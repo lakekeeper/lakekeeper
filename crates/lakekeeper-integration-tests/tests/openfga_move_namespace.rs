@@ -24,8 +24,6 @@
 // which the default nextest filter excludes (a root module would not match).
 mod move_namespace {
     mod openfga_integration_tests {
-        use std::sync::Arc;
-
         use iceberg::NamespaceIdent;
         use lakekeeper::{
             ProjectId, WarehouseId,
@@ -39,8 +37,9 @@ mod move_namespace {
                 },
             },
             service::{
-                CachePolicy, CatalogNamespaceOps, CatalogStore, CreateNamespaceRequest,
-                NamespaceId, State, Transaction, UserId, authz::Authorizer as _,
+                ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore,
+                CreateNamespaceRequest, NamespaceId, State, Transaction, UserId,
+                authz::Authorizer as _,
             },
         };
         use lakekeeper_authz_openfga::{
@@ -59,7 +58,7 @@ mod move_namespace {
 
         /// OpenFGA-backed context with a freshly-migrated, isolated store, bootstrapping
         /// `admin` as operator.
-        async fn setup(pool: PgPool) -> (Ctx, UserId, Arc<ProjectId>, WarehouseId) {
+        async fn setup(pool: PgPool) -> (Ctx, UserId, ArcProjectId, WarehouseId) {
             let authorizer = new_authorizer_in_empty_store_from_default_config()
                 .await
                 .expect("OpenFGA must be reachable at LAKEKEEPER__OPENFGA__ENDPOINT");

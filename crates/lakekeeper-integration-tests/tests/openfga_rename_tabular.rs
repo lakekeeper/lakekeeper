@@ -24,8 +24,6 @@
 // which the default nextest filter excludes (a root module would not match).
 mod rename_tabular {
     mod openfga_integration_tests {
-        use std::sync::Arc;
-
         use iceberg::{NamespaceIdent, TableIdent};
         use lakekeeper::{
             ProjectId, WarehouseId,
@@ -53,7 +51,7 @@ mod rename_tabular {
             },
             server::CatalogServer,
             service::{
-                AuthZTableInfo as _, CatalogNamespaceOps as _, CatalogStore,
+                ArcProjectId, AuthZTableInfo as _, CatalogNamespaceOps as _, CatalogStore,
                 CatalogTabularOps as _, GenericTableFormat, NamespaceId, State, TableId,
                 TabularListFlags, Transaction as _, UserId, authz::Authorizer as _,
             },
@@ -76,7 +74,7 @@ mod rename_tabular {
 
         /// OpenFGA-backed context with a freshly-migrated, isolated store, bootstrapping
         /// `admin` as operator.
-        async fn setup(pool: PgPool) -> (Ctx, UserId, Arc<ProjectId>, WarehouseId) {
+        async fn setup(pool: PgPool) -> (Ctx, UserId, ArcProjectId, WarehouseId) {
             let authorizer = new_authorizer_in_empty_store_from_default_config()
                 .await
                 .expect("OpenFGA must be reachable at LAKEKEEPER__OPENFGA__ENDPOINT");

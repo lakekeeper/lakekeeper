@@ -21,10 +21,10 @@ use crate::{
     },
     audit::{Wire, audit_part},
     service::{
-        ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
-        NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
-        TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
-        authn::UserIdRef,
+        ArcProjectId, ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId,
+        NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId,
+        TableIdentOrId, TableInfo, TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
+        authn::ArcUserId,
         authz::{
             ActionDescriptor, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
             EventAction, PrincipalScope, PrivilegeScope, ResourceType, RootLevelGrants,
@@ -1028,7 +1028,7 @@ impl<A: APIEventActions> APIEventContext<ProjectId, Unresolved, A> {
     pub fn for_project_arc(
         request_metadata: Arc<RequestMetadata>,
         dispatcher: EventDispatcher,
-        project_id: Arc<ProjectId>,
+        project_id: ArcProjectId,
         action: Arc<A>,
     ) -> Self {
         Self::new_arc(request_metadata, dispatcher, project_id, action)
@@ -1040,7 +1040,7 @@ impl<A: APIEventActions> APIEventContext<UserId, Unresolved, A> {
     pub fn for_user(
         request_metadata: Arc<RequestMetadata>,
         dispatcher: EventDispatcher,
-        user_id: UserIdRef,
+        user_id: ArcUserId,
         action: A,
     ) -> Self {
         Self::new_arc(request_metadata, dispatcher, user_id, Arc::new(action))

@@ -38,7 +38,7 @@ use crate::{
     XXHashSet,
     request_metadata::{RequestId, RequestMetadata},
     service::{
-        Actor, RoleIdent, UserId,
+        Actor, ArcRoleIdent, UserId,
         authn::InternalActor,
         events::backends::audit::{AuditOperation, AuditOutcome},
     },
@@ -283,7 +283,7 @@ pub struct Admission {
     /// [`RequestMetadata::admission_roles`] by the auth middleware, kept
     /// separate from token-claim roles so the provenance stays explicit.
     /// `None` when the gate resolves no roles.
-    pub resolved_roles: Option<XXHashSet<Arc<RoleIdent>>>,
+    pub resolved_roles: Option<XXHashSet<ArcRoleIdent>>,
 }
 
 impl Admission {
@@ -296,7 +296,7 @@ impl Admission {
     /// Admit the request and contribute the roles the gate resolved. The roles hold
     /// in every project, and a request is decided with them in the project it names.
     #[must_use]
-    pub fn with_roles(roles: XXHashSet<Arc<RoleIdent>>) -> Self {
+    pub fn with_roles(roles: XXHashSet<ArcRoleIdent>) -> Self {
         Self {
             resolved_roles: Some(roles),
         }
@@ -334,7 +334,7 @@ impl GateDecision {
     /// no project, so the roles hold in every project, and a request is decided
     /// with them in the project it names.
     #[must_use]
-    pub fn with_roles(roles: XXHashSet<Arc<RoleIdent>>) -> Self {
+    pub fn with_roles(roles: XXHashSet<ArcRoleIdent>) -> Self {
         Self::Admitted(Admission::with_roles(roles))
     }
 
@@ -490,7 +490,7 @@ impl AdmissionGates {
     /// Returns the [`AdmissionRejection`] from the first gate that rejects the
     /// request.
     pub async fn admit(&self, ctx: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
-        let mut resolved_roles: Option<XXHashSet<Arc<RoleIdent>>> = None;
+        let mut resolved_roles: Option<XXHashSet<ArcRoleIdent>> = None;
         for gate in &self.gates {
             let start = Instant::now();
             let result = gate.admit(ctx).await;
@@ -613,9 +613,10 @@ mod tests {
     use http::StatusCode;
 
     use super::*;
+    use crate::service::RoleIdent;
 
     /// Build a role set from role source-id names.
-    fn role_set(names: &[&str]) -> XXHashSet<Arc<RoleIdent>> {
+    fn role_set(names: &[&str]) -> XXHashSet<ArcRoleIdent> {
         names
             .iter()
             .map(|n| Arc::new(RoleIdent::new_unchecked("test", *n)))

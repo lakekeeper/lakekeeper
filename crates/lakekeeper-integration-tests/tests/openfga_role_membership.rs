@@ -20,7 +20,7 @@
 // which the default nextest filter excludes (a root module would not match).
 mod role_membership {
     mod openfga_integration_tests {
-        use std::{collections::HashSet, sync::Arc};
+        use std::collections::HashSet;
 
         use lakekeeper::{
             ProjectId,
@@ -36,7 +36,7 @@ mod role_membership {
                 },
             },
             service::{
-                RoleId, State, UserId,
+                ArcProjectId, RoleId, State, UserId,
                 authn::Actor,
                 authz::{Authorizer as _, UserOrRoleId},
             },
@@ -53,7 +53,7 @@ mod role_membership {
         /// Build an OpenFGA-backed context with a freshly-migrated, isolated store,
         /// bootstrapping `user_id` as operator. Returns the context, the operator's
         /// id, and the project the warehouse was created in.
-        async fn setup(pool: PgPool) -> (Ctx, UserId, Arc<ProjectId>) {
+        async fn setup(pool: PgPool) -> (Ctx, UserId, ArcProjectId) {
             let authorizer = new_authorizer_in_empty_store_from_default_config()
                 .await
                 .expect("OpenFGA must be reachable at LAKEKEEPER__OPENFGA__ENDPOINT");

@@ -25,7 +25,7 @@ use crate::{
     WarehouseId, XXHashSet,
     request_metadata::RequestMetadata,
     service::{
-        ArcProjectId, RoleIdent,
+        ArcProjectId, ArcRoleIdent, RoleIdent,
         admission::{AdmissionContext, AdmissionGates, AdmissionTrigger, RejectionKind},
         authz::InstanceAdminMembership,
         events::EventDispatcher,
@@ -77,7 +77,8 @@ pub(crate) struct AuthMiddlewareState<
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct UserId(Subject);
 
-pub type UserIdRef = std::sync::Arc<UserId>;
+/// Reference to [`UserId`] that can be cheaply cloned and shared.
+pub type ArcUserId = std::sync::Arc<UserId>;
 
 pub(crate) const OIDC_IDP_ID: &str = "oidc";
 pub(crate) const K8S_IDP_ID: &str = "kubernetes";
@@ -1069,7 +1070,7 @@ fn apply_token_roles(
 #[cfg(feature = "router")]
 fn extract_token_roles(
     authentication: &limes::Authentication,
-) -> Result<Option<XXHashSet<Arc<RoleIdent>>>, ErrorModel> {
+) -> Result<Option<XXHashSet<ArcRoleIdent>>, ErrorModel> {
     use crate::service::{RoleProviderId, RoleSourceId};
 
     let Some(roles) = authentication.roles() else {
@@ -2690,7 +2691,7 @@ mod tests {
         use crate::{
             request_metadata::RequestMetadata,
             service::{
-                RoleId, RoleIdent, UserId,
+                ArcRoleIdent, RoleId, RoleIdent, UserId,
                 admission::{
                     AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection,
                     GateDecision,
@@ -2715,7 +2716,7 @@ mod tests {
             }
         }
 
-        fn granted_role() -> Arc<RoleIdent> {
+        fn granted_role() -> ArcRoleIdent {
             Arc::new(RoleIdent::new_unchecked("test", "test-granted-role"))
         }
 
