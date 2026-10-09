@@ -95,7 +95,7 @@ Applies to `docs/docs/*.md` and `site/docs/`. Release notes: also follow `.githu
 
 Follow `crates/lakekeeper/src/api/management/v1/lakekeeper_actions.rs` as the reference.
 
-- Validate request inputs (query parsing, `require_project_id(None)`, request shape) with `?` before authorizing; such errors emit no event. From the first authorization step on, audit every failure: role resolution, catalog fetches, authz and serialization go inside the single `Result` passed to one `event_ctx.emit_authz(...)?`. A handler that emits after doing its work reports a denial with `event_ctx.emit_early_authz_failure(...)`.
+- Validate request inputs (query parsing, `require_project_id(None)`, request shape) with `?` before authorizing; such errors emit no event. From the first authorization step on, audit every failure: role resolution, catalog fetches, authz and serialization go inside the single `Result` passed to one `event_ctx.emit_authz(...)?`. Report a denial found before `emit_authz` with `event_ctx.emit_early_authz_failure(...)`, and one found after it, on the checked context `emit_authz` returns, with `emit_late_authz_failure(...)`.
 - Use `require_*_presence` to fold `Result<Option<T>, CatalogError>` into `AuthZError`.
 - Match `APIEventContext::for_*` to the actual target resource — never default to `for_server`.
 - Never format errors into user-facing messages. Attach typed errors via `.source(Some(Box::new(e)))`.
