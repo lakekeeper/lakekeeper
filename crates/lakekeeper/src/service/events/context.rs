@@ -222,11 +222,11 @@ pub enum ActionContextKey {
     /// The privileges named when `privilege_scope` is `only`; `[]` when it is `every`.
     NarrowedPrivileges(Vec<String>),
     /// The one principal whose grants are in range, as `{"user": …}` or `{"role": …}`, present when `principal_scope` is `one`. A user also carries `email` when audit records carry emails and it is known.
-    Principal(SubjectRecord),
+    Principal(SubjectRecord<'static>),
     /// `every` when the request reaches the grants of every principal, `one` when it names one in `principal`.
     PrincipalScope(Wire<PrincipalScope>),
     /// The distinct principals the grants are for, as `{"user": …}` or `{"role": …}`. A user also carries `email` when audit records carry emails and it is known.
-    Principals(Vec<SubjectRecord>),
+    Principals(Vec<SubjectRecord<'static>>),
     /// `every` when the request reaches every privilege a matching grant can carry, `only` when it names a set.
     PrivilegeScope(Wire<PrivilegeScope>),
     /// The distinct privilege names the request names. `[]` on a revocation that names none, which means every privilege.

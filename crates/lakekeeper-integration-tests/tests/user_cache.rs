@@ -46,7 +46,7 @@ async fn setup(pool: PgPool) -> Ctx {
 }
 
 async fn email_of(ctx: &Ctx, user_id: &UserId) -> UserEmail {
-    user_emails::<PostgresBackend>(std::slice::from_ref(user_id), ctx.v1_state.catalog.clone())
+    user_emails::<PostgresBackend>(&[user_id], ctx.v1_state.catalog.clone())
         .await
         .unwrap()
         .remove(user_id)
@@ -166,12 +166,7 @@ async fn several_ids_resolve_together(pool: PgPool) {
     write_silently(&ctx, &with_email, Some("f@example.com")).await;
     write_silently(&ctx, &without, None).await;
 
-    let ids = [
-        with_email.clone(),
-        without.clone(),
-        unknown.clone(),
-        with_email.clone(),
-    ];
+    let ids = [&with_email, &without, &unknown, &with_email];
     let emails = user_emails::<PostgresBackend>(&ids, ctx.v1_state.catalog.clone())
         .await
         .unwrap();
@@ -200,7 +195,8 @@ async fn ids_beyond_one_read_resolve_together(pool: PgPool) {
     let mut ids = vec![first.clone()];
     ids.extend((0..1_000).map(|i| UserId::new_unchecked("oidc", &format!("cache-chunk-{i}"))));
     ids.push(last.clone());
-    let emails = user_emails::<PostgresBackend>(&ids, ctx.v1_state.catalog.clone())
+    let refs: Vec<&UserId> = ids.iter().collect();
+    let emails = user_emails::<PostgresBackend>(&refs, ctx.v1_state.catalog.clone())
         .await
         .unwrap();
     assert_eq!(emails.len(), ids.len());

@@ -16,7 +16,7 @@ use axum_extra::{
 #[cfg(feature = "router")]
 use http::HeaderMap;
 use iceberg_ext::catalog::rest::ErrorModel;
-use limes::{AuthenticatorEnum, Subject, format_subject, parse_subject};
+use limes::{AuthenticatorEnum, Subject, parse_subject};
 use serde::{Deserialize, Serialize};
 
 use crate::{CONFIG, api, service::ArcRole};
@@ -1105,7 +1105,10 @@ fn extract_token_roles(
 
 impl std::fmt::Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", format_subject(&self.0, Some(IDP_SEPARATOR)))
+        // `format_subject` with `IDP_SEPARATOR`, written without building a `String` first.
+        let idp_id = self.0.idp_id().map_or("", String::as_str);
+        let sub = self.0.subject_in_idp();
+        write!(f, "{idp_id}{IDP_SEPARATOR}{sub}")
     }
 }
 
@@ -1253,7 +1256,7 @@ impl Serialize for UserId {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(self.to_string().as_str())
+        serializer.collect_str(self)
     }
 }
 
@@ -2213,6 +2216,18 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[test]
+    fn user_id_displays_as_format_subject() {
+        for subject in [
+            Subject::new(Some("oidc".to_string()), "123".to_string()),
+            Subject::new(Some("kubernetes".to_string()), "a~b".to_string()),
+            Subject::new(None, "123".to_string()),
+        ] {
+            let expected = limes::format_subject(&subject, Some(IDP_SEPARATOR));
+            assert_eq!(UserId(subject).to_string(), expected);
+        }
     }
 
     #[test]
