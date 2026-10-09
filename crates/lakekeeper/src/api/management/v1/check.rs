@@ -1196,7 +1196,7 @@ async fn fetch_namespaces<C: CatalogStore>(
     Ok((namespaces_by_id, namespace_ident_lookup))
 }
 
-/// Fetch `Arc<Role>` for every `Role(RoleId)` identity referenced in the check items.
+/// Fetch `ArcRole` for every `Role(RoleId)` identity referenced in the check items.
 /// Returns an error if any requested role ID is not found in the catalog.
 async fn fetch_identity_roles<C: CatalogStore>(
     checks: &[CatalogActionCheckItem],
@@ -1241,7 +1241,7 @@ async fn fetch_identity_roles<C: CatalogStore>(
 }
 
 /// Convert an API-level `UserOrRole` (which carries only a `RoleId`) into the
-/// internal `AuthzUserOrRole` (which carries the full `Arc<Role>`).
+/// internal `AuthzUserOrRole` (which carries the full `ArcRole`).
 /// Unreachable if a role ID is not present in `roles` — callers must pre-populate
 /// the map via `fetch_identity_roles`.
 fn resolve_identity(
@@ -1901,7 +1901,7 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     metadata: &RequestMetadata,
     error_on_not_found: bool,
 ) -> Result<Vec<CatalogActionsBatchCheckResult>, AuthZError> {
-    // 0. Resolve all role IDs referenced in identity fields to full Arc<Role>.
+    // 0. Resolve all role IDs referenced in identity fields to full ArcRole.
     //    Single batched catalog call; errors if any identity role ID is unknown.
     //    Must be called before group_checks consumes `checks`.
     let roles = fetch_identity_roles::<C>(&checks, catalog_state.clone()).await?;

@@ -5,7 +5,7 @@ use crate::{
     api::RequestMetadata,
     service::{
         ArcRole, RoleId,
-        authn::UserIdRef,
+        authn::ArcUserId,
         authz::{CatalogProjectAction, CatalogRoleAction},
         catalog_store::{ListRoleMembersResult, ListUserRoleAssignmentsResult},
         events::{
@@ -50,9 +50,9 @@ pub struct UpdateRoleEvent {
 #[derive(Clone, Debug)]
 pub struct RoleMembersSyncedEvent {
     /// Users added during this sync run.
-    pub added: Arc<[UserIdRef]>,
+    pub added: Arc<[ArcUserId]>,
     /// Users removed during this sync run.
-    pub removed: Arc<[UserIdRef]>,
+    pub removed: Arc<[ArcUserId]>,
     /// Timestamp written to the role member sync log by this sync run.
     pub synced_at: chrono::DateTime<chrono::Utc>,
     /// The complete, authoritative member list after this sync run.
@@ -68,7 +68,7 @@ pub struct RoleMembersSyncedEvent {
 #[derive(Clone, Debug)]
 pub struct UserRoleAssignmentsSyncedEvent {
     /// The user whose assignments were synced.
-    pub user_id: UserIdRef,
+    pub user_id: ArcUserId,
     /// IDs of roles newly assigned to the user during this sync run.
     pub added: Arc<[RoleId]>,
     /// IDs of roles removed from the user during this sync run.

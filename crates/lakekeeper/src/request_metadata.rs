@@ -19,7 +19,7 @@ use crate::{
     api::iceberg::v1::namespace::NamespaceIdentUrl,
     config::MatchedEngines,
     service::{
-        ArcProjectId, RoleIdent, TabularId,
+        ArcProjectId, ArcRoleIdent, TabularId,
         authn::{Actor, InternalActor},
         authz::{InstanceAdminAuthorizer, UserOrRole},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
@@ -161,13 +161,13 @@ pub struct RequestMetadata {
     authentication: Option<Authentication>,
     /// Roles the caller's token carries in the identity provider's roles claim. They
     /// hold in every project.
-    token_roles: Option<XXHashSet<Arc<RoleIdent>>>,
+    token_roles: Option<XXHashSet<ArcRoleIdent>>,
     /// Roles resolved by a post-authentication admission gate (see
     /// [`AdmissionGate`](crate::service::admission::AdmissionGate)) — e.g. from
     /// an external entitlement service. Kept separate from `token_roles` so the
     /// provenance (token claim vs externally resolved) stays explicit. They hold in
     /// every project.
-    admission_roles: Option<XXHashSet<Arc<RoleIdent>>>,
+    admission_roles: Option<XXHashSet<ArcRoleIdent>>,
     base_url: String,
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
@@ -279,7 +279,7 @@ impl RequestMetadata {
 
     /// Set the roles the caller's token carries. Written by the auth middleware
     /// after the token is verified.
-    pub fn set_token_roles(&mut self, roles: XXHashSet<Arc<RoleIdent>>) -> &mut Self {
+    pub fn set_token_roles(&mut self, roles: XXHashSet<ArcRoleIdent>) -> &mut Self {
         self.token_roles = Some(roles);
         self
     }
@@ -288,7 +288,7 @@ impl RequestMetadata {
     /// by the auth middleware after the gates run; kept separate from
     /// [`set_token_roles`](Self::set_token_roles) to preserve provenance.
     #[cfg_attr(not(feature = "router"), allow(dead_code))]
-    pub(crate) fn set_admission_roles(&mut self, roles: XXHashSet<Arc<RoleIdent>>) -> &mut Self {
+    pub(crate) fn set_admission_roles(&mut self, roles: XXHashSet<ArcRoleIdent>) -> &mut Self {
         self.admission_roles = Some(roles);
         self
     }
@@ -305,7 +305,7 @@ impl RequestMetadata {
     /// Roles resolved by a post-authentication admission gate, if any. They hold in
     /// every project.
     #[must_use]
-    pub fn admission_roles(&self) -> Option<&XXHashSet<Arc<RoleIdent>>> {
+    pub fn admission_roles(&self) -> Option<&XXHashSet<ArcRoleIdent>> {
         self.admission_roles.as_ref()
     }
 
@@ -337,7 +337,7 @@ impl RequestMetadata {
 
     /// Roles the caller's token carries, if any. They hold in every project.
     #[must_use]
-    pub fn token_roles(&self) -> Option<&XXHashSet<Arc<RoleIdent>>> {
+    pub fn token_roles(&self) -> Option<&XXHashSet<ArcRoleIdent>> {
         self.token_roles.as_ref()
     }
 
@@ -715,13 +715,13 @@ pub struct RequestMetadataTestBuilder {
     /// sets these; this builder field lets tests construct a request that carries
     /// them.
     #[builder(default, setter(strip_option))]
-    pub token_roles: Option<XXHashSet<Arc<RoleIdent>>>,
+    pub token_roles: Option<XXHashSet<ArcRoleIdent>>,
     /// Roles a post-authentication admission gate resolved for the caller. In
     /// production only the auth middleware sets these (via the `pub(crate)`
     /// [`RequestMetadata::set_admission_roles`]); this builder field lets tests
     /// construct a request that carries them.
     #[builder(default, setter(strip_option))]
-    pub admission_roles: Option<XXHashSet<Arc<RoleIdent>>>,
+    pub admission_roles: Option<XXHashSet<ArcRoleIdent>>,
     /// The `User-Agent` header the caller sent, as captured by the request
     /// middleware. Lets tests exercise the audit log's `user_agent` field.
     #[builder(default, setter(strip_option))]

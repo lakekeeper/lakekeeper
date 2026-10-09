@@ -24,7 +24,7 @@ Key commands:
 - Unit tests only: `just unit-test`
 - Test one: `cargo test -p <crate> <test_name>`
 - Lint: `just check` (runs clippy with multiple feature combinations, format check, cargo-sort)
-- Format: `just fix-format` (requires `cargo +nightly fmt` and `cargo sort`)
+- Format: `just fix-format` (requires `cargo sort`)
 - Auto-fix: `just fix`
 
 Clippy runs with multiple feature flag combinations — don't just run `cargo clippy --all-features`. Use `just check-clippy`.
@@ -39,7 +39,12 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 | lakekeeper-io | crates/io | Storage I/O (S3, GCS, Azure, etc.) |
 | iceberg-ext | crates/iceberg-ext | Iceberg format extensions |
 | lakekeeper-authz-openfga | crates/authz-openfga | OpenFGA authorization |
-| catalog-error-macros | crates/catalog-error-macros | Error derive macros |
+| lakekeeper-audit-macros | crates/audit-macros | `#[audit_part]` attribute for audit types |
+| lakekeeper-storage-postgres | crates/lakekeeper-storage-postgres | PostgreSQL catalog backend and migrations |
+| lakekeeper-events-kafka | crates/lakekeeper-events-kafka | Kafka cloud-events publisher |
+| lakekeeper-events-nats | crates/lakekeeper-events-nats | NATS cloud-events publisher |
+| lakekeeper-secrets-kv2 | crates/lakekeeper-secrets-kv2 | Vault KV2 secrets backend |
+| lakekeeper-integration-tests | crates/lakekeeper-integration-tests | Service-layer tests against a storage backend (Postgres) |
 
 ## Authz
 
@@ -49,8 +54,11 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 ## Code Style
 
 - Follow existing patterns in adjacent files.
+- Fix the code, don't silence the lint. `#[allow(clippy::…)]` needs a structural reason the clean fix is wrong, in a trailing comment. `too_many_arguments` → a `typed-builder` spec struct; `too_many_lines` → extract functions.
+- An existing `allow` is not permission to grow what it covers. Adding an argument, branch, or line under one means fixing the underlying issue in the same change.
 - Use `thiserror` for error types, `tracing` for logging.
 - Use `typed-builder` for struct construction.
+- Share a type through `Arc` on many call sites with `pub type ArcX = Arc<X>;` next to `X`, documented "Reference to [`X`] that can be cheaply cloned and shared." Where an alias exists, use it — never write `Arc<X>`.
 - Use workspace dependencies (`{ workspace = true }`) — don't add versions directly.
 - All crate versions use `version.workspace = true`.
 - Minimize new dependencies — justify additions.
@@ -81,6 +89,16 @@ Applies to `docs/docs/*.md` and `site/docs/`. Release notes: also follow `.githu
 - Hot authz path: may tolerate cache lag.
 - After any write: invalidate the local replica's in-memory cache immediately.
 - Never rely on per-process caches for cross-replica correctness — caches have no cross-replica invalidation.
+- Never retrofit a behavior-narrowing query param onto an existing route (worst case: scoping a DELETE). Released servers ignore unknown query params, so under version skew a new client gets the un-scoped operation. Add a new route instead — old servers reject it.
+
+## Authorization & audit in handlers
+
+Follow `crates/lakekeeper/src/api/management/v1/lakekeeper_actions.rs` as the reference.
+
+- Validate request inputs (query parsing, `require_project_id(None)`, request shape) with `?` before authorizing; such errors emit no event. From the first authorization step on, audit every failure: role resolution, catalog fetches, authz and serialization go inside the single `Result` passed to one `event_ctx.emit_authz(...)?`. Report a denial found before `emit_authz` with `event_ctx.emit_early_authz_failure(...)`, and one found after it, on the checked context `emit_authz` returns, with `emit_late_authz_failure(...)`.
+- Use `require_*_presence` to fold `Result<Option<T>, CatalogError>` into `AuthZError`.
+- Match `APIEventContext::for_*` to the actual target resource — never default to `for_server`.
+- Never format errors into user-facing messages. Attach typed errors via `.source(Some(Box::new(e)))`.
 
 ## Audit Log
 
@@ -102,3 +120,17 @@ Applies to `docs/docs/*.md` and `site/docs/`. Release notes: also follow `.githu
 - Write a clear PR description of the user-visible change; optionally add a `## Release notes` section. The docs-site Release Notes page (`site/docs/about/release-notes.md`) is summarised from PR descriptions at release; `CHANGELOG.md` (release-please) stays headlines-only. See `.github/RELEASING.md`.
 - Never acquire a nested database connection. If a transaction is active, all subsequent queries must use that transaction — do not check out another connection from the read or write pool. Nested connections cause pool exhaustion and deadlocks.
 - To return updated state after a write, read it back **in the same transaction** — a follow-up query may hit a lagging read replica and miss the write.
+- Stay on the default isolation level — no `REPEATABLE READ`/`SERIALIZABLE`. Read co-dependent data in ONE statement; guard a read-then-write with a version compare-and-set that reports a mismatch as retryable. Raise the level only where one statement cannot read the data together, with a comment saying why.
+- After changing a query, run `just sqlx-prepare` and commit `.sqlx/`.
+- Never edit a migration file a release tag carries (`git tag --contains`): it changes the sqlx checksum. Add a new numbered file, or list the version in `get_changed_migration_ids()` (`crates/lakekeeper-storage-postgres/src/migrations/mod.rs`).
+
+## Testing
+
+- Assert exact expected values. Never `assert x in (a, b)` or approximate matches — ambiguity in tests hides real bugs. If you're unsure which value is correct, find out first.
+
+## Downstream: Lakekeeper Plus
+
+Lakekeeper Plus (private repository) builds on this workspace, pinned to a git revision. It uses `lakekeeper`'s public API (`service`, `api`, `audit`, `__private`, the `test-utils` feature) and `lakekeeper-storage-postgres`'s `ExtensionMigrations`.
+
+- Treat every `pub` item of these crates as API. A rename, removal or signature change breaks Plus at its next revision bump: name it in the PR description under `## Downstream follow-up`.
+- Table names starting with `ext_` are reserved for downstream extensions.

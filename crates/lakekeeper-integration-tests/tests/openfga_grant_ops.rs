@@ -37,8 +37,8 @@ mod grant {
             },
             server::CatalogServer,
             service::{
-                CatalogNamespaceOps as _, CatalogWarehouseOps as _, NamespaceId, ResolvedWarehouse,
-                State, UserId,
+                ArcProjectId, CatalogNamespaceOps as _, CatalogWarehouseOps as _, NamespaceId,
+                ResolvedWarehouse, State, UserId,
                 authn::Actor,
                 authz::{
                     AuthZGrantOps as _, Authorizer as _, GrantAuthorityCheck, GrantOp,
@@ -59,7 +59,7 @@ mod grant {
         /// An OpenFGA-backed context with a freshly-migrated, isolated store,
         /// bootstrapping `admin` as operator — who therefore inherits the
         /// `can_grant_*` relations the grant surface checks.
-        async fn setup(pool: PgPool) -> (Ctx, UserId, Arc<ProjectId>, WarehouseId) {
+        async fn setup(pool: PgPool) -> (Ctx, UserId, ArcProjectId, WarehouseId) {
             let authorizer = new_authorizer_in_empty_store_from_default_config()
                 .await
                 .expect("OpenFGA must be reachable at LAKEKEEPER__OPENFGA__ENDPOINT");
