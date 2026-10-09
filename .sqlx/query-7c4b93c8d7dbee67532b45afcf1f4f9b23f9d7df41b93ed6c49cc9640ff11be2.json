@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT logical_key, physical_path, problem AS \"problem: DbDegradedFileProblem\"\n        FROM dataset_degraded_file\n        WHERE warehouse_id = $1 AND snapshot_id = $2\n          AND ($3::text IS NULL OR logical_key > $3::text COLLATE \"C\")\n        ORDER BY logical_key ASC\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "logical_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_degraded_file",
+            "name": "logical_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "physical_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_degraded_file",
+            "name": "physical_path"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "problem: DbDegradedFileProblem",
+        "type_info": {
+          "Custom": {
+            "name": "dataset_degraded_file_problem",
+            "kind": {
+              "Enum": [
+                "missing",
+                "changed"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "dataset_degraded_file",
+            "name": "problem"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7c4b93c8d7dbee67532b45afcf1f4f9b23f9d7df41b93ed6c49cc9640ff11be2"
+}

@@ -80,6 +80,8 @@ Then create the Warehouse with:
 }
 ```
 
+A system identity has no private key, so the signed URLs Lakekeeper issues for [dataset files](./datasets.md#signed-urls) are signed through the IAM `signBlob` API: one call per URL, and the service account needs `iam.serviceAccounts.signBlob` on itself. Vended credentials are unaffected. For high-volume signed reads, use a [service account key](#service-account-key), which signs locally.
+
 ## CORS
 
 [LoQE](engines.md#loqe) needs a [CORS policy](storage.md#cors) on the bucket. Save this policy as `cors.json`, replacing `https://lakekeeper.example.com` with the origin where your Lakekeeper instance is hosted:

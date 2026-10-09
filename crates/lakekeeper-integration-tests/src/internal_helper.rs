@@ -10,7 +10,8 @@ use iceberg_ext::catalog::rest::{
 };
 use lakekeeper::{
     api::{
-        ApiContext,
+        ApiContext, RequestMetadata, RequestMetadataTestBuilder,
+        data::v1::datasets::{CreateDatasetRequest, DatasetService as _},
         iceberg::{
             types::Prefix,
             v1::{
@@ -22,11 +23,15 @@ use lakekeeper::{
         },
     },
     server::CatalogServer,
-    service::{CatalogStore, SecretStore, State, authz::Authorizer},
+    service::{
+        CatalogStore, SecretStore, State, UserId, authn::Actor, authz::Authorizer,
+        idempotency::IdempotencyKey,
+    },
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use serde_json::json;
 use tokio::runtime::Runtime;
+use uuid::Uuid;
 
 use crate::random_request_metadata;
 
@@ -216,6 +221,28 @@ pub fn create_table_request(
     }
 }
 
+pub async fn create_dataset<T: Authorizer>(
+    api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
+    prefix: impl Into<String>,
+    ns_name: impl Into<String>,
+    name: impl Into<String>,
+) -> lakekeeper::api::Result<lakekeeper::api::data::v1::datasets::LoadDatasetResponse> {
+    CatalogServer::create_dataset(
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix.into())),
+            namespace: NamespaceIdent::new(ns_name.into()),
+        },
+        CreateDatasetRequest {
+            name: name.into(),
+            location: None,
+            constraints: None,
+        },
+        api_context,
+        random_request_metadata(),
+    )
+    .await
+}
+
 pub async fn create_generic_table<T: Authorizer>(
     api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: impl Into<String>,
@@ -248,4 +275,29 @@ pub async fn create_generic_table<T: Authorizer>(
         random_request_metadata(),
     )
     .await
+}
+
+#[must_use]
+pub fn new_key() -> IdempotencyKey {
+    IdempotencyKey::parse(&Uuid::now_v7().to_string()).unwrap()
+}
+
+#[must_use]
+pub fn metadata_with_key(key: IdempotencyKey) -> RequestMetadata {
+    let mut metadata = RequestMetadata::new_unauthenticated();
+    metadata.with_idempotency_key(key);
+    metadata
+}
+
+/// A request by `subject` (`<idp>~<id>`) carrying `key`, as a retry from another
+/// worker sends it.
+#[must_use]
+pub fn metadata_with_key_as(key: IdempotencyKey, subject: &str) -> RequestMetadata {
+    let mut metadata = RequestMetadataTestBuilder::builder()
+        .actor(Actor::Principal(
+            UserId::try_from(subject).expect("a valid user id"),
+        ))
+        .build();
+    metadata.with_idempotency_key(key);
+    metadata
 }

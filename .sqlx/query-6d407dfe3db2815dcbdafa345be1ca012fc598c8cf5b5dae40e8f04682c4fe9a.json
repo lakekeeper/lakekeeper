@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE dataset_snapshot SET is_checkpoint = true\n           WHERE warehouse_id = $1 AND snapshot_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6d407dfe3db2815dcbdafa345be1ca012fc598c8cf5b5dae40e8f04682c4fe9a"
+}

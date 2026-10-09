@@ -4,7 +4,7 @@
   "$ref": "#/$defs/AuditRecord",
   "x-audit-emitter": {
     "name": "lakekeeper",
-    "format": "1.0"
+    "format": "1.1"
   },
   "$defs": {
     "ActionRecord": {
@@ -134,7 +134,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "The branch or tag references the commit targets."
+                "description": "The branch or tag references the action targets."
               },
               "update_kinds": {
                 "type": "array",
@@ -149,6 +149,45 @@
                   "type": "string"
                 },
                 "description": "The properties being set, verbatim. The keys are the client's data."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "create_dataset"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "base_location": {
+                "type": "string",
+                "description": "The storage location the client requested."
+              },
+              "dataset_id": {
+                "type": "string",
+                "description": "The dataset id the client requested."
+              },
+              "managed": {
+                "type": "boolean",
+                "description": "`true` when the client asked Lakekeeper to own the dataset's prefix, `false` when the dataset borrows an existing one."
+              },
+              "name": {
+                "type": "string",
+                "description": "The name the client asked to create."
+              },
+              "properties": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "The properties the client supplied, verbatim. The keys are the client's data."
               }
             }
           }
@@ -425,6 +464,29 @@
           "if": {
             "properties": {
               "action_name": {
+                "const": "manage_refs"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The branch or tag references the action targets."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
                 "const": "move"
               }
             },
@@ -444,6 +506,52 @@
               "force": {
                 "type": "boolean",
                 "description": "`true` when the client asked to force the operation."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "promote"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The branch or tag references the action targets."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "read_data"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The branch or tag references the action targets."
               }
             }
           }
@@ -494,6 +602,29 @@
               "root_level": {
                 "$ref": "#/$defs/RootLevelGrants",
                 "description": "`included` when the addressed resource's own grants are in range, `excluded` when only those beneath it are."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action_name": {
+                "const": "reset"
+              }
+            },
+            "required": [
+              "action_name"
+            ]
+          },
+          "then": {
+            "properties": {
+              "target_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The branch or tag references the action targets."
               }
             }
           }
@@ -743,6 +874,7 @@
       "description": "Values of `operation`. A later release may add a value without a format change.",
       "x-audit-values": [
         "admission_decided",
+        "dataset_files_signed",
         "grant_created",
         "grant_revoked"
       ],
@@ -753,6 +885,7 @@
       "type": "string",
       "description": "Values of `outcome`. A later release may add a value without a format change.",
       "x-audit-values": [
+        "failed",
         "forbidden",
         "success",
         "unavailable"
@@ -760,7 +893,8 @@
       "x-audit-kind": "enum",
       "x-audit-field": "outcome",
       "x-audit-descriptions": {
-        "forbidden": "An admission gate denied the caller authoritatively.",
+        "failed": "A permitted operation did not complete: the catalog or the storage backend\nreturned an error.",
+        "forbidden": "An admission gate denied the caller authoritatively, or a sign request was refused by\nthe grant it presented.",
         "success": "The operation completed.",
         "unavailable": "An admission gate could not reach an upstream it needs and failed closed: an outage,\nnot a denial."
       }
@@ -969,6 +1103,50 @@
       "description": "An authorization record: was this caller permitted to do these actions on these entities?",
       "x-audit-kind": "shape"
     },
+    "CatalogDatasetAction": {
+      "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
+      "x-audit-values": [
+        "commit",
+        "control_tasks",
+        "drop",
+        "expire_snapshots",
+        "get_metadata",
+        "get_tasks",
+        "include_in_list",
+        "manage_refs",
+        "manage_tags",
+        "move",
+        "promote",
+        "read_data",
+        "read_grants",
+        "rename",
+        "reset",
+        "restore_snapshots",
+        "revoke_access_grants",
+        "set_protection",
+        "undrop",
+        "update_retention",
+        "update_settings"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-descriptions": {
+        "commit": "Append a snapshot and move a branch pointer forward.",
+        "expire_snapshots": "Expire a snapshot by hand, starting its grace period. Grant authority, like\n`restore_snapshots`, which undoes it.",
+        "manage_refs": "Create and delete branches and tags, and set their protection. Kept apart\nfrom `commit`, so write access does not confer control over refs: a writer\ncan neither replace a tag nor unprotect a branch.",
+        "manage_tags": "Attach/detach governance tags on this dataset.",
+        "move": "Rename this dataset into another namespace. Asked in addition to `rename` when a\nrename changes the namespace.\n\nThe move changes which grants the dataset inherits, as moving a namespace does, so it\nis gated on grant authority in addition to write access. The destination is gated by\n`create_dataset` plus `accept_moved_tabular`.",
+        "promote": "Fast-forward a branch to a descendant snapshot: the publish step of\nwrite-audit-publish, and the only way changes reach a protected branch.",
+        "read_data": "Read the files of a ref of this dataset.",
+        "read_grants": "Can list the grants held on this dataset.",
+        "reset": "Point a branch at an arbitrary non-descendant snapshot, `main` included.\nUnlike `promote` this abandons history on the branch, so it is not\nreachable through the promote path: it is ref management, like creating,\ndeleting and protecting refs.",
+        "restore_snapshots": "Bring back a snapshot retention expired, before it is purged. Grant\nauthority: it undoes a retention decision.",
+        "revoke_access_grants": "Revoke an access grant another caller obtained. Its own holder may always\nrevoke one.",
+        "update_retention": "Change the dataset's retention policy. Grant authority, like\n`expire_snapshots`: a policy expires snapshots as a caller expiring them by\nhand does.",
+        "update_settings": "Change the dataset's constraints. A write, like a table's property update."
+      }
+    },
     "CatalogGenericTableAction": {
       "type": "string",
       "description": "Values of `action_name`. A later release may add a value without a format change.",
@@ -1001,6 +1179,7 @@
       "x-audit-values": [
         "accept_moved_namespace",
         "accept_moved_tabular",
+        "create_dataset",
         "create_generic_table",
         "create_namespace",
         "create_table",
@@ -1008,6 +1187,7 @@
         "delete",
         "get_metadata",
         "include_in_list",
+        "list_datasets",
         "list_everything",
         "list_generic_tables",
         "list_namespaces",
@@ -1025,7 +1205,7 @@
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
         "accept_moved_namespace": "Accept a namespace being moved in from elsewhere as a child of this entity.\n\nDistinct from `create_namespace`: creating adds an *empty* child, so exposing it to\nthis subtree's grantees exposes nothing. A move arrives carrying existing contents\nand their direct grants, so an authorizer may require grant authority here in\naddition to `create`. OpenFGA does when this entity is under managed access.",
-        "accept_moved_tabular": "Accept a table, view or generic table being moved in from another namespace.\n\nThe tabular counterpart of `accept_moved_namespace`, asked together with the matching\n`create_*` action: a moved tabular arrives carrying its direct grants.",
+        "accept_moved_tabular": "Accept a table, view, generic table or dataset being moved in from another namespace.\n\nThe tabular counterpart of `accept_moved_namespace`, asked together with the matching\n`create_*` action: a moved tabular arrives carrying its direct grants.",
         "manage_tags": "Attach/detach governance tags on this namespace.",
         "move": "Move this namespace to a new path, re-parenting and/or renaming it.\n\nGated on grant-level authority *in addition to* plain write access. Re-parenting a\nnamespace re-issues every privilege the destination subtree confers onto the\nnamespace's contents, with no assignment record anywhere — so the actor must\nalready be able to grant on the namespace being moved. Inside a `managed_access`\nsubtree ownership does not confer that, which is precisely the case where moving\nout would otherwise defeat the control.\n\nOnly the source half of a move's authorization; the destination is gated by\n`CreateNamespace` plus `AcceptMovedNamespace`.",
         "read_grants": "Can list the grants held on this namespace.",
@@ -1243,6 +1423,41 @@
         "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `read_subtree_grants`."
       }
     },
+    "DatasetFilesSignedRecord": {
+      "type": "object",
+      "properties": {
+        "warehouse_id": {
+          "type": "string",
+          "description": "The warehouse the call named."
+        },
+        "dataset_id": {
+          "type": "string",
+          "description": "The dataset the call named. Absent when no active dataset has that name."
+        },
+        "snapshot_id": {
+          "type": "string",
+          "description": "The snapshot the call asked to sign."
+        },
+        "access_grant_id": {
+          "type": "string",
+          "description": "The access grant the call presented."
+        },
+        "key_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many keys the call asked to sign."
+        }
+      },
+      "required": [
+        "warehouse_id",
+        "snapshot_id",
+        "access_grant_id",
+        "key_count"
+      ],
+      "description": "One call signing a dataset's files: what the grant covered and how many keys were asked\nfor, never the URLs, which are bearer secrets.",
+      "x-audit-kind": "context"
+    },
     "Decision": {
       "type": "string",
       "description": "Values of `decision`. A new value is a major format change.",
@@ -1447,6 +1662,14 @@
           "type": "string",
           "description": "The generic table's id."
         },
+        "dataset": {
+          "type": "string",
+          "description": "The dataset's name, qualified by its namespace."
+        },
+        "dataset_id": {
+          "type": "string",
+          "description": "The dataset's id."
+        },
         "tag_definition_id": {
           "type": "string",
           "description": "The tag definition's id."
@@ -1465,6 +1688,7 @@
       "type": "string",
       "description": "Values of `entity_type`. A later release may add a value without a format change.",
       "x-audit-values": [
+        "dataset",
         "generic-table",
         "namespace",
         "project",
@@ -1847,6 +2071,7 @@
       "type": "string",
       "description": "Values of `resource_type`. A later release may add a value without a format change.",
       "x-audit-values": [
+        "dataset",
         "generic-table",
         "namespace",
         "project",

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO dataset_manifest_entry\n            (warehouse_id, snapshot_id, logical_key, physical_path, change,\n             etag, size, content_type, checksum, version_id, last_modified)\n        SELECT $1, $2, logical_key, physical_path, 'added',\n               etag, size, content_type, checksum, version_id, last_modified\n        FROM (\n            SELECT DISTINCT ON (t.logical_key)\n                t.logical_key, t.physical_path, t.change, t.etag, t.size,\n                t.content_type, t.checksum, t.version_id, t.last_modified\n            FROM unnest($3::uuid[]) WITH ORDINALITY AS a(snapshot_id, depth)\n            CROSS JOIN LATERAL (\n                SELECT m.logical_key, m.physical_path, m.change, m.etag, m.size,\n                       m.content_type, m.checksum, m.version_id, m.last_modified,\n                       a.depth AS depth\n                FROM dataset_manifest_entry m\n                WHERE m.warehouse_id = $1 AND m.snapshot_id = a.snapshot_id\n            ) t\n            ORDER BY t.logical_key, t.depth\n        ) newest\n        WHERE change <> 'removed'\n        ON CONFLICT DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "baa98ad32205845e30ec1a5540381b942f9450017b4241d39db00e67c561c466"
+}

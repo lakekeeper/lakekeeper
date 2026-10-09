@@ -391,11 +391,17 @@ fn true_fn() -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct DropParams {
+    /// Delete the underlying files as well as the catalog entry.
     #[serde(deserialize_with = "deserialize_bool", default = "true_fn")]
+    #[cfg_attr(feature = "open-api", param(default = true))]
     pub purge_requested: bool,
+    /// Delete immediately, ignoring the warehouse's soft-deletion profile and any
+    /// protection.
     #[serde(deserialize_with = "deserialize_bool", default)]
+    #[cfg_attr(feature = "open-api", param(default = false))]
     pub force: bool,
 }
 

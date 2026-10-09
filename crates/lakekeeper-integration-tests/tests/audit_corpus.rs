@@ -16,14 +16,16 @@
 //! coverage is exactly the request sequences exercised here, and that set starts small.
 //! Widening it is the point: drive another call through `CatalogServer` and the existing
 //! rules apply to whatever it produces. Reached today: the authorization family in both its
-//! allowed and denied form, and the `idempotent_replay` family — which carries `action` and
-//! `entity` but no `decision`, so it is the one record here that a consumer keying on
-//! `entity` would misread. Not yet reached, cheapest to add first: views and table commits;
-//! the plural `actions`/`entities` form, since every call here checks one action against one
-//! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
-//! the operational family, which grant changes emit; and a real authorizer with an
-//! authenticated actor (`AllowAllAuthorizer` and `random_request_metadata()` reach neither) —
-//! the OpenFGA authorizer is the cheap way in, because CI already provisions it.
+//! allowed and denied form, including dataset entities; the `idempotent_replay` family —
+//! which carries `action` and `entity` but no `decision`, so it is the one record here that
+//! a consumer keying on `entity` would misread; one operational record,
+//! `dataset_files_signed`, for a principal actor; and a batch check, whose `authorizations`
+//! carry a per-decision `id`. Not yet reached, cheapest to add first: views and table
+//! commits; the plural `actions`/`entities` form, since every call here checks one action
+//! against one entity; per-decision `for_principal`/`determined_by`, which need an identity
+//! override and a real authorizer; the grant-change records; and a real authorizer
+//! (`AllowAllAuthorizer` decides nothing) — the OpenFGA authorizer is the cheap way in,
+//! because CI already provisions it.
 //!
 //! Keep every test here on a current-thread runtime. Capture is thread-local:
 //! `set_default` binds the subscriber to the calling thread, and the detached
@@ -54,19 +56,32 @@ use iceberg::NamespaceIdent;
 use lakekeeper::{
     api::{
         RequestMetadataTestBuilder,
+        data::v1::datasets::{
+            CommitDatasetRequest, CommitFile, CreateDatasetAccessGrantRequest,
+            CreateDatasetRefRequest, CreateDatasetRequest, DatasetParameters, DatasetRefParameters,
+            DatasetRefSource, DatasetService as _, DatasetSnapshotParameters,
+            SignDatasetFilesRequest, UpdateDatasetSettingsRequest,
+        },
         iceberg::v1::{
             DataAccess, NamespaceParameters, namespace::NamespaceService as _,
             tables::TablesService as _,
         },
         management::v1::{
+            check::{
+                CatalogActionCheckItem, CatalogActionCheckOperation,
+                CatalogActionsBatchCheckRequest, TabularIdentOrUuid,
+            },
             grant::{ListGrantsQuery, Service as _},
             role::Service as _,
         },
     },
     server::CatalogServer,
     service::{
-        UserId, authn::Actor, authz::AllowAllAuthorizer,
-        events::backends::audit::AuditEventListener, idempotency::IdempotencyKey,
+        DatasetConstraints, DatasetRefType, DatasetRetention, UserId,
+        authn::Actor,
+        authz::{AllowAllAuthorizer, CatalogDatasetAction},
+        events::backends::audit::AuditEventListener,
+        idempotency::IdempotencyKey,
     },
 };
 use lakekeeper_integration_tests::{
@@ -82,7 +97,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 17;
+const EXPECTED_RECORDS: usize = 32;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -336,6 +351,223 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             random_request_metadata(),
         )
         .await;
+    }
+
+    // A dataset created, committed to and branched: a `dataset` entity carrying
+    // `dataset-id`, and the create's `base_location` / `managed` context.
+    let dataset = CatalogServer::create_dataset(
+        namespace_params.clone(),
+        CreateDatasetRequest {
+            name: "audited_dataset".to_string(),
+            location: None,
+            constraints: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    let dataset_params = || DatasetParameters {
+        prefix: Some(warehouse.clone().into()),
+        namespace: namespace.clone(),
+        dataset_name: "audited_dataset".to_string(),
+    };
+    let main_ref = || DatasetRefParameters {
+        prefix: Some(warehouse.clone().into()),
+        namespace: namespace.clone(),
+        dataset_name: "audited_dataset".to_string(),
+        ref_name: "main".to_string(),
+    };
+    let committed = CatalogServer::commit_dataset(
+        main_ref(),
+        CommitDatasetRequest {
+            parent_snapshot_id: None,
+            added: vec![CommitFile {
+                logical_key: "audited.bin".to_string(),
+                physical_path: None,
+                etag: None,
+                size: Some(1),
+                content_type: None,
+                checksum: None,
+                version_id: None,
+                last_modified: None,
+            }],
+            removed: vec![],
+            summary: None,
+            on_constraint_violation: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    let _ = CatalogServer::create_dataset_ref(
+        dataset_params(),
+        CreateDatasetRefRequest {
+            name: "audited-branch".to_string(),
+            typ: DatasetRefType::Branch,
+            source: DatasetRefSource::Ref {
+                name: "main".to_string(),
+            },
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+
+    // A keyed commit and its replay. The replay answers with the snapshot the commit
+    // recorded, authorized as the commit was, and emits no replay marker.
+    if let Ok(committed) = &committed {
+        let commit_key = new_key();
+        for _ in 0..2 {
+            let _ = CatalogServer::commit_dataset(
+                main_ref(),
+                CommitDatasetRequest {
+                    parent_snapshot_id: Some(committed.snapshot_id),
+                    added: vec![],
+                    removed: vec!["audited.bin".to_string()],
+                    summary: None,
+                    on_constraint_violation: None,
+                },
+                ctx.clone(),
+                keyed_metadata(commit_key),
+            )
+            .await;
+        }
+    }
+    // A settings update: `update_settings` on the dataset.
+    let _ = CatalogServer::update_dataset_settings(
+        dataset_params(),
+        UpdateDatasetSettingsRequest {
+            constraints: Some(DatasetConstraints {
+                allowed_content_types: None,
+                max_file_size: Some(1024),
+            }),
+            retention: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    // A ref deleted under a key, then replayed: the replay is marked, as a drop's is,
+    // carrying the ref in `target-refs`.
+    let delete_ref_key = new_key();
+    for _ in 0..2 {
+        let _ = CatalogServer::delete_dataset_ref(
+            DatasetRefParameters {
+                ref_name: "audited-branch".to_string(),
+                ..main_ref()
+            },
+            ctx.clone(),
+            keyed_metadata(delete_ref_key),
+        )
+        .await;
+    }
+    // A retention policy set, `update_retention`, and the first snapshot — which
+    // nothing holds once its branch is gone and `main` moved on — expired by hand,
+    // `expire_snapshots`.
+    let _ = CatalogServer::update_dataset_settings(
+        dataset_params(),
+        UpdateDatasetSettingsRequest {
+            constraints: None,
+            retention: Some(DatasetRetention::Manual { grace_period: None }),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    if let Ok(committed) = &committed {
+        let _ = CatalogServer::expire_dataset_snapshot(
+            DatasetSnapshotParameters {
+                prefix: Some(warehouse.clone().into()),
+                namespace: namespace.clone(),
+                dataset_name: "audited_dataset".to_string(),
+                snapshot_id: committed.snapshot_id,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await;
+    }
+    // A batch check naming the dataset by id and by name: one record whose
+    // `authorizations` carry a per-decision `id` for a dataset entity.
+    if let Ok(dataset) = &dataset {
+        let _ = lakekeeper::api::management::v1::check::check_internal(
+            ctx.clone(),
+            random_request_metadata(),
+            CatalogActionsBatchCheckRequest {
+                checks: vec![
+                    CatalogActionCheckItem {
+                        id: Some("dataset-by-id".to_string()),
+                        identity: None,
+                        operation: CatalogActionCheckOperation::Dataset {
+                            action: CatalogDatasetAction::ReadGrants,
+                            dataset: TabularIdentOrUuid::IdInWarehouse {
+                                warehouse_id: warehouse_response.warehouse_id,
+                                table_id: *dataset.dataset.id,
+                            },
+                        },
+                    },
+                    CatalogActionCheckItem {
+                        id: None,
+                        identity: None,
+                        operation: CatalogActionCheckOperation::Dataset {
+                            action: CatalogDatasetAction::UpdateSettings,
+                            dataset: TabularIdentOrUuid::Name {
+                                namespace: namespace.clone(),
+                                table: "audited_dataset".to_string(),
+                                warehouse_id: warehouse_response.warehouse_id,
+                            },
+                        },
+                    },
+                ],
+                error_on_not_found: false,
+            },
+        )
+        .await;
+    }
+
+    // A principal's access grant, then three sign calls under it: one signed, one by
+    // another actor, and one naming a dataset that does not exist, whose record
+    // carries `dataset_id: null`. Grants and signing are the one operational record
+    // a principal actor reaches here.
+    let reader = || {
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Principal(UserId::new_unchecked(
+                "oidc",
+                "corpus-reader",
+            )))
+            .build()
+    };
+    let granted = CatalogServer::create_dataset_access_grant(
+        main_ref(),
+        CreateDatasetAccessGrantRequest { content_type: None },
+        ctx.clone(),
+        reader(),
+    )
+    .await;
+    if let (Ok(committed), Ok(granted)) = (committed, granted) {
+        let sign = |dataset_name: &str| {
+            (
+                DatasetSnapshotParameters {
+                    prefix: Some(warehouse.clone().into()),
+                    namespace: namespace.clone(),
+                    dataset_name: dataset_name.to_string(),
+                    snapshot_id: committed.snapshot_id,
+                },
+                SignDatasetFilesRequest {
+                    grant_id: granted.grant_id,
+                    keys: vec!["audited.bin".to_string()],
+                },
+            )
+        };
+        for (dataset_name, metadata) in [
+            ("audited_dataset", reader()),
+            ("audited_dataset", random_request_metadata()),
+            ("no_such_dataset", reader()),
+        ] {
+            let (parameters, request) = sign(dataset_name);
+            let _ =
+                CatalogServer::sign_dataset_files(parameters, request, ctx.clone(), metadata).await;
+        }
     }
 
     // A role create that succeeds, then one the provider guard refuses after the

@@ -1,0 +1,103 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT logical_key, physical_path, size, last_modified, etag, version_id, referenced\n        FROM dataset_import_listing\n        WHERE warehouse_id = $1 AND snapshot_id = $2\n          AND ($3::text IS NULL OR logical_key > $3::text COLLATE \"C\")\n        ORDER BY logical_key ASC\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "logical_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_import_listing",
+            "name": "logical_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "physical_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_import_listing",
+            "name": "physical_path"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "size",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "dataset_import_listing",
+            "name": "size"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "last_modified",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_import_listing",
+            "name": "last_modified"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "etag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_import_listing",
+            "name": "etag"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "version_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_import_listing",
+            "name": "version_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "referenced",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "dataset_import_listing",
+            "name": "referenced"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "4ff151ec23a67dd2d41019c2bd68e6ea937ecf4189e38a718994a6c1a7f2d3bb"
+}

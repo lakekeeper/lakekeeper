@@ -7,11 +7,11 @@ use crate::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         ResolvedWarehouse, TabularId, TabularListFlags, ViewOrTableInfo, WarehouseStatus,
         authz::{
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZTableOps, AuthZWarehouseActionForbidden,
-            Authorizer, AuthzWarehouseOps, CatalogGenericTableAction, CatalogTableAction,
-            CatalogViewAction, CatalogWarehouseAction, RequireTableActionError,
-            RequireWarehouseActionError,
+            AuthZCannotSeeDataset, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZTableOps,
+            AuthZWarehouseActionForbidden, Authorizer, AuthzWarehouseOps, CatalogDatasetAction,
+            CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, RequireTableActionError, RequireWarehouseActionError,
         },
         require_namespace_for_tabular,
     },
@@ -98,6 +98,9 @@ pub(crate) async fn require_undrop_in_warehouse<A: Authorizer, C: CatalogStore>(
                     .into(),
                 );
             }
+            TabularId::Dataset(id) => {
+                return Err(AuthZCannotSeeDataset::new_not_found(warehouse_id, id).into());
+            }
         }
     }
 
@@ -121,6 +124,7 @@ pub(crate) async fn require_undrop_in_warehouse<A: Authorizer, C: CatalogStore>(
                     CatalogViewAction::Undrop,
                     CatalogTableAction::Undrop,
                     CatalogGenericTableAction::Undrop,
+                    CatalogDatasetAction::Undrop,
                     None,
                 ),
             ))

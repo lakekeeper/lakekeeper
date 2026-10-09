@@ -14,16 +14,17 @@ use crate::{
     service::{
         Actor, AuthZTabularInfo as _, CatalogBackendError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, GenericTabularInfo, GetTabularInfoError, NamespaceHierarchy,
-        NamespaceId, NamespaceWithParent, ResolveTasksError, ResolvedWarehouse,
+        CatalogWarehouseOps, DatasetTabularInfo, GenericTabularInfo, GetTabularInfoError,
+        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolveTasksError, ResolvedWarehouse,
         TabularIdentBorrowed, TabularIdentOwned, TabularInfo, TabularListFlags, UserId, ViewInfo,
         ViewOrTableInfo,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnTableOrView, ActionOnView,
             AuthZCannotSeeNamespace, AuthZError, AuthZTableOps, AuthZViewOps,
             AuthorizationCountMismatch, Authorizer, AuthzBadRequest,
-            BackendUnavailableOrCountMismatch, CatalogGenericTableAction, CatalogTableAction,
-            CatalogViewAction, RequireTableActionError, RequireViewActionError, UserOrRole,
+            BackendUnavailableOrCountMismatch, CatalogDatasetAction, CatalogGenericTableAction,
+            CatalogTableAction, CatalogViewAction, RequireTableActionError, RequireViewActionError,
+            UserOrRole,
         },
     },
 };
@@ -39,6 +40,8 @@ pub(crate) type TabularAuthzAction<'a> = (
         CatalogViewAction,
         GenericTabularInfo,
         CatalogGenericTableAction,
+        DatasetTabularInfo,
+        CatalogDatasetAction,
     >,
 );
 
@@ -230,8 +233,8 @@ pub(crate) fn check_required_tabulars<A: Authorizer>(
                     Ok::<_, RequireViewActionError>(view),
                 )?;
             }
-            TabularIdentOwned::GenericTable(_) => {
-                // Generic tables are handled via dedicated endpoints.
+            TabularIdentOwned::GenericTable(_) | TabularIdentOwned::Dataset(_) => {
+                // Generic tables and datasets are handled via dedicated endpoints.
             }
         }
     }
@@ -382,12 +385,14 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
         // Exhaustive match: a future variant of ViewOrTableInfo must make an
         // explicit decision here.
         match tabular {
-            ViewOrTableInfo::Table(_) | ViewOrTableInfo::GenericTable(_) => {
+            ViewOrTableInfo::Table(_)
+            | ViewOrTableInfo::GenericTable(_)
+            | ViewOrTableInfo::Dataset(_) => {
                 debug_assert!(
                     tabulars
                         .last()
                         .is_some_and(|(t, _)| std::ptr::eq(t, tabular)),
-                    "Table or generic table appeared as intermediate entry in authorization chain"
+                    "Table, generic table or dataset appeared as intermediate entry in authorization chain"
                 );
                 continue;
             }
@@ -520,6 +525,10 @@ pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular<'a>(
                     )
                 })
                 .collect::<Vec<_>>(),
+                // Datasets never appear in an Iceberg load chain: they are not
+                // referenced by views and have their own read path, so they
+                // contribute no actions here.
+                ViewOrTableInfo::Dataset(_) => Vec::new(),
             }
         })
         .collect()
@@ -532,6 +541,8 @@ fn acting_principal<'a>(action: &TabularAuthzAction<'a>) -> (Option<&'a UserOrRo
         ActionOnTableOrView::Table(a) => (a.user, a.is_delegated_execution),
         ActionOnTableOrView::View(a) => (a.user, a.is_delegated_execution),
         ActionOnTableOrView::GenericTable(a) => (a.user, a.is_delegated_execution),
+        // Datasets never run as part of a view, so no execution is delegated.
+        ActionOnTableOrView::Dataset(a) => (a.user, false),
     }
 }
 
@@ -550,7 +561,9 @@ fn principal_segments<'s, 'a>(
 fn refusal_ends_request(action: &TabularAuthzAction<'_>) -> bool {
     match &action.1 {
         ActionOnTableOrView::View(_) => true,
-        ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => false,
+        ActionOnTableOrView::Table(_)
+        | ActionOnTableOrView::GenericTable(_)
+        | ActionOnTableOrView::Dataset(_) => false,
     }
 }
 
@@ -1329,7 +1342,9 @@ mod tests {
             .iter()
             .filter_map(|(_, a)| match a {
                 ActionOnTableOrView::View(v) => Some(v.action.clone()),
-                ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => None,
+                ActionOnTableOrView::Table(_)
+                | ActionOnTableOrView::GenericTable(_)
+                | ActionOnTableOrView::Dataset(_) => None,
             })
             .collect();
         assert_eq!(emitted, vec![CatalogViewAction::GetMetadata]);
@@ -1370,7 +1385,9 @@ mod tests {
             .iter()
             .filter_map(|(_, a)| match a {
                 ActionOnTableOrView::View(v) => Some(v.action.clone()),
-                ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => None,
+                ActionOnTableOrView::Table(_)
+                | ActionOnTableOrView::GenericTable(_)
+                | ActionOnTableOrView::Dataset(_) => None,
             })
             .collect();
         // Intermediate view: GetMetadata + Select. Target view: GetMetadata only.
@@ -1409,7 +1426,9 @@ mod tests {
         for (_, a) in &actions {
             match a {
                 ActionOnTableOrView::View(v) => assert!(v.is_delegated_execution),
-                ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => {
+                ActionOnTableOrView::Table(_)
+                | ActionOnTableOrView::GenericTable(_)
+                | ActionOnTableOrView::Dataset(_) => {
                     panic!("expected view action")
                 }
             }
@@ -1439,7 +1458,9 @@ mod tests {
         for (_, a) in &actions {
             match a {
                 ActionOnTableOrView::View(v) => assert!(!v.is_delegated_execution),
-                ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => {
+                ActionOnTableOrView::Table(_)
+                | ActionOnTableOrView::GenericTable(_)
+                | ActionOnTableOrView::Dataset(_) => {
                     panic!("expected view action")
                 }
             }
@@ -1482,7 +1503,9 @@ mod tests {
                 ViewOrTableInfo::View(v) => {
                     format!("view:{}/{}", self.warehouse.warehouse_id, v.view_id())
                 }
-                ViewOrTableInfo::GenericTable(_) => unreachable!("tests build no generic tables"),
+                ViewOrTableInfo::GenericTable(_) | ViewOrTableInfo::Dataset(_) => {
+                    unreachable!("tests build only tables and views")
+                }
             }
         }
 

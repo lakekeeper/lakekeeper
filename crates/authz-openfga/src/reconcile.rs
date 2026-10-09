@@ -69,8 +69,8 @@ use lakekeeper::{
     api::iceberg::v1::{ListNamespacesQuery, NamespaceIdent, PageToken, PaginationQuery},
     service::{
         ArcProjectId, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
-        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableId, NamespaceId,
-        ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, DatasetId, GenericTableId,
+        NamespaceId, ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
         authz::NamespaceParent, maintenance::MaintenanceLockGuard,
     },
 };
@@ -82,9 +82,9 @@ use crate::{
     FgaType,
     entities::OpenFgaEntity,
     tuples::{
-        hierarchy_tuples_for_generic_table, hierarchy_tuples_for_namespace,
-        hierarchy_tuples_for_project, hierarchy_tuples_for_role, hierarchy_tuples_for_table,
-        hierarchy_tuples_for_view, hierarchy_tuples_for_warehouse,
+        hierarchy_tuples_for_dataset, hierarchy_tuples_for_generic_table,
+        hierarchy_tuples_for_namespace, hierarchy_tuples_for_project, hierarchy_tuples_for_role,
+        hierarchy_tuples_for_table, hierarchy_tuples_for_view, hierarchy_tuples_for_warehouse,
     },
 };
 
@@ -265,6 +265,7 @@ struct CatalogIndex {
     tables: HashMap<TableId, (WarehouseId, NamespaceId)>,
     views: HashMap<ViewId, (WarehouseId, NamespaceId)>,
     generic_tables: HashMap<GenericTableId, (WarehouseId, NamespaceId)>,
+    datasets: HashMap<DatasetId, (WarehouseId, NamespaceId)>,
     roles: HashMap<lakekeeper::service::RoleId, ProjectId>,
 }
 
@@ -281,6 +282,7 @@ impl CatalogIndex {
             tables: HashMap::new(),
             views: HashMap::new(),
             generic_tables: HashMap::new(),
+            datasets: HashMap::new(),
             roles: HashMap::new(),
         };
 
@@ -371,6 +373,9 @@ impl CatalogIndex {
                     }
                     TabularId::GenericTable(g) => {
                         idx.generic_tables.insert(g, (warehouse_id, ns_id));
+                    }
+                    TabularId::Dataset(d) => {
+                        idx.datasets.insert(d, (warehouse_id, ns_id));
                     }
                 }
             }
@@ -504,6 +509,12 @@ impl CatalogIndex {
                     .map(GenericTableId::new)
                     .map(|g| self.generic_tables.contains_key(&g))
             }
+            FgaType::Dataset => {
+                let (_, d) = id.split_once('/')?;
+                parse_uuid(d)
+                    .map(DatasetId::new)
+                    .map(|d| self.datasets.contains_key(&d))
+            }
             // Tag definitions are managed via the create_tag/delete_tag hooks and are
             // not part of the catalog hierarchy index, so reconcile leaves them alone.
             FgaType::User | FgaType::Tag | FgaType::ModelVersion | FgaType::AuthModelId => None,
@@ -553,14 +564,18 @@ fn is_managed_structural(tuple: &TupleKey) -> bool {
             )
             | (FgaType::Namespace, "namespace", FgaType::Warehouse)
             | (
-                FgaType::Namespace | FgaType::Table | FgaType::View | FgaType::GenericTable,
+                FgaType::Namespace
+                    | FgaType::Table
+                    | FgaType::View
+                    | FgaType::GenericTable
+                    | FgaType::Dataset,
                 "child",
                 FgaType::Namespace
             )
             | (
                 FgaType::Namespace,
                 "parent",
-                FgaType::Table | FgaType::View | FgaType::GenericTable
+                FgaType::Table | FgaType::View | FgaType::GenericTable | FgaType::Dataset
             )
     )
 }
@@ -612,6 +627,11 @@ async fn write_missing_from_index(
                 "generic_table",
                 hierarchy_tuples_for_generic_table(*wh, *gt_id, *ns),
             )
+            .await?;
+    }
+    for (ds_id, (wh, ns)) in &idx.datasets {
+        writer
+            .push("dataset", hierarchy_tuples_for_dataset(*wh, *ds_id, *ns))
             .await?;
     }
     for (role_id, project) in &idx.roles {
@@ -732,6 +752,11 @@ fn build_expected_set(idx: &CatalogIndex) -> HashSet<(String, String, String)> {
             push(t, &mut expected);
         }
     }
+    for (ds_id, (wh, ns)) in &idx.datasets {
+        for t in hierarchy_tuples_for_dataset(*wh, *ds_id, *ns) {
+            push(t, &mut expected);
+        }
+    }
     for (role_id, project) in &idx.roles {
         for t in hierarchy_tuples_for_role(project, *role_id) {
             push(t, &mut expected);
@@ -818,13 +843,14 @@ impl<'a> BatchWriter<'a> {
 
 fn log_index(idx: &CatalogIndex) {
     tracing::info!(
-        "reconcile: catalog index built — {} projects, {} warehouses, {} namespaces, {} tables, {} views, {} generic_tables, {} roles",
+        "reconcile: catalog index built — {} projects, {} warehouses, {} namespaces, {} tables, {} views, {} generic_tables, {} datasets, {} roles",
         idx.projects.len(),
         idx.warehouses.len(),
         idx.namespaces.len(),
         idx.tables.len(),
         idx.views.len(),
         idx.generic_tables.len(),
+        idx.datasets.len(),
         idx.roles.len()
     );
 }
@@ -1564,6 +1590,77 @@ mod openfga_integration_tests {
         assert!(
             !state_after.contains(&ident(&stale_inverse)),
             "stale inverse generic-table edge must be deleted"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_reconcile_deletes_drifted_dataset_parent_edge(pool: sqlx::PgPool) {
+        let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+        let (_svc_client, authorizer) = authorizer_for_empty_store().await;
+        let server_id = authorizer.server_id();
+        let (warehouse, root_ns_id, _child, _role) =
+            populate(&authorizer, &pool, &operator_id).await;
+
+        // A stale parent edge keeps a dataset inheriting from a namespace it has
+        // left, so reconcile has to be able to remove it.
+        let bogus_dataset_uuid = Uuid::now_v7();
+        let stale_forward = TupleKey {
+            user: format!("namespace:{root_ns_id}"),
+            relation: "parent".to_string(),
+            object: format!(
+                "lakekeeper_dataset:{}/{bogus_dataset_uuid}",
+                warehouse.warehouse_id
+            ),
+            condition: None,
+        };
+        let stale_inverse = TupleKey {
+            user: stale_forward.object.clone(),
+            relation: "child".to_string(),
+            object: stale_forward.user.clone(),
+            condition: None,
+        };
+        authorizer
+            .client
+            .write(
+                Some(vec![stale_forward.clone(), stale_inverse.clone()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let state_before = read_all_tuples(&authorizer.client).await;
+        assert!(state_before.contains(&ident(&stale_forward)));
+        assert!(state_before.contains(&ident(&stale_inverse)));
+
+        let state = pg_state(&pool);
+        let lock = PostgresAdvisoryLock::try_acquire(&state, RECONCILE_LOCK_KEY)
+            .await
+            .expect("acquire lock")
+            .expect("lock free");
+        let report = reconcile_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            state,
+            lock,
+            &authorizer.client,
+            server_id,
+            ReconcileMode::AddMissingAndDeleteDrift,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            report.tuples_deleted >= 2,
+            "expected both forward and inverse stale dataset edges to be deleted; report={report:?}"
+        );
+
+        let state_after = read_all_tuples(&authorizer.client).await;
+        assert!(
+            !state_after.contains(&ident(&stale_forward)),
+            "stale forward dataset edge must be deleted"
+        );
+        assert!(
+            !state_after.contains(&ident(&stale_inverse)),
+            "stale inverse dataset edge must be deleted"
         );
     }
 }

@@ -20,17 +20,36 @@ use crate::{
     },
 };
 
-/// Claim the request's idempotency key inside the rename transaction.
+/// Claim the request's idempotency key inside the rename transaction. Every rename
+/// endpoint answers 204, which is the status recorded against the key.
+pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
+    transaction: C::Transaction,
+    warehouse_id: WarehouseId,
+    key: Option<IdempotencyKey>,
+    endpoint: EndpointFlat,
+) -> Result<C::Transaction> {
+    claim_idempotency_key::<C>(
+        transaction,
+        warehouse_id,
+        key,
+        endpoint,
+        StatusCode::NO_CONTENT,
+    )
+    .await
+}
+
+/// Claim the request's idempotency key inside the mutation's transaction, recording
+/// `http_status` as the success it answers with.
 ///
 /// Returns the transaction so the caller can go on to commit it. A key another in-flight
 /// request already holds is not an error the caller can recover from, so the transaction is
-/// rolled back here and the request fails; `None` is a no-op. Every rename endpoint answers
-/// 204, which is the status recorded against the key.
-pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
+/// rolled back here and the request fails; `None` is a no-op.
+pub(crate) async fn claim_idempotency_key<C: CatalogStore>(
     mut transaction: C::Transaction,
     warehouse_id: WarehouseId,
     key: Option<IdempotencyKey>,
     endpoint: EndpointFlat,
+    http_status: StatusCode,
 ) -> Result<C::Transaction> {
     let Some(key) = key else {
         return Ok(transaction);
@@ -41,7 +60,7 @@ pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
         &IdempotencyInfo::builder()
             .key(key)
             .endpoint(endpoint)
-            .http_status(StatusCode::NO_CONTENT)
+            .http_status(http_status)
             .build(),
         transaction.transaction(),
     )

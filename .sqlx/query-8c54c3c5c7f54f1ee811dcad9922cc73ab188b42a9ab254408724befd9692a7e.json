@@ -1,0 +1,144 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO dataset_access_grant\n            (warehouse_id, grant_id, dataset_id, snapshot_id, ref_name, actor,\n             content_type, expires_at, idempotency_key)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n        RETURNING grant_id, warehouse_id, dataset_id, snapshot_id, ref_name, actor,\n                  content_type, created_at, expires_at, revoked_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "grant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "dataset_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "dataset_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "snapshot_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "ref_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "ref_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "actor",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "actor"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "content_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "revoked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_access_grant",
+            "name": "revoked_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "8c54c3c5c7f54f1ee811dcad9922cc73ab188b42a9ab254408724befd9692a7e"
+}

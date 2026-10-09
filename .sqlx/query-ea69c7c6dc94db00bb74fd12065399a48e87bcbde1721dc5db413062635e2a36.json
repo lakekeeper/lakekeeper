@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT status::text AS \"status!\", purge_after\n        FROM dataset_snapshot\n        WHERE warehouse_id = $1 AND dataset_id = $2 AND snapshot_id = $3\n        FOR NO KEY UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "purge_after",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "dataset_snapshot",
+            "name": "purge_after"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      true
+    ]
+  },
+  "hash": "ea69c7c6dc94db00bb74fd12065399a48e87bcbde1721dc5db413062635e2a36"
+}

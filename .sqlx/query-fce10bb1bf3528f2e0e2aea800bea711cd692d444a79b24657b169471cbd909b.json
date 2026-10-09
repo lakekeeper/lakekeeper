@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset_snapshot s\n        SET status = 'expired', expired_at = now(), purge_after = $4\n        WHERE s.warehouse_id = $1 AND s.dataset_id = $2 AND s.snapshot_id = ANY($3)\n          AND s.status = 'active'\n          -- Checked after the lock above, in a statement of its own, so it sees a\n          -- ref moved onto it, or a grant made on it, since the plan was made.\n          AND NOT EXISTS (\n              SELECT 1 FROM dataset_ref r\n              WHERE r.warehouse_id = s.warehouse_id AND r.snapshot_id = s.snapshot_id\n          )\n          AND NOT EXISTS (\n              SELECT 1 FROM dataset_access_grant g\n              WHERE g.warehouse_id = s.warehouse_id AND g.snapshot_id = s.snapshot_id\n                AND g.revoked_at IS NULL AND g.expires_at > now()\n          )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fce10bb1bf3528f2e0e2aea800bea711cd692d444a79b24657b169471cbd909b"
+}

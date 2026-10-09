@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -19,6 +20,7 @@ use google_cloud_storage::{
         },
         resumable_upload_client::{ChunkSize, ResumableUploadClient, UploadStatus},
     },
+    sign::{SignedURLMethod, SignedURLOptions},
 };
 
 use crate::{
@@ -85,6 +87,52 @@ impl GcsStorage {
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// A V4 signed GET URL for `path`, valid for `expires_in`. A service-account
+    /// key signs locally; a system identity signs through the IAM `signBlob` API,
+    /// which needs `iam.serviceAccounts.signBlob` on itself.
+    ///
+    /// With a `generation` the URL reads exactly that one, and fails once it is
+    /// gone; without one it reads whatever is current.
+    ///
+    /// # Errors
+    /// Fails if `path` is not a GCS location or the credentials cannot sign — a
+    /// bearer token carries no signing identity.
+    pub async fn presign_get(
+        &self,
+        path: &str,
+        generation: Option<&str>,
+        expires_in: Duration,
+    ) -> Result<String, ReadError> {
+        let location = GcsLocation::try_from_str(path)?;
+        let query_parameters = generation
+            .map(|g| HashMap::from([("generation".to_string(), vec![g.to_string()])]))
+            .unwrap_or_default();
+        let url = self
+            .client
+            .signed_url(
+                location.bucket_name(),
+                &location.object_name(),
+                None,
+                None,
+                SignedURLOptions {
+                    method: SignedURLMethod::GET,
+                    expires: expires_in,
+                    query_parameters,
+                    ..SignedURLOptions::default()
+                },
+            )
+            .await
+            .map_err(|e| {
+                IOError::new(
+                    ErrorKind::PermissionDenied,
+                    format!("Failed to sign GCS URL: {e}"),
+                    path.to_string(),
+                )
+                .set_source(anyhow::anyhow!(e))
+            })?;
+        Ok(url)
     }
 }
 
@@ -426,6 +474,28 @@ impl LakekeeperStorage for GcsStorage {
 
         Ok(stream.boxed())
     }
+
+    /// Whether generation `version` of the object at `path` is still stored. A
+    /// deleted generation, or a version that names no generation, reads as absent.
+    async fn version_exists(&self, path: &str, version: &str) -> Result<bool, ReadError> {
+        let location = GcsLocation::try_from_str(path)?;
+        let Ok(generation) = version.parse::<i64>() else {
+            return Ok(false);
+        };
+        let mut request = build_get_object_request(&location);
+        request.generation = Some(generation);
+        match self.client.get_object(&request).await {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                let error = parse_error(e, location.as_str());
+                if error.kind() == ErrorKind::NotFound {
+                    Ok(false)
+                } else {
+                    Err(ReadError::IOError(error))
+                }
+            }
+        }
+    }
 }
 
 /// Convert a `time::OffsetDateTime` to a `chrono::DateTime<Utc>`, preserving
@@ -446,7 +516,9 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
         })?;
         let last_modified = object.updated.as_ref().and_then(parse_offsetdatetime);
         let size = crate::size_to_u64(object.size, &gcs_path);
-        Ok(FileInfo::new(last_modified, location, size))
+        Ok(FileInfo::new(last_modified, location, size)
+            .with_e_tag(Some(object.etag).filter(|etag| !etag.is_empty()))
+            .with_version((object.generation != 0).then(|| object.generation.to_string())))
     }
 }
 

@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use azure_storage::CloudLocation;
 use iceberg_ext::configs::table::TableProperties;
@@ -14,7 +14,8 @@ use super::{
     AdlsTableConfigContext, AzCredential, MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS, SasMintContext,
     adls_catalog_config, adls_lakekeeper_io, generate_adls_table_config,
     iceberg_expiration_property_key, iceberg_sas_property_key, key_prefix_overlaps,
-    lakekeeper_io_from_vended_adls_table_config, validate_sas_token_validity_seconds,
+    lakekeeper_io_from_vended_adls_table_config, presign_file_reads,
+    validate_sas_token_validity_seconds,
 };
 use crate::{
     WarehouseId,
@@ -22,7 +23,7 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            ShortTermCredentialsRequest, TableConfig,
+            ReadTarget, ShortTermCredentialsRequest, TableConfig,
             cache::STCCacheKey,
             error::{
                 CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
@@ -369,6 +370,33 @@ impl OneLakeProfile {
     #[allow(clippy::unused_self)]
     fn sas_account(&self) -> &'static str {
         "onelake"
+    }
+
+    /// Read-only SAS URLs for single files, each valid for `validity`.
+    ///
+    /// # Errors
+    /// Fails if SAS is disabled for this profile or cannot be minted.
+    pub async fn presign_reads(
+        &self,
+        credential: &AzCredential,
+        stc_request: ShortTermCredentialsRequest,
+        targets: &[ReadTarget],
+        validity: Duration,
+    ) -> Result<Vec<String>, CredentialsError> {
+        if !self.sas_enabled {
+            return Err(CredentialsError::Misconfiguration(
+                "SAS is disabled for this storage profile, so files cannot be signed".to_string(),
+            ));
+        }
+        presign_file_reads(
+            self.sas_account(),
+            &self.azure_settings(),
+            credential,
+            STCCacheKey::new(stc_request, self.into(), Some(credential.into())),
+            targets,
+            validity,
+        )
+        .await
     }
 
     /// The endpoint suffix — everything after the first DNS label of the host.

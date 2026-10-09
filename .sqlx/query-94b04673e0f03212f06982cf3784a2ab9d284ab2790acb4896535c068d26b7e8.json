@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH RECURSIVE ancestry(snapshot_id, parent_snapshot_id, depth, is_checkpoint) AS (\n            SELECT snapshot_id, parent_snapshot_id, 0, is_checkpoint\n            FROM dataset_snapshot\n            WHERE warehouse_id = $1 AND dataset_id = $2 AND snapshot_id = $3\n          UNION ALL\n            SELECT s.snapshot_id, s.parent_snapshot_id, a.depth + 1, s.is_checkpoint\n            FROM dataset_snapshot s\n            INNER JOIN ancestry a ON s.snapshot_id = a.parent_snapshot_id\n            WHERE s.warehouse_id = $1 AND NOT a.is_checkpoint\n        )\n        SELECT COALESCE(MAX(depth), 0) as \"depth!\" FROM ancestry\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "depth!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "94b04673e0f03212f06982cf3784a2ab9d284ab2790acb4896535c068d26b7e8"
+}

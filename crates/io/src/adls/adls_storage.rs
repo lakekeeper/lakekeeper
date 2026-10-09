@@ -610,7 +610,7 @@ fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<
         } else {
             crate::size_to_u64(path.content_length, &full_path)
         };
-        Some(FileInfo::new(last_modified, location, size))
+        Some(FileInfo::new(last_modified, location, size).with_e_tag(Some(path.etag.to_string())))
     }
 }
 

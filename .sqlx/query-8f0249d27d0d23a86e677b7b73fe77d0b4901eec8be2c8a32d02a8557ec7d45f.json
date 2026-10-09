@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM dataset_snapshot\n        WHERE warehouse_id = $1 AND dataset_id = $2 AND snapshot_id = $3\n          AND status = 'staging'\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8f0249d27d0d23a86e677b7b73fe77d0b4901eec8be2c8a32d02a8557ec7d45f"
+}

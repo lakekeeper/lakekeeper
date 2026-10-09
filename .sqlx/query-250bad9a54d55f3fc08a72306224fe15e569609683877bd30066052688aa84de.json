@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE dataset_snapshot\n        SET missing_files = $4, changed_files = $5, materialization_checked_at = now()\n        WHERE warehouse_id = $1 AND dataset_id = $2 AND snapshot_id = $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "250bad9a54d55f3fc08a72306224fe15e569609683877bd30066052688aa84de"
+}

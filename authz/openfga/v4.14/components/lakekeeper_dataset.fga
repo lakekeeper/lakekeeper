@@ -1,0 +1,82 @@
+module lakekeeper-lakekeeper_dataset
+
+type lakekeeper_dataset
+  relations
+    # ------------------ Relation Hierarchies ------------------
+    define parent: [namespace]
+
+    # ------------------ Special roles ------------------
+    define ownership: [user, role#assignee]
+
+    # ------------------ Assignable Privileges ------------------
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
+    # Split as on the namespace: bare name = granted here, `_effective` = implied.
+    define describe: [user, role#assignee]
+    define describe_effective: describe or ownership or select_effective or describe_effective from parent
+    define select: [user, role#assignee]
+    define select_effective: select or ownership or modify_effective or select_effective from parent
+    define modify: [user, role#assignee]
+    define modify_effective: modify or ownership or modify_effective from parent
+
+    # A grant on this object. A leaf, so there is nothing below to recurse into.
+    define visible_below: describe or select or modify or ownership
+    # Governance tag attachment. Independent of `modify` (separation of duties);
+    # inherits from the parent namespace.
+    define manage_tags: [user, role#assignee] or manage_tags from parent
+    # Creating, deleting, protecting and resetting branches and tags. Independent of
+    # `modify`, so a writer can commit but can neither replace a tag nor unprotect a
+    # branch.
+    define manage_refs: [user, role#assignee] or ownership or manage_refs from parent
+
+    # ------------------ Actions ------------------
+    define can_drop: modify_effective
+    define can_undrop: modify_effective
+    define can_read_data: select_effective
+    define can_get_metadata: describe_effective
+    define can_rename: modify_effective
+    define can_move: manage_grants and modify_effective
+    define can_include_in_list: can_get_metadata
+    define can_set_protection: modify_effective
+    define can_get_tasks: describe_effective
+    define can_control_tasks: modify_effective
+    define can_manage_tags: manage_tags
+    # Constraints bound what may be committed; changing them is a write, like a
+    # table's property update.
+    define can_update_settings: modify_effective
+
+    # Versioning. Refs are not objects: these apply to every ref of the dataset,
+    # and the `protected` flag is the only per-branch control.
+    # A commit appends a snapshot and moves one branch forward: a write.
+    define can_commit: modify_effective
+    define can_manage_refs: manage_refs
+    # Fast-forward: the publish step, and the only way into a protected branch.
+    define can_promote: modify_effective
+    # A reset moves a branch to any snapshot, `main` included: ref management.
+    define can_reset: manage_refs
+    # Revoking another caller's access grant is containment; a holder may always
+    # revoke its own.
+    define can_revoke_access_grants: manage_grants
+    # Restoring an expired snapshot undoes a retention decision, expiring one by
+    # hand makes one, and a retention policy makes them from then on.
+    define can_restore_snapshots: manage_grants
+    define can_expire_snapshots: manage_grants
+    define can_update_retention: manage_grants
+
+    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_modify or can_grant_manage_tags or can_grant_manage_refs or can_change_ownership
+
+    # GRANT Permissions
+    define can_grant_pass_grants: manage_grants
+    define can_grant_manage_grants: manage_grants
+    define can_grant_describe: manage_grants or (describe_effective and pass_grants)
+    define can_grant_select: manage_grants or (select_effective and pass_grants)
+    define can_grant_modify: manage_grants or (modify_effective and pass_grants)
+    define can_grant_manage_tags: manage_grants
+    define can_grant_manage_refs: manage_grants
+
+    # REVOKE Permissions
+    # Taking a privilege back is administration, never delegation
+    define can_revoke_describe: manage_grants
+    define can_revoke_modify: manage_grants
+    define can_revoke_select: manage_grants
+    define can_change_ownership: manage_grants

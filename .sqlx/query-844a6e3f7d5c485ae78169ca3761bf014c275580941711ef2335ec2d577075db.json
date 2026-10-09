@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT has_renamed_files FROM dataset WHERE warehouse_id = $1 AND dataset_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "has_renamed_files",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "dataset",
+            "name": "has_renamed_files"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "844a6e3f7d5c485ae78169ca3761bf014c275580941711ef2335ec2d577075db"
+}

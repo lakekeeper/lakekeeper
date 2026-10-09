@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ownership AS \"ownership: DbDatasetOwnership\" FROM dataset WHERE warehouse_id = $1 AND dataset_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ownership: DbDatasetOwnership",
+        "type_info": {
+          "Custom": {
+            "name": "dataset_ownership",
+            "kind": {
+              "Enum": [
+                "managed",
+                "imported"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "dataset",
+            "name": "ownership"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7033a1c2ec36d5f1c09e8a5fd8a10057cf16982777068175c97cbed654113dd8"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE task SET scheduled_for = $4\n           WHERE warehouse_id = $1 AND entity_type = 'dataset' AND entity_id = $2\n             AND queue_name = $3 AND status = 'scheduled' AND scheduled_for > $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f248f5b76edc5c7ba3d60d55f60fd94cd843a2b4f425c9b29f7ae24ecc77bd02"
+}

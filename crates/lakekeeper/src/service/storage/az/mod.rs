@@ -9,7 +9,7 @@ use azure_storage::{
     prelude::{BlobSasPermissions, BlobSignedResource},
     shared_access_signature::{
         SasToken,
-        service_sas::{BlobSharedAccessSignature, SasKey},
+        service_sas::{BlobSharedAccessSignature, SasKey, UserDeligationKey},
     },
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
@@ -19,7 +19,6 @@ use lakekeeper_io::{
     adls::{AdlsLocation, AdlsStorage, AzureAuth, AzureSasAuth, AzureSettings},
 };
 use time::OffsetDateTime;
-#[cfg(test)]
 use url::Url;
 
 use crate::{
@@ -28,8 +27,10 @@ use crate::{
     service::{
         BasicTabularInfo,
         storage::{
-            ShortTermCredentialsRequest, StoragePermissions, TableConfig,
-            cache::{ADLS_STC_CACHE, CachedStc, STCCacheKey, get_or_load_stc},
+            ReadTarget, ShortTermCredentialsRequest, StoragePermissions, TableConfig,
+            cache::{
+                ADLS_DELEGATION_KEY_CACHE, ADLS_STC_CACHE, CachedStc, STCCacheKey, get_or_load_stc,
+            },
             error::{CredentialsError, InvalidProfileError, TableConfigError, ValidationError},
         },
     },
@@ -78,6 +79,11 @@ const MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS: i64 =
 /// (not a rejection — the value is silently floored at
 /// [`MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS`] at mint time).
 const SAS_TOKEN_WARN_THRESHOLD_SECONDS: i64 = 60;
+
+/// How long a cached user delegation key keeps signing. The key is fetched valid
+/// for this long past the URLs it signs, so every URL signed from a cached key
+/// expires before the key does.
+const DELEGATION_KEY_REUSE_SECONDS: i64 = 2 * 60 * 60;
 
 /// Floor for the cache `valid_until` window — prevents an unusually short
 /// user TTL from collapsing the cache lifetime to zero (which would disable
@@ -282,9 +288,26 @@ fn canonical_resource(
     })?;
     let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
     let depth = rootless_path.split('/').count();
+    Ok((
+        decoded_resource(account_name, filesystem, rootless_path),
+        depth,
+    ))
+}
+
+/// The canonical resource of `rootless_path`, signed over its decoded form; see
+/// [`canonical_resource`].
+fn decoded_resource(account_name: &str, filesystem: &str, rootless_path: &str) -> String {
     let decoded_path = percent_encoding::percent_decode_str(rootless_path).decode_utf8_lossy();
-    let resource = format!("/blob/{account_name}/{filesystem}/{decoded_path}");
-    Ok((resource, depth))
+    format!("/blob/{account_name}/{filesystem}/{decoded_path}")
+}
+
+/// Serialize a SAS into its query-string token.
+fn sas_token(sas: &BlobSharedAccessSignature) -> Result<String, CredentialsError> {
+    sas.token()
+        .map_err(|e| CredentialsError::ShortTermCredential {
+            reason: "Error getting azure sas token.".to_string(),
+            source: Some(Box::new(e)),
+        })
 }
 
 /// Build a SAS token for a directory resource.
@@ -295,19 +318,31 @@ fn build_directory_sas(
     depth: usize,
     key: impl Into<SasKey>,
 ) -> Result<String, CredentialsError> {
-    BlobSharedAccessSignature::new(
-        key,
-        canonical_resource,
-        permissions,
-        signed_expiry,
-        BlobSignedResource::Directory,
+    sas_token(
+        &BlobSharedAccessSignature::new(
+            key,
+            canonical_resource,
+            permissions,
+            signed_expiry,
+            BlobSignedResource::Directory,
+        )
+        .signed_directory_depth(depth),
     )
-    .signed_directory_depth(depth)
-    .token()
-    .map_err(|e| CredentialsError::ShortTermCredential {
-        reason: "Error getting azure sas token.".to_string(),
-        source: Some(Box::new(e)),
-    })
+}
+
+async fn fetch_user_delegation_key(
+    client: &BlobServiceClient,
+    start: OffsetDateTime,
+    end: OffsetDateTime,
+) -> Result<UserDeligationKey, CredentialsError> {
+    client
+        .get_user_deligation_key(start, end)
+        .await
+        .map(|response| response.user_deligation_key)
+        .map_err(|e| CredentialsError::ShortTermCredential {
+            reason: "Error getting azure user delegation key.".to_string(),
+            source: Some(Box::new(e)),
+        })
 }
 
 /// Mint a SAS via Azure user-delegation-key flow.
@@ -322,21 +357,122 @@ async fn mint_sas_via_delegation_key(
     tracing::debug!(
         "Requesting user delegation key from azure for sas token generation - Valid from {sas_token_start} to {sas_token_end}",
     );
-    let delegation_key = client
-        .get_user_deligation_key(sas_token_start, sas_token_end)
-        .await
-        .map_err(|e| CredentialsError::ShortTermCredential {
-            reason: "Error getting azure user delegation key.".to_string(),
-            source: Some(Box::new(e)),
-        })?;
-    let signed_expiry = delegation_key.user_deligation_key.signed_expiry;
+    let key = fetch_user_delegation_key(&client, sas_token_start, sas_token_end).await?;
+    let signed_expiry = key.signed_expiry;
     tracing::debug!(
         "Successfully obtained user delegation key from azure for sas token generation - Valid from {} until {signed_expiry}",
-        delegation_key.user_deligation_key.signed_start
+        key.signed_start
     );
-    let key = delegation_key.user_deligation_key;
     let sas = build_directory_sas(canonical_resource, permissions, signed_expiry, depth, key)?;
     Ok((sas, signed_expiry))
+}
+
+/// The key read SAS tokens of one batch are signed with.
+enum ReadSasKey {
+    Account(azure_core::auth::Secret),
+    Delegation(UserDeligationKey),
+}
+
+impl ReadSasKey {
+    fn sas_key(&self) -> SasKey {
+        match self {
+            Self::Account(secret) => secret.clone().into(),
+            Self::Delegation(key) => key.clone().into(),
+        }
+    }
+}
+
+/// Lifetime to fetch a user delegation key with: the URLs it signs, plus the
+/// time the cache keeps signing with it, plus the start backshift.
+fn delegation_key_ttl_seconds(url_validity: i64) -> i64 {
+    url_validity
+        .saturating_add(DELEGATION_KEY_REUSE_SECONDS)
+        .saturating_add(SAS_TOKEN_START_BACKSHIFT_SECONDS)
+}
+
+/// Read-only SAS URLs for single files, one per location, each valid for
+/// `validity`. One key signs the whole batch: the account key, or a user
+/// delegation key read through the cache. `sas_account` is the account the
+/// canonical resource names; the URL is the file's own DFS host.
+pub(super) async fn presign_file_reads(
+    sas_account: &str,
+    settings: &AzureSettings,
+    credential: &AzCredential,
+    cache_key: STCCacheKey,
+    targets: &[ReadTarget],
+    validity: Duration,
+) -> Result<Vec<String>, CredentialsError> {
+    let validity = i64::try_from(validity.as_secs()).unwrap_or(i64::MAX);
+    let (_, end) = sas_validity_window(validity.saturating_add(SAS_TOKEN_START_BACKSHIFT_SECONDS));
+    let key = match credential {
+        AzCredential::SharedAccessKey { key } => {
+            ReadSasKey::Account(azure_core::auth::Secret::new(key.clone()))
+        }
+        AzCredential::ClientCredentials { .. } | AzCredential::AzureSystemIdentity {} => {
+            ReadSasKey::Delegation(
+                get_or_load_stc(&ADLS_DELEGATION_KEY_CACHE, cache_key, || async {
+                    let (start, key_end) =
+                        sas_validity_window(delegation_key_ttl_seconds(validity));
+                    let auth = AzureAuth::try_from(credential.clone())?;
+                    let client = settings.get_blob_service_client(&auth).await?;
+                    let key = fetch_user_delegation_key(&client, start, key_end).await?;
+                    let reuse = Duration::from_secs(DELEGATION_KEY_REUSE_SECONDS.unsigned_abs());
+                    Ok::<_, CredentialsError>(CachedStc::new(
+                        key,
+                        Instant::now().checked_add(reuse),
+                    ))
+                })
+                .await?,
+            )
+        }
+    };
+
+    // A pinned version is not signed: a blob-version SAS (`sr=bv`) signs the version
+    // id into its string-to-sign, which the SAS builder leaves empty. The URL
+    // reads the current blob.
+    targets
+        .iter()
+        .map(|target| {
+            let location = &target.location;
+            let file = AdlsLocation::try_from_location(location, true).map_err(|e| {
+                CredentialsError::ShortTermCredential {
+                    reason: format!("Invalid ADLS location for SAS signing: {e}"),
+                    source: Some(Box::new(e)),
+                }
+            })?;
+            let path = file.blob_name().trim_start_matches('/').to_string();
+            let token = sas_token(&BlobSharedAccessSignature::new(
+                key.sas_key(),
+                decoded_resource(sas_account, file.filesystem(), &path),
+                // One blob: read is the whole grant, list has nothing to list.
+                BlobSasPermissions {
+                    read: true,
+                    ..Default::default()
+                },
+                end,
+                BlobSignedResource::Blob,
+            ))?;
+            let decoded = percent_encoding::percent_decode_str(&path).decode_utf8_lossy();
+            let mut url = Url::parse(&format!(
+                "https://{}.{}",
+                file.account_name(),
+                file.endpoint_suffix()
+            ))
+            .map_err(|e| CredentialsError::ShortTermCredential {
+                reason: format!("Invalid ADLS host for {location}"),
+                source: Some(Box::new(e)),
+            })?;
+            url.path_segments_mut()
+                .map_err(|()| CredentialsError::ShortTermCredential {
+                    reason: format!("Invalid ADLS host for {location}"),
+                    source: None,
+                })?
+                .push(file.filesystem())
+                .extend(decoded.split('/'));
+            url.set_query(Some(&token));
+            Ok(url.to_string())
+        })
+        .collect()
 }
 
 /// Description of an ADLS-compatible storage profile sufficient for shared SAS
@@ -572,11 +708,91 @@ pub(super) async fn lakekeeper_io_from_vended_adls_table_config(
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::service::storage::{
-        GenericAdlsProfile, StorageProfile,
-        az::DEFAULT_AUTHORITY_HOST,
-        storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
+    use crate::{
+        WarehouseId,
+        service::{
+            DatasetId, TabularId,
+            storage::{
+                GenericAdlsProfile, StorageProfile,
+                az::DEFAULT_AUTHORITY_HOST,
+                credential_serve_window,
+                storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
+            },
+        },
     };
+
+    /// Served from the cache for as long as the cache keeps it, a user delegation
+    /// key still outlives the last URL it signs.
+    #[test]
+    fn test_a_cached_delegation_key_outlives_every_url_it_signs() {
+        let served_for = credential_serve_window(Duration::from_secs(
+            DELEGATION_KEY_REUSE_SECONDS.unsigned_abs(),
+        ));
+        let served_for = i64::try_from(served_for.as_secs()).unwrap();
+        for url_validity in [60, 900, 3_600, 6 * 3_600] {
+            let key_expires_after =
+                delegation_key_ttl_seconds(url_validity) - SAS_TOKEN_START_BACKSHIFT_SECONDS;
+            assert!(
+                served_for + url_validity <= key_expires_after,
+                "a URL valid for {url_validity}s signed after {served_for}s outlives its key"
+            );
+        }
+    }
+
+    /// A shared key signs locally, so this needs no Azure: each file gets its own
+    /// read-only blob SAS on its DFS host, with the key encoded in the path.
+    #[tokio::test]
+    async fn test_presign_reads_signs_each_file_for_reading() {
+        let profile = GenericAdlsProfile {
+            filesystem: "files".to_string(),
+            key_prefix: None,
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        };
+        let key = AzCredential::SharedAccessKey {
+            key: "c2VjcmV0".to_string(),
+        };
+        let targets = [
+            "abfss://files@account.dfs.core.windows.net/ds/a file+1.bin",
+            "abfss://files@account.dfs.core.windows.net/ds/b.bin",
+        ]
+        .map(|location| ReadTarget {
+            location: location.parse().unwrap(),
+            version: None,
+        });
+
+        let urls = profile
+            .presign_reads(
+                &key,
+                ShortTermCredentialsRequest {
+                    table_location: "abfss://files@account.dfs.core.windows.net/ds"
+                        .parse()
+                        .unwrap(),
+                    storage_permissions: StoragePermissions::Read,
+                    warehouse_id: WarehouseId::new_random(),
+                    tabular_id: TabularId::Dataset(DatasetId::new_random()),
+                },
+                &targets,
+                Duration::from_mins(15),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(urls.len(), 2);
+        let url = Url::parse(&urls[0]).unwrap();
+        assert_eq!(url.host_str(), Some("account.dfs.core.windows.net"));
+        assert_eq!(url.path(), "/files/ds/a%20file+1.bin");
+        let query: HashMap<_, _> = url.query_pairs().collect();
+        assert_eq!(query["sr"], "b");
+        assert_eq!(query["sp"], "r");
+        assert!(query.contains_key("sig"));
+        assert_eq!(Url::parse(&urls[1]).unwrap().path(), "/files/ds/b.bin");
+    }
 
     #[test]
     fn test_reduce_scheme_string() {

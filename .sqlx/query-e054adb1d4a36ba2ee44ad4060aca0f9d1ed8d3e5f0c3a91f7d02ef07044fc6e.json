@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE dataset_snapshot SET idempotency_key = $3, skipped_files = $4\n            WHERE warehouse_id = $1 AND snapshot_id = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e054adb1d4a36ba2ee44ad4060aca0f9d1ed8d3e5f0c3a91f7d02ef07044fc6e"
+}

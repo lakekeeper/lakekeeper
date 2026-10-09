@@ -7,7 +7,7 @@ use iceberg::TableIdent;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::generic::{GenericTableId, TableId, ViewId};
+use super::generic::{DatasetId, GenericTableId, TableId, ViewId};
 
 #[derive(
     Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, Serialize, derive_more::From,
@@ -22,6 +22,8 @@ pub enum TabularId {
     View(ViewId),
     #[cfg_attr(feature = "open-api", schema(value_type = Uuid))]
     GenericTable(GenericTableId),
+    #[cfg_attr(feature = "open-api", schema(value_type = Uuid))]
+    Dataset(DatasetId),
 }
 
 impl TabularId {
@@ -31,6 +33,7 @@ impl TabularId {
             TabularId::Table(_) => "Table",
             TabularId::View(_) => "View",
             TabularId::GenericTable(_) => "GenericTable",
+            TabularId::Dataset(_) => "Dataset",
         }
     }
 
@@ -48,6 +51,11 @@ impl TabularId {
     pub fn is_generic_table(&self) -> bool {
         matches!(self, TabularId::GenericTable(_))
     }
+
+    #[must_use]
+    pub fn is_dataset(&self) -> bool {
+        matches!(self, TabularId::Dataset(_))
+    }
 }
 
 impl AsRef<Uuid> for TabularId {
@@ -56,6 +64,7 @@ impl AsRef<Uuid> for TabularId {
             TabularId::Table(id) => id.as_ref(),
             TabularId::View(id) => id.as_ref(),
             TabularId::GenericTable(id) => id.as_ref(),
+            TabularId::Dataset(id) => id.as_ref(),
         }
     }
 }
@@ -76,6 +85,8 @@ pub enum TabularIdentBorrowed<'a> {
     View(&'a TableIdent),
     #[allow(dead_code)]
     GenericTable(&'a TableIdent),
+    #[allow(dead_code)]
+    Dataset(&'a TableIdent),
 }
 
 impl TabularIdentBorrowed<'_> {
@@ -85,6 +96,7 @@ impl TabularIdentBorrowed<'_> {
             TabularIdentBorrowed::Table(_) => "Table",
             TabularIdentBorrowed::View(_) => "View",
             TabularIdentBorrowed::GenericTable(_) => "GenericTable",
+            TabularIdentBorrowed::Dataset(_) => "Dataset",
         }
     }
 }
@@ -94,6 +106,7 @@ pub enum TabularIdentOwned {
     Table(TableIdent),
     View(TableIdent),
     GenericTable(TableIdent),
+    Dataset(TableIdent),
 }
 
 impl TabularIdentOwned {
@@ -102,7 +115,8 @@ impl TabularIdentOwned {
         match self {
             TabularIdentOwned::Table(ident)
             | TabularIdentOwned::View(ident)
-            | TabularIdentOwned::GenericTable(ident) => ident,
+            | TabularIdentOwned::GenericTable(ident)
+            | TabularIdentOwned::Dataset(ident) => ident,
         }
     }
 
@@ -112,6 +126,7 @@ impl TabularIdentOwned {
             TabularIdentOwned::Table(ident) => TabularIdentBorrowed::Table(ident),
             TabularIdentOwned::View(ident) => TabularIdentBorrowed::View(ident),
             TabularIdentOwned::GenericTable(ident) => TabularIdentBorrowed::GenericTable(ident),
+            TabularIdentOwned::Dataset(ident) => TabularIdentBorrowed::Dataset(ident),
         }
     }
 
@@ -120,7 +135,8 @@ impl TabularIdentOwned {
         match self {
             TabularIdentOwned::Table(ident)
             | TabularIdentOwned::View(ident)
-            | TabularIdentOwned::GenericTable(ident) => ident,
+            | TabularIdentOwned::GenericTable(ident)
+            | TabularIdentOwned::Dataset(ident) => ident,
         }
     }
 }
@@ -133,6 +149,7 @@ impl<'a> From<TabularIdentBorrowed<'a>> for TabularIdentOwned {
             TabularIdentBorrowed::GenericTable(ident) => {
                 TabularIdentOwned::GenericTable(ident.clone())
             }
+            TabularIdentBorrowed::Dataset(ident) => TabularIdentOwned::Dataset(ident.clone()),
         }
     }
 }
@@ -143,7 +160,8 @@ impl TabularIdentBorrowed<'_> {
         match self {
             TabularIdentBorrowed::Table(ident)
             | TabularIdentBorrowed::View(ident)
-            | TabularIdentBorrowed::GenericTable(ident) => ident,
+            | TabularIdentBorrowed::GenericTable(ident)
+            | TabularIdentBorrowed::Dataset(ident) => ident,
         }
     }
 }
@@ -156,6 +174,7 @@ impl Deref for TabularId {
             TabularId::Table(id) => id.as_ref(),
             TabularId::View(id) => id.as_ref(),
             TabularId::GenericTable(id) => id.as_ref(),
+            TabularId::Dataset(id) => id.as_ref(),
         }
     }
 }

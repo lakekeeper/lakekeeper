@@ -47,7 +47,7 @@ If you made any changes to SQL queries, please follow [Working with SQLx](#worki
 
 ### Required tools for OpenAPI regeneration
 
-The `just update-management-openapi` and `just update-generic-table-openapi` recipes — plus several `add-*-to-rest-openapi` recipes — require **Go yq** ([mikefarah/yq](https://github.com/mikefarah/yq)).
+The `just update-management-openapi`, `just update-generic-table-openapi` and `just update-dataset-openapi` recipes — plus several `add-*-to-rest-openapi` recipes — require **Go yq** ([mikefarah/yq](https://github.com/mikefarah/yq)).
 
 The Python `yq` (kislyuk) shipped via `pip install yq` is **not compatible**: it uses different flags (`-y -i` instead of `-i`) and its YAML emitter formats lists differently, which produces large whitespace-only diffs.
 
