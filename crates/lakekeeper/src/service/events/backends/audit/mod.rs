@@ -25,8 +25,9 @@ pub use part::{
 };
 use parts::include_user_email;
 pub use parts::{
-    ActionRecord, ActorRecord, AssumedRoleRecord, DecisionRecord, EntityRecord, ErrorRecord,
-    GrantContextRecord, HandlerContext, RoleSubjectRecord, SubjectRecord, UserSubjectRecord,
+    ActionRecord, ActorRecord, AssumedRoleRecord, DecisionRecord, EntityFields, EntityRecord,
+    ErrorRecord, GrantContextRecord, HandlerContext, RoleSubjectRecord, SubjectRecord,
+    UserSubjectRecord,
 };
 pub use render::{AuditJson, log_format};
 pub use shapes::{AuthorizationRecord, OperationRecord, RecordOrigin, ReplayRecord};
@@ -226,15 +227,15 @@ impl AuditEventListener {
         }
     }
 
-    async fn enrichment(
+    async fn enrichment<'a>(
         &self,
-        request_metadata: &RequestMetadata,
-        named: &assemble::NamedPrincipals,
-    ) -> Enrichment {
+        request_metadata: &'a RequestMetadata,
+        named: &'a assemble::NamedPrincipals<'a>,
+    ) -> Enrichment<'a> {
         Enrichment::resolve(
             self.catalog.as_deref(),
             request_metadata,
-            &named.users,
+            named.users.iter().copied(),
             &named.roles,
         )
         .await
@@ -249,7 +250,7 @@ impl Display for AuditEventListener {
 
 /// One grant record per triple, not one per request: the batch is a dispatch optimisation,
 /// while the audit trail is answered per grant.
-fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment) {
+fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
     let actor = || assemble::actor(&event.request_metadata, enrichment);
     for (specs, operation, message) in [
         (
@@ -328,7 +329,7 @@ impl EventListener for AuditEventListener {
             let enrichment = Enrichment::resolve(
                 Some(catalog.as_ref()),
                 &event.request_metadata,
-                &named.users,
+                named.users.iter().copied(),
                 &named.roles,
             )
             .await;
