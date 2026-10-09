@@ -28,10 +28,10 @@ use crate::{
 pub trait EventCatalog: Send + Sync + std::fmt::Debug {
     /// What the catalog knows about the email of each of `user_ids`, through the user
     /// cache.
-    async fn user_emails(
+    async fn user_emails<'a>(
         &self,
-        user_ids: &[UserId],
-    ) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
+        user_ids: &[&'a UserId],
+    ) -> Result<HashMap<&'a UserId, UserEmail>, CatalogBackendError> {
         let _ = user_ids;
         Err(unsupported("user_emails"))
     }
@@ -79,10 +79,10 @@ impl<C: CatalogStore> std::fmt::Debug for CatalogStoreReader<C> {
 
 #[async_trait::async_trait]
 impl<C: CatalogStore> EventCatalog for CatalogStoreReader<C> {
-    async fn user_emails(
+    async fn user_emails<'a>(
         &self,
-        user_ids: &[UserId],
-    ) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
+        user_ids: &[&'a UserId],
+    ) -> Result<HashMap<&'a UserId, UserEmail>, CatalogBackendError> {
         user_cache::user_emails::<C>(user_ids, self.state.clone()).await
     }
 

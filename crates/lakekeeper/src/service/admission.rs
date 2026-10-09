@@ -421,8 +421,7 @@ impl<'a> AdmissionTrigger<'a> {
     /// The triggering request's actor as an audit record carries it, assumed role included.
     #[must_use]
     pub fn actor_record(&self) -> crate::audit::ActorRecord {
-        crate::audit::ActorRecord::from_internal_actor(self.actor)
-            .with_email(self.email.map(str::to_owned))
+        crate::audit::ActorRecord::from_internal_actor(self.actor).with_email(self.email)
     }
 
     /// The triggering request's id.

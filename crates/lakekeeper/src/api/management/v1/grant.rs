@@ -1546,7 +1546,7 @@ const TABULAR_FLAGS: TabularListFlags = TabularListFlags {
 /// diff's size. The counts are kept because deduplication loses them.
 #[derive(Clone, Debug)]
 pub struct ApplyGrants {
-    principals: Vec<SubjectRecord>,
+    principals: Vec<SubjectRecord<'static>>,
     privileges: Vec<String>,
     writes: usize,
     deletes: usize,

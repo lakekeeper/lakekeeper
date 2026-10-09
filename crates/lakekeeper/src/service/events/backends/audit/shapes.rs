@@ -28,7 +28,7 @@ use crate::{
 /// An authorization record: was this caller permitted to do these actions on these entities?
 #[audit_part(shape = "authorization")]
 #[derive(Debug, Clone, PartialEq)]
-pub struct AuthorizationRecord {
+pub struct AuthorizationRecord<'a> {
     /// Every product that contributed to this record, keyed by its name, with the version of
     /// what it contributes: the one that assembled it and any whose vocabulary it carries.
     pub(crate) emitters: Emitters,
@@ -41,33 +41,34 @@ pub struct AuthorizationRecord {
     /// The actions evaluated, always a list however many there are.
     pub(crate) actions: Vec<ActionRecord>,
     /// The entities they were evaluated against, always a list.
-    pub(crate) entities: Vec<EntityRecord>,
+    pub(crate) entities: Vec<EntityRecord<'a>>,
     /// Who made the request, as authentication established it.
     pub(crate) actor: ActorRecord,
     /// Which authority answered: the authorizer, or a bypass.
     pub(crate) privilege_source: Wire<PrivilegeSource>,
     /// The `User-Agent` header, verbatim and unverified. Absent when none was sent.
-    pub(crate) user_agent: Option<String>,
+    pub(crate) user_agent: Option<&'a str>,
     /// The stated break-glass reason. Absent unless the caller claimed one.
-    pub(crate) break_glass: Option<String>,
+    pub(crate) break_glass: Option<&'a str>,
     /// Handler-supplied detail about the request. Absent when the handler added none.
-    pub(crate) context: Option<HandlerContext>,
+    pub(crate) context: Option<HandlerContext<'a>>,
     /// One entry per permission evaluated.
-    pub(crate) authorizations: Vec<DecisionRecord>,
+    pub(crate) authorizations: Vec<DecisionRecord<'a>>,
     /// The request's `Idempotency-Key`. Absent when the caller sent none.
-    pub(crate) idempotency_key: Option<String>,
+    #[schemars(with = "Option<String>")]
+    pub(crate) idempotency_key: Option<uuid::Uuid>,
     /// Whether the request was permitted.
     pub(crate) decision: Wire<Decision>,
     /// Why a denied record was denied, as the vocabulary spells it.
     pub(crate) failure_reason: Option<Wire<AuthorizationFailureReason>>,
     /// The error the caller received. Present only on a denial that produced one.
-    pub(crate) error: Option<ErrorRecord>,
+    pub(crate) error: Option<ErrorRecord<'a>>,
 }
 
 /// A replay record: a retry answered from an idempotency record, so no authorization ran.
 #[audit_part(shape = "replay")]
 #[derive(Debug, Clone, PartialEq)]
-pub struct ReplayRecord {
+pub struct ReplayRecord<'a> {
     /// Every product that contributed to this record, keyed by its name, with the version of
     /// what it contributes: the one that assembled it and any whose vocabulary it carries.
     pub(crate) emitters: Emitters,
@@ -81,16 +82,17 @@ pub struct ReplayRecord {
     pub(crate) actions: Vec<ActionRecord>,
     /// The entities it named, always a list. As the caller wrote them: a replay resolves
     /// nothing.
-    pub(crate) entities: Vec<EntityRecord>,
+    pub(crate) entities: Vec<EntityRecord<'a>>,
     /// Who made the request, as authentication established it.
     pub(crate) actor: ActorRecord,
     /// Which authority would have answered, had one been asked.
     pub(crate) privilege_source: Wire<PrivilegeSource>,
     /// The `User-Agent` header, verbatim and unverified. Absent when none was sent.
-    pub(crate) user_agent: Option<String>,
+    pub(crate) user_agent: Option<&'a str>,
     /// The key whose stored response was served. Always present: it is what makes this a
     /// replay.
-    pub(crate) idempotency_key: String,
+    #[schemars(with = "String")]
+    pub(crate) idempotency_key: uuid::Uuid,
 }
 
 /// Who and which request an operation record belongs to.
