@@ -45,5 +45,11 @@ JEMALLOC_SYS_WITH_MALLOC_CONF = "thp:never"
 #
 # Both are fixed upstream in krb5 1.22; remove these once `krb5-src` bundles it.
 # A `CFLAGS` set in the environment replaces this value.
+#
+# `CFLAGS` reaches every C build in the tree, not only krb5. `cc` adds it last,
+# so it also replaces the C standard a crate picks itself (ring and aws-lc ask
+# for C11). All of them build with it, and GCC <= 14 uses gnu17 by default.
+# Cargo cannot limit `[env]` to one package; if a dependency ever needs C23,
+# move this flag into a patched `krb5-src`.
 CFLAGS = "-std=gnu17"
 WARN_CFLAGS = "-Wall"
