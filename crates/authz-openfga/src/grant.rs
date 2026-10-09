@@ -132,8 +132,8 @@ struct PrivilegeDocumentation {
 
 /// Documentation for one privilege, for a picker that has to group and explain itself.
 ///
-/// Keyed by name rather than by level: the same fourteen names cover all forty-odd
-/// entries, because a privilege means the same thing wherever the model defines it.
+/// Keyed by name rather than by level: a few names cover every level's entries,
+/// because a privilege means the same thing wherever the model defines it.
 /// Anything not listed reports nothing rather than a guess — a wrong explanation of a
 /// permission is worse than none.
 fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
@@ -191,10 +191,15 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         "describe" => ("metadata", "Read the object's metadata."),
         "select" => ("read", "Read the object's data."),
         "create" => ("create", "Create new objects inside this one."),
-        "modify" => (
-            "write",
-            "Change the object and its contents, including schema changes.",
-        ),
+        "write" => ("write", {
+            "Write data: add snapshots, move branches and tags, and record statistics. \
+             Does not change a table's structure or properties, expire its snapshots or \
+             remove its branches and tags, and does not drop, rename or protect anything."
+        }),
+        "modify" => ("write", {
+            "Change the object and its contents, including schema changes, properties and \
+             snapshot expiry, and drop, rename or protect it."
+        }),
         // Tag definitions.
         "apply" => ("metadata", {
             "Attach and detach this tag. Attaching it to an object additionally requires \
@@ -805,6 +810,7 @@ mod tests {
                 "describe",
                 "select",
                 "create",
+                "write",
                 "modify",
                 "manage_tags"
             ]
@@ -840,7 +846,7 @@ mod tests {
                 "{privilege} is not delegable, so its two directions share a relation"
             );
         }
-        for privilege in ["describe", "select", "create", "modify"] {
+        for privilege in ["describe", "select", "create", "write", "modify"] {
             assert_ne!(
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Grant),
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Revoke),

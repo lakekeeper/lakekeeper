@@ -2635,6 +2635,113 @@ pub(crate) mod tests {
             )));
         }
 
+        /// A `write` grant on a namespace lets a principal write data to a table below it
+        /// and commit snapshots, refs and statistics, but not change the table's
+        /// structure, properties or history, nor drop, rename or protect it.
+        #[tokio::test]
+        async fn test_write_commits_data_but_not_structure() {
+            use lakekeeper::service::authz::{CatalogTableAction, TableUpdateKind};
+
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"));
+            let warehouse_id = WarehouseId::new_random();
+            let namespace_id = NamespaceId::new_random();
+            let table_id = TableId::new_random();
+            authorizer
+                .create_namespace(
+                    &metadata,
+                    namespace_id,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+            authorizer
+                .create_table(&metadata, warehouse_id, table_id, namespace_id)
+                .await
+                .unwrap();
+
+            let writer = UserId::new_unchecked("oidc", "writer");
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: format!("user:{writer}"),
+                        relation: NamespaceRelation::Write.to_string(),
+                        object: format!("namespace:{namespace_id}"),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let allowed = async |action: CatalogTableAction| {
+                authorizer
+                    .check(CheckRequestTupleKey {
+                        user: format!("user:{writer}"),
+                        relation: action.to_openfga().to_string(),
+                        object: (warehouse_id, table_id).to_openfga(),
+                    })
+                    .await
+                    .unwrap()
+            };
+            let commit = |kinds: &[TableUpdateKind]| CatalogTableAction::Commit {
+                updated_properties: Arc::default(),
+                removed_properties: Arc::default(),
+                target_refs: Arc::default(),
+                update_kinds: Arc::new(kinds.iter().copied().collect()),
+            };
+
+            for kinds in [
+                vec![
+                    TableUpdateKind::AddSnapshot,
+                    TableUpdateKind::SetSnapshotRef,
+                ],
+                vec![TableUpdateKind::SetStatistics],
+            ] {
+                assert!(allowed(commit(&kinds)).await, "{kinds:?} is a data commit");
+            }
+            for kinds in [
+                vec![
+                    TableUpdateKind::AddSchema,
+                    TableUpdateKind::SetCurrentSchema,
+                ],
+                vec![TableUpdateKind::AddSnapshot, TableUpdateKind::SetProperties],
+                vec![TableUpdateKind::RemoveSnapshots],
+                // Names no update, so it asks about commits in general.
+                vec![],
+            ] {
+                assert!(!allowed(commit(&kinds)).await, "{kinds:?} needs modify");
+            }
+            // A check that changes properties without naming kinds, as an engine's
+            // access-control bridge may send it.
+            assert!(
+                !allowed(CatalogTableAction::Commit {
+                    updated_properties: Arc::new(std::collections::BTreeMap::from([(
+                        "write.format.default".to_string(),
+                        "orc".to_string()
+                    )])),
+                    removed_properties: Arc::default(),
+                    target_refs: Arc::default(),
+                    update_kinds: Arc::default(),
+                })
+                .await,
+                "changing properties needs modify"
+            );
+            assert!(allowed(CatalogTableAction::WriteData).await);
+            assert!(allowed(CatalogTableAction::ReadData).await);
+            for action in [
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
+                CatalogTableAction::Rename,
+                CatalogTableAction::SetProtection,
+                CatalogTableAction::Undrop,
+            ] {
+                assert!(!allowed(action.clone()).await, "{action:?} needs modify");
+            }
+        }
+
         /// Views and generic tables ride the same hook, and each has its own object type
         /// and `parent` relation. A dispatcher that fell through to the table helper would
         /// leave the real edge live — invisible unless the other two are exercised too.

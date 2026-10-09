@@ -316,6 +316,32 @@ tuples:
     relation: create
     object: namespace:namespace_1_3
 
+  # `write` grants: on a namespace (reaching table_3, view_1 and generic_table_1 below
+  # namespace_1_2), on a single deep table, on a warehouse and on a project.
+  - user: user:namespace_1_1_writer
+    relation: write
+    object: namespace:namespace_1_1
+  - user: user:table_3_writer
+    relation: write
+    object: lakekeeper_table:warehouse_1/table_3
+  - user: user:warehouse_1_writer
+    relation: write
+    object: warehouse:warehouse_1
+  - user: user:project_1_writer
+    relation: write
+    object: project:project_1
+  - user: user:warehouse_1_grant_admin
+    relation: manage_grants
+    object: warehouse:warehouse_1
+  - user: user:table_3_write_delegator
+    relation: write
+    object: lakekeeper_table:warehouse_1/table_3
+  - user: user:table_3_write_delegator
+    relation: pass_grants
+    object: lakekeeper_table:warehouse_1/table_3
+  - user: user:namespace_2_1_writer
+    relation: write
+    object: namespace:namespace_2_1
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
     check:
@@ -2254,4 +2280,138 @@ tests:
         object: lakekeeper_table:warehouse_1/table_1_3
         assertions:
           manage_grants: false
+          can_move: false
+  - name: write changes data but not structure, and never drops, renames or protects
+    check:
+      - user: user:namespace_1_1_writer
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          write: false                 # granted on the namespace, not here
+          write_effective: true
+          can_write_data: true
+          can_commit_data: true
+          can_read_data: true          # write implies select
+          can_get_metadata: true
+          can_commit: false            # schema, properties, expiry need modify
+          can_drop: false
+          can_undrop: false
+          can_rename: false
+          can_move: false
+          can_set_protection: false
+          can_control_tasks: false
+          can_grant_write: false       # holding write is not delegating it
+      - user: user:namespace_1_1_writer
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_write_data: true
+          can_read_data: true
+          can_drop: false
+          can_rename: false
+      - user: user:namespace_1_1_writer
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          # A view has no data to write; a namespace `write` still reads it.
+          can_select: true
+          can_commit: false
+          can_drop: false
+      - user: user:namespace_1_1_writer
+        object: namespace:namespace_1_2
+        assertions:
+          write_effective: true
+          can_create_table: false      # write is not create
+          can_delete: false
+          can_update_properties: false
+      - user: user:namespace_1_1_writer
+        object: namespace:namespace_1_1
+        assertions:
+          write: true
+          visible_below: true
+      - user: user:warehouse_1_modify_only
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          # modify implies write.
+          write_effective: true
+          can_commit_data: true
+          can_commit: true
+  - name: write flows down from the warehouse and the project
+    check:
+      - user: user:warehouse_1_writer
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_write_data: true
+          can_commit_data: true
+          can_commit: false
+          can_drop: false
+      - user: user:warehouse_1_writer
+        object: warehouse:warehouse_1
+        assertions:
+          write: true
+          can_use: true
+          can_create_namespace: false
+          can_delete: false
+          can_update_storage: false
+      - user: user:project_1_writer
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          write_effective: true
+          can_write_data: true
+          can_commit: false
+      - user: user:project_1_writer
+        object: project:project_1
+        assertions:
+          write: true
+          select_effective: true
+          can_create_warehouse: false
+          can_delete: false
+  - name: write on a deep table bubbles up for navigation
+    check:
+      - user: user:table_3_writer
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          visible_below: true
+          can_write_data: true
+          can_drop: false
+      - user: user:table_3_writer
+        object: namespace:namespace_1_1
+        assertions:
+          describe_effective: false
+          visible_below: true
+          can_get_metadata: true
+      - user: user:table_3_writer
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
+          can_use: true
+          can_get_config: true
+      - user: user:table_3_writer
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_write_data: false        # a sibling is not covered
+  - name: write is granted and revoked like the other privileges
+    check:
+      - user: user:warehouse_1_grant_admin
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          can_grant_write: true
+          can_revoke_write: true
+  - name: write is delegated with pass_grants like select, never as modify
+    check:
+      - user: user:table_3_write_delegator
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          can_grant_write: true
+          can_grant_select: true
+          can_grant_describe: true
+          can_grant_modify: false
+          can_revoke_write: false     # taking back needs manage_grants
+  - name: write under managed access writes data but grants nothing
+    check:
+      - user: user:namespace_2_1_writer
+        object: lakekeeper_table:warehouse_2/table_2_2
+        assertions:
+          can_write_data: true
+          can_commit_data: true
+          can_commit: false
+          can_drop: false
+          can_grant_write: false
           can_move: false

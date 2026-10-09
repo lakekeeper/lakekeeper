@@ -31,9 +31,11 @@ type project
     define describe: [user, role#assignee]
     define describe_effective: describe or select_effective or create_effective or data_admin or security_admin
     define select: [user, role#assignee]
-    define select_effective: select or modify_effective
+    define select_effective: select or write_effective
     define create: [user, role#assignee]
     define create_effective: create or data_admin
+    define write: [user, role#assignee]
+    define write_effective: write or modify_effective
     define modify: [user, role#assignee]
     define modify_effective: modify or project_admin
     # A project carries no `visible_below`: it is the top of the resource tree
@@ -78,6 +80,7 @@ type project
     define can_grant_tag_creator: security_admin or admin from server
     define can_grant_create: security_admin or admin from server
     define can_grant_describe: security_admin or admin from server
+    define can_grant_write: security_admin or admin from server
     define can_grant_modify: security_admin or admin from server
     define can_grant_select: security_admin or admin from server
     define can_grant_project_admin: project_admin or admin from server

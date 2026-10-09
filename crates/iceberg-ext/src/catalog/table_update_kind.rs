@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use iceberg::TableUpdate;
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +82,43 @@ impl From<&TableUpdate> for TableUpdateKind {
             TableUpdate::AddEncryptionKey { .. } => Self::AddEncryptionKey,
             TableUpdate::RemoveEncryptionKey { .. } => Self::RemoveEncryptionKey,
         }
+    }
+}
+
+impl TableUpdateKind {
+    /// Whether a commit made of `kinds` only changes the table's data: it adds snapshots,
+    /// moves branches and tags, and records statistics. Anything that changes the table's
+    /// structure, properties or history is not. An empty set names no update, so it says
+    /// nothing about the commit and does not count.
+    #[must_use]
+    pub fn changes_only_data(kinds: &BTreeSet<TableUpdateKind>) -> bool {
+        !kinds.is_empty()
+            && kinds.iter().all(|kind| match kind {
+                Self::AddSnapshot
+                | Self::SetSnapshotRef
+                | Self::SetStatistics
+                | Self::RemoveStatistics
+                | Self::SetPartitionStatistics
+                | Self::RemovePartitionStatistics => true,
+                // Writers to an encrypted table add the key of each snapshot they add.
+                Self::AddEncryptionKey => kinds.contains(&Self::AddSnapshot),
+                Self::UpgradeFormatVersion
+                | Self::AssignUuid
+                | Self::AddSchema
+                | Self::SetCurrentSchema
+                | Self::AddSpec
+                | Self::SetDefaultSpec
+                | Self::AddSortOrder
+                | Self::SetDefaultSortOrder
+                | Self::RemoveSnapshots
+                | Self::RemoveSnapshotRef
+                | Self::SetLocation
+                | Self::SetProperties
+                | Self::RemoveProperties
+                | Self::RemovePartitionSpecs
+                | Self::RemoveSchemas
+                | Self::RemoveEncryptionKey => false,
+            })
     }
 }
 
@@ -221,5 +260,58 @@ mod tests {
             }),
             TableUpdateKind::SetProperties
         );
+    }
+
+    fn kinds(kinds: &[TableUpdateKind]) -> std::collections::BTreeSet<TableUpdateKind> {
+        kinds.iter().copied().collect()
+    }
+
+    /// What ordinary writers send, including statistics written with the data and the keys
+    /// of encrypted tables.
+    #[test]
+    fn data_commits_change_only_data() {
+        use TableUpdateKind::*;
+        for commit in [
+            vec![AddSnapshot],
+            vec![AddSnapshot, SetSnapshotRef],
+            vec![SetSnapshotRef],
+            vec![AddSnapshot, SetSnapshotRef, SetStatistics],
+            vec![RemoveStatistics],
+            vec![SetPartitionStatistics, RemovePartitionStatistics],
+            vec![AddEncryptionKey, AddSnapshot, SetSnapshotRef],
+        ] {
+            assert!(
+                TableUpdateKind::changes_only_data(&kinds(&commit)),
+                "{commit:?} only changes data"
+            );
+        }
+    }
+
+    #[test]
+    fn other_commits_are_not_data_commits() {
+        use TableUpdateKind::*;
+        for commit in [
+            vec![AddSchema, SetCurrentSchema],
+            vec![AddSnapshot, SetSnapshotRef, SetProperties],
+            vec![RemoveProperties],
+            vec![RemoveSnapshots],
+            vec![RemoveSnapshotRef],
+            vec![AddSpec, SetDefaultSpec],
+            vec![AddSortOrder, SetDefaultSortOrder],
+            vec![UpgradeFormatVersion],
+            vec![AssignUuid],
+            vec![SetLocation],
+            vec![RemovePartitionSpecs, RemoveSchemas],
+            vec![RemoveEncryptionKey],
+            // A key without a snapshot to encrypt is not part of a data commit.
+            vec![AddEncryptionKey],
+            // Names no update, so says nothing about the commit.
+            vec![],
+        ] {
+            assert!(
+                !TableUpdateKind::changes_only_data(&kinds(&commit)),
+                "{commit:?} is not a data commit"
+            );
+        }
     }
 }
