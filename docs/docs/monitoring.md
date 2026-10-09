@@ -117,6 +117,23 @@ The Postgres connection differs. If Postgres becomes unreachable, the pod **will
 !!! tip "Alerting on role provider health"
     Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported. The series exists only for external-backed providers (LDAP), and only after the first health-check cycle. Pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms Lakekeeper is falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` means roles are not reaching Postgres. For an LDAP provider that is a database connectivity or permissions problem. For the OIDC token provider (`persist_token_roles`) it is a failure persisting token roles for definer-view reuse.
 
+### Cedar Policy Refresh Metrics { .lkp }
+
+With the [Cedar authorizer](./authorization-cedar.md), Lakekeeper reloads policies and entities from files and ConfigMaps, and the policies stored per project or warehouse, every `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS`. It reports each refresh with these metrics:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| <code class="selectable">lakekeeper_<wbr>cedar_<wbr>policy_<wbr>source_up</code> | Gauge | `source`, `kind` | `1` if the file or ConfigMap loaded at the last refresh, `0` otherwise. `kind` is `policies` or `entities` |
+| <code class="selectable">lakekeeper_<wbr>cedar_<wbr>policy_<wbr>refresh_<wbr>errors_total</code> | Counter | `tier` | Failed refreshes. `tier` is `sources` (files and ConfigMaps) or `database` (policies stored per project or warehouse) |
+| <code class="selectable">lakekeeper_<wbr>cedar_<wbr>policy_<wbr>last_<wbr>success_<wbr>timestamp_<wbr>seconds</code> | Gauge | `tier` | Unix time of the last successful refresh of that tier |
+
+`source_up` exists only for configured files and ConfigMaps, and the `database` tier only with a policy store.
+
+**Health probe behavior.** A failed refresh does **not** fail `/health`. Files and ConfigMaps are reloaded as one set: if any of them fails to load or validate, the whole set keeps its last good version, and the pod keeps deciding with it. The policies stored per project or warehouse keep refreshing independently, so policy changes made through the API still reach every replica. Each failed refresh logs an error that names the failing source.
+
+!!! tip "Alerting on policy refreshes"
+    Alert on `lakekeeper_cedar_policy_source_up == 0` to catch a broken policy file or ConfigMap, and on `time() - lakekeeper_cedar_policy_last_success_timestamp_seconds > 300` to catch a tier that has stopped refreshing. Fix a broken source before the next rollout: a pod that starts with an invalid source refuses to start.
+
 ### Admission Gate Metrics
 
 [Admission gates](./admission.md) run once per authenticated request, before any handler. The enforce-endpoint gate ships with Lakekeeper Plus.
@@ -246,7 +263,7 @@ See [Configuration - Endpoint Statistics](./configuration.md#endpoint-statistics
 
 ## Best Practices
 
-Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, role provider health, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, low cache hit rates, and `lakekeeper_role_provider_up == 0` (combined with `absent(...)` to catch a provider that never reported).
+Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, role provider health, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, low cache hit rates, `lakekeeper_role_provider_up == 0` (combined with `absent(...)` to catch a provider that never reported), and `lakekeeper_cedar_policy_source_up == 0`.
 
 ## Troubleshooting
 
