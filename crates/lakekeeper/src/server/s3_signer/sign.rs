@@ -42,7 +42,19 @@ const UNSIGNED_HEADERS: &[&str] = &[
     "x-amz-date",
     "amz-sdk-invocation-id",
     "amz-sdk-retry",
+    // AWS SDK v2's successor of `amz-sdk-retry`: carries the attempt number,
+    // so it changes on every retry of a request that reuses a cached signature.
+    "amz-sdk-request",
 ];
+
+/// Whether a request header stays out of the signature. HTTP field names are
+/// case-insensitive (RFC 9110, section 5.1), and the AWS SDK v2 sends `Range`.
+fn is_unsigned_header(name: &str) -> bool {
+    UNSIGNED_HEADERS
+        .iter()
+        .any(|unsigned| name.eq_ignore_ascii_case(unsigned))
+}
+
 const HOST_HEADER: &str = "host";
 /// Also covers `x-amz-copy-source-range` and the `x-amz-copy-source-if-*` conditions.
 const COPY_SOURCE_HEADER_PREFIX: &str = "x-amz-copy-source";
@@ -413,7 +425,7 @@ async fn sign(
     let mut headers_vec: Vec<(String, String)> = Vec::new();
 
     for (key, values) in request_headers.clone() {
-        if UNSIGNED_HEADERS.contains(&key.as_str()) {
+        if is_unsigned_header(&key) {
             // Skip unsigned headers
             continue;
         }
@@ -2539,6 +2551,35 @@ mod test {
                 (403, "ObjectLockNotSignable".to_string()),
                 "Test case: {query}"
             );
+        }
+    }
+
+    /// Iceberg's signer client caches GET signatures per URI, so a signed `Range`
+    /// breaks the next ranged read of the same object. The AWS SDK v2 sends `Range`.
+    #[test]
+    fn test_unsigned_headers_ignore_case() {
+        for name in [
+            "range",
+            "Range",
+            "RANGE",
+            "x-amz-date",
+            "X-Amz-Date",
+            "amz-sdk-invocation-id",
+            "Amz-Sdk-Invocation-Id",
+            "amz-sdk-retry",
+            "amz-sdk-request",
+            "Amz-Sdk-Request",
+        ] {
+            assert!(is_unsigned_header(name), "{name} must stay unsigned");
+        }
+        for name in [
+            "host",
+            "Host",
+            "x-amz-content-sha256",
+            "content-type",
+            "ranges",
+        ] {
+            assert!(!is_unsigned_header(name), "{name} must be signed");
         }
     }
 
