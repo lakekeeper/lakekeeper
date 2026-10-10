@@ -43,7 +43,7 @@ jobs:
     env:
       RUSTFLAGS: --cfg tracing_unstable --cfg tokio_unstable # drop -D warnings; MSRV builds may emit new warnings
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - name: Read MSRV from Cargo.toml
@@ -60,7 +60,7 @@ jobs:
           print(f'version={v}')
           " >> "$GITHUB_OUTPUT"
       - name: Setup Rust ${{ steps.msrv.outputs.version }}
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
         env:
@@ -74,13 +74,13 @@ jobs:
     name: Unused dependencies
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
       - name: Install cargo-machete
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
           tool: cargo-machete
       - name: Check unused dependencies
@@ -105,11 +105,11 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
       - name: Install sqlx-cli and migrate database
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -127,12 +127,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: sudo snap install --edge --classic just
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: rustfmt
         env:
@@ -153,12 +153,12 @@ jobs:
       - run: |
           sudo snap install --edge --classic just
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: clippy
         env:
@@ -174,11 +174,11 @@ jobs:
     steps:
       - run: |
           sudo snap install --edge --classic just
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           components: clippy
         env:
@@ -189,7 +189,7 @@ jobs:
         run: just update-generic-table-openapi
       - name: Fail on diff
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Build TS Client
@@ -258,7 +258,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
@@ -289,7 +289,7 @@ jobs:
           docker exec minio /usr/bin/mc alias set local http://localhost:9000 minio-root-user minio-root-password
           docker exec minio /usr/bin/mc mb local/tests
 
-      - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         if: ${{ env.AZURE_CLIENT_ID != '' }}
         with:
           creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
@@ -301,12 +301,12 @@ jobs:
         shell: bash
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         env:
           RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
           tool: cargo-nextest
 
@@ -427,7 +427,7 @@ jobs:
           LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
           LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
       - name: Upload junit
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: junit-pg${{ matrix.postgres-version }}
           path: target/nextest/${{ env.NEXTEST_PROFILE }}/junit.xml
@@ -452,7 +452,7 @@ jobs:
     # FRAGMENT under audit-format/unreleased/ — a file in the tree, which the checker can
     # read and the release recipe can assemble. A description gate could do neither.
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         with:
           persist-credentials: false
