@@ -64,6 +64,8 @@ Each storage profile turns the methods on or off for its Warehouse. Disabled met
 
 Remote signing applies to [Generic Tables](./generic-tables.md) as well as Iceberg tables.
 
+Remote signing keeps a client inside its table only if the object store checks every part of a signed request, as AWS S3 does. A store that does not lets a client change a request after it was signed, for example to read or delete data outside its table, so prefer vended credentials there. Clients that may write a table can also set tags on its files, so do not base access or lifecycle rules on object tags.
+
 ## CORS
 
 [LoQE, the in-browser query console](engines.md#loqe), reads and writes table data directly from object storage, so the bucket must return a CORS (Cross-Origin Resource Sharing) policy that allows requests from the Lakekeeper origin. This applies to S3, STACKIT, Google Cloud Storage and ADLS, which LoQE only reads; LoQE does not support OneLake. It also applies only when the Warehouse vends credentials, because LoQE cannot use remote signing. [Storage validation](storage-validation.md) reports a `cors-origin-allowed` warning when the Lakekeeper origin is not allowed.
