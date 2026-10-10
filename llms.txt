@@ -1,0 +1,76 @@
+# Lakekeeper
+
+> Lakekeeper is an open source Apache Iceberg REST Catalog written in Rust, with fine-grained access control, multi-engine support and S3, GCS & Azure storage.
+
+Lakekeeper is an Apache Iceberg REST Catalog. It manages Iceberg tables,
+views and namespaces for query engines such as Spark, Trino, StarRocks,
+DuckDB, Athena and Flink, vending short-lived storage credentials and
+enforcing fine-grained access control.
+
+Notes for retrieval:
+
+- These links point at the current release (`docs/latest`). Older
+  releases live under `/docs/<version>/` and unreleased docs under
+  `/docs/nightly/`; both are intentionally omitted here.
+- Append `.md` to any docs URL for its Markdown source, e.g. `https://docs.lakekeeper.io/docs/latest/configuration.md`.
+- `https://docs.lakekeeper.io/llms-full.txt` contains every page below in one file.
+
+## Docs
+
+- [Admission Gates](https://docs.lakekeeper.io/docs/latest/admission/): Configure admission gates in Lakekeeper Plus to allow or deny authenticated requests before they reach a handler, using an external entitlement service.
+- [Overview](https://docs.lakekeeper.io/docs/latest/api-overview/): Overview of Lakekeeper's three HTTP APIs: the Apache Iceberg REST Catalog API, the Generic Table API and the Management API, plus the built-in Swagger UI.
+- [Index](https://docs.lakekeeper.io/docs/latest/api/)
+- [Catalog](https://docs.lakekeeper.io/docs/latest/api/catalog/): Interactive OpenAPI reference for Lakekeeper's Apache Iceberg REST Catalog API.
+- [Generic Tables](https://docs.lakekeeper.io/docs/latest/api/generic-table/): Interactive OpenAPI reference for Lakekeeper's Generic Table API for non-Iceberg table formats.
+- [Management](https://docs.lakekeeper.io/docs/latest/api/management-plus/): Interactive OpenAPI reference for the Lakekeeper Plus extensions to the Management API.
+- [Management (Core)](https://docs.lakekeeper.io/docs/latest/api/management/): Interactive OpenAPI reference for the Lakekeeper Management API: projects, warehouses, users, roles and permissions.
+- [Audit Log Schema](https://docs.lakekeeper.io/docs/latest/audit/schema/): The machine-readable JSON Schema of Lakekeeper's audit log: every record shape, every object, every field and every value set.
+- [Authentication](https://docs.lakekeeper.io/docs/latest/authentication/): Secure Lakekeeper with OpenID Connect, OAuth 2 or Kubernetes service accounts, and map identity provider tokens to catalog users and roles.
+- [Cedar](https://docs.lakekeeper.io/docs/latest/authorization-cedar/): Policy-as-code authorization for Lakekeeper Plus with Cedar: declarative policies with attribute conditions, evaluated without an external service.
+- [OpenFGA](https://docs.lakekeeper.io/docs/latest/authorization-openfga/): Run Lakekeeper's authorization on OpenFGA for hierarchical, inheritable permissions across warehouses, namespaces, tables and views.
+- [Overview](https://docs.lakekeeper.io/docs/latest/authorization/): Choose and configure a Lakekeeper Authorizer — OpenFGA or Cedar — and learn how grants, privileges and roles control access to catalog objects.
+- [Bootstrap / Initialize](https://docs.lakekeeper.io/docs/latest/bootstrap/): Bootstrap a new Lakekeeper deployment through the UI or the /management/v1/bootstrap endpoint. What initial access this grants depends on the configured authorizer.
+- [Concepts](https://docs.lakekeeper.io/docs/latest/concepts/): Lakekeeper's architecture and core concepts: projects, warehouses, namespaces, tables and views, and the external dependencies the catalog builds on.
+- [Configuration](https://docs.lakekeeper.io/docs/latest/configuration/): Reference for Lakekeeper's environment variables: database, storage, authentication, authorization, logging, routing and server settings.
+- [Customize](https://docs.lakekeeper.io/docs/latest/customize/): Extend Lakekeeper in Rust: swap backends and implement traits and hooks for authorization, secret storage, event publishing and custom endpoints.
+- [Developer Guide](https://docs.lakekeeper.io/docs/latest/developer-guide/): Contribute to Lakekeeper: development setup, pull request and CI expectations, conventional commits, and the contributor licence agreement.
+- [Query Engines](https://docs.lakekeeper.io/docs/latest/engines/): Connect Spark, Trino, StarRocks, DuckDB, Athena, Flink, PyIceberg and other query engines to Lakekeeper's Iceberg REST Catalog with per-user permissions.
+- [Client Authentication](https://docs.lakekeeper.io/docs/latest/generic-tables-auth/): Authenticate the Lakekeeper Python and Java clients with OAuth2 bearer tokens, and choose the right strategy for scripts, services and notebooks.
+- [Apache Flink (Java)](https://docs.lakekeeper.io/docs/latest/generic-tables-flink/): Stream data from Apache Flink into Lakekeeper generic tables with the Java client, writing directly to S3, GCS or Azure using vended credentials.
+- [Python Client](https://docs.lakekeeper.io/docs/latest/generic-tables-pylakekeeper/): pylakekeeper, the official Python client for Lakekeeper's Generic Table API: catalog CRUD, OAuth2 authentication and vended storage credentials.
+- [Apache Spark (PySpark)](https://docs.lakekeeper.io/docs/latest/generic-tables-spark/): Read and write Lance generic tables from PySpark using the Lakekeeper client and short-lived, prefix-scoped vended storage credentials.
+- [Overview](https://docs.lakekeeper.io/docs/latest/generic-tables/): Catalog non-Iceberg data — Lance, Parquet, CSV and any other format — alongside Iceberg tables with Lakekeeper's format-agnostic Generic Table API.
+- [Gotchas](https://docs.lakekeeper.io/docs/latest/gotchas/): Common Lakekeeper problems and their causes: unexpected 403 responses, Helm and UI issues, and other frequently hit edge cases.
+- [Grants API](https://docs.lakekeeper.io/docs/latest/grants/): Grant, list and revoke a single privilege for one principal on one resource with Lakekeeper's authorizer-independent Grants API.
+- [Instance Admins](https://docs.lakekeeper.io/docs/latest/instance-admins/): Configure Lakekeeper instance admins — principals from static configuration that bypass the Authorizer for administrative operations.
+- [Logging](https://docs.lakekeeper.io/docs/latest/logging/): Configure Lakekeeper's structured JSON logging and RUST_LOG filtering, and understand the fields emitted by the tracing pipeline.
+- [Monitoring Lakekeeper](https://docs.lakekeeper.io/docs/latest/monitoring/): Monitor Lakekeeper with Prometheus metrics and per-project endpoint statistics, and wire them into a Kubernetes, Prometheus and Grafana stack.
+- [Open Policy Agent (OPA)](https://docs.lakekeeper.io/docs/latest/opa/): Use the Lakekeeper OPA bridge to enforce catalog permissions in Trino and other engines that delegate access control to Open Policy Agent.
+- [Production Checklist](https://docs.lakekeeper.io/docs/latest/production/): Checklist for running Lakekeeper in production: database, storage, identity provider, authorization and high-availability recommendations.
+- [Azure Data Lake Storage](https://docs.lakekeeper.io/docs/latest/storage-adls/): Configure Lakekeeper Warehouses on Azure Data Lake Storage Gen2: parameters, App Registration and storage account setup, SAS vended credentials and Azure system identities.
+- [Google Cloud Storage](https://docs.lakekeeper.io/docs/latest/storage-gcs/): Configure Lakekeeper Warehouses on Google Cloud Storage: parameters, service account keys, GCP system identities, downscoped vended credentials and CORS.
+- [Storage Layout](https://docs.lakekeeper.io/docs/latest/storage-layout/): Control how Lakekeeper lays out namespace and table directories under a Warehouse location: the default, full-hierarchy and tabular-only layouts, name and UUID templates, and namespace moves.
+- [OneLake](https://docs.lakekeeper.io/docs/latest/storage-onelake/): Configure Lakekeeper Warehouses on OneLake (Microsoft Fabric) lakehouses: parameters, endpoint modes and private links, Entra credentials, the Fabric settings for user-delegated SAS tokens, path restrictions and client versions.
+- [S3](https://docs.lakekeeper.io/docs/latest/storage-s3/): Configure Lakekeeper Warehouses on AWS S3 and S3-compatible storage such as MinIO, SeaweedFS, Cloudflare R2 and Alibaba Cloud OSS: parameters, credentials, STS vended credentials, remote signing and CORS.
+- [STACKIT](https://docs.lakekeeper.io/docs/latest/storage-stackit/): Configure Lakekeeper Warehouses on STACKIT Object Storage: storage services, credentials groups and trust policies for STS, bucket policies that keep other credentials groups out, CORS and troubleshooting.
+- [Validation](https://docs.lakekeeper.io/docs/latest/storage-validation/): Validate Lakekeeper storage profiles and credentials before you save them: the validation endpoints, every check they run, warnings for CORS and STACKIT bucket policies, and probe timeouts.
+- [Overview](https://docs.lakekeeper.io/docs/latest/storage/): How Lakekeeper Warehouses store data: storage profiles and credentials, the supported object stores (S3, STACKIT, ADLS, OneLake, GCS), table locations, credential vending, remote signing and CORS.
+- [Table Maintenance](https://docs.lakekeeper.io/docs/latest/table-maintenance/): How Lakekeeper maintains Iceberg tables: metadata file cleanup, delete-after-commit behaviour and retention of previous metadata versions.
+- [Governance Tags](https://docs.lakekeeper.io/docs/latest/tags/): Attach governance tags such as pii or sensitivity=restricted to warehouses, namespaces, tables, views, generic tables and columns for classification, discovery and, with Cedar in Lakekeeper Plus, access control.
+- [UI Branding](https://docs.lakekeeper.io/docs/latest/ui-branding/): Re-skin the Lakekeeper Plus console with custom colors, a partner logo and your own support links, from environment variables, with no rebuild required.
+- [View Security](https://docs.lakekeeper.io/docs/latest/view-security/): Lakekeeper's DEFINER and INVOKER view security models, and how the referenced-by view chain decides whose permissions are checked.
+
+## Project
+
+- [Getting Started](https://docs.lakekeeper.io/getting-started/): Deploy Lakekeeper with the self-contained examples, Docker Compose, Kubernetes, a prebuilt binary or from source, and connect your first query engine.
+- [Production](https://docs.lakekeeper.io/production/): Run Lakekeeper in production: the open-source checklist for Postgres, authentication, scaling and TLS, plus what Lakekeeper+ adds for enterprises.
+- [Community](https://docs.lakekeeper.io/support/): Get help with Lakekeeper through the community Discord and GitHub, or through commercial support from the maintainers at Vakamo.
+
+## Optional
+
+- [Code of Conduct](https://docs.lakekeeper.io/about/code-of-conduct/): The Lakekeeper community code of conduct: expected behaviour, unacceptable behaviour, and how to report a problem.
+- [Lakekeeper+](https://docs.lakekeeper.io/about/enterprise-release-notes/): Release notes for Lakekeeper+, the commercial distribution, covering Cedar authorization, UI branding, admission gates and other enterprise features.
+- [License](https://docs.lakekeeper.io/about/license/): Lakekeeper is open source under the Apache License 2.0. Read the full licence text for the Apache Iceberg REST Catalog.
+- [Logos](https://docs.lakekeeper.io/about/logos/): Download the official Lakekeeper logos and brand marks as SVG, for light and dark backgrounds.
+- [Lakekeeper (OSS)](https://docs.lakekeeper.io/about/release-notes/): Release highlights for every Lakekeeper version: new features, breaking changes and upgrade notes for the open source Iceberg REST Catalog.
+- [Stay Updated](https://docs.lakekeeper.io/about/subscribe/): Subscribe to Lakekeeper release announcements and hear about new features, breaking changes and upgrade notes as they ship.

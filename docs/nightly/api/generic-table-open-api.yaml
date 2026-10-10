@@ -1,0 +1,432 @@
+openapi: 3.1.0
+info:
+  title: Lakekeeper Generic Table API
+  description: Lakekeeper data-plane API for non-Iceberg formats (Lance, Delta, ...).
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  version: 0.0.0
+servers:
+  - url: '{scheme}://{host}{basePath}'
+    description: Lakekeeper Generic Table API
+    variables:
+      basePath:
+        default: ''
+        description: Optional path prefix (starting with '/') to be prepended to all routes
+      host:
+        default: localhost
+        description: The host (and optional port) for the specified server
+      scheme:
+        default: https
+        description: The scheme of the URI, either http or https
+paths:
+  /lakekeeper/v1/{prefix}/generic-tables/rename:
+    post:
+      tags:
+        - generic-table
+      summary: Rename a generic table
+      operationId: rename_generic_table
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameGenericTableRequest'
+        required: true
+      responses:
+        '204':
+          description: Generic table renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables:
+    get:
+      tags:
+        - generic-table
+      summary: List generic tables in a namespace
+      operationId: list_generic_tables
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGenericTablesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - generic-table
+      summary: Create a generic table
+      operationId: create_generic_table
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGenericTableRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadGenericTableResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}:
+    get:
+      tags:
+        - generic-table
+      summary: Load a generic table
+      operationId: load_generic_table
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadGenericTableResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - generic-table
+      summary: Drop a generic table
+      operationId: drop_generic_table
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Generic table dropped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}/credentials:
+    get:
+      tags:
+        - generic-table
+      summary: Load credentials for a generic table
+      operationId: load_generic_table_credentials
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: referenced-by
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadGenericTableCredentialsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+components:
+  schemas:
+    CreateGenericTableRequest:
+      type: object
+      required:
+        - name
+        - format
+      properties:
+        base-location:
+          type:
+            - string
+            - 'null'
+        doc:
+          type:
+            - string
+            - 'null'
+        format:
+          type: string
+        name:
+          type: string
+        properties:
+          type: object
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        schema: {}
+        statistics: {}
+    ErrorModel:
+      type: object
+      description: JSON error payload returned in a response with further details on the error
+      required:
+        - message
+        - type
+        - code
+      properties:
+        code:
+          type: integer
+          format: int32
+          description: HTTP response code
+          minimum: 0
+        message:
+          type: string
+          description: Human-readable error message
+        stack:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
+          description: Internal type definition of the error
+    GenericTableData:
+      type: object
+      required:
+        - name
+        - format
+        - base-location
+        - protected
+      properties:
+        base-location:
+          type: string
+        doc:
+          type:
+            - string
+            - 'null'
+        format:
+          type: string
+        name:
+          type: string
+        properties:
+          type: object
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        protected:
+          type: boolean
+          description: Whether the generic table is protected from being deleted.
+        schema: {}
+        statistics: {}
+    GenericTableIdentifier:
+      type: object
+      required:
+        - namespace
+        - name
+      properties:
+        format:
+          type:
+            - string
+            - 'null'
+        id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        name:
+          type: string
+        namespace:
+          type: array
+          items:
+            type: string
+    IcebergErrorResponse:
+      type: object
+      description: JSON wrapper for all error responses (non-2xx)
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorModel'
+    ListGenericTablesResponse:
+      type: object
+      required:
+        - identifiers
+      properties:
+        identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenericTableIdentifier'
+        next-page-token:
+          type:
+            - string
+            - 'null'
+    LoadGenericTableCredentialsResponse:
+      type: object
+      required:
+        - storage-credentials
+      properties:
+        storage-credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageCredential'
+    LoadGenericTableResponse:
+      type: object
+      required:
+        - table
+      properties:
+        config:
+          type:
+            - object
+            - 'null'
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        storage-credentials:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/StorageCredential'
+        table:
+          $ref: '#/components/schemas/GenericTableData'
+    RenameGenericTableRequest:
+      type: object
+      required:
+        - source
+        - destination
+      properties:
+        destination:
+          $ref: '#/components/schemas/RenameGenericTableTarget'
+        source:
+          $ref: '#/components/schemas/RenameGenericTableTarget'
+    RenameGenericTableTarget:
+      type: object
+      required:
+        - namespace
+        - name
+      properties:
+        name:
+          type: string
+        namespace:
+          type: array
+          items:
+            type: string
+    StorageCredential:
+      type: object
+      required:
+        - prefix
+        - config
+      properties:
+        config:
+          type: object
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        prefix:
+          type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
+tags:
+  - name: generic-table
+    description: Manage generic (non-Iceberg) tables
