@@ -137,6 +137,7 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         metadata_location: metadata_location_ref.to_string(),
         metadata: metadata_ref,
         config: Some(access.config.into()),
+        labels: None,
     };
 
     Ok(load_table_result)

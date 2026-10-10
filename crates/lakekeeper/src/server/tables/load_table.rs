@@ -256,6 +256,7 @@ pub(crate) async fn load_table_with_flags<
         config: Some(load_response_config(storage_config.map(|c| c.config))),
         storage_credentials,
         remote_signing_config,
+        labels: None,
         etag: metadata_location_ref.as_ref().map(|loc| {
             TableETag::new(
                 warehouse_id,

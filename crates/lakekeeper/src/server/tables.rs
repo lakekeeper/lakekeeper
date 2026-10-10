@@ -655,6 +655,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             remote_signing_config: config.remote_signing.clone(),
             config: Some(load_response_config(Some(config.config))),
             storage_credentials,
+            labels: None,
             etag: Some(etag),
         })
     }

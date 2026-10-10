@@ -352,6 +352,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             metadata_location: new_view.metadata_location.to_string(),
             metadata: new_metadata.clone(),
             config: Some(config.config.into()),
+            labels: None,
         },
         ViewEventTransition {
             old_metadata: previous_view.metadata,
