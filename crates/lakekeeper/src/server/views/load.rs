@@ -12,6 +12,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
+        labels::load_labels,
         require_warehouse_id,
         tables::{
             LoadChainDecisions, add_namespace_to_tabulars_for_authorize_load_tabular,
@@ -27,7 +28,7 @@ use crate::{
     },
     service::{
         ArcResolvedWarehouse, AuthZViewInfo as _, CatalogStore, CatalogViewOps,
-        InternalParseLocationError, Result, SecretStore, State, TabularIdentBorrowed,
+        InternalParseLocationError, Result, SecretStore, State, TabularId, TabularIdentBorrowed,
         TabularListFlags, Transaction, ViewInfo,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeView, AuthZError, AuthorizationCountMismatch,
@@ -94,6 +95,14 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
 
     let view_id = event_ctx.resolved().view.view_id();
     // ------------------- BUSINESS LOGIC -------------------
+    // Read before the view transaction opens, so no second connection is held
+    // alongside it.
+    let labels = load_labels::<C>(
+        warehouse_id,
+        TabularId::View(view_id),
+        catalog_state.clone(),
+    )
+    .await?;
     let mut t = C::Transaction::begin_read(catalog_state).await?;
     let view = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
     t.commit().await?;
@@ -137,7 +146,7 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         metadata_location: metadata_location_ref.to_string(),
         metadata: metadata_ref,
         config: Some(access.config.into()),
-        labels: None,
+        labels,
     };
 
     Ok(load_table_result)

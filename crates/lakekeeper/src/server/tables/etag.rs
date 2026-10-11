@@ -6,7 +6,7 @@
 //! lives here and not in `iceberg-ext`. That crate keeps only the [`ETag`]
 //! newtype and emits whatever tag it is handed.
 
-use iceberg_ext::catalog::rest::ETag;
+use iceberg_ext::catalog::rest::{ETag, Labels};
 use xxhash_rust::xxh3::Xxh3Default;
 
 use crate::{
@@ -28,6 +28,11 @@ use crate::{
 /// `lk2` added the warehouse id to the hash. `lk3` added `scan-planning-mode` to
 /// every response config, leaving the hash inputs alone. Either way every cached
 /// tag stops matching and each client reloads once — the standing cost.
+///
+/// `labels` is not such a key: a table without labels has no `labels` in its body
+/// and hashes no labels digest (see [`labels_digest`]), so its tag and body stay
+/// as they were and the prefix stays. A table whose only labels are on columns no
+/// schema has hashes a digest without carrying `labels`; that costs one reload.
 const ETAG_PREFIX: &str = "lk3";
 
 /// One axis of a [`TableResponseShape`].
@@ -119,9 +124,10 @@ pub(crate) enum StorageAccess {
 /// Identifies which response body a request would produce, at an unchanged
 /// table metadata version.
 ///
-/// Covers the inputs that vary the body per request: the snapshot filter and
-/// the storage access the config was generated for. It is deliberately *not* a
-/// claim to cover everything — `request_metadata` also reaches the body through
+/// Covers the inputs that vary the body per request: the snapshot filter, the
+/// storage access the config was generated for, and the table's labels, which
+/// change with governance tags while the metadata stays. It is deliberately *not*
+/// a claim to cover everything — `request_metadata` also reaches the body through
 /// signer and credential-refresh URIs, which are bounded by the credential
 /// window rather than by the tag.
 ///
@@ -138,11 +144,18 @@ pub(crate) enum StorageAccess {
 pub(crate) struct TableResponseShape {
     snapshots: SnapshotsQuery,
     storage: StorageAccess,
+    /// [`labels_digest`] of the labels the body carries, `None` without labels.
+    labels: Option<u64>,
 }
 
 impl TableResponseShape {
+    /// A shape without labels: every response but `loadTable`.
     pub(crate) fn new(snapshots: SnapshotsQuery, storage: StorageAccess) -> Self {
-        Self { snapshots, storage }
+        Self {
+            snapshots,
+            storage,
+            labels: None,
+        }
     }
 
     /// Shape of a `loadTable` response.
@@ -150,9 +163,21 @@ impl TableResponseShape {
     /// `filters` is destructured on purpose: a new field on [`LoadTableFilters`]
     /// must not compile until it has been considered here, since a body-affecting
     /// filter missing from the tag reintroduces the cross-shape 304.
-    pub(crate) fn for_load(filters: &LoadTableFilters, storage: StorageAccess) -> Self {
+    ///
+    /// `labels` are the table's labels as read for this request, before the
+    /// response drops field labels for fields no schema has. That step depends only
+    /// on the metadata, which the tag already covers by its location, so hashing
+    /// the labels before it can only cost a reload.
+    pub(crate) fn for_load(
+        filters: &LoadTableFilters,
+        storage: StorageAccess,
+        labels: Option<&Labels>,
+    ) -> Self {
         let LoadTableFilters { snapshots } = filters;
-        Self::new(*snapshots, storage)
+        Self {
+            labels: labels_digest(labels),
+            ..Self::new(*snapshots, storage)
+        }
     }
 
     /// Shape of a commit response: full metadata, no `config` key at all.
@@ -202,7 +227,11 @@ impl TableETag {
         revalidate_after_ms: Option<i64>,
     ) -> Self {
         // Destructured so a new axis cannot be added without being hashed here.
-        let TableResponseShape { snapshots, storage } = shape;
+        let TableResponseShape {
+            snapshots,
+            storage,
+            labels,
+        } = shape;
 
         // NUL-separated: each axis occupies a fixed slot, so no combination of an
         // arbitrary metadata location and the fixed tags can be re-split into a
@@ -235,6 +264,14 @@ impl TableETag {
                 hasher.update(&[0]);
                 hasher.update(&warehouse_version.to_le_bytes());
             }
+        }
+        // Hashes nothing without labels, so those tags equal the ones minted
+        // before labels existed.
+        if let Some(labels) = labels {
+            hasher.update(&[0]);
+            hasher.update(b"lb");
+            hasher.update(&[0]);
+            hasher.update(&labels.to_le_bytes());
         }
         let hash = hasher.digest();
 
@@ -287,6 +324,47 @@ impl TableETag {
     }
 }
 
+/// Digest of a table's labels for [`TableResponseShape`]: `None` when there are
+/// none, so a table without labels hashes as it always has.
+///
+/// Expects the canonical form [`Labels::from_maps`] builds, in which equal label
+/// sets are equal values. Every string is length-prefixed, since tag names and
+/// free-text values are arbitrary.
+fn labels_digest(labels: Option<&Labels>) -> Option<u64> {
+    let labels = labels.filter(|labels| !labels.is_empty())?;
+    let mut hasher = Xxh3Default::new();
+    hasher.update(b"o");
+    update_len(&mut hasher, labels.object_labels.len());
+    for (key, value) in &labels.object_labels {
+        update_str(&mut hasher, key);
+        update_str(&mut hasher, value);
+    }
+    hasher.update(b"f");
+    update_len(&mut hasher, labels.fields.len());
+    for field in &labels.fields {
+        hasher.update(&field.field_id.to_le_bytes());
+        update_len(&mut hasher, field.labels.len());
+        for (key, value) in &field.labels {
+            update_str(&mut hasher, key);
+            update_str(&mut hasher, value);
+        }
+    }
+    Some(hasher.digest())
+}
+
+/// Length-prefixed, so adjacent strings cannot be re-split into others. The
+/// fixed slots of [`TableETag::new`] are NUL-separated; these strings are
+/// arbitrary, so they may contain NUL.
+fn update_str(hasher: &mut Xxh3Default, s: &str) {
+    update_len(hasher, s.len());
+    hasher.update(s.as_bytes());
+}
+
+/// A length as 8 little-endian bytes, the same width on every platform.
+fn update_len(hasher: &mut Xxh3Default, len: usize) {
+    hasher.update(&(len as u64).to_le_bytes());
+}
+
 /// Mint the [`ETag`] for a commit response, which carries no storage config.
 pub(crate) fn commit_etag(warehouse_id: WarehouseId, metadata_location: &str) -> ETag {
     TableETag::new(
@@ -300,10 +378,10 @@ pub(crate) fn commit_etag(warehouse_id: WarehouseId, metadata_location: &str) ->
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
 
     use super::*;
-    use crate::api::iceberg::v1::tables::DataAccess;
+    use crate::{api::iceberg::v1::tables::DataAccess, server::labels::label_map};
 
     const LOC: &str = "s3://bucket/table/metadata.json";
     /// Fixed so the pinned wire-format values stay reproducible.
@@ -422,6 +500,103 @@ mod tests {
                 .into_etag()
                 .as_str(),
             "W/\"lk3.165c4d5b6eec0d9a.ff\""
+        );
+    }
+
+    fn refs_read_storage() -> StorageAccess {
+        StorageAccess::Config {
+            delegation: delegated(true, false),
+            permissions: StoragePermissions::Read,
+            warehouse_version: WarehouseVersion::new(1),
+        }
+    }
+
+    fn load_shape(labels: Option<&Labels>) -> TableResponseShape {
+        TableResponseShape::for_load(
+            &LoadTableFilters {
+                snapshots: SnapshotsQuery::Refs,
+            },
+            refs_read_storage(),
+            labels,
+        )
+    }
+
+    fn load_hash(labels: Option<&Labels>) -> String {
+        TableETag::new(wh(), LOC, load_shape(labels), None)
+            .hash()
+            .to_string()
+    }
+
+    fn object_labels(pairs: &[(&str, &str)]) -> Labels {
+        Labels::from_maps(label_map(pairs), BTreeMap::new()).unwrap()
+    }
+
+    fn field_labels(field_id: i32, pairs: &[(&str, &str)]) -> Labels {
+        Labels::from_maps(
+            BTreeMap::new(),
+            BTreeMap::from([(field_id, label_map(pairs))]),
+        )
+        .unwrap()
+    }
+
+    /// A table without labels keeps the tag it had before labels existed, so an
+    /// upgrade does not make every client reload.
+    #[test]
+    fn a_load_without_labels_keeps_the_pinned_tag() {
+        assert_eq!(
+            TableETag::new(wh(), LOC, load_shape(None), None)
+                .into_etag()
+                .as_str(),
+            "W/\"lk3.ca98cf6daac60cd\""
+        );
+        assert_eq!(load_hash(Some(&Labels::default())), load_hash(None));
+    }
+
+    #[test]
+    fn labels_are_part_of_the_tag() {
+        let restricted = object_labels(&[("classification", "restricted")]);
+        let public = object_labels(&[("classification", "public")]);
+        assert_ne!(load_hash(Some(&restricted)), load_hash(None));
+        assert_ne!(load_hash(Some(&restricted)), load_hash(Some(&public)));
+        assert_eq!(
+            load_hash(Some(&restricted)),
+            load_hash(Some(&object_labels(&[("classification", "restricted")])))
+        );
+    }
+
+    #[test]
+    fn labels_digest_distinguishes_boundaries_targets_and_field_ids() {
+        // A shifted boundary between key and value.
+        assert_ne!(
+            labels_digest(Some(&object_labels(&[("ab", "c")]))),
+            labels_digest(Some(&object_labels(&[("a", "bc")])))
+        );
+        // The same pair on the object and on a field.
+        assert_ne!(
+            labels_digest(Some(&object_labels(&[("pii", "true")]))),
+            labels_digest(Some(&field_labels(1, &[("pii", "true")])))
+        );
+        // The same pair on another field.
+        assert_ne!(
+            labels_digest(Some(&field_labels(1, &[("pii", "true")]))),
+            labels_digest(Some(&field_labels(2, &[("pii", "true")])))
+        );
+        assert_eq!(labels_digest(None), None);
+        assert_eq!(labels_digest(Some(&Labels::default())), None);
+    }
+
+    /// Pins the labels encoding: a change here invalidates every labelled tag.
+    #[test]
+    fn labelled_etag_wire_format_is_pinned() {
+        let labels = Labels::from_maps(
+            [("classification".to_string(), "restricted".to_string())].into(),
+            [(7, [("pii-type".to_string(), "email".to_string())].into())].into(),
+        );
+        assert_eq!(
+            TableETag::new(wh(), LOC, load_shape(labels.as_ref()), None)
+                .into_etag()
+                .as_str(),
+            "W/\"lk3.f03ab9d7b655eb56\""
         );
     }
 

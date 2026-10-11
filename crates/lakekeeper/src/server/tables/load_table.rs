@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::ETag;
+use iceberg_ext::catalog::rest::{ETag, Labels};
+use lakekeeper_io::Location;
 
 use crate::{
     CONFIG, WarehouseId,
@@ -12,6 +13,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
+        labels::{load_labels, retain_schema_fields},
         maybe_get_secret, require_warehouse_id,
         tables::{
             authorize_load_table,
@@ -21,16 +23,17 @@ use crate::{
         },
     },
     service::{
-        AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
-        LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId,
-        TabularListFlags, TabularNotFound, Transaction, WarehouseStatus, WarehouseVersion,
+        ArcResolvedWarehouse, AuthZTableInfo as _, BasicTabularInfo, CachePolicy, CatalogStore,
+        CatalogTableOps, CatalogWarehouseOps, LoadTableResponse as CatalogLoadTableResult,
+        ResolvedWarehouse, State, TableId, TableIdentOrId, TabularId, TabularListFlags,
+        TabularNotFound, Transaction, WarehouseStatus, WarehouseVersion,
         authz::{Authorizer, AuthzWarehouseOps, CatalogTableAction},
         events::{
             APIEventContext,
             context::{ResolvedTable, authz_to_error_no_audit},
         },
         secrets::SecretStore,
-        storage::{StoragePermissions, credential_revalidate_after_ms, now_epoch_ms},
+        storage::{StoragePermissions, TableConfig, credential_revalidate_after_ms, now_epoch_ms},
     },
 };
 
@@ -47,6 +50,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         state,
         request_metadata,
         TabularListFlags::active(),
+        TableLabels::Read,
     )
     .await
 }
@@ -74,6 +78,7 @@ pub(crate) async fn load_table_with_flags<
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
     list_flags: TabularListFlags,
+    table_labels: TableLabels,
 ) -> Result<LoadTableResultOrNotModified> {
     let LoadTableRequest {
         data_access,
@@ -143,6 +148,13 @@ pub(crate) async fn load_table_with_flags<
             .warehouse
             .storage_profile
             .vends_expiring_credentials(data_access);
+    let labels = table_labels
+        .read::<C>(
+            warehouse_id,
+            event_ctx.resolved().table.table_id(),
+            catalog_state.clone(),
+        )
+        .await?;
     // The warehouse version is a parameter rather than read from `event_ctx`,
     // because the two call sites see different versions: the 304 check below
     // runs before the table is loaded, while the response tag must name the
@@ -152,6 +164,7 @@ pub(crate) async fn load_table_with_flags<
         TableResponseShape::for_load(
             &filters,
             storage_access_for(storage_permissions, data_access, warehouse_version),
+            labels.as_ref(),
         )
     };
     if let Some(etag) = match_not_modified(
@@ -190,19 +203,14 @@ pub(crate) async fn load_table_with_flags<
     .await?;
     t.commit().await?;
 
-    // Refetch warehouse if version is stale
     if event_ctx.resolved().warehouse.version < warehouse_version {
-        let warehouse = C::get_warehouse_by_id_cache_aware(
+        event_ctx.resolved_mut().warehouse = refetch_warehouse::<C, A>(
+            &authorizer,
             warehouse_id,
-            WarehouseStatus::active(),
-            CachePolicy::RequireMinimumVersion(*warehouse_version),
+            warehouse_version,
             catalog_state.clone(),
         )
-        .await;
-        let fresh_warehouse = authorizer
-            .require_warehouse_presence(warehouse_id, warehouse)
-            .map_err(authz_to_error_no_audit)?;
-        event_ctx.resolved_mut().warehouse = fresh_warehouse;
+        .await?;
     }
     let warehouse = &event_ctx.resolved().warehouse;
     // Bound to the version `generate_table_config` below reads the profile from,
@@ -213,26 +221,16 @@ pub(crate) async fn load_table_with_flags<
     let table_location =
         parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let storage_config = if let Some(storage_permissions) = storage_permissions {
-        let storage_secret =
-            maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
-        let storage_secret_ref = storage_secret.as_deref();
-        Some(
-            warehouse
-                .storage_profile
-                .generate_table_config(
-                    data_access,
-                    storage_secret_ref,
-                    &table_location,
-                    storage_permissions,
-                    &request_metadata,
-                    &*event_ctx.resolved().table,
-                )
-                .await?,
-        )
-    } else {
-        None
-    };
+    let storage_config = storage_config_for(
+        warehouse,
+        &state.v1_state.secrets,
+        data_access,
+        &table_location,
+        storage_permissions,
+        &request_metadata,
+        &*event_ctx.resolved().table,
+    )
+    .await?;
 
     let storage_credentials = storage_config
         .as_ref()
@@ -242,6 +240,7 @@ pub(crate) async fn load_table_with_flags<
         .and_then(|c| c.credentials_expiration_ms)
         .map(credential_revalidate_after_ms);
 
+    let labels = retain_schema_fields(labels, &table_metadata);
     let metadata_ref = Arc::new(table_metadata);
     let metadata_location_ref = metadata_location.map(Arc::new);
 
@@ -256,7 +255,7 @@ pub(crate) async fn load_table_with_flags<
         config: Some(load_response_config(storage_config.map(|c| c.config))),
         storage_credentials,
         remote_signing_config,
-        labels: None,
+        labels,
         etag: metadata_location_ref.as_ref().map(|loc| {
             TableETag::new(
                 warehouse_id,
@@ -271,6 +270,85 @@ pub(crate) async fn load_table_with_flags<
     Ok(LoadTableResultOrNotModified::LoadTableResult(
         load_table_result,
     ))
+}
+
+/// Whether a table load reads and returns the table's labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TableLabels {
+    /// Read and return them: `loadTable`.
+    Read,
+    /// Read none and return none: an idempotent replay of `createTable` or
+    /// `registerTable`, whose responses carry no labels. Its tag then matches the
+    /// one the original response carried.
+    Omit,
+}
+
+impl TableLabels {
+    /// Read before the 304 check, which has to cover the labels: a tag change on
+    /// the table, a column or an ancestor changes the body while the metadata
+    /// stays. Read before the metadata transaction opens, so no second connection
+    /// is held alongside it.
+    async fn read<C: CatalogStore>(
+        self,
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        catalog_state: C::State,
+    ) -> Result<Option<Labels>> {
+        match self {
+            Self::Read => {
+                load_labels::<C>(warehouse_id, TabularId::Table(table_id), catalog_state).await
+            }
+            Self::Omit => Ok(None),
+        }
+    }
+}
+
+/// The storage config of a load by a caller with storage access; `None` without.
+async fn storage_config_for<S: SecretStore>(
+    warehouse: &ResolvedWarehouse,
+    secrets: &S,
+    data_access: DataAccessMode,
+    table_location: &Location,
+    storage_permissions: Option<StoragePermissions>,
+    request_metadata: &RequestMetadata,
+    table: &impl BasicTabularInfo,
+) -> Result<Option<TableConfig>> {
+    let Some(storage_permissions) = storage_permissions else {
+        return Ok(None);
+    };
+    let storage_secret = maybe_get_secret(warehouse.storage_secret_id, secrets).await?;
+    let config = warehouse
+        .storage_profile
+        .generate_table_config(
+            data_access,
+            storage_secret.as_deref(),
+            table_location,
+            storage_permissions,
+            request_metadata,
+            table,
+        )
+        .await?;
+    Ok(Some(config))
+}
+
+/// The warehouse at `min_version` or later, for a load whose table row names a
+/// newer warehouse version than the one authorization resolved.
+async fn refetch_warehouse<C: CatalogStore, A: Authorizer>(
+    authorizer: &A,
+    warehouse_id: WarehouseId,
+    min_version: WarehouseVersion,
+    catalog_state: C::State,
+) -> Result<ArcResolvedWarehouse> {
+    let warehouse = C::get_warehouse_by_id_cache_aware(
+        warehouse_id,
+        WarehouseStatus::active(),
+        CachePolicy::RequireMinimumVersion(*min_version),
+        catalog_state,
+    )
+    .await;
+    Ok(authorizer
+        .require_warehouse_presence(warehouse_id, warehouse)
+        .map_err(authz_to_error_no_audit)?)
 }
 
 /// Which [`StorageAccess`] a load response has, from the two per-request inputs
@@ -429,9 +507,12 @@ fn match_not_modified(
 
 #[cfg(test)]
 mod etag_tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::{
         api::iceberg::v1::tables::{DataAccess, DataAccessMode, SnapshotsQuery},
+        server::labels::label_map,
         service::{WarehouseVersion, storage::StoragePermissions},
     };
 
@@ -517,6 +598,68 @@ mod etag_tests {
 
     fn matches(etags: &[ETag], vends_credentials: bool) -> bool {
         matches_repr(etags, all(), vends_credentials)
+    }
+
+    fn labelled(pairs: &[(&str, &str)]) -> Option<Labels> {
+        Labels::from_maps(label_map(pairs), BTreeMap::new())
+    }
+
+    fn load_with(labels: Option<&Labels>) -> TableResponseShape {
+        TableResponseShape::for_load(
+            &LoadTableFilters {
+                snapshots: SnapshotsQuery::All,
+            },
+            StorageAccess::Config {
+                delegation: delegated(false, false),
+                permissions: StoragePermissions::ReadWriteDelete,
+                warehouse_version: wv(),
+            },
+            labels,
+        )
+    }
+
+    /// A tag change on the table, a column or an ancestor leaves the metadata
+    /// location alone, so only the labels in the tag keep a cached body from
+    /// answering for one with other labels.
+    #[test]
+    fn no_304_once_labels_change() {
+        let restricted = labelled(&[("classification", "restricted")]);
+        let public = labelled(&[("classification", "public")]);
+        let cached = client_etag_for(LOC, load_with(restricted.as_ref()), None);
+
+        assert!(matches_repr(
+            std::slice::from_ref(&cached),
+            load_with(restricted.as_ref()),
+            false
+        ));
+        assert!(!matches_repr(
+            std::slice::from_ref(&cached),
+            load_with(public.as_ref()),
+            false
+        ));
+        assert!(!matches_repr(
+            std::slice::from_ref(&cached),
+            load_with(None),
+            false
+        ));
+        // A body cached without labels misses once labels appear.
+        let unlabelled = client_etag_for(LOC, load_with(None), None);
+        assert!(!matches_repr(
+            &[unlabelled],
+            load_with(restricted.as_ref()),
+            false
+        ));
+    }
+
+    /// A tag minted for a table before it had labels — or by a server without
+    /// labels — still matches while it has none.
+    #[test]
+    fn an_unlabelled_load_matches_a_tag_minted_without_labels() {
+        assert!(matches_repr(
+            &[client_etag(LOC, None)],
+            load_with(None),
+            false
+        ));
     }
 
     #[test]
