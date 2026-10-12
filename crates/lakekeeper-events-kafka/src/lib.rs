@@ -153,3 +153,78 @@ impl CloudEventBackend for KafkaBackend {
         "kafka-publisher"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rdkafka::{ClientConfig, error::KafkaError};
+
+    use super::*;
+
+    /// Creates a producer without connecting to a broker; librdkafka checks
+    /// the security settings against its compiled-in features at creation.
+    fn create_producer(settings: &[(&str, &str)]) -> Result<FutureProducer, KafkaError> {
+        let mut config = ClientConfig::new();
+        config.set("bootstrap.servers", "127.0.0.1:1");
+        for (key, value) in settings {
+            config.set(*key, *value);
+        }
+        config.create()
+    }
+
+    #[test]
+    fn test_supported_security_settings() {
+        let cases: &[&[(&str, &str)]] = &[
+            &[("security.protocol", "PLAINTEXT")],
+            &[("security.protocol", "SSL")],
+            &[
+                ("security.protocol", "SASL_SSL"),
+                ("sasl.mechanisms", "PLAIN"),
+                ("sasl.username", "user"),
+                ("sasl.password", "password"),
+            ],
+            &[
+                ("security.protocol", "SASL_PLAINTEXT"),
+                ("sasl.mechanisms", "SCRAM-SHA-256"),
+                ("sasl.username", "user"),
+                ("sasl.password", "password"),
+            ],
+            &[
+                ("security.protocol", "SASL_PLAINTEXT"),
+                ("sasl.mechanisms", "SCRAM-SHA-512"),
+                ("sasl.username", "user"),
+                ("sasl.password", "password"),
+            ],
+            &[
+                ("security.protocol", "SASL_SSL"),
+                ("sasl.mechanisms", "OAUTHBEARER"),
+                ("sasl.oauthbearer.method", "oidc"),
+                ("sasl.oauthbearer.client.id", "client"),
+                ("sasl.oauthbearer.client.secret", "secret"),
+                (
+                    "sasl.oauthbearer.token.endpoint.url",
+                    "https://127.0.0.1:1/token",
+                ),
+            ],
+        ];
+        for settings in cases {
+            if let Err(e) = create_producer(settings) {
+                panic!("Producer creation failed for {settings:?}: {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_gssapi_is_not_supported() {
+        let result = create_producer(&[
+            ("security.protocol", "SASL_PLAINTEXT"),
+            ("sasl.mechanisms", "GSSAPI"),
+        ]);
+        let Err(KafkaError::ClientCreation(message)) = result else {
+            panic!("Expected a client creation error for GSSAPI");
+        };
+        assert_eq!(
+            message,
+            "No provider for SASL mechanism GSSAPI: recompile librdkafka with libsasl2 or openssl support. Current build options: PLAIN SASL_SCRAM OAUTHBEARER"
+        );
+    }
+}
