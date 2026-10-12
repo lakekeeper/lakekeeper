@@ -1,13 +1,11 @@
-use std::sync::Arc;
-
 use iceberg::NamespaceIdent;
 
 use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceHierarchy,
-        ResolvedWarehouse,
+        ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps,
+        NamespaceHierarchy,
         authz::{
             AuthZCannotUseWarehouseId, AuthZError, AuthZWarehouseActionForbidden, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogWarehouseAction,
@@ -22,7 +20,7 @@ pub(super) async fn authorize_namespace_list<C: CatalogStore, A: Authorizer>(
     warehouse_id: WarehouseId,
     parent: Option<&NamespaceIdent>,
     catalog_state: C::State,
-) -> Result<(bool, Arc<ResolvedWarehouse>, Option<NamespaceHierarchy>), AuthZError> {
+) -> Result<(bool, ArcResolvedWarehouse, Option<NamespaceHierarchy>), AuthZError> {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 

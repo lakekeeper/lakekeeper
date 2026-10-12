@@ -5,8 +5,6 @@ mod list;
 mod load;
 mod rename;
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -28,9 +26,9 @@ use crate::{
     request_metadata::RequestMetadata,
     server::CatalogServer,
     service::{
-        CatalogBackendError, CatalogGenericTableOps, CatalogNamespaceOps, CatalogStore,
-        CatalogWarehouseOps, GenericTableInfo, IcebergErrorResponse, LoadGenericTableError,
-        NamespaceHierarchy, ResolvedWarehouse, Result, SecretStore, State, Transaction,
+        ArcResolvedWarehouse, CatalogBackendError, CatalogGenericTableOps, CatalogNamespaceOps,
+        CatalogStore, CatalogWarehouseOps, GenericTableInfo, IcebergErrorResponse,
+        LoadGenericTableError, NamespaceHierarchy, Result, SecretStore, State, Transaction,
         WarehouseId,
         authz::{
             AuthZCannotSeeGenericTable, AuthZError, AuthZGenericTableOps, Authorizer,
@@ -49,8 +47,7 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
     table_name: &str,
     action: impl Into<A::GenericTableAction> + Send,
     catalog_state: C::State,
-) -> std::result::Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, GenericTableInfo), AuthZError>
-{
+) -> std::result::Result<(ArcResolvedWarehouse, NamespaceHierarchy, GenericTableInfo), AuthZError> {
     let (warehouse_result, namespace_result) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
         C::get_namespace(warehouse_id, namespace.clone(), catalog_state.clone()),

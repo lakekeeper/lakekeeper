@@ -6,10 +6,10 @@ use lakekeeper_io::Location;
 
 use crate::{
     WarehouseId,
-    api::{RequestMetadata, iceberg::types::DropParams},
+    api::{ArcRequestMetadata, iceberg::types::DropParams},
     server::tables::CommitContext,
     service::{
-        NamespaceWithParent, ResolvedWarehouse, TableInfo,
+        ArcResolvedWarehouse, NamespaceWithParent, TableInfo,
         authz::CatalogTableAction,
         events::{
             APIEventContext,
@@ -29,7 +29,7 @@ pub struct CommitTransactionEvent {
     pub warehouse_id: WarehouseId,
     pub request: Arc<CommitTransactionRequest>,
     pub commits: Arc<Vec<CommitContext>>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 impl std::fmt::Debug for CommitTransactionEvent {
@@ -49,7 +49,7 @@ impl std::fmt::Debug for CommitTransactionEvent {
 pub struct DropTableEvent {
     pub table: ResolvedTable,
     pub drop_params: DropParams,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a table is renamed
@@ -58,18 +58,18 @@ pub struct RenameTableEvent {
     pub source_table: ResolvedTable,
     pub destination_namespace: NamespaceWithParent,
     pub request: Arc<RenameTableRequest>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Load Table Event - emitted when a user loads a table's metadata
 #[derive(Clone, Debug)]
 pub struct LoadTableEvent {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub table: Arc<TableInfo>,
     pub storage_permissions: Option<StoragePermissions>,
     pub metadata: TableMetadataRef,
     pub metadata_location: Option<Arc<Location>>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 pub type APIEventCommitContext = APIEventContext<
