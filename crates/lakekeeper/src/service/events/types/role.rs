@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     ProjectId,
-    api::RequestMetadata,
+    api::ArcRequestMetadata,
     service::{
         ArcRole, RoleId,
         authn::ArcUserId,
@@ -21,21 +21,21 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct CreateRoleEvent {
     pub role: ArcRole,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a role is deleted
 #[derive(Clone, Debug)]
 pub struct DeleteRoleEvent {
     pub role: ArcRole,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a role is updated
 #[derive(Clone, Debug)]
 pub struct UpdateRoleEvent {
     pub role: ArcRole,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 // ===== Role Assignment Sync Events =====

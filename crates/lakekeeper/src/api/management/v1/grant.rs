@@ -45,7 +45,7 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    sync::{Arc, LazyLock},
+    sync::LazyLock,
 };
 
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{
-        ApiContext, RequestMetadata,
+        ApiContext, ArcRequestMetadata, RequestMetadata,
         iceberg::v1::{PaginationQuery, Result},
         management::v1::{
             ApiServer,
@@ -1152,7 +1152,7 @@ async fn apply_and_emit<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     events: &crate::service::events::EventDispatcher,
-    request_metadata: Arc<RequestMetadata>,
+    request_metadata: ArcRequestMetadata,
     resource: &GrantResource,
     request: &ApplyGrantsRequest,
 ) -> Result<()> {
@@ -1391,7 +1391,7 @@ async fn list_subtree_and_render<A: Authorizer, C: CatalogStore>(
 async fn revoke_and_emit<C: CatalogStore>(
     catalog_state: C::State,
     events: &crate::service::events::EventDispatcher,
-    request_metadata: Arc<RequestMetadata>,
+    request_metadata: ArcRequestMetadata,
     root: SubtreeGrantRoot,
     candidates: GrantRevokeCandidates,
     request: &RevokeSubtreeGrantsRequest,
@@ -3713,6 +3713,8 @@ mod resource_type_wire_agreement {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::{
         api::management::v1::{RoleId, check::RoleAssignee},

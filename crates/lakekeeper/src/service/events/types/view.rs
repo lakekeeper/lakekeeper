@@ -6,11 +6,11 @@ use lakekeeper_io::Location;
 
 use crate::{
     api::{
-        RequestMetadata,
+        ArcRequestMetadata,
         iceberg::{types::DropParams, v1::DataAccessMode},
     },
     service::{
-        NamespaceWithParent, ResolvedWarehouse, ViewInfo,
+        ArcResolvedWarehouse, NamespaceWithParent, ViewInfo,
         authz::CatalogViewAction,
         events::{
             APIEventContext,
@@ -25,11 +25,11 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct CommitViewEvent {
     pub view: Arc<ViewInfo>,
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub request: Arc<CommitViewRequest>,
     pub view_commit: Arc<ViewEventTransition>,
     pub data_access: DataAccessMode,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a view is dropped
@@ -37,7 +37,7 @@ pub struct CommitViewEvent {
 pub struct DropViewEvent {
     pub view: ResolvedView,
     pub drop_params: DropParams,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a view is renamed
@@ -46,13 +46,13 @@ pub struct RenameViewEvent {
     pub source_view: ResolvedView,
     pub destination_namespace: NamespaceWithParent,
     pub request: Arc<RenameTableRequest>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Load View Event - emitted when a user loads a view's metadata
 #[derive(Clone, Debug)]
 pub struct LoadViewEvent {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub view: Arc<ViewInfo>,
     pub metadata: ViewMetadataRef,
     pub metadata_location: Arc<Location>,

@@ -1,13 +1,11 @@
-use std::sync::Arc;
-
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        CatalogBackendError, CatalogGetWarehouseByIdError, DatabaseIntegrityError,
-        ResolvedWarehouse, WarehouseIdNotFound,
+        ArcResolvedWarehouse, CatalogBackendError, CatalogGetWarehouseByIdError,
+        DatabaseIntegrityError, ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
             AuthorizationInternalError, Authorizer, AuthzBadRequest,
@@ -239,8 +237,8 @@ pub trait AuthzWarehouseOps: Authorizer {
     fn require_warehouse_presence(
         &self,
         user_provided_warehouse: WarehouseId,
-        warehouse: Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError>,
-    ) -> Result<Arc<ResolvedWarehouse>, RequireWarehouseActionError> {
+        warehouse: Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError>,
+    ) -> Result<ArcResolvedWarehouse, RequireWarehouseActionError> {
         let warehouse = warehouse?;
         let warehouse_not_found = warehouse.is_none();
         warehouse.ok_or_else(|| {
@@ -252,9 +250,9 @@ pub trait AuthzWarehouseOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         user_provided_warehouse: WarehouseId,
-        warehouse: Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError>,
+        warehouse: Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError>,
         action: impl Into<Self::WarehouseAction> + Send,
-    ) -> Result<Arc<ResolvedWarehouse>, RequireWarehouseActionError> {
+    ) -> Result<ArcResolvedWarehouse, RequireWarehouseActionError> {
         let action = action.into();
         let warehouse = warehouse?;
         let cant_see_err =

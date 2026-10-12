@@ -13,10 +13,10 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
     request_metadata::ProjectIdMissing,
     service::{
-        ArcProjectId, ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
-        CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo, GetRoleAcrossProjectsError,
-        NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId,
+        ArcProjectId, ArcResolvedWarehouse, ArcRole, BasicTabularInfo, CachePolicy,
+        CatalogGetNamespaceError, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo,
+        GetRoleAcrossProjectsError, NamespaceId, NamespaceVersion, NamespaceWithParent, RoleId,
         RoleIdNotFound, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
         TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
@@ -919,7 +919,7 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     authorizer: &A,
     error_on_not_found: bool,
-) -> Result<HashMap<WarehouseId, Arc<ResolvedWarehouse>>, AuthZError> {
+) -> Result<HashMap<WarehouseId, ArcResolvedWarehouse>, AuthZError> {
     if seen_warehouse_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1325,7 +1325,7 @@ fn spawn_project_checks<A: Authorizer>(
 fn spawn_warehouse_checks<A: Authorizer>(
     authz_tasks: &mut AuthzTaskJoinSet,
     warehouse_checks: WarehouseChecksMap,
-    warehouses: &HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &HashMap<WarehouseId, ArcResolvedWarehouse>,
     authorizer: &A,
     metadata: &RequestMetadata,
     roles: &HashMap<RoleId, ArcRole>,
@@ -1358,7 +1358,7 @@ fn spawn_warehouse_checks<A: Authorizer>(
 struct NamespaceCheckByIdParams<'a, A: Authorizer> {
     authz_tasks: &'a mut AuthzTaskJoinSet,
     namespace_checks_by_id: NamespaceChecksByIdMap,
-    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &'a HashMap<WarehouseId, ArcResolvedWarehouse>,
     namespaces_by_id: &'a HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
     authorizer: &'a A,
     metadata: &'a RequestMetadata,
@@ -1447,7 +1447,7 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
 struct NamespaceCheckByIdentParams<'a, A: Authorizer> {
     authz_tasks: &'a mut AuthzTaskJoinSet,
     namespace_checks_by_ident: NamespaceChecksByIdentMap,
-    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &'a HashMap<WarehouseId, ArcResolvedWarehouse>,
     namespaces_by_id: &'a HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
     namespace_ident_lookup: &'a HashMap<(WarehouseId, Vec<String>), NamespaceId>,
     authorizer: &'a A,
@@ -1556,7 +1556,7 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
 struct TabularCheckByIdParams<'a, A: Authorizer> {
     authz_tasks: &'a mut AuthzTaskJoinSet,
     tabular_checks_by_id: TabularChecksByIdMap,
-    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &'a HashMap<WarehouseId, ArcResolvedWarehouse>,
     tabular_infos_by_id: &'a Arc<HashMap<(WarehouseId, TabularId), ViewOrTableInfo>>,
     namespaces_by_id: &'a Arc<HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>>,
     authorizer: &'a A,
@@ -1672,7 +1672,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
 struct TabularCheckByIdentParams<'a, A: Authorizer> {
     authz_tasks: &'a mut AuthzTaskJoinSet,
     tabular_checks_by_ident: TabularChecksByIdentMap,
-    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &'a HashMap<WarehouseId, ArcResolvedWarehouse>,
     tabular_infos_by_ident: &'a Arc<HashMap<(WarehouseId, TabularIdentOwned), ViewOrTableInfo>>,
     namespaces_by_id: &'a Arc<HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>>,
     authorizer: &'a A,

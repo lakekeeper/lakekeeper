@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    api::RequestMetadata,
+    api::ArcRequestMetadata,
     service::{
         authz::ActionDescriptor, events::context::EventEntities, idempotency::IdempotencyKey,
     },
@@ -29,7 +29,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct IdempotentReplayEvent {
     /// Request metadata of the *retry*, not of the request that did the work.
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
     /// When the event happened: when it was built, not when a listener got to it.
     pub occurred_at: chrono::DateTime<chrono::Utc>,
 
