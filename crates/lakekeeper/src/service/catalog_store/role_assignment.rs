@@ -13,9 +13,8 @@ use crate::{
     api::management::v1::user::{UserLastUpdatedWith, UserType},
     service::{
         ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId,
-        RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleProviderId, Transaction,
-        UserWrite,
-        authn::{UserId, UserIdRef},
+        RoleIdNotFoundInProject, RoleNameAlreadyExists, RoleProviderId, Transaction, UserWrite,
+        authn::{ArcUserId, UserId},
         cache_metrics, define_transparent_error,
         events::{EventDispatcher, RoleMembersSyncedEvent, UserRoleAssignmentsSyncedEvent},
         identifier::role::ArcRoleIdent,
@@ -32,7 +31,7 @@ use crate::{
 /// `users` table before writing the `user_role` row.
 #[derive(Debug, Clone)]
 pub struct CatalogUserRoleAssignmentUser<'a> {
-    pub user_id: &'a UserIdRef,
+    pub user_id: &'a ArcUserId,
     /// Display name. When `None` a new row is stored with a NULL name (rendered
     /// as a `"Nameless User with id {id}"` placeholder at read time); the
     /// existing name is preserved for updates.
@@ -72,7 +71,7 @@ pub enum SyncFor {
 /// passing a mismatched provider returns [`RoleProviderMismatchError`].
 #[derive(Debug, Clone)]
 pub struct CatalogRoleForAssignment<'a> {
-    pub ident: &'a Arc<RoleIdent>,
+    pub ident: &'a ArcRoleIdent,
     /// Display name. When `None` the role is stored / kept with its `source_id`
     /// as the name for new rows, and the existing name is preserved for updates.
     pub name: Option<&'a str>,
@@ -100,7 +99,7 @@ pub struct AssignedRole {
 /// A member as seen from a **role's** perspective.
 #[derive(Debug, Clone)]
 pub struct AssignedUser {
-    pub user_id: UserIdRef,
+    pub user_id: ArcUserId,
 }
 
 /// Sync metadata for one `(project_id, provider_id)` pair as recorded in the
@@ -823,7 +822,7 @@ impl From<RoleMembershipLockTimeout> for ErrorModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleMembershipEntry {
     pub role_id: RoleId,
-    pub role_ident: Arc<RoleIdent>,
+    pub role_ident: ArcRoleIdent,
     /// The role's human-readable display name (`role.name`). Carried so the
     /// `member-of` and `user roles` listings can render names without a
     /// per-row follow-up lookup.
@@ -1740,7 +1739,7 @@ where
     /// database on every call.
     async fn list_role_assignments_for_role_by_ident(
         project_id: &ArcProjectId,
-        role_ident: &Arc<RoleIdent>,
+        role_ident: &ArcRoleIdent,
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
         let Some(result) = Self::list_role_assignments_for_role_by_ident_impl(

@@ -29,7 +29,7 @@ use crate::{
 
 define_version_newtype!(RoleVersion);
 
-/// Reference to a [`Role`]
+/// Reference to [`Role`] that can be cheaply cloned and shared.
 pub type ArcRole = Arc<Role>;
 
 #[derive(Debug, PartialEq, Clone, Eq)]
@@ -744,7 +744,7 @@ where
         project_id: &ProjectId,
         role_to_create: CatalogCreateRoleRequest<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Arc<Role>, CreateRoleError> {
+    ) -> Result<ArcRole, CreateRoleError> {
         let roles = Self::create_roles(project_id, vec![role_to_create], transaction).await?;
         let n_roles = roles.len();
         if n_roles != 1 {
@@ -766,7 +766,7 @@ where
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Vec<Arc<Role>>, CreateRoleError> {
+    ) -> Result<Vec<ArcRole>, CreateRoleError> {
         let roles = Self::create_roles_impl(
             project_id,
             roles_to_create,
@@ -798,7 +798,7 @@ where
         specs: &[SystemRoleSpec],
         _cap: SystemRoleSeederCap,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Vec<Arc<Role>>, CreateRoleError> {
+    ) -> Result<Vec<ArcRole>, CreateRoleError> {
         if specs.is_empty() {
             return Ok(Vec::new());
         }
@@ -890,7 +890,7 @@ where
         role_name: &str,
         description: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Arc<Role>, UpdateRoleError> {
+    ) -> Result<ArcRole, UpdateRoleError> {
         Self::update_role_impl(project_id, role_id, role_name, description, transaction)
             .await
             .map(Arc::new)
@@ -905,7 +905,7 @@ where
         role_id: RoleId,
         request: &UpdateRoleSourceSystemRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Arc<Role>, UpdateRoleError> {
+    ) -> Result<ArcRole, UpdateRoleError> {
         Self::set_role_source_system_impl(project_id, role_id, request, transaction)
             .await
             .map(Arc::new)
@@ -954,7 +954,7 @@ where
     async fn get_role_by_id_across_projects(
         role_id: RoleId,
         catalog_state: Self::State,
-    ) -> Result<Arc<Role>, GetRoleAcrossProjectsError> {
+    ) -> Result<ArcRole, GetRoleAcrossProjectsError> {
         // Single-flight read-through: concurrent misses for the same role coalesce
         // onto one load (see `role_cache_get_or_load`); the helper owns the
         // version-gated insert + ident-index population.
@@ -979,7 +979,7 @@ where
         project_id: &ArcProjectId,
         role_id: RoleId,
         catalog_state: Self::State,
-    ) -> Result<Arc<Role>, GetRoleInProjectError> {
+    ) -> Result<ArcRole, GetRoleInProjectError> {
         // Single-flight read-through: load by id (across projects) coalesced via
         // `role_cache_get_or_load` (which owns the cache fast-path + hit/miss
         // metrics), then re-check the project. Resolving across projects +
@@ -1020,7 +1020,7 @@ where
         project_ids: &[&ProjectId],
         idents: &[&RoleIdent],
         catalog_state: Self::State,
-    ) -> Result<Vec<Arc<Role>>, CatalogBackendError> {
+    ) -> Result<Vec<ArcRole>, CatalogBackendError> {
         Ok(
             Self::list_roles_by_idents_in_projects_impl(project_ids, idents, catalog_state)
                 .await?
@@ -1035,7 +1035,7 @@ where
         arc_project_id: ArcProjectId,
         arc_ident: ArcRoleIdent,
         catalog_state: Self::State,
-    ) -> Result<Arc<Role>, GetRoleByIdentError> {
+    ) -> Result<ArcRole, GetRoleByIdentError> {
         // Fast path: ident → id → role.
         if let Some(role) = role_cache_get_by_ident(arc_project_id.clone(), arc_ident.clone()).await
         {
@@ -1103,7 +1103,7 @@ where
         role_id: RoleId,
         cache_policy: CachePolicy,
         catalog_state: Self::State,
-    ) -> Result<Arc<Role>, GetRoleInProjectError> {
+    ) -> Result<ArcRole, GetRoleInProjectError> {
         match cache_policy {
             CachePolicy::Use => Self::get_role_by_id(project_id, role_id, catalog_state).await,
             CachePolicy::Skip => {
@@ -1155,7 +1155,7 @@ where
         role_id: RoleId,
         cache_policy: CachePolicy,
         catalog_state: Self::State,
-    ) -> Result<Arc<Role>, GetRoleAcrossProjectsError> {
+    ) -> Result<ArcRole, GetRoleAcrossProjectsError> {
         match cache_policy {
             CachePolicy::Use => Self::get_role_by_id_across_projects(role_id, catalog_state).await,
             CachePolicy::Skip => {
@@ -1207,7 +1207,7 @@ where
         ident: ArcRoleIdent,
         cache_policy: CachePolicy,
         catalog_state: Self::State,
-    ) -> Result<Arc<Role>, GetRoleByIdentError> {
+    ) -> Result<ArcRole, GetRoleByIdentError> {
         match cache_policy {
             CachePolicy::Use => Self::get_role_by_ident(project_id, ident, catalog_state).await,
             CachePolicy::Skip => {

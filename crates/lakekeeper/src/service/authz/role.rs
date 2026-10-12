@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     api::RequestMetadata,
     service::{
-        ArcProjectId, CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken, Role,
-        RoleId, RoleIdNotFoundInProject,
+        ArcProjectId, ArcRole, CatalogBackendError, GetRoleInProjectError, InvalidPaginationToken,
+        Role, RoleId, RoleIdNotFoundInProject,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
             AuthorizationInternalError, Authorizer, AuthzBadRequest,
@@ -186,8 +184,8 @@ delegate_authorization_failure_source!(RequireRoleActionError => {
 pub trait AuthZRoleOps: Authorizer {
     fn require_role_presence(
         &self,
-        role: Result<Arc<Role>, GetRoleInProjectError>,
-    ) -> Result<Arc<Role>, RequireRoleActionError> {
+        role: Result<ArcRole, GetRoleInProjectError>,
+    ) -> Result<ArcRole, RequireRoleActionError> {
         let role = role?;
         Ok(role)
     }
@@ -266,9 +264,9 @@ pub trait AuthZRoleOps: Authorizer {
     async fn require_role_action(
         &self,
         metadata: &RequestMetadata,
-        role: Result<Arc<Role>, GetRoleInProjectError>,
+        role: Result<ArcRole, GetRoleInProjectError>,
         action: impl Into<Self::RoleAction> + Send,
-    ) -> Result<Arc<Role>, RequireRoleActionError> {
+    ) -> Result<ArcRole, RequireRoleActionError> {
         let role = self.require_role_presence(role)?;
 
         let action = action.into();

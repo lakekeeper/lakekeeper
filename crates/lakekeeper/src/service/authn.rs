@@ -16,7 +16,7 @@ use axum_extra::{
 #[cfg(feature = "router")]
 use http::HeaderMap;
 use iceberg_ext::catalog::rest::ErrorModel;
-use limes::{AuthenticatorEnum, Subject, format_subject, parse_subject};
+use limes::{AuthenticatorEnum, Subject, parse_subject};
 use serde::{Deserialize, Serialize};
 
 use crate::{CONFIG, api, service::ArcRole};
@@ -25,7 +25,7 @@ use crate::{
     WarehouseId, XXHashSet,
     request_metadata::RequestMetadata,
     service::{
-        ArcProjectId, RoleIdent,
+        ArcProjectId, ArcRoleIdent, RoleIdent,
         admission::{AdmissionContext, AdmissionGates, AdmissionTrigger, RejectionKind},
         authz::InstanceAdminMembership,
         events::EventDispatcher,
@@ -77,7 +77,8 @@ pub(crate) struct AuthMiddlewareState<
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct UserId(Subject);
 
-pub type UserIdRef = std::sync::Arc<UserId>;
+/// Reference to [`UserId`] that can be cheaply cloned and shared.
+pub type ArcUserId = std::sync::Arc<UserId>;
 
 pub(crate) const OIDC_IDP_ID: &str = "oidc";
 pub(crate) const K8S_IDP_ID: &str = "kubernetes";
@@ -1069,7 +1070,7 @@ fn apply_token_roles(
 #[cfg(feature = "router")]
 fn extract_token_roles(
     authentication: &limes::Authentication,
-) -> Result<Option<XXHashSet<Arc<RoleIdent>>>, ErrorModel> {
+) -> Result<Option<XXHashSet<ArcRoleIdent>>, ErrorModel> {
     use crate::service::{RoleProviderId, RoleSourceId};
 
     let Some(roles) = authentication.roles() else {
@@ -1105,7 +1106,10 @@ fn extract_token_roles(
 
 impl std::fmt::Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", format_subject(&self.0, Some(IDP_SEPARATOR)))
+        // `format_subject` with `IDP_SEPARATOR`, written without building a `String` first.
+        let idp_id = self.0.idp_id().map_or("", String::as_str);
+        let sub = self.0.subject_in_idp();
+        write!(f, "{idp_id}{IDP_SEPARATOR}{sub}")
     }
 }
 
@@ -1253,7 +1257,7 @@ impl Serialize for UserId {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(self.to_string().as_str())
+        serializer.collect_str(self)
     }
 }
 
@@ -2216,6 +2220,18 @@ mod tests {
     }
 
     #[test]
+    fn user_id_displays_as_format_subject() {
+        for subject in [
+            Subject::new(Some("oidc".to_string()), "123".to_string()),
+            Subject::new(Some("kubernetes".to_string()), "a~b".to_string()),
+            Subject::new(None, "123".to_string()),
+        ] {
+            let expected = limes::format_subject(&subject, Some(IDP_SEPARATOR));
+            assert_eq!(UserId(subject).to_string(), expected);
+        }
+    }
+
+    #[test]
     fn test_user_id() {
         let user_id = UserId::try_from("oidc~123".to_string()).unwrap();
         assert_eq!(
@@ -2675,7 +2691,7 @@ mod tests {
         use crate::{
             request_metadata::RequestMetadata,
             service::{
-                RoleId, RoleIdent, UserId,
+                ArcRoleIdent, RoleId, RoleIdent, UserId,
                 admission::{
                     AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection,
                     GateDecision,
@@ -2700,7 +2716,7 @@ mod tests {
             }
         }
 
-        fn granted_role() -> Arc<RoleIdent> {
+        fn granted_role() -> ArcRoleIdent {
             Arc::new(RoleIdent::new_unchecked("test", "test-granted-role"))
         }
 

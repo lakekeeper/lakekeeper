@@ -4,7 +4,7 @@ use http::StatusCode;
 use lakekeeper::{
     ProjectId, WarehouseId,
     api::{
-        ApiContext, RequestMetadata,
+        ApiContext, ArcRequestMetadata, RequestMetadata,
         management::v1::check::{NamespaceIdentOrUuid, TabularIdentOrUuid, UserOrRole},
     },
     axum::{Extension, Json, extract::State as AxumState},
@@ -79,7 +79,7 @@ pub(super) async fn check<C: CatalogStore, S: SecretStore>(
 
 async fn check_internal<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: Arc<RequestMetadata>,
+    metadata: ArcRequestMetadata,
     request: CheckRequest,
 ) -> Result<bool> {
     let authorizer = api_context.v1_state.authz.clone();
@@ -189,7 +189,7 @@ async fn check_internal<C: CatalogStore, S: SecretStore>(
 }
 
 async fn check_warehouse(
-    metadata: Arc<RequestMetadata>,
+    metadata: ArcRequestMetadata,
     authorizer: &OpenFGAAuthorizer,
     for_principal: Option<&UserOrRole>,
     action: &APIWarehouseAction,
@@ -221,7 +221,7 @@ async fn check_warehouse(
 }
 
 async fn check_project(
-    metadata: Arc<RequestMetadata>,
+    metadata: ArcRequestMetadata,
     authorizer: &OpenFGAAuthorizer,
     for_principal: Option<&UserOrRole>,
     action: &APIProjectAction,
@@ -255,7 +255,7 @@ async fn check_project(
 }
 
 async fn check_server(
-    metadata: Arc<RequestMetadata>,
+    metadata: ArcRequestMetadata,
     authorizer: &OpenFGAAuthorizer,
     for_principal: &mut Option<UserOrRole>,
     action: &APIServerAction,
@@ -286,7 +286,7 @@ async fn check_server(
 
 async fn check_namespace<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: Arc<RequestMetadata>,
+    metadata: ArcRequestMetadata,
     namespace: &NamespaceIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
@@ -354,7 +354,7 @@ async fn authorize_check_namespace<C: CatalogStore, S: SecretStore>(
 
 async fn check_table<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: Arc<RequestMetadata>,
+    metadata: ArcRequestMetadata,
     table: &TabularIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
@@ -452,7 +452,7 @@ async fn authorize_check_table<C: CatalogStore, S: SecretStore>(
 
 async fn check_view<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: Arc<RequestMetadata>,
+    metadata: ArcRequestMetadata,
     view: &TabularIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {
@@ -548,7 +548,7 @@ async fn authorize_check_view<C: CatalogStore, S: SecretStore>(
 
 async fn check_generic_table<C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
-    metadata: Arc<RequestMetadata>,
+    metadata: ArcRequestMetadata,
     generic_table: &TabularIdentOrUuid,
     for_principal: Option<&UserOrRole>,
 ) -> Result<String> {

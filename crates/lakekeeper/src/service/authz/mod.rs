@@ -151,7 +151,7 @@ pub enum UserOrRole {
 
 /// Identifier-only sibling of [`UserOrRole`].
 ///
-/// Carries just the principal id (no resolved `Arc<Role>`), so it's cheap to
+/// Carries just the principal id (no resolved `ArcRole`), so it's cheap to
 /// construct from request payloads where only the role's UUID is known and
 /// safe to embed in audit events without forcing a Role lookup. Both the
 /// service-level [`UserOrRole`] and API-level `UserOrRole` types convert into

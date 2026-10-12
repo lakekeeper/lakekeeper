@@ -9,7 +9,7 @@ use futures::FutureExt;
 use tokio::sync::RwLock;
 
 use super::types;
-use crate::{api::RequestMetadata, service::UserWrite};
+use crate::{api::ArcRequestMetadata, service::UserWrite};
 
 pub(crate) const METRIC_EVENT_LISTENER_DURATION_SECONDS: &str =
     "lakekeeper_event_listener_duration_seconds";
@@ -330,7 +330,7 @@ impl EventDispatcher {
     pub(crate) fn users_written_async(
         &self,
         writes: impl IntoIterator<Item = UserWrite>,
-        request_metadata: Option<&Arc<RequestMetadata>>,
+        request_metadata: Option<&ArcRequestMetadata>,
     ) {
         let events: Vec<_> = writes
             .into_iter()

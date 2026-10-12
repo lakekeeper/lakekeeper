@@ -9,7 +9,7 @@ use tracing::Instrument;
 use crate::{
     ProjectId, WarehouseId,
     api::{
-        RequestMetadata,
+        ArcRequestMetadata, RequestMetadata,
         management::v1::{
             check::{
                 CatalogActionCheckItem, CatalogActionCheckOperation, NamespaceIdentOrUuid,
@@ -21,10 +21,10 @@ use crate::{
     },
     audit::{Wire, audit_part},
     service::{
-        ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
-        NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
-        TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
-        authn::UserIdRef,
+        ArcProjectId, ArcResolvedWarehouse, ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo,
+        NamespaceId, NamespaceIdentOrId, NamespaceWithParent, RoleId, ServerId, TableIdentOrId,
+        TableInfo, TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
+        authn::ArcUserId,
         authz::{
             ActionDescriptor, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
             EventAction, PrincipalScope, PrivilegeScope, ResourceType, RootLevelGrants,
@@ -222,11 +222,11 @@ pub enum ActionContextKey {
     /// The privileges named when `privilege_scope` is `only`; `[]` when it is `every`.
     NarrowedPrivileges(Vec<String>),
     /// The one principal whose grants are in range, as `{"user": …}` or `{"role": …}`, present when `principal_scope` is `one`. A user also carries `email` when audit records carry emails and it is known.
-    Principal(SubjectRecord),
+    Principal(SubjectRecord<'static>),
     /// `every` when the request reaches the grants of every principal, `one` when it names one in `principal`.
     PrincipalScope(Wire<PrincipalScope>),
     /// The distinct principals the grants are for, as `{"user": …}` or `{"role": …}`. A user also carries `email` when audit records carry emails and it is known.
-    Principals(Vec<SubjectRecord>),
+    Principals(Vec<SubjectRecord<'static>>),
     /// `every` when the request reaches every privilege a matching grant can carry, `only` when it names a set.
     PrivilegeScope(Wire<PrivilegeScope>),
     /// The distinct privilege names the request names. `[]` on a revocation that names none, which means every privilege.
@@ -371,26 +371,26 @@ impl AuthzState for AuthzChecked {}
 
 #[derive(Clone, Debug)]
 pub struct ResolvedNamespace {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub namespace: NamespaceWithParent,
 }
 
 #[derive(Clone, Debug)]
 pub struct ResolvedTable {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub table: Arc<TableInfo>,
     pub storage_permissions: Option<StoragePermissions>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ResolvedView {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub view: Arc<ViewInfo>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ResolvedGenericTable {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub generic_table: Arc<GenericTableInfo>,
     pub storage_permissions: Option<StoragePermissions>,
 }
@@ -910,7 +910,7 @@ where
     A: APIEventActions,
     Z: AuthzState,
 {
-    pub(super) request_metadata: Arc<RequestMetadata>,
+    pub(super) request_metadata: ArcRequestMetadata,
     pub(super) dispatcher: EventDispatcher,
     pub(super) user_provided_entity: Arc<P>,
     pub(super) action: Arc<A>,
@@ -936,7 +936,7 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
     /// Create a new context with request metadata, dispatcher, and user-provided entity (unresolved)
     #[must_use]
     pub fn new(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         entity: P,
         action: A,
@@ -956,7 +956,7 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
 
     #[must_use]
     pub fn new_arc(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         entity: Arc<P>,
         action: Arc<A>,
@@ -1004,7 +1004,7 @@ impl<P: UserProvidedEntity, A: APIEventActions, Z: AuthzState>
 impl<A: APIEventActions> APIEventContext<ServerId, Unresolved, A> {
     #[must_use]
     pub fn for_server(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         action: A,
         server_id: ServerId,
@@ -1016,7 +1016,7 @@ impl<A: APIEventActions> APIEventContext<ServerId, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<ProjectId, Unresolved, A> {
     #[must_use]
     pub fn for_project(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         project_id: ProjectId,
         action: A,
@@ -1026,9 +1026,9 @@ impl<A: APIEventActions> APIEventContext<ProjectId, Unresolved, A> {
 
     #[must_use]
     pub fn for_project_arc(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
-        project_id: Arc<ProjectId>,
+        project_id: ArcProjectId,
         action: Arc<A>,
     ) -> Self {
         Self::new_arc(request_metadata, dispatcher, project_id, action)
@@ -1038,9 +1038,9 @@ impl<A: APIEventActions> APIEventContext<ProjectId, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<UserId, Unresolved, A> {
     #[must_use]
     pub fn for_user(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
-        user_id: UserIdRef,
+        user_id: ArcUserId,
         action: A,
     ) -> Self {
         Self::new_arc(request_metadata, dispatcher, user_id, Arc::new(action))
@@ -1050,7 +1050,7 @@ impl<A: APIEventActions> APIEventContext<UserId, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<RoleId, Unresolved, A> {
     #[must_use]
     pub fn for_role(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         role_id: RoleId,
         action: A,
@@ -1062,7 +1062,7 @@ impl<A: APIEventActions> APIEventContext<RoleId, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<TagDefinitionId, Unresolved, A> {
     #[must_use]
     pub fn for_tag(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         tag_definition_id: TagDefinitionId,
         action: A,
@@ -1074,7 +1074,7 @@ impl<A: APIEventActions> APIEventContext<TagDefinitionId, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<WarehouseId, Unresolved, A> {
     #[must_use]
     pub fn for_warehouse(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         action: A,
@@ -1086,7 +1086,7 @@ impl<A: APIEventActions> APIEventContext<WarehouseId, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<UserProvidedNamespace, Unresolved, A> {
     #[must_use]
     pub fn for_namespace(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         namespace: impl Into<NamespaceIdentOrId>,
@@ -1107,7 +1107,7 @@ impl<A: APIEventActions> APIEventContext<UserProvidedNamespace, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<NamespaceId, Unresolved, A> {
     #[must_use]
     pub fn for_namespace_only_id(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         namespace: NamespaceId,
         action: A,
@@ -1119,7 +1119,7 @@ impl<A: APIEventActions> APIEventContext<NamespaceId, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<UserProvidedTable, Unresolved, A> {
     #[must_use]
     pub fn for_table(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         table: impl Into<TableIdentOrId>,
@@ -1140,7 +1140,7 @@ impl<A: APIEventActions> APIEventContext<UserProvidedTable, Unresolved, A> {
 impl APIEventContext<UserProvidedTableLocation, Unresolved, CatalogTableAction> {
     #[must_use]
     pub fn for_table_location(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         table_location: Arc<S3Location>,
@@ -1161,7 +1161,7 @@ impl APIEventContext<UserProvidedTableLocation, Unresolved, CatalogTableAction> 
 impl<A: APIEventActions> APIEventContext<UserProvidedTableIdents, Unresolved, A> {
     #[must_use]
     pub fn for_tables_by_ident(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         tables: Vec<TableIdent>,
@@ -1182,7 +1182,7 @@ impl<A: APIEventActions> APIEventContext<UserProvidedTableIdents, Unresolved, A>
 impl<A: APIEventActions> APIEventContext<UserProvidedTabularsIDs, Unresolved, A> {
     #[must_use]
     pub fn for_tabulars(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         tabulars: Vec<TabularId>,
@@ -1203,7 +1203,7 @@ impl<A: APIEventActions> APIEventContext<UserProvidedTabularsIDs, Unresolved, A>
 impl<A: APIEventActions> APIEventContext<UserProvidedView, Unresolved, A> {
     #[must_use]
     pub fn for_view(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         view: impl Into<ViewIdentOrId>,
@@ -1224,7 +1224,7 @@ impl<A: APIEventActions> APIEventContext<UserProvidedView, Unresolved, A> {
 impl<A: APIEventActions> APIEventContext<UserProvidedGenericTable, Unresolved, A> {
     #[must_use]
     pub fn for_generic_table(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         generic_table: impl Into<GenericTableIdentOrId>,
@@ -1245,7 +1245,7 @@ impl<A: APIEventActions> APIEventContext<UserProvidedGenericTable, Unresolved, A
 impl<A: APIEventActions> APIEventContext<UserProvidedTask, Unresolved, A> {
     #[must_use]
     pub fn for_task(
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
         dispatcher: EventDispatcher,
         warehouse_id: WarehouseId,
         task_id: TaskId,
@@ -1305,7 +1305,7 @@ where
     }
 
     #[must_use]
-    pub fn request_metadata_arc(&self) -> Arc<RequestMetadata> {
+    pub fn request_metadata_arc(&self) -> ArcRequestMetadata {
         self.request_metadata.clone()
     }
 

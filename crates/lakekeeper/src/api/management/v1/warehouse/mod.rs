@@ -22,7 +22,7 @@ pub use crate::service::{
 use crate::{
     ProjectId, WarehouseId,
     api::{
-        ApiContext, Result,
+        ApiContext, ArcRequestMetadata, Result,
         iceberg::v1::{PageToken, PaginationQuery},
         management::v1::{
             ApiServer, DeletedTabularResponse, GetWarehouseStatisticsQuery,
@@ -37,10 +37,10 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{UnfilteredPage, maybe_get_secret},
     service::{
-        AllowedFormatVersions, ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId,
-        ResolvedWarehouse, State, TabularId, TabularListFlags, Transaction,
-        ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy, WarehouseSpecLocked,
+        AllowedFormatVersions, ArcProjectId, ArcResolvedWarehouse, CachePolicy,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        EnsureWarehouseSpecMutableError, NamespaceId, State, TabularId, TabularListFlags,
+        Transaction, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy, WarehouseSpecLocked,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
@@ -974,11 +974,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: &ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         check_spec_mutable: bool,
-    ) -> Result<(
-        Arc<RequestMetadata>,
-        Arc<ResolvedWarehouse>,
-        ValidationCheck,
-    )> {
+    ) -> Result<(ArcRequestMetadata, ArcResolvedWarehouse, ValidationCheck)> {
         let event_ctx = APIEventContext::for_warehouse(
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
@@ -2433,7 +2429,7 @@ fn skipped_access_checks(reason: &str) -> Vec<ValidationCheck> {
 /// create can still take the name between this check and the real request.
 fn warehouse_name_check(
     warehouse_name: &str,
-    warehouses: &[Arc<ResolvedWarehouse>],
+    warehouses: &[ArcResolvedWarehouse],
 ) -> ValidationCheck {
     let started = Instant::now();
     if let Err(e) = validate_warehouse_name(warehouse_name) {
@@ -2462,7 +2458,7 @@ fn warehouse_name_check(
 /// the project surfaces as a conflict on the real create.
 fn warehouse_id_check(
     warehouse_id: Option<WarehouseId>,
-    warehouses: &[Arc<ResolvedWarehouse>],
+    warehouses: &[ArcResolvedWarehouse],
 ) -> ValidationCheck {
     let started = Instant::now();
     let Some(warehouse_id) = warehouse_id else {
@@ -2495,7 +2491,7 @@ fn warehouse_id_taken_error(warehouse_id: WarehouseId) -> ErrorModel {
 /// Check that no other warehouse in the project already occupies this location.
 fn location_overlap_check(
     storage_profile: &StorageProfile,
-    warehouses: &[Arc<ResolvedWarehouse>],
+    warehouses: &[ArcResolvedWarehouse],
 ) -> ValidationCheck {
     let started = Instant::now();
     match find_overlapping_warehouse(storage_profile, warehouses) {
@@ -2515,8 +2511,8 @@ fn location_overlap_check(
 /// Shared with the create path so the dry-run and the real thing cannot drift.
 fn find_overlapping_warehouse<'a>(
     storage_profile: &StorageProfile,
-    warehouses: &'a [Arc<ResolvedWarehouse>],
-) -> Option<&'a Arc<ResolvedWarehouse>> {
+    warehouses: &'a [ArcResolvedWarehouse],
+) -> Option<&'a ArcResolvedWarehouse> {
     warehouses
         .iter()
         .find(|w| storage_profile.is_overlapping_location(&w.storage_profile))
@@ -2685,7 +2681,7 @@ mod test {
             profile_compatibility_check, skipped_access_checks, warehouse_name_check,
         };
         use crate::service::{
-            ResolvedWarehouse,
+            ArcResolvedWarehouse, ResolvedWarehouse,
             storage::{S3Flavor, S3Profile},
         };
 
@@ -2700,10 +2696,7 @@ mod test {
                 .into()
         }
 
-        fn warehouses(
-            name: &str,
-            storage_profile: StorageProfile,
-        ) -> Vec<std::sync::Arc<ResolvedWarehouse>> {
+        fn warehouses(name: &str, storage_profile: StorageProfile) -> Vec<ArcResolvedWarehouse> {
             let mut warehouse = ResolvedWarehouse::new_random();
             warehouse.name = name.to_string();
             warehouse.storage_profile = storage_profile;

@@ -11,7 +11,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -20,7 +20,11 @@ use axum_prometheus::metrics;
 use super::parts::{ActorRecord, claims_email, include_user_email};
 use crate::{
     request_metadata::RequestMetadata,
-    service::{ArcRoleIdent, RoleId, UserId, events::EventCatalog, user_cache::cached_user_email},
+    service::{
+        ArcRoleIdent, RoleId, UserId,
+        events::EventCatalog,
+        user_cache::{UserEmail, cached_user_email},
+    },
 };
 
 /// The longest a record waits for one kind of lookup.
@@ -47,16 +51,17 @@ fn record_lookups(metric: &'static str, outcome: &'static str, count: usize) {
     metrics::counter!(metric, "outcome" => outcome).increment(count as u64);
 }
 
-/// What one record knows about the principals it names, by principal.
+/// What one record knows about the principals it names, by principal. Borrows the ids of the
+/// users it was resolved for.
 #[derive(Debug, Default)]
-pub(crate) struct Enrichment {
-    emails: HashMap<UserId, String>,
+pub(crate) struct Enrichment<'a> {
+    emails: HashMap<&'a UserId, Arc<str>>,
     roles: HashMap<RoleId, ArcRoleIdent>,
 }
 
-impl Enrichment {
-    pub(crate) fn email(&self, user_id: &UserId) -> Option<String> {
-        self.emails.get(user_id).cloned()
+impl<'a> Enrichment<'a> {
+    pub(crate) fn email(&self, user_id: &UserId) -> Option<&Arc<str>> {
+        self.emails.get(user_id)
     }
 
     pub(crate) fn role(&self, role_id: &RoleId) -> Option<&ArcRoleIdent> {
@@ -66,7 +71,7 @@ impl Enrichment {
     /// What a record naming `users` and `roles` adds about them, and about the request's
     /// caller: emails from the token or `catalog`, role sources from `catalog`. Emails are
     /// empty when the operator left them off; both are empty without a catalog.
-    pub(crate) async fn resolve<'a>(
+    pub(crate) async fn resolve(
         catalog: Option<&dyn EventCatalog>,
         request_metadata: &'a RequestMetadata,
         users: impl IntoIterator<Item = &'a UserId>,
@@ -88,7 +93,7 @@ async fn emails<'a>(
     catalog: &dyn EventCatalog,
     request_metadata: &'a RequestMetadata,
     users: impl IntoIterator<Item = &'a UserId>,
-) -> HashMap<UserId, String> {
+) -> HashMap<&'a UserId, Arc<str>> {
     if !include_user_email() {
         return HashMap::new();
     }
@@ -96,32 +101,34 @@ async fn emails<'a>(
     let from_token = caller.zip(claims_email(request_metadata));
 
     let mut seen = HashSet::new();
-    let to_look_up: Vec<UserId> = caller
+    let to_look_up: Vec<&UserId> = caller
         .filter(|_| from_token.is_none())
         .into_iter()
         .chain(users)
         .filter(|id| from_token.is_none_or(|(caller, _)| caller != *id))
         .filter(|id| seen.insert(*id))
-        .cloned()
         .collect();
 
     let mut emails = lookup_emails(catalog, &to_look_up).await;
     if let Some((caller, email)) = from_token {
-        emails.insert(caller.clone(), email.to_owned());
+        emails.insert(caller, Arc::from(email));
     }
     emails
 }
 
 /// Look up `user_ids`, best-effort: an error or a timeout gives no emails, logged at debug.
-async fn lookup_emails(catalog: &dyn EventCatalog, user_ids: &[UserId]) -> HashMap<UserId, String> {
+async fn lookup_emails<'a>(
+    catalog: &dyn EventCatalog,
+    user_ids: &[&'a UserId],
+) -> HashMap<&'a UserId, Arc<str>> {
     if user_ids.is_empty() {
         return HashMap::new();
     }
     match tokio::time::timeout(LOOKUP_TIMEOUT, catalog.user_emails(user_ids)).await {
         Ok(Ok(found)) => {
-            let emails: HashMap<UserId, String> = found
+            let emails: HashMap<&UserId, Arc<str>> = found
                 .into_iter()
-                .filter_map(|(id, email)| email.email().map(|email| (id, email.to_owned())))
+                .filter_map(|(id, email)| email.into_email().map(|email| (id, email)))
                 .collect();
             record_lookups(METRIC_EMAIL_LOOKUPS_TOTAL, "found", emails.len());
             record_lookups(
@@ -201,12 +208,12 @@ pub async fn principal_with_known_email(
     let from_token = request
         .filter(|request| request.user_id() == Some(user_id))
         .and_then(claims_email)
-        .map(str::to_owned);
+        .map(Arc::from);
     let email = match from_token {
         Some(email) => Some(email),
         None => cached_user_email(user_id)
             .await
-            .and_then(|email| email.email().map(str::to_owned)),
+            .and_then(UserEmail::into_email),
     };
     actor.with_email(email)
 }
@@ -214,7 +221,7 @@ pub async fn principal_with_known_email(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::{CatalogBackendError, user_cache::UserEmail};
+    use crate::service::CatalogBackendError;
 
     /// A catalog that must not be read.
     #[derive(Debug)]
@@ -222,10 +229,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl EventCatalog for Unreachable {
-        async fn user_emails(
+        async fn user_emails<'a>(
             &self,
-            _user_ids: &[UserId],
-        ) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
+            _user_ids: &[&'a UserId],
+        ) -> Result<HashMap<&'a UserId, UserEmail>, CatalogBackendError> {
             panic!("emails are disabled, so nothing may be looked up");
         }
     }
