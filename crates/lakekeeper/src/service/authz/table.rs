@@ -11,12 +11,12 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        AuthZGenericTableInfo, AuthZTableInfo, AuthZViewInfo, CatalogBackendError,
-        CatalogGetNamespaceError, GetTabularInfoByLocationError, GetTabularInfoError,
-        InternalParseLocationError, InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId,
-        NamespaceWithParent, ResolvedWarehouse, SerializationError, TableId, TableIdentOrId,
-        TableInfo, TabularNotFound, TaskNotFoundError, UnexpectedTabularInResponse,
-        WarehouseStatus,
+        ArcResolvedWarehouse, AuthZGenericTableInfo, AuthZTableInfo, AuthZViewInfo,
+        CatalogBackendError, CatalogGetNamespaceError, GetTabularInfoByLocationError,
+        GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
+        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolvedWarehouse,
+        SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound, TaskNotFoundError,
+        UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
             AuthZError, AuthZGenericTableActionForbidden, AuthZGenericTableOps,
             AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
@@ -51,7 +51,7 @@ pub async fn refresh_warehouse_and_namespace_if_needed<C, A, T>(
     cannot_see_error: impl Into<AuthZError>,
     authorizer: &A,
     catalog_state: C::State,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), AuthZError>
+) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy), AuthZError>
 where
     C: CatalogStore,
     A: AuthzNamespaceOps + AuthzWarehouseOps,
@@ -726,7 +726,7 @@ pub trait AuthZTableOps: Authorizer {
         table_flags: TabularListFlags,
         action: impl Into<Self::TableAction> + Send,
         catalog_state: C::State,
-    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), AuthZError> {
+    ) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy, TableInfo), AuthZError> {
         let warehouse_id = user_provided_table.warehouse_id;
         let action = action.into();
 
@@ -1240,7 +1240,7 @@ pub(crate) async fn fetch_warehouse_namespace_table_by_id<C, A>(
     user_provided_table: TableId,
     table_flags: TabularListFlags,
     catalog_state: C::State,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, TableInfo), AuthZError>
+) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy, TableInfo), AuthZError>
 where
     C: CatalogStore,
     A: AuthzWarehouseOps + AuthzNamespaceOps,

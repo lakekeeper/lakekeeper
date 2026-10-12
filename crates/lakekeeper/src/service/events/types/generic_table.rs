@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use crate::{
     api::{
-        RequestMetadata,
+        ArcRequestMetadata,
         data::v1::generic_tables::{CreateGenericTableRequest, RenameGenericTableRequest},
         iceberg::{types::DropParams, v1::DataAccessMode},
     },
     service::{
-        GenericTableInfo, NamespaceWithParent, ResolvedWarehouse,
+        ArcResolvedWarehouse, GenericTableInfo, NamespaceWithParent,
         authz::{CatalogGenericTableAction, CatalogNamespaceAction},
         events::{
             APIEventContext,
@@ -27,7 +27,7 @@ use crate::{
 pub struct CreateGenericTableEvent {
     pub namespace: ResolvedNamespace,
     pub generic_table: Arc<GenericTableInfo>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
     pub request: Arc<CreateGenericTableRequest>,
 }
 
@@ -36,17 +36,17 @@ pub struct CreateGenericTableEvent {
 pub struct DropGenericTableEvent {
     pub generic_table: ResolvedGenericTable,
     pub drop_params: DropParams,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a generic table's metadata is loaded
 #[derive(Clone, Debug)]
 pub struct LoadGenericTableEvent {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub generic_table: Arc<GenericTableInfo>,
     pub storage_permissions: Option<StoragePermissions>,
     pub data_access: DataAccessMode,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a generic table is renamed
@@ -55,7 +55,7 @@ pub struct RenameGenericTableEvent {
     pub source_generic_table: ResolvedGenericTable,
     pub destination_namespace: NamespaceWithParent,
     pub request: Arc<RenameGenericTableRequest>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 pub type GenericTableEventContext = APIEventContext<

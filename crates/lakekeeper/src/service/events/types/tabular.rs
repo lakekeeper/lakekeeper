@@ -3,11 +3,11 @@ use std::sync::Arc;
 use crate::{
     WarehouseId,
     api::{
-        RequestMetadata,
+        ArcRequestMetadata,
         management::v1::{tasks::ControlTasksRequest, warehouse::UndropTabularsRequest},
     },
     service::{
-        AuthZTabularInfo, ResolvedWarehouse, TabularId, ViewOrTableInfo,
+        ArcResolvedWarehouse, AuthZTabularInfo, TabularId, ViewOrTableInfo,
         events::{
             APIEventContext,
             context::{AuthzChecked, Resolved, TabularAction, UserProvidedTabularsIDs},
@@ -20,23 +20,23 @@ use crate::{
 /// Event emitted when tables or views are undeleted
 #[derive(Clone, Debug)]
 pub struct UndropTabularEvent {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub request: Arc<UndropTabularsRequest>,
     pub responses: Arc<Vec<ViewOrTableInfo>>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 impl
     APIEventContext<
         UserProvidedTabularsIDs,
-        Resolved<Arc<ResolvedWarehouse>>,
+        Resolved<ArcResolvedWarehouse>,
         TabularAction,
         AuthzChecked,
     >
 {
     pub(crate) fn emit_tabular_undropped(
         self,
-        warehouse: Arc<ResolvedWarehouse>,
+        warehouse: ArcResolvedWarehouse,
         request: Arc<UndropTabularsRequest>,
         responses: Arc<Vec<ViewOrTableInfo>>,
     ) {
@@ -57,7 +57,7 @@ impl APIEventContext<WarehouseId, Resolved<Vec<TabularId>>, ControlTasksRequest,
     /// Cancelling a soft-deletion task undrops its tabular; emit what `undrop_tabulars` emits.
     pub(crate) fn emit_tabular_undropped_by_task_cancel(
         &self,
-        warehouse: Arc<ResolvedWarehouse>,
+        warehouse: ArcResolvedWarehouse,
         responses: Arc<Vec<ViewOrTableInfo>>,
     ) {
         let event = super::UndropTabularEvent {

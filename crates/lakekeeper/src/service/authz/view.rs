@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use iceberg_ext::catalog::rest::ErrorModel;
 
@@ -6,10 +6,10 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        AuthZViewInfo, CatalogBackendError, GetTabularInfoError, InternalParseLocationError,
-        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
-        ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
-        ViewId, ViewIdentOrId, ViewInfo,
+        ArcResolvedWarehouse, AuthZViewInfo, CatalogBackendError, GetTabularInfoError,
+        InternalParseLocationError, InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId,
+        NamespaceWithParent, ResolvedWarehouse, SerializationError, TabularNotFound,
+        UnexpectedTabularInResponse, ViewId, ViewIdentOrId, ViewInfo,
         authz::{
             ActionOnView, AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
             AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
@@ -372,7 +372,7 @@ pub trait AuthZViewOps: Authorizer {
         view_flags: TabularListFlags,
         action: impl Into<Self::ViewAction> + Send,
         catalog_state: C::State,
-    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), AuthZError>
+    ) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy, ViewInfo), AuthZError>
     where
         C: CatalogStore,
     {
@@ -618,7 +618,7 @@ pub(crate) async fn fetch_warehouse_namespace_view_by_id<C, A>(
     user_provided_view: ViewId,
     table_flags: TabularListFlags,
     catalog_state: C::State,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), AuthZError>
+) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy, ViewInfo), AuthZError>
 where
     C: CatalogStore,
     A: AuthzWarehouseOps + AuthzNamespaceOps,

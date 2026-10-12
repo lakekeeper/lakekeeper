@@ -71,11 +71,11 @@ use crate::{
         tabular::{authorize_entities, fetch_entities},
     },
     service::{
-        AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
-        CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps,
-        NamedEntity, ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId,
-        TableInfo, TabularId, TabularIdentBorrowed, TabularInfo, TabularListFlags, TabularNotFound,
-        Transaction, WarehouseStatus,
+        ArcResolvedWarehouse, AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
+        CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
+        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit,
+        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed,
+        TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
@@ -1129,14 +1129,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     authorizer: A,
     state: C::State,
     referenced_by: Option<&[ReferencingView]>,
-) -> Result<
-    (
-        Arc<ResolvedWarehouse>,
-        TableInfo,
-        Option<StoragePermissions>,
-    ),
-    AuthZError,
-> {
+) -> Result<(ArcResolvedWarehouse, TableInfo, Option<StoragePermissions>), AuthZError> {
     let engines = request_metadata.engines();
     let referenced_by = effective_referenced_by(referenced_by, engines);
 
@@ -1386,7 +1379,7 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
 /// Returns an error if the commit fails or if a DB error occurs.
 /// This function will retry on concurrent update errors up to a maximum number of retries.
 async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
-    warehouse: Arc<ResolvedWarehouse>,
+    warehouse: ArcResolvedWarehouse,
     request: CommitTransactionRequest,
     event_ctx: APIEventCommitContext,
     state: ApiContext<State<A, C, S>>,
@@ -1556,7 +1549,7 @@ pub async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S:
 struct CommitAuthorizationResult<'a> {
     table_infos_with_actions:
         HashMap<TableIdent, (Arc<TabularInfo<TableId>>, &'a CatalogTableAction)>,
-    warehouse: Arc<ResolvedWarehouse>,
+    warehouse: ArcResolvedWarehouse,
 }
 
 /// Result of `commit_tables_with_authz`, indicating whether the operation
