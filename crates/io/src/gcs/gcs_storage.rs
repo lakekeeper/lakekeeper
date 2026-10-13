@@ -302,7 +302,7 @@ impl LakekeeperStorage for GcsStorage {
         } else if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
             let mut request = build_get_object_request(&gcs_location);
-            request.if_generation_match = Some(head_response.generation);
+            request.generation = Some(head_response.generation);
             fetch_range(&self.client, &request, None..None).await?
         } else {
             parallel_chunked_read_with_fixed_generation(
