@@ -358,6 +358,11 @@ test_all_storages!(
     test_write_then_read_single_and_read_impl
 );
 test_all_storages!(test_read_returns_metadata, test_read_returns_metadata_impl);
+test_all_storages!(
+    test_read_window_boundaries,
+    test_read_window_boundaries_impl
+);
+test_all_storages!(test_read_during_overwrite, test_read_during_overwrite_impl);
 
 // // Performance tests for storage backend initialization
 // #[cfg(feature = "storage-in-memory")]
@@ -1074,9 +1079,13 @@ async fn test_empty_files_impl(
     storage.write(&test_path, empty_data.clone()).await?;
 
     // Read empty file back
-    let read_data = storage.read(&test_path).await?.bytes;
+    let read = storage.read(&test_path).await?;
+    let read_data = read.bytes;
     assert_eq!(read_data.len(), 0, "Empty file should have zero length");
     assert_eq!(read_data, empty_data, "Empty file content should match");
+    assert_eq!(read.info.size(), Some(0), "Empty file should report size 0");
+    let meta = storage.metadata(&test_path).await?;
+    assert_eq!(read.info.e_tag(), meta.e_tag());
 
     // Clean up
     storage.delete(&test_path).await?;
@@ -1966,6 +1975,88 @@ async fn test_read_returns_metadata_impl(
     assert_eq!(read.info.size(), meta.size());
     assert_eq!(read.info.last_modified(), meta.last_modified());
     assert_eq!(read.info.e_tag(), meta.e_tag());
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `read` returns every byte and the exact size for objects at and just past
+/// the size a backend reads in its first request (7 MiB for ADLS, 25 MiB for
+/// S3 and GCS).
+async fn test_read_window_boundaries_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    const MIB: usize = 1024 * 1024;
+    let data = generate_test_data(26);
+    for size in [7 * MIB, 7 * MIB + 1, 25 * MIB, 25 * MIB + 1] {
+        let path = config.test_path(&format!("read-window-{size}.bin"));
+        let expected = data.slice(0..size);
+        storage.write(&path, expected.clone()).await?;
+
+        let read = storage.read(&path).await?;
+        assert_eq!(
+            read.bytes.len(),
+            size,
+            "read length for a {size} byte object"
+        );
+        assert!(
+            read.bytes == expected,
+            "read content for a {size} byte object"
+        );
+        assert_eq!(read.info.size(), Some(size as u64));
+        let meta = storage.metadata(&path).await?;
+        assert_eq!(read.info.e_tag(), meta.e_tag());
+        assert_eq!(read.info.last_modified(), meta.last_modified());
+
+        storage.delete(&path).await?;
+    }
+    Ok(())
+}
+
+/// A `read` that races with overwrites of a multi-request object returns one
+/// written version in full, or fails. It never mixes the bytes of two versions.
+async fn test_read_during_overwrite_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    const SIZE: usize = 30 * 1024 * 1024;
+    let path = config.test_path("read-during-overwrite.bin");
+    let versions = [Bytes::from(vec![0x11; SIZE]), Bytes::from(vec![0x22; SIZE])];
+    storage.write(&path, versions[0].clone()).await?;
+
+    let writer = {
+        let storage = storage.clone();
+        let path = path.clone();
+        let versions = versions.clone();
+        tokio::spawn(async move {
+            for i in 1..=4 {
+                storage.write(&path, versions[i % 2].clone()).await?;
+            }
+            anyhow::Ok(())
+        })
+    };
+
+    let mut complete_reads = 0;
+    while !writer.is_finished() {
+        let Ok(read) = storage.read(&path).await else {
+            continue;
+        };
+        assert_eq!(read.info.size(), Some(SIZE as u64));
+        assert!(
+            versions.contains(&read.bytes),
+            "read returned bytes from more than one version of the object"
+        );
+        complete_reads += 1;
+    }
+    writer.await??;
+
+    let read = storage.read(&path).await?;
+    assert!(
+        read.bytes == versions[0],
+        "the last written version is read"
+    );
+    println!("{complete_reads} complete reads during the overwrites");
 
     storage.delete(&path).await?;
     Ok(())

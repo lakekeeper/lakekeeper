@@ -356,51 +356,68 @@ impl LakekeeperStorage for AdlsStorage {
         require_key(&adls_location)?;
         let client = self.get_file_client(&adls_location)?;
 
-        let head_response = head(&client, &adls_location).await?;
-
-        // The `head` above already carries the object metadata, so it is
-        // surfaced here; a second request is not needed. Built before
-        // `adls_location` is moved into the fetch calls below.
+        // The first window is read in one ranged GET. Its `Content-Range`
+        // carries the file size and its `Last-Modified`/`ETag` describe the
+        // version served, so a file that fits the window costs one request and
+        // `info` describes exactly the bytes returned.
+        let Some(window) = fetch_first_window(&client, &adls_location).await? else {
+            // Empty file, or a response without the file size.
+            return read_via_head(&client, adls_location, path).await;
+        };
         let info = FileInfo::new(
-            parse_offsetdatetime(&head_response.last_modified),
+            parse_offsetdatetime(&window.last_modified),
             adls_location.location().clone(),
-            head_response
-                .content_length
-                .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str())),
+            Some(window.total_size),
         )
-        .with_e_tag(Some(head_response.etag.clone()));
+        .with_e_tag(Some(window.etag.clone()));
 
-        let Some(content_length) = head_response.content_length else {
-            // If we do not get content_length, we cannot read in chunks,
-            // so read the file in one request. We can use `fetch_range`
-            // with `u64::MAX`, which is set by client if no range is provided
-            let bytes = fetch_range(&client, 0..u64::MAX, adls_location)
-                .await
-                .map(|gfr| gfr.data)?;
-            return Ok(ObjectRead { bytes, info });
-        };
-        let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
+        let first_len = window.data.len() as u64;
+        if window.total_size <= first_len {
+            if window.total_size < first_len {
+                return Err(ReadError::IOError(IOError::new(
+                    ErrorKind::Unexpected,
+                    format!(
+                        "ADLS returned {first_len} bytes for a file of {} bytes",
+                        window.total_size
+                    ),
+                    adls_location.location().to_string(),
+                )));
+            }
+            return Ok(ObjectRead {
+                bytes: window.data,
+                info,
+            });
+        }
 
-        let bytes = if file_size == 0 {
-            Bytes::new()
-        } else if file_size < MAX_BYTES_PER_REQUEST {
-            // If the file is small enough, read it in a single request
-            fetch_range(&client, 0..file_size as u64, adls_location)
-                .await
-                .map(|gfr| gfr.data)?
-        } else {
-            parallel_chunked_read_with_integrity(
-                &client,
-                path,
-                0,
-                file_size,
-                head_response.last_modified,
-                adls_location,
-            )
-            .await?
-        };
-
-        Ok(ObjectRead { bytes, info })
+        // The file is larger than the window: the window is the first chunk
+        // and the rest is read in parallel, each chunk checked against the
+        // window's `Last-Modified`.
+        let rest_size = usize::try_from(window.total_size - first_len).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!(
+                    "File size {} too large for this platform",
+                    window.total_size
+                ),
+                adls_location.location().to_string(),
+            ))
+        })?;
+        let rest = parallel_chunked_read_with_integrity(
+            &client,
+            path,
+            first_len,
+            rest_size,
+            window.last_modified,
+            adls_location,
+        )
+        .await?;
+        let mut bytes = BytesMut::with_capacity(window.data.len() + rest.len());
+        bytes.extend_from_slice(&window.data);
+        bytes.extend_from_slice(&rest);
+        Ok(ObjectRead {
+            bytes: bytes.freeze(),
+            info,
+        })
     }
 
     async fn read_range(
@@ -702,6 +719,100 @@ async fn fetch_range(
                 .with_context("Failed to download byte range."),
         )
     })
+}
+
+/// The first window of a file and the metadata of the response that served it.
+struct FirstWindow {
+    data: Bytes,
+    total_size: u64,
+    last_modified: time::OffsetDateTime,
+    etag: String,
+}
+
+/// Read `[0, MAX_BYTES_PER_REQUEST)` of a file in one GET.
+///
+/// Returns `None` when the response does not give the file size: the range is
+/// unsatisfiable (`416`, an empty file), or `Content-Range` is missing. The
+/// caller sizes the file with a `HEAD` then, so a server that ignores the range
+/// cannot truncate the read.
+async fn fetch_first_window(
+    client: &FileClient,
+    adls_location: &AdlsLocation,
+) -> Result<Option<FirstWindow>, ReadError> {
+    let response = match client.read().range(0..MAX_BYTES_PER_REQUEST as u64).await {
+        Ok(response) => response,
+        Err(e)
+            if e.as_http_error().map(azure_core::error::HttpError::status)
+                == Some(azure_core::StatusCode::RequestedRangeNotSatisfiable) =>
+        {
+            return Ok(None);
+        }
+        Err(e) => {
+            return Err(ReadError::IOError(
+                parse_error(e, &adls_location.to_string())
+                    .with_context("Failed to download byte range."),
+            ));
+        }
+    };
+    let Some(content_range) = response.content_range else {
+        return Ok(None);
+    };
+    Ok(Some(FirstWindow {
+        data: response.data,
+        total_size: content_range.total_length(),
+        last_modified: response.last_modified,
+        etag: response.etag,
+    }))
+}
+
+/// Read a file after sizing it with a `HEAD`.
+async fn read_via_head(
+    client: &FileClient,
+    adls_location: AdlsLocation,
+    path: &str,
+) -> Result<ObjectRead, ReadError> {
+    let head_response = head(client, &adls_location).await?;
+
+    let info = FileInfo::new(
+        parse_offsetdatetime(&head_response.last_modified),
+        adls_location.location().clone(),
+        head_response
+            .content_length
+            .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str())),
+    )
+    .with_e_tag(Some(head_response.etag.clone()));
+
+    let Some(content_length) = head_response.content_length else {
+        // If we do not get content_length, we cannot read in chunks,
+        // so read the file in one request. We can use `fetch_range`
+        // with `u64::MAX`, which is set by client if no range is provided
+        let bytes = fetch_range(client, 0..u64::MAX, adls_location)
+            .await
+            .map(|gfr| gfr.data)?;
+        return Ok(ObjectRead { bytes, info });
+    };
+    let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
+
+    let bytes = if file_size == 0 {
+        Bytes::new()
+    } else if file_size < MAX_BYTES_PER_REQUEST {
+        // If the file is small enough, read it in a single request
+        fetch_range(client, 0..file_size as u64, adls_location)
+            .await
+            .map(|gfr| gfr.data)?
+    } else {
+        parallel_chunked_read_with_integrity(
+            client,
+            path,
+            0,
+            file_size,
+            head_response.last_modified,
+            adls_location,
+        )
+        .await?
+    };
+
+    Ok(ObjectRead { bytes, info })
 }
 
 /// Run a parallel-chunked download over `[range_start, range_start + range_size)`
