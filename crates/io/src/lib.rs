@@ -304,11 +304,12 @@ impl FileInfo {
 /// The result of [`LakekeeperStorage::read`]: the object's bytes plus the
 /// [`FileInfo`] the backend surfaced while fetching them.
 ///
-/// A read already yields the object metadata (the cloud backends issue a `head`
-/// to size the request; the in-memory backend holds it directly), so returning
-/// it here lets callers get the bytes and the metadata (`last_modified`, `size`,
-/// `e_tag`) in one call — a separate [`LakekeeperStorage::metadata`] request is
-/// not needed.
+/// A read already yields the object metadata (S3 and ADLS take it from the
+/// response of the GET that returns the bytes, GCS from the `head` the
+/// download is pinned to, and the in-memory backend holds it directly), so
+/// returning it here lets callers get the bytes and the metadata
+/// (`last_modified`, `size`, `e_tag`) in one call — a separate
+/// [`LakekeeperStorage::metadata`] request is not needed.
 #[derive(Debug, Clone)]
 pub struct ObjectRead {
     /// The object's bytes.
