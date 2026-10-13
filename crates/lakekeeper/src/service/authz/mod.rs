@@ -1693,7 +1693,7 @@ pub enum CatalogTableAction {
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
         target_refs: Arc<BTreeSet<String>>,
         /// The kinds of metadata updates this commit contains. A check that names none
-        /// is answered for any commit.
+        /// asks about a commit of any kind.
         // Lets an authorizer require table-wide authority for anything beyond a
         // branch-ref move (schema, spec, properties, snapshot expiry, …).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -3919,6 +3919,36 @@ pub mod tests {
             context.get("update_kinds"),
             Some(&"[add-schema, set-snapshot-ref]".to_string())
         );
+    }
+
+    /// A data commit adds snapshots, moves refs or records statistics and touches no
+    /// property; a check without update kinds is a commit of any kind.
+    #[test]
+    fn test_is_data_commit() {
+        let commit = |updated: &[(&str, &str)], removed: &[&str], kinds: &[TableUpdateKind]| {
+            CatalogTableAction::Commit {
+                updated_properties: Arc::new(
+                    updated
+                        .iter()
+                        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                        .collect(),
+                ),
+                removed_properties: Arc::new(removed.iter().map(|k| (*k).to_string()).collect()),
+                target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
+                update_kinds: Arc::new(kinds.iter().copied().collect()),
+            }
+        };
+        let append = [
+            TableUpdateKind::AddSnapshot,
+            TableUpdateKind::SetSnapshotRef,
+        ];
+
+        assert!(commit(&[], &[], &append).is_data_commit());
+        assert!(!commit(&[("owner", "team")], &[], &append).is_data_commit());
+        assert!(!commit(&[], &["owner"], &append).is_data_commit());
+        assert!(!commit(&[], &[], &[]).is_data_commit());
+        assert!(!commit(&[], &[], &[TableUpdateKind::AddSchema]).is_data_commit());
+        assert!(!CatalogTableAction::WriteData.is_data_commit());
     }
 
     /// Locks the wire shape of the ref/kind fields — kinds serialize as their kebab-case

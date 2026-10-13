@@ -15,9 +15,9 @@ Adds a `write` privilege between `select` and `modify`, for principals that chan
 
 `project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_generic_table`:
 
-- Add `write` (`[user, role#assignee]`) and `write_effective` (`write or ownership or modify_effective`, plus `write_effective` from the parent). `select_effective` now reads `write_effective` where it read `modify_effective`, which still includes it.
-- Add `can_grant_write` and, below the project, `can_revoke_write`, following `select`; `can_read_assignments` includes `can_grant_write`.
-- `write` is a visibility source in `visible_below`, like the other grantable privileges, so a principal granted `write` on one deep table reaches the warehouse and the listings above it.
+- Add `write` (`[user, role#assignee]`) and `write_effective`: `write or modify_effective` on the project, and `write or ownership or modify_effective` plus `write_effective` from the parent below it. `select_effective` now reads `write_effective` where it read `modify_effective`, which still includes it.
+- Add `can_grant_write` and, below the project, `can_revoke_write`, following `select`; below the project, `can_read_assignments` includes `can_grant_write`.
+- Below the project, `write` is a visibility source in `visible_below`, like the other grantable privileges, so a principal granted `write` on one deep table reaches the warehouse and the listings above it.
 
 `lakekeeper_table`, `lakekeeper_generic_table`:
 

@@ -109,13 +109,17 @@ require_table_access_simple(catalog_name, schema_name, table_name, action) if {
 	)
 }
 
-require_table_access_commit(
+require_table_access_commit(catalog_name, schema_name, table_name, updated_properties, removed_properties) if {
+	require_table_access_commit_kinds(catalog_name, schema_name, table_name, updated_properties, removed_properties, [])
+}
+
+require_table_access_commit_kinds(
 	catalog_name, schema_name, table_name,
 	updated_properties, removed_properties, update_kinds,
 ) if {
 	trino_catalog := catalog_config_by_name[catalog_name]
 	namespace_name := namespace_for_schema(schema_name)
-	lakekeeper.require_table_access_commit(
+	lakekeeper.require_table_access_commit_kinds(
 		trino_catalog.lakekeeper_id,
 		trino_catalog.lakekeeper_warehouse,
 		namespace_name,

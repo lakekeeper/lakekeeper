@@ -217,7 +217,7 @@ spark.sql(f"USE {catalog_name}")
 
 ## What Lakekeeper Enforces
 
-Lakekeeper decides every request made to the catalog: creating, changing, dropping, renaming and protecting tables, and granting access. For a change to a table it checks what the change does, so a user who may write data cannot change the table's schema.
+Lakekeeper decides every request made to the catalog: creating, changing, dropping, renaming and protecting tables, and granting access. Depending on the authorizer, it also checks what a change to a table does: with [OpenFGA](./authorization-openfga.md#write), a user who may only write data cannot change the table's schema.
 
 Reading and writing files in storage does not go through Lakekeeper. A user who may only read a table gets read-only access to its storage location. A user who may write gets access to write and delete files there, through vended credentials or remote signing. A writer can therefore overwrite or delete any file of the table, including the files of older versions, and Lakekeeper cannot see or prevent it. Snapshots, time travel, soft deletion and protection guard against changes made through the catalog, not against changes to the files themselves. Settings that ask clients not to delete files, such as `push-s3-delete-disabled`, are a request a client can ignore.
 

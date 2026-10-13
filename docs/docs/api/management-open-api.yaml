@@ -11917,7 +11917,7 @@ components:
             $ref: '#/components/schemas/TableUpdateKind'
           description: |-
             The kinds of metadata updates this commit contains. A check that names none
-            is answered for any commit.
+            asks about a commit of any kind.
           uniqueItems: true
         updated_properties:
           type: object
