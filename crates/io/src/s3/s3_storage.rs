@@ -248,6 +248,11 @@ impl LakekeeperStorage for S3Storage {
 
         // The object is larger than the window: the window is the first chunk
         // and the rest is read in parallel, pinned to the window's `ETag`.
+        // Without an `ETag` the rest cannot be pinned to the window's version,
+        // so the object is read from a `HEAD`.
+        if window.e_tag.is_none() {
+            return read_via_head(&self.client, &s3_location, path).await;
+        }
         let rest_size = usize::try_from(window.total_size - first_len).map_err(|_| {
             ReadError::IOError(IOError::new(
                 ErrorKind::ConditionNotMatch,
