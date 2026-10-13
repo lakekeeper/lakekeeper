@@ -23,9 +23,11 @@ Please include:
 
 ## Response Process
 
-- Acknowledgement within <N> business days
-- Initial assessment within <N> business days
-- Fix and coordinated disclosure via a GitHub Security Advisory, with CVE requested where applicable
+- **Acknowledgement:** reports are acknowledged as soon as possible after receipt
+- **Initial assessment:** maintainers assess severity and confirm whether the issue is accepted
+- **Status updates:** reporters receive regular updates until the issue is resolved
+- **Fix and disclosure:** fixes are released and published via a GitHub Security Advisory, with a CVE requested where applicable
+- **Coordinated disclosure:** the advisory is published together with the fix release. Reporters are asked not to disclose publicly until the advisory is published, and disclosure timing is agreed between the reporter and maintainers.
 
 ## Scope
 
