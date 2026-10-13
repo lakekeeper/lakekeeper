@@ -1,0 +1,26 @@
+<!-- Title must start with feat:, fix:, docs: or chore: (optional scope, ! for breaking). Other types fail the title check. -->
+
+## Summary
+<!-- What changes for users and why. Release notes are written from this. -->
+
+## Related issue
+Closes #
+
+## How was this tested?
+- [ ] Unit tests added or updated
+- [ ] Integration tests added or updated
+- Query engine (Spark / Trino / PyIceberg / StarRocks):
+- Storage (S3 / MinIO / ADLS / GCS):
+- Authorization (None / OpenFGA / OPA):
+
+## Checklist
+- [ ] CI passes (tests, clippy, formatting)
+- [ ] SQL queries changed: updated `.sqlx/` folder committed
+- [ ] Database schema changed: new migration added, no released migration edited
+- [ ] New or changed endpoint: authorization check added and OpenAPI spec updated
+- [ ] Permissions changed: OpenFGA model updated
+- [ ] Audit log fields changed: change note added in `audit-format/unreleased/`
+- [ ] Docs updated
+
+## Breaking changes
+<!-- Who is affected and what they must do. Write "None" if not applicable. -->
