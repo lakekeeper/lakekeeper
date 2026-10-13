@@ -940,4 +940,84 @@ mod tests {
             loaded[0].table_metadata.properties(),
         );
     }
+
+    /// Removing the last ref (`main`) must persist after reload: the table keeps its
+    /// snapshot but has no refs and no current snapshot.
+    #[sqlx::test]
+    async fn test_remove_last_ref_persists_after_reload(pool: sqlx::PgPool) {
+        let (previous_table_info, previous_metadata) = setup_table(pool.clone()).await;
+        let warehouse_id = previous_table_info.warehouse_id;
+        let table_id = TableId::from(previous_metadata.uuid());
+
+        // Step 1: add a snapshot on `main`, the table's only ref.
+        let prev_loc = previous_table_info.metadata_location.clone().unwrap();
+        let set_build = previous_metadata
+            .clone()
+            .into_builder(Some(prev_loc.to_string()))
+            .set_branch_snapshot(snapshot_1(), "main")
+            .unwrap()
+            .build()
+            .unwrap();
+        let after_set_metadata = set_build.metadata;
+        let new_loc_1 =
+            Location::from_str("s3://bucket/test/location/metadata/metadata2.json").unwrap();
+        let commit_1 = TableCommit {
+            new_metadata: Arc::new(after_set_metadata.clone()),
+            new_metadata_location: new_loc_1.clone(),
+            previous_metadata_location: Some(prev_loc),
+            updates: Arc::new(set_build.changes),
+            diffs: calculate_diffs(&after_set_metadata, &previous_metadata, 1, 0),
+        };
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![commit_1], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Step 2: remove `main`; the new metadata has no refs.
+        let remove_build = after_set_metadata
+            .clone()
+            .into_builder(Some(new_loc_1.to_string()))
+            .remove_ref("main")
+            .build()
+            .unwrap();
+        let after_remove_metadata = remove_build.metadata;
+        assert!(
+            after_remove_metadata.refs().is_empty(),
+            "test precondition: new metadata refs must be empty"
+        );
+        let new_loc_2 =
+            Location::from_str("s3://bucket/test/location/metadata/metadata3.json").unwrap();
+        let commit_2 = TableCommit {
+            new_metadata: Arc::new(after_remove_metadata.clone()),
+            new_metadata_location: new_loc_2,
+            previous_metadata_location: Some(new_loc_1),
+            updates: Arc::new(remove_build.changes),
+            diffs: calculate_diffs(&after_remove_metadata, &after_set_metadata, 1, 0),
+        };
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![commit_2], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = pool.begin().await.unwrap();
+        let loaded = PostgresBackend::load_tables(
+            warehouse_id,
+            [table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        let loaded = &loaded[0].table_metadata;
+        assert_eq!(loaded.refs(), &HashMap::new());
+        assert_eq!(loaded.current_snapshot_id(), None);
+        assert_eq!(
+            loaded.snapshots().map(|s| s.snapshot_id()).collect::<Vec<_>>(),
+            vec![1]
+        );
+    }
 }
