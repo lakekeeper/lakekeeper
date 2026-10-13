@@ -15,10 +15,10 @@ use crate::{
     },
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
-        ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity, NoWarehouseTaskError,
-        ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId, TabularId,
-        TabularListFlags, TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId,
+        ArcProjectId, ArcResolvedWarehouse, CachePolicy, CatalogNamespaceOps, CatalogStore,
+        CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity,
+        NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId,
+        TabularId, TabularListFlags, TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId,
         ViewOrTableDeletionInfo, ViewOrTableInfo,
         authz::{
             AuthZCannotListAllTasks, AuthZCannotSeeGenericTable, AuthZCannotSeeTable,
@@ -1125,7 +1125,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
     entities: Option<&Vec<WarehouseTaskEntityFilter>>,
-) -> Result<Arc<ResolvedWarehouse>, AuthZError> {
+) -> Result<ArcResolvedWarehouse, AuthZError> {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
@@ -1536,7 +1536,7 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     request_metadata: &RequestMetadata,
     query: &ControlTasksRequest,
     warehouse_id: WarehouseId,
-) -> Result<(Arc<ResolvedWarehouse>, Vec<TabularId>), AuthZError> {
+) -> Result<(ArcResolvedWarehouse, Vec<TabularId>), AuthZError> {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
@@ -1667,7 +1667,7 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
     entity: WarehouseTaskEntityId,
-) -> Result<(Arc<ResolvedWarehouse>, ViewOrTableInfo), AuthZError> {
+) -> Result<(ArcResolvedWarehouse, ViewOrTableInfo), AuthZError> {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 

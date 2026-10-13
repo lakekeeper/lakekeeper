@@ -26,9 +26,9 @@ use crate::{
         },
     },
     service::{
-        AuthZViewInfo as _, CatalogStore, CatalogViewOps, InternalParseLocationError,
-        ResolvedWarehouse, Result, SecretStore, State, TabularIdentBorrowed, TabularListFlags,
-        Transaction, ViewInfo,
+        ArcResolvedWarehouse, AuthZViewInfo as _, CatalogStore, CatalogViewOps,
+        InternalParseLocationError, Result, SecretStore, State, TabularIdentBorrowed,
+        TabularListFlags, Transaction, ViewInfo,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeView, AuthZError, AuthorizationCountMismatch,
             Authorizer, AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CatalogViewAction,
@@ -151,7 +151,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     authorizer: &A,
     state: C::State,
     referenced_by: Option<&[ReferencingView]>,
-) -> Result<(Arc<ResolvedWarehouse>, ViewInfo, Option<StoragePermissions>), AuthZError> {
+) -> Result<(ArcResolvedWarehouse, ViewInfo, Option<StoragePermissions>), AuthZError> {
     let engines = request_metadata.engines();
     let list_flags = TabularListFlags::active();
     let referenced_by = effective_referenced_by(referenced_by, engines);

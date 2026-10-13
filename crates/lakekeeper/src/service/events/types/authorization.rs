@@ -3,7 +3,7 @@ use std::sync::Arc;
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
-    api::RequestMetadata,
+    api::ArcRequestMetadata,
     service::{
         authz::{ActionDescriptor, DeterminingFactor, UserOrRoleId},
         events::context::{EntityDescriptor, EventEntities},
@@ -79,7 +79,7 @@ impl AuthorizationError {
 #[derive(Clone, Debug)]
 pub struct AuthorizationFailedEvent {
     /// Request metadata including the actor who attempted the action
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
     /// When the event happened: when it was built, not when a listener got to it.
     pub occurred_at: chrono::DateTime<chrono::Utc>,
 
@@ -114,7 +114,7 @@ pub struct AuthorizationFailedEvent {
 #[derive(Clone, Debug)]
 pub struct AuthorizationSucceededEvent {
     /// Request metadata including the actor who attempted the action
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
     /// When the event happened: when it was built, not when a listener got to it.
     pub occurred_at: chrono::DateTime<chrono::Utc>,
 

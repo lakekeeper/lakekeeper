@@ -9,9 +9,9 @@ use lakekeeper_io::Location;
 
 use crate::{
     WarehouseId,
-    api::{RequestMetadata, iceberg::v1::DataAccessMode},
+    api::{ArcRequestMetadata, iceberg::v1::DataAccessMode},
     service::{
-        MovedNamespace, NamespaceId, NamespaceIdent, NamespaceWithParent, ResolvedWarehouse,
+        ArcResolvedWarehouse, MovedNamespace, NamespaceId, NamespaceIdent, NamespaceWithParent,
         authz::{CatalogNamespaceAction, CatalogWarehouseAction},
         events::{
             APIEventContext, AuthorizationFailureSource, EventDispatcher,
@@ -30,14 +30,14 @@ use crate::{
 pub struct CreateNamespaceEvent {
     pub warehouse_id: WarehouseId,
     pub namespace: NamespaceWithParent,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a namespace is dropped
 #[derive(Clone, Debug)]
 pub struct DropNamespaceEvent {
     pub namespace: NamespaceWithParent,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a namespace is moved (re-parented and/or renamed)
@@ -55,7 +55,7 @@ pub struct MoveNamespaceEvent {
     pub previous_ident: NamespaceIdent,
     /// Parent before the move. `None` if the namespace was top-level.
     pub previous_parent: Option<NamespaceId>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when namespace protection status changes
@@ -63,7 +63,7 @@ pub struct MoveNamespaceEvent {
 pub struct SetNamespaceProtectionEvent {
     pub requested_protected: bool,
     pub updated_namespace: NamespaceWithParent,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when namespace properties are updated
@@ -72,7 +72,7 @@ pub struct UpdateNamespacePropertiesEvent {
     pub warehouse_id: WarehouseId,
     pub namespace: NamespaceWithParent,
     pub updated_properties: Arc<UpdateNamespacePropertiesResponse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when Namespace metadata is loaded
@@ -80,7 +80,7 @@ pub struct UpdateNamespacePropertiesEvent {
 pub struct NamespaceMetadataLoadedEvent {
     pub namespace: NamespaceWithParent,
     pub properties: Arc<HashMap<String, String>>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a table is created (within a namespace)
@@ -91,7 +91,7 @@ pub struct CreateTableEvent {
     pub metadata: TableMetadataRef,
     pub metadata_location: Option<Arc<Location>>,
     pub data_access: DataAccessMode,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
     pub request: Arc<CreateTableRequest>,
 }
 
@@ -106,7 +106,7 @@ pub struct RegisterTableEvent {
     /// without this a subscriber cannot tell a registration that handed out
     /// read-write-delete credentials from one that handed out none.
     pub data_access: DataAccessMode,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a view is created (within a namespace)
@@ -116,7 +116,7 @@ pub struct CreateViewEvent {
     pub view_name: String,
     pub metadata: Arc<ViewMetadata>,
     pub metadata_location: Arc<Location>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
     pub request: Arc<CreateViewRequest>,
 }
 
@@ -133,7 +133,7 @@ pub enum NamespaceOrWarehouseAPIContext<
 impl<RW: ResolutionState, RN: ResolutionState, Z: AuthzState>
     NamespaceOrWarehouseAPIContext<RW, RN, Z>
 {
-    pub fn request_metadata(&self) -> &Arc<RequestMetadata> {
+    pub fn request_metadata(&self) -> &ArcRequestMetadata {
         match self {
             NamespaceOrWarehouseAPIContext::Warehouse(ctx) => &ctx.request_metadata,
             NamespaceOrWarehouseAPIContext::Namespace(ctx) => &ctx.request_metadata,
@@ -174,7 +174,7 @@ impl<RW: ResolutionState, RN: ResolutionState>
 }
 
 pub(crate) type ResolvedNamespaceOrWarehouseContext = NamespaceOrWarehouseAPIContext<
-    Resolved<Arc<ResolvedWarehouse>>,
+    Resolved<ArcResolvedWarehouse>,
     Resolved<ResolvedNamespace>,
     AuthzChecked,
 >;

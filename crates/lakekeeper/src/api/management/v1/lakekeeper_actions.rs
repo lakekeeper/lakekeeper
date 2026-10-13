@@ -13,7 +13,7 @@ use crate::{
         CatalogTagOps, CatalogWarehouseOps, GenericTableId, NamespaceId, ProjectId, Result, RoleId,
         SecretStore, State, TableId, TabularListFlags, TagDefinitionId, UserId, ViewId,
         WarehouseStatus,
-        authn::UserIdRef,
+        authn::ArcUserId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AuthZCannotSeeGenericTable,
             AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeTag,
@@ -311,7 +311,7 @@ pub(super) async fn get_allowed_user_actions<C: CatalogStore, A: Authorizer, S: 
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
     query: GetAccessQuery,
-    object: UserIdRef,
+    object: ArcUserId,
 ) -> Result<Vec<CatalogUserAction>> {
     let for_user_api = query.try_parse()?.principal;
 

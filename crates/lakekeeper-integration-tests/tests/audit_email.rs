@@ -268,7 +268,7 @@ async fn a_principal_outside_the_request_takes_the_known_email(pool: PgPool) {
     ] {
         f.user(id, Some(email)).await;
     }
-    user_emails::<PostgresBackend>(std::slice::from_ref(&bob), f.ctx.v1_state.catalog.clone())
+    user_emails::<PostgresBackend>(&[&bob], f.ctx.v1_state.catalog.clone())
         .await
         .unwrap();
     let alices_request =
@@ -549,10 +549,10 @@ struct FailingCatalog;
 
 #[async_trait::async_trait]
 impl EventCatalog for FailingCatalog {
-    async fn user_emails(
+    async fn user_emails<'a>(
         &self,
-        _user_ids: &[UserId],
-    ) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
+        _user_ids: &[&'a UserId],
+    ) -> Result<HashMap<&'a UserId, UserEmail>, CatalogBackendError> {
         Err(CatalogBackendError::new_unexpected(std::io::Error::other(
             "the database is down",
         )))

@@ -455,7 +455,7 @@ pub(crate) async fn user_assignments_cache_invalidate_many(user_ids: &[UserId]) 
 }
 
 // ============================================================================
-// Shared identity pools — dedup Arc<RoleIdent>/Arc<ProjectId> across cached entries
+// Shared identity pools — dedup ArcRoleIdent/ArcProjectId across cached entries
 // ============================================================================
 //
 // The effective-roles loader allocates a fresh `Arc` for each (user, role) row,
@@ -526,7 +526,7 @@ async fn share_project_id(project_id: ArcProjectId) -> ArcProjectId {
         .await
 }
 
-/// Replace the per-row `Arc<RoleIdent>` / `Arc<ProjectId>` in a freshly-loaded
+/// Replace the per-row `ArcRoleIdent` / `ArcProjectId` in a freshly-loaded
 /// user-assignments result with shared `Arc`s before it is cached, so a
 /// role/project referenced by many users is stored once in memory. No-op when the
 /// user-assignments cache is disabled (nothing is cached → nothing to dedup).

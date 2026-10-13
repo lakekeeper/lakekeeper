@@ -28,7 +28,7 @@ use crate::{
         },
     },
     service::{
-        CatalogStore, GenericTabularInfo, NamespaceHierarchy, ResolvedWarehouse, SecretStore,
+        ArcResolvedWarehouse, CatalogStore, GenericTabularInfo, NamespaceHierarchy, SecretStore,
         State, TabularIdentBorrowed, TabularListFlags,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeGenericTable, AuthZCannotSeeView, AuthZError,
@@ -136,7 +136,7 @@ pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer 
     referenced_by: Option<&[ReferencingView]>,
 ) -> Result<
     (
-        Arc<ResolvedWarehouse>,
+        ArcResolvedWarehouse,
         NamespaceHierarchy,
         GenericTabularInfo,
         Option<StoragePermissions>,

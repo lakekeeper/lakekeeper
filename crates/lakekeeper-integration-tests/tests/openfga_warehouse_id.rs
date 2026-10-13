@@ -19,8 +19,6 @@
 // which the default nextest filter excludes (a root module would not match).
 mod warehouse_id {
     mod openfga_integration_tests {
-        use std::sync::Arc;
-
         use lakekeeper::{
             ProjectId, WarehouseId,
             api::{
@@ -31,8 +29,8 @@ mod warehouse_id {
                 },
             },
             service::{
-                CatalogStore, CatalogWarehouseOps, State, Transaction, UserId, authn::Actor,
-                authz::CatalogWarehouseAction,
+                ArcProjectId, CatalogStore, CatalogWarehouseOps, State, Transaction, UserId,
+                authn::Actor, authz::CatalogWarehouseAction,
             },
         };
         use lakekeeper_authz_openfga::{
@@ -47,7 +45,7 @@ mod warehouse_id {
 
         /// OpenFGA-backed context with a freshly-migrated, isolated store, bootstrapping
         /// `admin` as operator.
-        async fn setup(pool: PgPool) -> (Ctx, UserId, Arc<ProjectId>) {
+        async fn setup(pool: PgPool) -> (Ctx, UserId, ArcProjectId) {
             let authorizer = new_authorizer_in_empty_store_from_default_config()
                 .await
                 .expect("OpenFGA must be reachable at LAKEKEEPER__OPENFGA__ENDPOINT");

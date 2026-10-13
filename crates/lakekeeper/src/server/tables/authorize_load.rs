@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
@@ -12,10 +9,10 @@ use crate::{
     config::{MatchedEngines, SecurityModel},
     request_metadata::RequestMetadata,
     service::{
-        Actor, AuthZTabularInfo as _, CatalogBackendError, CatalogGetNamespaceError,
-        CatalogGetWarehouseByIdError, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, GenericTabularInfo, GetTabularInfoError, NamespaceHierarchy,
-        NamespaceId, NamespaceWithParent, ResolveTasksError, ResolvedWarehouse,
+        Actor, ArcResolvedWarehouse, AuthZTabularInfo as _, CatalogBackendError,
+        CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogNamespaceOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo, GetTabularInfoError,
+        NamespaceHierarchy, NamespaceId, NamespaceWithParent, ResolveTasksError, ResolvedWarehouse,
         TabularIdentBorrowed, TabularIdentOwned, TabularInfo, TabularListFlags, UserId, ViewInfo,
         ViewOrTableInfo,
         authz::{
@@ -170,7 +167,7 @@ pub(crate) fn get_relevant_tabulars_to_authorize_load_tabular<'a>(
 
 #[derive(Debug)]
 pub(crate) struct AuthorizeLoadTabularObjects {
-    pub(crate) warehouse: Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError>,
+    pub(crate) warehouse: Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError>,
     pub(crate) namespaces:
         Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>,
     pub(crate) tabulars: Result<HashMap<TableIdent, ViewOrTableInfo>, GetTabularInfoError>,

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    api::{RequestMetadata, management::v1::user::User},
+    api::{ArcRequestMetadata, management::v1::user::User},
     service::UserWrite,
 };
 
@@ -18,7 +18,7 @@ pub struct UserCreatedEvent {
     pub user: Arc<User>,
     /// The request that made the write; `None` for a role-provider sync, which runs
     /// without one.
-    pub request_metadata: Option<Arc<RequestMetadata>>,
+    pub request_metadata: Option<ArcRequestMetadata>,
 }
 
 /// Event emitted when a user is updated, including when a deleted user is created again.
@@ -30,7 +30,7 @@ pub struct UserUpdatedEvent {
     pub previous: Option<Arc<User>>,
     /// The request that made the write; `None` for a role-provider sync, which runs
     /// without one.
-    pub request_metadata: Option<Arc<RequestMetadata>>,
+    pub request_metadata: Option<ArcRequestMetadata>,
 }
 
 /// Event emitted when a user is deleted.
@@ -38,7 +38,7 @@ pub struct UserUpdatedEvent {
 pub struct UserDeletedEvent {
     /// The row as it was before the delete cleared its name and email.
     pub user: Arc<User>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// The event a user write fires.
@@ -51,7 +51,7 @@ pub enum UserWrittenEvent {
 impl UserWrittenEvent {
     /// The event for `write`, made by the request `request_metadata`.
     #[must_use]
-    pub fn new(write: UserWrite, request_metadata: Option<Arc<RequestMetadata>>) -> Self {
+    pub fn new(write: UserWrite, request_metadata: Option<ArcRequestMetadata>) -> Self {
         match write {
             UserWrite::Created(user) => Self::Created(UserCreatedEvent {
                 user,

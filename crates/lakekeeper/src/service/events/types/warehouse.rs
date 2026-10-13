@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     SecretId, WarehouseId,
     api::{
-        RequestMetadata,
+        ArcRequestMetadata,
         management::v1::{
             task_queue::SetTaskQueueConfigRequest,
             warehouse::{
@@ -14,7 +14,7 @@ use crate::{
         },
     },
     service::{
-        ResolvedWarehouse,
+        ArcResolvedWarehouse,
         authz::CatalogWarehouseAction,
         events::{
             APIEventContext,
@@ -29,56 +29,56 @@ use crate::{
 /// Event emitted when a warehouse is deleted
 #[derive(Clone, Debug)]
 pub struct DeleteWarehouseEvent {
-    pub warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when warehouse protection status changes
 #[derive(Clone, Debug)]
 pub struct SetWarehouseProtectionEvent {
     pub requested_protected: bool,
-    pub updated_warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when the warehouse managed-by marker changes
 #[derive(Clone, Debug)]
 pub struct SetWarehouseManagedByEvent {
     pub requested_managed_by: crate::service::ManagedBy,
-    pub updated_warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a warehouse is renamed
 #[derive(Clone, Debug)]
 pub struct RenameWarehouseEvent {
     pub request: Arc<RenameWarehouseRequest>,
-    pub updated_warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when warehouse delete profile is updated
 #[derive(Clone, Debug)]
 pub struct UpdateWarehouseDeleteProfileEvent {
     pub request: Arc<UpdateWarehouseDeleteProfileRequest>,
-    pub updated_warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when warehouse format version policy is updated
 #[derive(Clone, Debug)]
 pub struct UpdateWarehouseFormatVersionPolicyEvent {
     pub request: Arc<UpdateWarehouseFormatVersionPolicyRequest>,
-    pub updated_warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when warehouse storage configuration is updated
 #[derive(Clone, Debug)]
 pub struct UpdateWarehouseStorageEvent {
     pub request: Arc<UpdateWarehouseStorageRequest>,
-    pub updated_warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when warehouse storage credentials are updated
@@ -86,23 +86,23 @@ pub struct UpdateWarehouseStorageEvent {
 pub struct UpdateWarehouseStorageCredentialEvent {
     pub request: Arc<UpdateWarehouseCredentialRequest>,
     pub old_secret_id: Option<SecretId>,
-    pub updated_warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a warehouse task queue config is set
 #[derive(Clone, Debug)]
 pub struct SetTaskQueueConfigEvent {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
     pub queue_name: TaskQueueName,
     pub request: Arc<SetTaskQueueConfigRequest>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 impl
     APIEventContext<
         WarehouseId,
-        Resolved<Arc<ResolvedWarehouse>>,
+        Resolved<ArcResolvedWarehouse>,
         CatalogWarehouseAction,
         AuthzChecked,
     >
@@ -123,7 +123,7 @@ impl
     pub(crate) fn emit_warehouse_renamed(
         self,
         request: Arc<RenameWarehouseRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
+        updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = RenameWarehouseEvent {
             request,
@@ -140,7 +140,7 @@ impl
     pub(crate) fn emit_warehouse_delete_profile_updated(
         self,
         request: Arc<UpdateWarehouseDeleteProfileRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
+        updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = UpdateWarehouseDeleteProfileEvent {
             request,
@@ -157,7 +157,7 @@ impl
     pub(crate) fn emit_warehouse_protection_set(
         self,
         requested_protected: bool,
-        updated_warehouse: Arc<ResolvedWarehouse>,
+        updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = SetWarehouseProtectionEvent {
             requested_protected,
@@ -174,7 +174,7 @@ impl
     pub(crate) fn emit_warehouse_format_version_policy_updated(
         self,
         request: Arc<UpdateWarehouseFormatVersionPolicyRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
+        updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = UpdateWarehouseFormatVersionPolicyEvent {
             request,
@@ -193,7 +193,7 @@ impl
     pub(crate) fn emit_warehouse_storage_updated(
         self,
         request: Arc<UpdateWarehouseStorageRequest>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
+        updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = UpdateWarehouseStorageEvent {
             request,
@@ -211,7 +211,7 @@ impl
         self,
         request: Arc<UpdateWarehouseCredentialRequest>,
         old_secret_id: Option<SecretId>,
-        updated_warehouse: Arc<ResolvedWarehouse>,
+        updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = UpdateWarehouseStorageCredentialEvent {
             request,
@@ -258,7 +258,7 @@ where
     pub(crate) fn emit_warehouse_managed_by_set(
         self,
         requested_managed_by: crate::service::ManagedBy,
-        updated_warehouse: Arc<ResolvedWarehouse>,
+        updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = SetWarehouseManagedByEvent {
             requested_managed_by,

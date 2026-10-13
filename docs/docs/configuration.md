@@ -166,13 +166,20 @@ Lakekeeper uses [rust-rdkafka](https://github.com/fede1024/rust-rdkafka) to enab
 The following features of rust-rdkafka are enabled:
 
 - tokio
-- ztstd
-- gssapi-vendored
+- zstd
 - curl-static
 - ssl-vendored
 - libz-static
 
-This means that all features of [librdkafka](https://github.com/confluentinc/librdkafka) are usable. All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
+Lakekeeper can connect to Kafka in these ways:
+
+- Without authentication (`security.protocol` `PLAINTEXT`).
+- With TLS, including client certificates (`SSL`).
+- With SASL, also over TLS (`SASL_PLAINTEXT` or `SASL_SSL`), using the mechanisms `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` or `OAUTHBEARER`. For `OAUTHBEARER`, set `sasl.oauthbearer.method` to `oidc`, so that the Kafka client fetches tokens from your identity provider.
+
+Kerberos (SASL mechanism `GSSAPI`) is not supported.
+
+All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
 
 To publish events to Kafka, set the following environment variables:
 
