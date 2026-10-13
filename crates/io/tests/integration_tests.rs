@@ -2038,7 +2038,13 @@ async fn test_read_during_overwrite_impl(
 ) -> anyhow::Result<()> {
     // An ADLS write creates an empty file and then appends to it, so a reader
     // can see the file in between. Its reads are covered by the chunk checks.
-    if matches!(storage, StorageBackend::Adls(_)) {
+    // The `Adls` variant only exists with `storage-adls`, so gate the arm.
+    let is_adls = match storage {
+        #[cfg(feature = "storage-adls")]
+        StorageBackend::Adls(_) => true,
+        _ => false,
+    };
+    if is_adls {
         println!("Skipping the overwrite race for ADLS, whose writes are not atomic");
         return Ok(());
     }
