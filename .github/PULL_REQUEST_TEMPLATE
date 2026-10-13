@@ -1,4 +1,4 @@
-<!-- Title must start with feat:, fix:, docs: or chore: (optional scope, ! for breaking). Other types fail the title check. -->
+<!-- Title must start with feat, fix, docs or chore; it may include an optional scope and ! breaking marker before the colon. Other types fail the title check. -->
 
 ## Summary
 <!-- What changes for users and why. Release notes are written from this. -->
@@ -21,6 +21,7 @@ Closes #
 - [ ] Permissions changed: OpenFGA model updated
 - [ ] Audit log fields changed: change note added in `audit-format/unreleased/`
 - [ ] Docs updated
+- [ ] CLA signed
 
 ## Breaking changes
 <!-- Who is affected and what they must do. Write "None" if not applicable. -->
