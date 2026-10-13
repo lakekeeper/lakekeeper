@@ -2014,16 +2014,42 @@ async fn test_read_window_boundaries_impl(
     Ok(())
 }
 
+/// The error a `read` fails with when the object is overwritten between two of
+/// its requests, or `None` if the backend never fails a read that way.
+fn overwritten_during_read_kind(storage: &StorageBackend) -> Option<ErrorKind> {
+    match storage {
+        // The remaining chunks are sent with `If-Match`: 412 Precondition Failed.
+        #[cfg(feature = "storage-s3")]
+        StorageBackend::S3(_) => Some(ErrorKind::ConditionNotMatch),
+        // The chunks request the generation the `HEAD` saw. An overwrite replaces
+        // it, so in a bucket without object versioning that generation is gone.
+        #[cfg(feature = "storage-gcs")]
+        StorageBackend::Gcs(_) => Some(ErrorKind::NotFound),
+        _ => None,
+    }
+}
+
 /// A `read` that races with overwrites of a multi-request object returns one
-/// written version in full, or fails. It never mixes the bytes of two versions.
+/// written version in full, or fails with the backend's overwrite error. It
+/// never mixes the bytes of two versions.
 async fn test_read_during_overwrite_impl(
     storage: &StorageBackend,
     config: &TestConfig,
 ) -> anyhow::Result<()> {
+    // An ADLS write creates an empty file and then appends to it, so a reader
+    // can see the file in between. Its reads are covered by the chunk checks.
+    if matches!(storage, StorageBackend::Adls(_)) {
+        println!("Skipping the overwrite race for ADLS, whose writes are not atomic");
+        return Ok(());
+    }
+
     const SIZE: usize = 30 * 1024 * 1024;
+    const MIN_RACING_READS: usize = 3;
     let path = config.test_path("read-during-overwrite.bin");
     let versions = [Bytes::from(vec![0x11; SIZE]), Bytes::from(vec![0x22; SIZE])];
     storage.write(&path, versions[0].clone()).await?;
+    let read = storage.read(&path).await?;
+    assert!(read.bytes == versions[0], "the first version is read");
 
     let writer = {
         let storage = storage.clone();
@@ -2037,17 +2063,24 @@ async fn test_read_during_overwrite_impl(
         })
     };
 
+    let expected_error = overwritten_during_read_kind(storage);
     let mut complete_reads = 0;
-    while !writer.is_finished() {
-        let Ok(read) = storage.read(&path).await else {
-            continue;
-        };
-        assert_eq!(read.info.size(), Some(SIZE as u64));
-        assert!(
-            versions.contains(&read.bytes),
-            "read returned bytes from more than one version of the object"
-        );
-        complete_reads += 1;
+    let mut failed_reads = 0;
+    while complete_reads + failed_reads < MIN_RACING_READS || !writer.is_finished() {
+        match storage.read(&path).await {
+            Ok(read) => {
+                assert_eq!(read.info.size(), Some(SIZE as u64));
+                assert!(
+                    versions.contains(&read.bytes),
+                    "read returned bytes from more than one version of the object"
+                );
+                complete_reads += 1;
+            }
+            Err(ReadError::IOError(e)) if Some(e.kind()) == expected_error => {
+                failed_reads += 1;
+            }
+            Err(e) => return Err(anyhow::anyhow!("read failed during overwrites: {e:?}")),
+        }
     }
     writer.await??;
 
@@ -2056,7 +2089,7 @@ async fn test_read_during_overwrite_impl(
         read.bytes == versions[0],
         "the last written version is read"
     );
-    println!("{complete_reads} complete reads during the overwrites");
+    println!("{complete_reads} complete and {failed_reads} failed reads during the overwrites");
 
     storage.delete(&path).await?;
     Ok(())
