@@ -112,3 +112,71 @@ test_structural_changes_allowed_with_full_access if {
 			with http.send as mock_http_allow_all
 	}
 }
+
+# Allows a commit only if it names exactly the kinds of update the test expects.
+_mock_exact_kinds_result(check) := {"allowed": true} if {
+	check.operation.table.action.action == "commit"
+	check.operation.table.action.update_kinds == data.expected_update_kinds
+} else := {"allowed": false} if {
+	check.operation.table.action.action == "commit"
+} else := {"allowed": true}
+
+mock_http_exact_kinds(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
+	endswith(request.url, "/token")
+} else := {"status_code": 200, "body": {"defaults": {"prefix": "mock-wh-id"}}} if {
+	contains(request.url, "catalog/v1/config")
+} else := {"status_code": 200, "body": {"results": results}} if {
+	contains(request.url, "batch-check")
+	results := [_mock_exact_kinds_result(check) | some check in request.body.checks]
+}
+
+test_commit_checks_name_the_updates_they_make if {
+	every operation in ["AddColumn", "AlterColumn", "DropColumn", "RenameColumn", "SetColumnComment"] {
+		trino.allow with input as _table_input(operation)
+			with data.configuration.lakekeeper as mock_lakekeeper
+			with data.configuration.trino_catalog as mock_trino_catalog
+			with http.send as mock_http_exact_kinds
+			with data.expected_update_kinds as ["add-schema", "set-current-schema"]
+	}
+	every operation in ["SetTableComment", "SetTableProperties"] {
+		trino.allow with input as _table_input(operation)
+			with data.configuration.lakekeeper as mock_lakekeeper
+			with data.configuration.trino_catalog as mock_trino_catalog
+			with http.send as mock_http_exact_kinds
+			with data.expected_update_kinds as ["set-properties"]
+	}
+	trino.allow with input as _procedure_input("ADD_FILES")
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_exact_kinds
+		with data.expected_update_kinds as ["add-snapshot", "set-snapshot-ref", "set-properties"]
+	every procedure in ["EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"] {
+		trino.allow with input as _procedure_input(procedure)
+			with data.configuration.lakekeeper as mock_lakekeeper
+			with data.configuration.trino_catalog as mock_trino_catalog
+			with http.send as mock_http_exact_kinds
+			with data.expected_update_kinds as ["remove-snapshots"]
+	}
+}
+
+test_commit_check_with_other_kinds_is_refused if {
+	not trino.allow with input as _table_input("AddColumn")
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_exact_kinds
+		with data.expected_update_kinds as ["set-properties"]
+}
+
+# The commit check without kinds keeps its arguments for existing policies and asks
+# about a commit of any kind, which needs more than writing data.
+test_commit_check_without_kinds_needs_modify if {
+	not trino.require_table_access_commit("managed", "schema_a", "t", {}, []) with input as {"context": mock_context}
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_writer
+	trino.require_table_access_commit("managed", "schema_a", "t", {}, []) with input as {"context": mock_context}
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_exact_kinds
+		with data.expected_update_kinds as []
+}

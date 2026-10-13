@@ -194,7 +194,8 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         "write" => ("write", {
             "Write data: add snapshots, move branches and tags, and record statistics. \
              Does not change a table's structure or properties, expire its snapshots or \
-             remove its branches and tags, and does not drop, rename or protect anything."
+             remove its branches and tags directly, and does not drop, rename or protect anything. \
+             Gives write and delete access to the table's files."
         }),
         "modify" => ("write", {
             "Change the object and its contents, including schema changes, properties and \

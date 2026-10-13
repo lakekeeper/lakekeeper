@@ -84,7 +84,7 @@ allow_table_modify if {
 	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
-	require_table_access_commit(catalog, schema, table, {}, [], ["add-schema", "set-current-schema"])
+	require_table_access_commit_kinds(catalog, schema, table, {}, [], ["add-schema", "set-current-schema"])
 }
 
 allow_table_modify if {
@@ -93,7 +93,7 @@ allow_table_modify if {
 	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
-	require_table_access_commit(catalog, schema, table, {}, [], ["set-properties"])
+	require_table_access_commit_kinds(catalog, schema, table, {}, [], ["set-properties"])
 }
 
 allow_table_modify if {
@@ -104,7 +104,7 @@ allow_table_modify if {
 	schema := input.action.resource.table.schemaName
 	properties := object.get(input.action.resource.table, "properties", {})
 	flattened_properties := flatten_properties(properties)
-	require_table_access_commit(catalog, schema, table, flattened_properties, [], ["set-properties"])
+	require_table_access_commit_kinds(catalog, schema, table, flattened_properties, [], ["set-properties"])
 }
 
 allow_table_metadata if {
@@ -155,7 +155,10 @@ allow_table_procedure if {
 	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
-	require_table_access_commit(catalog, schema, table, {}, [], ["add-snapshot", "set-snapshot-ref", "set-properties"])
+	require_table_access_commit_kinds(
+		catalog, schema, table, {}, [],
+		["add-snapshot", "set-snapshot-ref", "set-properties"],
+	)
 }
 
 # Expiring snapshots and removing orphan files delete history and files for good.
@@ -166,5 +169,5 @@ allow_table_procedure if {
 	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
-	require_table_access_commit(catalog, schema, table, {}, [], ["remove-snapshots"])
+	require_table_access_commit_kinds(catalog, schema, table, {}, [], ["remove-snapshots"])
 }

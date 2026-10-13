@@ -77,9 +77,13 @@ The `create` grant allows a user to create new objects within an entity, such as
 
 ### Write
 
-The `write` grant allows a user to change the data of a table without changing the table itself: inserting, updating, deleting and merging rows, compacting files and computing statistics. It does not allow changing a table's schema, partitioning, sort order or properties, expiring snapshots, or removing branches and tags, and it does not allow dropping, renaming or protecting the table — those need `modify`. Jobs that change the schema while they write, such as Spark with `mergeSchema` or dbt with `on_schema_change`, therefore need `modify`. Adding existing files to a table (`add_files`) needs `modify` as well if the table has no column name mapping yet, and through Trino it always does.
+The `write` grant allows a user to change the data of a table without changing the table itself: inserting, updating, deleting and merging rows, compacting files and computing statistics. It does not allow changing a table's schema, partitioning, sort order or properties, expiring snapshots, or removing branches and tags, and it does not allow dropping, renaming or protecting the table — those need `modify`. Jobs that change the schema while they write, such as Spark with `mergeSchema` or dbt with `on_schema_change`, therefore need `modify`. So does replacing or recreating a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do. Adding existing files to a table (`add_files`) needs `modify` as well if the table has no column name mapping yet, and through Trino it always does.
 
-Moving branches and tags is part of writing data, so a user with `write` can also roll a table back to an earlier snapshot, create branches and tags, and change how long a branch keeps its snapshots.
+Moving branches and tags is part of writing data, so a user with `write` can also roll a table back to an earlier snapshot, create branches and tags, and change their retention settings. If [snapshot expiry](./table-maintenance.md#expire-snapshots) is enabled, it follows these settings, so shortening them lets a user with `write` have old snapshots, branches and tags removed.
+
+Generic tables keep their structure in their own files, so for them `write` allows every change to the table's contents and structure. Managing the table itself, such as dropping, restoring, renaming or protecting it, needs `modify`.
+
+If Trino reaches Lakekeeper through the [OPA bridge](./opa.md), upgrade the bridge policies before granting `write`. Older policies let a user with `write` change a table's columns and comments, add files and expire snapshots through Trino.
 
 The `write` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants. It exists on projects, warehouses, namespaces, tables and generic tables. Views have no data of their own, so they have no `write` grant; a `write` grant on a namespace or above lets a user read the views below it.
 

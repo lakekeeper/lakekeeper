@@ -314,4 +314,53 @@ mod tests {
             );
         }
     }
+
+    /// Pins the data kinds over every variant, alone and together with an added
+    /// snapshot, so a structural kind cannot hide behind a companion kind.
+    #[test]
+    fn data_kinds_are_exactly_these() {
+        use TableUpdateKind::*;
+        use strum::{EnumCount as _, VariantNames as _};
+
+        let all: Vec<TableUpdateKind> = TableUpdateKind::VARIANTS
+            .iter()
+            .map(|name| serde_json::from_value(serde_json::Value::from(*name)).unwrap())
+            .collect();
+        assert_eq!(all.len(), TableUpdateKind::COUNT);
+
+        let alone: Vec<_> = all
+            .iter()
+            .copied()
+            .filter(|kind| TableUpdateKind::changes_only_data(&kinds(&[*kind])))
+            .collect();
+        assert_eq!(
+            alone,
+            vec![
+                AddSnapshot,
+                SetSnapshotRef,
+                SetStatistics,
+                RemoveStatistics,
+                SetPartitionStatistics,
+                RemovePartitionStatistics,
+            ]
+        );
+
+        let with_snapshot: Vec<_> = all
+            .iter()
+            .copied()
+            .filter(|kind| TableUpdateKind::changes_only_data(&kinds(&[*kind, AddSnapshot])))
+            .collect();
+        assert_eq!(
+            with_snapshot,
+            vec![
+                AddSnapshot,
+                SetSnapshotRef,
+                SetStatistics,
+                RemoveStatistics,
+                SetPartitionStatistics,
+                RemovePartitionStatistics,
+                AddEncryptionKey,
+            ]
+        );
+    }
 }
