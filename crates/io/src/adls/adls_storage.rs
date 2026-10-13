@@ -807,9 +807,8 @@ async fn read_via_head(
         // If we do not get content_length, we cannot read in chunks,
         // so read the file in one request. We can use `fetch_range`
         // with `u64::MAX`, which is set by client if no range is provided
-        let bytes = fetch_range(client, 0..u64::MAX, adls_location)
-            .await
-            .map(|gfr| gfr.data)?;
+        let bytes =
+            fetch_head_version(client, 0..u64::MAX, adls_location, &head_response.etag).await?;
         return Ok(ObjectRead { bytes, info });
     };
     let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
@@ -818,9 +817,13 @@ async fn read_via_head(
         Bytes::new()
     } else if file_size < MAX_BYTES_PER_REQUEST {
         // If the file is small enough, read it in a single request
-        fetch_range(client, 0..file_size as u64, adls_location)
-            .await
-            .map(|gfr| gfr.data)?
+        fetch_head_version(
+            client,
+            0..file_size as u64,
+            adls_location,
+            &head_response.etag,
+        )
+        .await?
     } else {
         parallel_chunked_read_with_integrity(
             client,
@@ -834,6 +837,29 @@ async fn read_via_head(
     };
 
     Ok(ObjectRead { bytes, info })
+}
+
+/// Download `range` and check that it comes from the version a `HEAD` saw
+/// (`head_etag`). A file overwritten in between fails the read.
+async fn fetch_head_version(
+    client: &FileClient,
+    range: std::ops::Range<u64>,
+    adls_location: AdlsLocation,
+    head_etag: &str,
+) -> Result<Bytes, ReadError> {
+    let location = adls_location.location().to_string();
+    let response = fetch_range(client, range, adls_location).await?;
+    if response.etag != head_etag {
+        return Err(ReadError::IOError(IOError::new(
+            ErrorKind::Unexpected,
+            format!(
+                "File was modified during download: expected ETag {head_etag}, got {}",
+                response.etag
+            ),
+            location,
+        )));
+    }
+    Ok(response.data)
 }
 
 /// Run a parallel-chunked download over `[range_start, range_start + range_size)`
