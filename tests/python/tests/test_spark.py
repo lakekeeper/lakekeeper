@@ -246,8 +246,14 @@ def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_co
 def hard_delete_warehouse(
     server: conftest.Server, project, storage_config
 ) -> conftest.Warehouse:
+    if storage_config["storage-profile"]["type"] != "s3":
+        pytest.skip("S3FileIO batch deletes run against S3 only.")
     test_id = uuid.uuid4().hex
     warehouse_name = f"warehouse-hard-delete-{test_id}"
+    # Next to the session warehouse, below the same configured root, so the
+    # locations do not overlap.
+    root = storage_config["storage-profile"].get("key-prefix", "").rstrip("/")
+    root = root.rsplit("/", 1)[0] if "/" in root else ""
     warehouse_id = server.create_warehouse(
         warehouse_name,
         project_id=project,
@@ -255,7 +261,7 @@ def hard_delete_warehouse(
             **storage_config,
             "storage-profile": {
                 **storage_config["storage-profile"],
-                "key-prefix": f"hard-delete-spark-test/{test_id}",
+                "key-prefix": f"{root}/hard-delete-spark-test/{test_id}".lstrip("/"),
             },
         },
         overrides={"delete-profile": {"type": "hard"}},
@@ -279,8 +285,6 @@ def test_expire_snapshots_deletes_files_in_several_batches(
     # calls a few seconds apart: one with 300 files, so two batches, then one
     # more. A client that caches the signature of the first call sends the
     # second batch with it, and the store refuses it.
-    if storage_config["storage-profile"]["type"] != "s3":
-        pytest.skip("S3FileIO batch deletes run against S3 only.")
     for key, value in conftest.spark_catalog_configuration(
         hard_delete_warehouse, storage_config
     ).items():
