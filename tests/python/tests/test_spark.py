@@ -1,4 +1,5 @@
 import time
+import urllib.parse
 import uuid
 
 import boto3
@@ -325,7 +326,7 @@ def write_and_expire(spark, catalog: str, table: str, n_files: int) -> str:
 
 
 def s3_files(storage_config, location: str) -> list[str]:
-    """The keys of every object under the `s3://` `location`, listed with the
+    """The keys of every object under the `s3://` or `s3a://` `location`, listed with the
     warehouse's own S3 credentials, so the result does not depend on remote
     signing."""
     credential = storage_config["storage-credential"]
@@ -340,7 +341,9 @@ def s3_files(storage_config, location: str) -> list[str]:
             s3={"addressing_style": "path" if profile.get("path-style-access") else "auto"}
         ),
     )
-    bucket, prefix = location[len("s3://") :].split("/", 1)
+    parsed = urllib.parse.urlparse(location)
+    assert parsed.scheme in ("s3", "s3a") and parsed.netloc, f"not an S3 location: {location}"
+    bucket, prefix = parsed.netloc, parsed.path.lstrip("/")
     keys = []
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
         keys.extend(item["Key"] for item in page.get("Contents", []))
