@@ -1209,7 +1209,7 @@ Configure automatic policy refresh using `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SE
 1. **Change Detection**: Lightweight checks monitor ConfigMap versions and file timestamps
 2. **Reload on Change**: Modified entity or policy files trigger a full reload of all files to guarantee consistency
 3. **Atomic Updates**: The in-memory store is only updated if all files reload successfully
-4. **Error Handling**: If any reload fails, the previous configuration is retained, an error is logged, and health checks report unhealthy status
+4. **Error Handling**: If any file fails to reload, all files keep their previous version and an error naming the file is logged. Health checks are not affected, so the pod stays in service. Policies stored per project or warehouse keep refreshing. Monitor failures with the [Cedar policy refresh metrics](./monitoring.md#cedar-policy-refresh-metrics)
 
 This approach ensures that authorization policies remain consistent and that partial updates never compromise security.
 

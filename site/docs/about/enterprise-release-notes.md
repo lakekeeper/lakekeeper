@@ -82,7 +82,7 @@ This release includes Lakekeeper v0.13.6 and v0.14.0. See the [Lakekeeper releas
 - **Grants API, governance tags, and moving and renaming namespaces** ([lakekeeper#1945](https://github.com/lakekeeper/lakekeeper/pull/1945), [lakekeeper#1914](https://github.com/lakekeeper/lakekeeper/pull/1914), [lakekeeper#1950](https://github.com/lakekeeper/lakekeeper/pull/1950)).
 - **Storage validation,** with warnings for STACKIT buckets that other credentials groups can reach and for CORS settings that block the console ([lakekeeper#1936](https://github.com/lakekeeper/lakekeeper/pull/1936), [lakekeeper#2050](https://github.com/lakekeeper/lakekeeper/pull/2050), [lakekeeper#2049](https://github.com/lakekeeper/lakekeeper/pull/2049)).
 - **STACKIT storage type with data platform storage, and Alibaba Cloud OSS** ([lakekeeper#1978](https://github.com/lakekeeper/lakekeeper/pull/1978), [lakekeeper#2045](https://github.com/lakekeeper/lakekeeper/pull/2045), [lakekeeper#1894](https://github.com/lakekeeper/lakekeeper/pull/1894)).
-- **Audit log: user emails and role sources.** Emails are off by default, role sources on ([lakekeeper#2091](https://github.com/lakekeeper/lakekeeper/pull/2091)).
+- **Audit log format changes,** listed in full under Audit log format below.
 - **Required token claims, and stricter OpenID settings** that can stop the server from starting ([lakekeeper#2001](https://github.com/lakekeeper/lakekeeper/pull/2001)).
 - **Task queue renamed.** Rename `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` to `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS` before you upgrade; the old name stops the server from starting ([lakekeeper#1881](https://github.com/lakekeeper/lakekeeper/pull/1881)).
 - **Requests may be up to 32 MiB by default** ([lakekeeper#1974](https://github.com/lakekeeper/lakekeeper/pull/1974)).
@@ -96,7 +96,131 @@ This release includes Lakekeeper v0.13.6 and v0.14.0. See the [Lakekeeper releas
 
 ### Audit log format
 
+Lakekeeper Plus writes the same audit log as Lakekeeper, so this section lists the audit log changes of Lakekeeper v0.14.0 together with those of Lakekeeper Plus.
+
 **Breaking changes** — an existing parser must be updated:
+
+- **A field is absent when it has no value, and an empty list or map is written out. Nothing in an audit record is `null`.**
+
+    A field the request did not supply is left out. A policy factor without a name, for example, has no `name` key instead of `"name": null`.
+
+    An empty list or map is a value and is always written once an action can carry it:
+
+    ```text
+    before  {"action_name": "commit"}
+    after   {"action_name": "commit", "updated_properties": {}, "removed_properties": [], "target_refs": [], "update_kinds": []}
+    ```
+
+    This applies to `properties`, `updated_properties`, `removed_properties`, `source`, `destination`, `target_refs` and `update_kinds` in an action, and to `authorizations[].determined_by` and `error.stack`. A flag such as `force`, `purge` or `recursive` is also always written, as `true` or `false`.
+
+    **What to do:** read "none" from an empty value, not from a missing key. Keys that are genuinely optional, such as a name or an id, still need a presence check.
+
+- **Authorization records always carry `actions` and `entities` as lists. The singular `action` and `entity` fields are gone.**
+
+    ```text
+    before  "action": {…}            or  "actions": [{…}, {…}]
+    after   "actions": [{…}]
+
+    before  .entity.namespace         .action.action_name
+    after   .entities[0].namespace    .actions[0].action_name
+    ```
+
+    Each entry of `authorizations[]` still carries a singular `action` and `entity`.
+
+    **What to do:** read `actions` and `entities` as lists, and iterate: a record can carry more than one.
+
+- **A `context` value has its own JSON type. It is no longer always a string.**
+
+    ```text
+    before  "force": "true"   "dry_run": "true"   "writes": "2"
+    after   "force": true     "dry_run": false    "writes": 2
+    ```
+
+    - Booleans: `force`, `purge`, `recursive`, `dry_run` and `allow_partial` in an action, and `self_provisioning` and `self_read` in `context`.
+    - Numbers: `writes` and `deletes`.
+    - Principals: `principals` on `apply_grants` and `principal` on `read_subtree_grants` and `revoke_subtree_grants` are `{"user": …}` or `{"role": …}`, the form `context.principal` has on grant records. A subtree request states with `principal_scope` (`every` or `one`) whether it names one principal; `principal` is present only for `one`.
+    - Strings, lists and maps keep their type.
+
+    Lakekeeper Plus adds `context` keys that hold an object, such as `scope_changes` and `applied` on `apply_cedar_policies`. `schema-plus.json` gives the object's definition.
+
+    **What to do:** compare a flag with `true`, not with `"true"`. Read each key's type from the schema.
+
+- **The entries of `authorizations[].determined_by` have the shape the management API returns from a permission check, and there are two new kinds.**
+
+    ```text
+    before  {"Policy": {"policy_id": "p-42", "effect": {"Permit": []}, "source": "cedar"}}
+    after   {"type": "policy", "policy-id": "p-42", "effect": "permit", "source": "cedar"}
+    ```
+
+    - The kind is in `type`. Field names are kebab-case, as in the API. `effect` is `permit` or `forbid`.
+    - `{"type": "system-authority"}`: a built-in authority, not a configured policy, decided the allow. It may carry `source` and `reason`.
+    - `{"type": "admission-gate"}`: an admission gate would refuse the user. It carries `gate`, and `check` when the gate names one.
+
+    **What to do:** switch on `type`. The same code can parse these entries and a `/check` response.
+
+- **A request that names nothing to check records empty lists. The made-up `unknown` entry is gone.**
+
+    A batch check with `checks: []`, and a transaction commit with no table changes, recorded one `authorizations` entry with `entity_type` `unknown`, and for the commit `action_name` `unknown` too.
+
+    ```text
+    before  "authorizations": [{"action": {"action_name": "unknown"}, "entity": {"entity_type": "unknown"}, …}]
+    after   "actions": [], "entities": [], "authorizations": []
+    ```
+
+    `decision` still carries the outcome.
+
+    **What to do:** stop matching `unknown` in `entity_type` and `action_name`, and handle an empty `authorizations` list.
+
+- **Every key and every value this log names itself is spelled `snake_case`, and `failure_reason` is a plain string.**
+
+    Keys that carried a hyphen now carry an underscore:
+
+    - in an `entity`: `generic_table`, `generic_table_id`, `namespace_id`, `project_id`, `role_id`, `role_provider_id`, `role_source_id`, `server_id`, `table_id`, `table_location`, `tag_definition_id`, `task_id`, `user_id`, `view_id`, `warehouse_id`
+    - in an action: `allow_partial`, `created_before`, `dry_run`, `removed_properties`, `target_refs`, `update_kinds`, `updated_properties`
+    - in an authorization record's `context`: `invoked_by`, `self_provisioning`, `self_read`
+    - on an `authorizations[]` entry: `for_principal`
+
+    Values:
+
+    ```text
+    actor_type      before  assumed-role                after  assumed_role
+                    before  lakekeeper-internal         after  lakekeeper_internal
+    failure_reason  before  {"ActionForbidden": []}     after  "action_forbidden"
+    ```
+
+    Every `failure_reason` value follows the same pattern: `action_forbidden`, `resource_not_found`, `cannot_see_resource`, `internal_authorization_error`, `internal_catalog_error`, `invalid_request_data`.
+
+    Three sets keep the spelling of the vocabulary they come from: `entity_type` and `resource_type` (`generic-table`, `tag-definition`, as in the management API) and `update_kinds` (Iceberg's update names, such as `add-schema`). The objects in `determined_by` keep the management API's field names, `policy-id` included.
+
+    **What to do:** rename these keys and values in every query. A query on the old spelling matches nothing and raises no error, so check for the new names explicitly. In `jq`, `.failure_reason | keys[0]` becomes `.failure_reason`.
+
+- **A role on a record carries its `provider_id` and `source_id` next to its id.** `provider_id` is always shown; `LAKEKEEPER__AUDIT__TRACING__INCLUDE_ROLE_SOURCE_ID=false` leaves `source_id` out.
+
+    ```text
+    before  {"role": "1f7b…"}
+    after   {"role": "1f7b…", "provider_id": "corporate-ldap", "source_id": "engineering"}
+    ```
+
+    This applies wherever a role is named: `authorizations[].for_principal`, `context.principal` on `grant_created` and `grant_revoked`, `principals` on `apply_grants`, and `principal` on `read_subtree_grants` and `revoke_subtree_grants`. Both fields are absent when the role no longer exists or could not be looked up. With the setting off, `source_id` is absent everywhere, including on `actor.assumed_role`, which carries it otherwise.
+
+    **What to do:** correlate on the role's id. Read `provider_id` and `source_id` as optional on a role a record names, and `source_id` as optional on `actor.assumed_role`. Some providers let a source id be a free-form name, so it might hold personal data; turn the setting off if that matters for your log.
+
+- **Renaming a table, view or generic table into another namespace is recorded as `move`, not `rename`, and namespaces have a new action `accept_moved_tabular`.**
+
+    ```text
+    renameTable, renameView, renameGenericTable into another namespace
+      before   rename
+      after    move   destination
+    namespace  accept_moved_tabular   source
+    ```
+
+    The record of such a rename names `move` on the renamed entity, refused or allowed, on replays as well. `destination` holds the path of the destination namespace; the entity's new name is not part of it, unlike for a namespace `move`, where `destination` is the full new path. A rename within one namespace is still recorded as `rename`. Whether the namespace changes is decided on the paths in the request, ignoring upper and lower case of ASCII letters: two paths that differ only in the case of a non-ASCII letter are recorded as `move`.
+
+    `accept_moved_tabular` is the check on the destination namespace. `source` holds the path of the namespace the entity is moved from. It appears in records of permission checks that name it, such as `/management/v1/action/batch-check`.
+
+    The record of cancelling soft-deletion tasks is unchanged: it still names `control_tasks`. Cancelling such a task now also requires `undrop` on its table, view or generic table, and a refusal is recorded as a denied `control_tasks`.
+
+    **What to do:** if you match table, view or generic-table renames on `rename`, match `move` as well.
 
 - **`context.roles` on `resolve_roles` records with `outcome: "roles_resolved"` lists role objects instead of strings.**
 
@@ -109,9 +233,70 @@ This release includes Lakekeeper v0.13.6 and v0.14.0. See the [Lakekeeper releas
 
     **What to do:** read each entry of `roles` as an object. To rebuild the old string, join `provider_id` and `source_id` with `~`.
 
-- Lakekeeper's part of each record carries `audit_format` **1.0**, its first version. Lakekeeper's release notes list what changed: https://docs.lakekeeper.io/about/release-notes/
-
 **Additions** — an existing parser keeps working:
+
+- **Authorization records carry three new optional fields about the request: `user_agent`, `break_glass` and `idempotency_key`.**
+
+    - `user_agent`: the request's `User-Agent` header, as sent and unverified.
+    - `break_glass`: the reason the caller stated in the `x-break-glass` header, as sent and unverified.
+    - `idempotency_key`: the request's `Idempotency-Key`.
+
+    Each is absent when the request did not send it.
+
+    **What to do:** nothing. Treat `user_agent` and `break_glass` as claims, never as identity.
+
+- **Three more operations record the override that makes them destructive.**
+
+    ```text
+    role delete          force   revokes the grants the role still holds
+    warehouse delete     force   deletes a protected warehouse and everything in it
+    generic-table drop   force   skips the warehouse's soft-deletion window
+                         purge   deletes the data files
+    ```
+
+    They use the same keys as namespace delete, table drop and view drop. The key is present whichever way the flag went.
+
+    **What to do:** if you alert on destructive operations, include these three. `"force": true` is the forced form.
+
+- **Three new kinds of audit record: grant changes, admission decisions and idempotent replays.**
+
+    - `operation: "grant_created"` and `"grant_revoked"`: one record per grant the backend reports as applied, with `outcome: "success"` and `context` `principal`, `privilege`, `resource_type`, and `resource_id` and `warehouse_id` where they apply.
+    - `operation: "admission_decided"`: a request an admission gate refused. `outcome` is `forbidden` or `unavailable`; `context` carries `gate`, `status`, `error_type`, `message`, `error_id`, and `denied_by` when the gate named a rule.
+    - `record_type: "replay"`: a request answered from an idempotency record without being executed. It carries the `actions` and `entities` the request named and the `idempotency_key` that matched, and no `decision`.
+
+    **What to do:** nothing, unless you want these records. Select them by `operation` or by `record_type`.
+
+- **Records can carry the email of the users they name.** Off by default; `LAKEKEEPER__AUDIT__TRACING__INCLUDE_USER_EMAIL=true` turns it on.
+
+    ```text
+    actor.email                          the principal's email, for principal and assumed_role actors
+    authorizations[].for_principal.email  the user's email, for a user subject
+    actions[].principals[].email         the user's email, for a user an apply_grants request names
+    actions[].principal.email            the user's email, when a subtree grant request names one user
+    context.principal.email              the recipient's email, on grant_created and grant_revoked
+    ```
+
+    Each is best-effort: absent when the email is not known, never `null`. Roles, `anonymous` and `lakekeeper_internal` actors never carry one. An email is metadata, not identity: emails are not unique and can change.
+
+    **What to do:** correlate on `principal`, `user` and `role`, never on `email`. If you enable the setting, treat the log as holding personal data: an email stays in the log after the user is deleted.
+
+- **Audit records carry four new top-level fields: `record_type`, `emitters`, `time`, and `request_id` when a request caused the record.**
+
+    ```text
+    "record_type": "authorization",
+    "emitters": {"lakekeeper": "1.0"},
+    "request_id": "019684ff-…",
+    "time": "2026-03-14T09:26:53.589793Z"
+    ```
+
+    - `record_type` names the record's shape: `authorization`, `replay` or `operation`.
+    - `emitters` names every product that contributed to the record. Each key is a product name, each value the `MAJOR.MINOR` version of what that product contributes. Records that Lakekeeper Plus writes itself, such as `resolve_roles`, carry `"emitters": {"lakekeeper_plus": "1.0"}`. An authorization record also has the key `lakekeeper_plus` when it carries one of Lakekeeper Plus's action names or `context` keys.
+    - `request_id` is the request that caused the record: the value of the `x-request-id` response header, as sent by the caller or generated by Lakekeeper. It is absent from an operation record no request caused, such as the role-provider records `resolve_roles`, `ldap_resolve_roles` and `cached_role_provider`.
+    - `time` is when the event happened, in UTC, as RFC 3339 with microseconds.
+
+    `audit_format` governs the record's overall shape. A product's value in `emitters` governs what that product contributes. The two are equal on a record only Lakekeeper produced; do not rely on that.
+
+    **What to do:** route on `record_type`. Read a product's version from its key: `.emitters.lakekeeper` for Lakekeeper, `.emitters.lakekeeper_plus` for Lakekeeper Plus. Correlate records with a request through `request_id`, and order them by `time`.
 
 - **A new record: `operation: "admission_enforce_check"` with `outcome: "role_withheld"`.**
 
@@ -137,27 +322,22 @@ This release includes Lakekeeper v0.13.6 and v0.14.0. See the [Lakekeeper releas
 
 **Also worth knowing** — the format itself did not change:
 
-- **Every record this product writes carries the new top-level fields of every audit record: `record_type`, `emitters`, `time`, and `request_id` when a request caused it.**
+- **Audit records are emitted on the fixed `tracing` target `lakekeeper::audit`.**
 
-    ```text
-    "record_type": "operation",
-    "emitters": {"lakekeeper_plus": "1.0"},
-    "time": "2026-03-14T09:26:53.589793Z"
-    ```
+    A log filter naming `lakekeeper::service::events::backends::audit`, `lakekeeper::service::admission` or a prefix of either below `lakekeeper` matches no audit record. The server warns at start-up when it finds such a filter.
 
-    The role-provider records (`resolve_roles`, `ldap_resolve_roles`, `cached_role_provider`) carry no `request_id`. An authorization record that carries one of this product's action names or `context` keys also has the key `lakekeeper_plus` in `emitters`.
+    **What to do:** select audit records with `RUST_LOG=warn,lakekeeper::audit=info`, or suppress them with `RUST_LOG=info,lakekeeper::audit=warn`.
 
-    Lakekeeper's release notes describe these fields. This product's version is the value of `.emitters.lakekeeper_plus`.
+- **The audit log has published JSON Schemas: `audit/schema.json` for Lakekeeper and `audit/schema-plus.json` for Lakekeeper Plus, in the documentation, linked from the "Audit Log Schema" page.**
 
-    **What to do:** read this product's version from `.emitters.lakekeeper_plus`.
-
-- **This product publishes a JSON Schema for what it contributes to the audit log: `audit/schema-plus.json` in the documentation, beside Lakekeeper's `audit/schema.json`.**
-
-    It lists this product's `operation` and `outcome` values, the `context` of each of its records, the `context` keys it adds to authorization records, and its action names. Lakekeeper's schema describes the record shapes. A record whose `emitters` has the key `lakekeeper_plus` is governed by both.
+    - Point a validator at the document to check a whole record. Its root, `AuditRecord`, requires `event_source`, `audit_format` and `record_type` and selects the shape by `record_type`: `AuthorizationRecord`, `ReplayRecord` or `OperationRecord`.
+    - Every field and key is a property with its type and description. `ActionRecord` lists, per `action_name`, the keys that action carries.
+    - A value set the log may extend lists its values under `x-audit-values`, so a validator accepts a value a later release adds. The closed sets `decision`, `privilege_scope`, `root_level` and a policy's `effect` use `enum`.
+    - `schema-plus.json` lists Lakekeeper Plus's `operation` and `outcome` values, the `context` of each of its records, the `context` keys it adds to authorization records, and its action names. A record whose `emitters` has the key `lakekeeper_plus` is governed by both schemas.
 
     **What to do:** nothing. Validate with both schemas, or generate a parser from them.
 
-Records from v0.14.0 carry `emitters.lakekeeper_plus` **1.0** (the first version).
+Records from v0.14.0 carry `audit_format` **1.0** (the first version). Records from v0.14.0 that Lakekeeper Plus contributes to carry `emitters.lakekeeper_plus` **1.0** (the first version).
 
 
 ## v0.13.6 (2026-09-18)

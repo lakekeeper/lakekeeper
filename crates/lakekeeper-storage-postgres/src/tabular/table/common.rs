@@ -466,10 +466,6 @@ pub(super) async fn insert_snapshot_refs(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<(), InternalBackendErrors> {
     let n_refs = table_metadata.refs().len();
-    if n_refs == 0 {
-        return Ok(());
-    }
-
     let mut refnames = Vec::with_capacity(n_refs);
     let mut snapshot_ids = Vec::with_capacity(n_refs);
     let mut retentions = Vec::with_capacity(n_refs);
@@ -495,9 +491,12 @@ pub(super) async fn insert_snapshot_refs(
                               table_ref_name,
                               snapshot_id,
                               retention)
-        SELECT $1, $2, u.* FROM UNNEST($3::TEXT[], $4::BIGINT[], $5::JSONB[]) u
+        SELECT $1, $2, u.* FROM UNNEST($3::TEXT[], $4::BIGINT[], $5::JSONB[]) AS u(table_ref_name, snapshot_id, retention)
+        ORDER BY u.table_ref_name
         ON CONFLICT (warehouse_id, table_id, table_ref_name)
-        DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention"#,
+        DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention
+        WHERE (table_refs.snapshot_id, table_refs.retention)
+            IS DISTINCT FROM (EXCLUDED.snapshot_id, EXCLUDED.retention)"#,
         *warehouse_id,
         table_metadata.uuid(),
         &refnames,

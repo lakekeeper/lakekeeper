@@ -24,7 +24,7 @@ The `storage-credential` of a GCS Warehouse has `"type": "gcs"` and one of these
 | `service-account-key` | A service account key, see [Service Account Key](#service-account-key) |
 | `gcp-system-identity` | The service account the Lakekeeper process runs as, see [GCP System Identity](#gcp-system-identity) |
 
-Either way, the service account needs access to the bucket, typically the Storage Admin role on it.
+Either way, the service account needs access to the objects of the bucket. The Storage Object User role (`roles/storage.objectUser`) on the bucket is enough, with or without hierarchical namespaces: Lakekeeper only reads, writes, lists and deletes objects, and the tokens it vends are downscoped to at most that role. Permissions to administer the bucket itself, such as those in Storage Admin, are not needed.
 
 ### Service Account Key
 

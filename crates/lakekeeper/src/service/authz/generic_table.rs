@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use iceberg_ext::catalog::rest::ErrorModel;
 
@@ -6,12 +6,12 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        AuthZGenericTableInfo, CachePolicy, CatalogBackendError, CatalogNamespaceOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GenericTableId, GenericTableIdentOrId,
-        GenericTabularInfo, GetTabularInfoError, IcebergErrorResponse, InternalParseLocationError,
-        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
-        ResolvedWarehouse, SerializationError, TabularId, TabularListFlags, TabularNotFound,
-        UnexpectedTabularInResponse, ViewOrTableInfo,
+        ArcResolvedWarehouse, AuthZGenericTableInfo, CachePolicy, CatalogBackendError,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableId,
+        GenericTableIdentOrId, GenericTabularInfo, GetTabularInfoError, IcebergErrorResponse,
+        InternalParseLocationError, InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId,
+        NamespaceWithParent, ResolvedWarehouse, SerializationError, TabularId, TabularListFlags,
+        TabularNotFound, UnexpectedTabularInResponse, ViewOrTableInfo,
         authz::{
             ActionOnGenericTable, AuthZError, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, AuthorizationDecision, AuthorizationInternalError,
@@ -506,14 +506,7 @@ pub trait AuthZGenericTableOps: Authorizer {
         table_flags: TabularListFlags,
         action: impl Into<Self::GenericTableAction> + Send,
         catalog_state: C::State,
-    ) -> Result<
-        (
-            Arc<ResolvedWarehouse>,
-            NamespaceHierarchy,
-            GenericTabularInfo,
-        ),
-        AuthZError,
-    > {
+    ) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy, GenericTabularInfo), AuthZError> {
         let warehouse_id = user_provided.warehouse_id;
         let action = action.into();
 
@@ -594,14 +587,7 @@ pub(crate) async fn fetch_warehouse_namespace_generic_table_by_id<C, A>(
     generic_table_id: GenericTableId,
     table_flags: TabularListFlags,
     catalog_state: C::State,
-) -> Result<
-    (
-        Arc<ResolvedWarehouse>,
-        NamespaceHierarchy,
-        GenericTabularInfo,
-    ),
-    AuthZError,
->
+) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy, GenericTabularInfo), AuthZError>
 where
     C: CatalogStore,
     A: AuthzWarehouseOps + AuthzNamespaceOps,

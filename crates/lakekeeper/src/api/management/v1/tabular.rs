@@ -9,8 +9,8 @@ use crate::{
     WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        ResolvedWarehouse, SecretStore, State, TabularId,
+        ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, SecretStore, State, TabularId,
         authz::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
@@ -144,7 +144,7 @@ where
 }
 
 struct AuthorizeSearchTabularResult {
-    warehouse: Arc<ResolvedWarehouse>,
+    warehouse: ArcResolvedWarehouse,
     authz_list_all: bool,
 }
 

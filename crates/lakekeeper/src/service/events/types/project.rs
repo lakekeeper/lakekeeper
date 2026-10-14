@@ -1,10 +1,8 @@
-use std::sync::Arc;
-
 use crate::{
     ProjectId,
-    api::RequestMetadata,
+    api::ArcRequestMetadata,
     service::{
-        ResolvedWarehouse,
+        ArcResolvedWarehouse,
         authz::CatalogProjectAction,
         events::{
             APIEventContext,
@@ -18,13 +16,13 @@ use crate::{
 /// Event emitted when a warehouse is created (within a project)
 #[derive(Clone, Debug)]
 pub struct CreateWarehouseEvent {
-    pub warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 impl APIEventContext<ProjectId, Unresolved, CatalogProjectAction, AuthzChecked> {
     /// Emit warehouse created event
-    pub(crate) fn emit_warehouse_created(self, warehouse: Arc<ResolvedWarehouse>) {
+    pub(crate) fn emit_warehouse_created(self, warehouse: ArcResolvedWarehouse) {
         let event = CreateWarehouseEvent {
             warehouse,
             request_metadata: self.request_metadata,

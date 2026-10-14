@@ -15,9 +15,9 @@ use lakekeeper::{
         },
     },
     service::{
-        CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
-        RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, Transaction, UserId, UserUpsertMode,
-        authz::AllowAllAuthorizer, events::EventListener,
+        ArcProjectId, CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId,
+        RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, Transaction, UserId,
+        UserUpsertMode, authz::AllowAllAuthorizer, events::EventListener,
     },
 };
 use lakekeeper_integration_tests::{CapturingAuthzListener, SetupTestCatalog, memory_io_profile};
@@ -26,7 +26,7 @@ use sqlx::PgPool;
 
 type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
 
-async fn setup(pool: PgPool) -> (Ctx, std::sync::Arc<ProjectId>) {
+async fn setup(pool: PgPool) -> (Ctx, ArcProjectId) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
         .storage_profile(memory_io_profile())

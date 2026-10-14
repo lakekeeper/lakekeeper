@@ -20,6 +20,36 @@ check-clippy:
 check-cargo-sort:
 	cargo sort -c -w
 
+# Every workspace crate takes the workspace version, so release-please must bump each one's
+# Cargo.lock entry. A crate it misses leaves the release commit failing `--locked`.
+# Check that release-please bumps exactly the workspace crates in Cargo.lock
+check-release-please-crates:
+    #!/usr/bin/env python3
+    import json, re, subprocess, sys
+    metadata = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    crates = {package["name"] for package in json.loads(metadata)["packages"]}
+    with open("release-please/release-please-config.json") as f:
+        extra_files = json.load(f)["extra-files"]
+    version_selector = re.compile(r'\$\.package\[\?\(@\.name\.value == "([^"]+)"\)\]\.version')
+    bumped = {
+        match.group(1)
+        for entry in extra_files
+        if entry.get("path") == "Cargo.lock"
+        for match in [version_selector.fullmatch(entry.get("jsonpath", ""))]
+        if match
+    }
+    missing, stale = sorted(crates - bumped), sorted(bumped - crates)
+    for name in missing:
+        print(f"release-please does not bump {name} in Cargo.lock: add it to the extra-files of release-please/release-please-config.json.", file=sys.stderr)
+    for name in stale:
+        print(f"release-please bumps {name} in Cargo.lock, which is not a workspace crate: remove it from release-please/release-please-config.json.", file=sys.stderr)
+    if missing or stale:
+        sys.exit(1)
+    print(f"release-please bumps all {len(crates)} workspace crates in Cargo.lock.")
+
 check: check-clippy check-format check-cargo-sort
 
 fix-format:

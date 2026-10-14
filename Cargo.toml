@@ -153,7 +153,6 @@ quote = "1.0"
 rdkafka = { version = "0.38.0", default-features = false, features = [
     "tokio",
     "zstd",
-    "gssapi-vendored",
     "curl-static",
     "ssl-vendored",
     "libz-static",

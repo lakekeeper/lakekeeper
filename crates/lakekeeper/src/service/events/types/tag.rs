@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     ProjectId,
-    api::RequestMetadata,
+    api::ArcRequestMetadata,
     service::{
         Tag, TagDefinition, TagDefinitionId,
         authz::{CatalogProjectAction, CatalogTagAction},
@@ -19,21 +19,21 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct CreateTagDefinitionEvent {
     pub tag_definition: Arc<TagDefinition>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a tag definition is updated
 #[derive(Clone, Debug)]
 pub struct UpdateTagDefinitionEvent {
     pub tag_definition: Arc<TagDefinition>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a tag definition is deleted
 #[derive(Clone, Debug)]
 pub struct DeleteTagDefinitionEvent {
     pub tag_definition: Arc<TagDefinition>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 impl APIEventContext<ProjectId, Resolved<Arc<TagDefinition>>, CatalogProjectAction, AuthzChecked> {
@@ -85,7 +85,7 @@ impl
 pub struct TagAppliedEvent {
     pub tag: Arc<Tag>,
     pub tag_definition: Arc<TagDefinition>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when a tag is removed from a target
@@ -93,7 +93,7 @@ pub struct TagAppliedEvent {
 pub struct TagRemovedEvent {
     pub tag: Arc<Tag>,
     pub tag_definition: Arc<TagDefinition>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 // Attachment endpoints authorize the tag's target (warehouse, namespace,

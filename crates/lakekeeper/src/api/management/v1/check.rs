@@ -13,10 +13,10 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
     request_metadata::ProjectIdMissing,
     service::{
-        ArcProjectId, ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
-        CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo, GetRoleAcrossProjectsError,
-        NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId,
+        ArcProjectId, ArcResolvedWarehouse, ArcRole, BasicTabularInfo, CachePolicy,
+        CatalogGetNamespaceError, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo,
+        GetRoleAcrossProjectsError, NamespaceId, NamespaceVersion, NamespaceWithParent, RoleId,
         RoleIdNotFound, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
         TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
@@ -919,7 +919,7 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     authorizer: &A,
     error_on_not_found: bool,
-) -> Result<HashMap<WarehouseId, Arc<ResolvedWarehouse>>, AuthZError> {
+) -> Result<HashMap<WarehouseId, ArcResolvedWarehouse>, AuthZError> {
     if seen_warehouse_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1196,7 +1196,7 @@ async fn fetch_namespaces<C: CatalogStore>(
     Ok((namespaces_by_id, namespace_ident_lookup))
 }
 
-/// Fetch `Arc<Role>` for every `Role(RoleId)` identity referenced in the check items.
+/// Fetch `ArcRole` for every `Role(RoleId)` identity referenced in the check items.
 /// Returns an error if any requested role ID is not found in the catalog.
 async fn fetch_identity_roles<C: CatalogStore>(
     checks: &[CatalogActionCheckItem],
@@ -1241,7 +1241,7 @@ async fn fetch_identity_roles<C: CatalogStore>(
 }
 
 /// Convert an API-level `UserOrRole` (which carries only a `RoleId`) into the
-/// internal `AuthzUserOrRole` (which carries the full `Arc<Role>`).
+/// internal `AuthzUserOrRole` (which carries the full `ArcRole`).
 /// Unreachable if a role ID is not present in `roles` — callers must pre-populate
 /// the map via `fetch_identity_roles`.
 fn resolve_identity(
@@ -1325,7 +1325,7 @@ fn spawn_project_checks<A: Authorizer>(
 fn spawn_warehouse_checks<A: Authorizer>(
     authz_tasks: &mut AuthzTaskJoinSet,
     warehouse_checks: WarehouseChecksMap,
-    warehouses: &HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &HashMap<WarehouseId, ArcResolvedWarehouse>,
     authorizer: &A,
     metadata: &RequestMetadata,
     roles: &HashMap<RoleId, ArcRole>,
@@ -1358,7 +1358,7 @@ fn spawn_warehouse_checks<A: Authorizer>(
 struct NamespaceCheckByIdParams<'a, A: Authorizer> {
     authz_tasks: &'a mut AuthzTaskJoinSet,
     namespace_checks_by_id: NamespaceChecksByIdMap,
-    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &'a HashMap<WarehouseId, ArcResolvedWarehouse>,
     namespaces_by_id: &'a HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
     authorizer: &'a A,
     metadata: &'a RequestMetadata,
@@ -1447,7 +1447,7 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
 struct NamespaceCheckByIdentParams<'a, A: Authorizer> {
     authz_tasks: &'a mut AuthzTaskJoinSet,
     namespace_checks_by_ident: NamespaceChecksByIdentMap,
-    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &'a HashMap<WarehouseId, ArcResolvedWarehouse>,
     namespaces_by_id: &'a HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
     namespace_ident_lookup: &'a HashMap<(WarehouseId, Vec<String>), NamespaceId>,
     authorizer: &'a A,
@@ -1556,7 +1556,7 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
 struct TabularCheckByIdParams<'a, A: Authorizer> {
     authz_tasks: &'a mut AuthzTaskJoinSet,
     tabular_checks_by_id: TabularChecksByIdMap,
-    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &'a HashMap<WarehouseId, ArcResolvedWarehouse>,
     tabular_infos_by_id: &'a Arc<HashMap<(WarehouseId, TabularId), ViewOrTableInfo>>,
     namespaces_by_id: &'a Arc<HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>>,
     authorizer: &'a A,
@@ -1672,7 +1672,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
 struct TabularCheckByIdentParams<'a, A: Authorizer> {
     authz_tasks: &'a mut AuthzTaskJoinSet,
     tabular_checks_by_ident: TabularChecksByIdentMap,
-    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    warehouses: &'a HashMap<WarehouseId, ArcResolvedWarehouse>,
     tabular_infos_by_ident: &'a Arc<HashMap<(WarehouseId, TabularIdentOwned), ViewOrTableInfo>>,
     namespaces_by_id: &'a Arc<HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>>,
     authorizer: &'a A,
@@ -1901,7 +1901,7 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     metadata: &RequestMetadata,
     error_on_not_found: bool,
 ) -> Result<Vec<CatalogActionsBatchCheckResult>, AuthZError> {
-    // 0. Resolve all role IDs referenced in identity fields to full Arc<Role>.
+    // 0. Resolve all role IDs referenced in identity fields to full ArcRole.
     //    Single batched catalog call; errors if any identity role ID is unknown.
     //    Must be called before group_checks consumes `checks`.
     let roles = fetch_identity_roles::<C>(&checks, catalog_state.clone()).await?;

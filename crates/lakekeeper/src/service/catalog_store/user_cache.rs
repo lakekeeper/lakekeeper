@@ -48,6 +48,15 @@ impl UserEmail {
         }
     }
 
+    /// The email, if the user has one, sharing the cached string.
+    #[must_use]
+    pub fn into_email(self) -> Option<Arc<str>> {
+        match self {
+            Self::Email(email) => Some(email),
+            Self::NoEmail | Self::NoUser => None,
+        }
+    }
+
     fn of(email: Option<&str>) -> Self {
         email.map_or(Self::NoEmail, |email| Self::Email(Arc::from(email)))
     }
@@ -78,31 +87,31 @@ const LOAD_CHUNK: usize = 500;
 /// One id is loaded single-flight: concurrent misses for it share one read. Several
 /// ids are loaded in one read per [`LOAD_CHUNK`] misses; concurrent misses for the same id
 /// then each read it once. A read error is returned; chunks read before it stay cached.
-pub async fn user_emails<C: CatalogStore>(
-    user_ids: &[UserId],
+pub async fn user_emails<'a, C: CatalogStore>(
+    user_ids: &[&'a UserId],
     catalog_state: C::State,
-) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
+) -> Result<HashMap<&'a UserId, UserEmail>, CatalogBackendError> {
     let mut seen = HashSet::new();
-    let unique: Vec<UserId> = user_ids
+    let unique: Vec<&UserId> = user_ids
         .iter()
+        .copied()
         .filter(|id| seen.insert(*id))
-        .cloned()
         .collect();
 
     if let [user_id] = unique.as_slice() {
         let email = USER_CACHE
             .get_or_load(user_id, async {
-                let mut loaded = load::<C>(std::slice::from_ref(user_id), catalog_state).await?;
-                Ok(loaded.remove(user_id).unwrap_or(UserEmail::NoUser))
+                let mut loaded = load::<C>(&[*user_id], catalog_state).await?;
+                Ok(loaded.remove(*user_id).unwrap_or(UserEmail::NoUser))
             })
             .await?;
-        return Ok(HashMap::from([(user_id.clone(), email)]));
+        return Ok(HashMap::from([(*user_id, email)]));
     }
 
     let mut emails = HashMap::with_capacity(unique.len());
     let mut misses = Vec::new();
     for user_id in unique {
-        match USER_CACHE.get(&user_id).await {
+        match USER_CACHE.get(user_id).await {
             Some(email) => {
                 emails.insert(user_id, email);
             }
@@ -121,11 +130,11 @@ pub async fn user_emails<C: CatalogStore>(
             .collect();
         let mut loaded = load::<C>(chunk, catalog_state.clone()).await?;
         for (user_id, count) in chunk.iter().zip(counts) {
-            let email = loaded.remove(user_id).unwrap_or(UserEmail::NoUser);
+            let email = loaded.remove(*user_id).unwrap_or(UserEmail::NoUser);
             USER_CACHE
                 .put_unless_invalidated(user_id, email.clone(), count)
                 .await;
-            emails.insert(user_id.clone(), email);
+            emails.insert(*user_id, email);
         }
     }
     Ok(emails)
@@ -140,10 +149,12 @@ pub async fn cached_user_email(user_id: &UserId) -> Option<UserEmail> {
 /// Read the emails of `user_ids`, at most [`LOAD_CHUNK`] of them, in one statement. A user
 /// the read does not return has no row or is deleted, and is left out.
 async fn load<C: CatalogStore>(
-    user_ids: &[UserId],
+    user_ids: &[&UserId],
     catalog_state: C::State,
 ) -> Result<HashMap<UserId, UserEmail>, CatalogBackendError> {
-    let users = C::list_user_membership_entries(user_ids, catalog_state)
+    // The store reads owned ids. Only cache misses get here, each on its way to the database.
+    let user_ids: Vec<UserId> = user_ids.iter().map(|&id| id.clone()).collect();
+    let users = C::list_user_membership_entries(&user_ids, catalog_state)
         .await
         .map_err(|e| CatalogBackendError::new_unexpected(std::io::Error::other(e.error.message)))?;
     Ok(users

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -7,10 +7,10 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        AuthZNamespaceInfo, CachePolicy, CatalogBackendError, CatalogGetNamespaceError,
-        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, InvalidNamespaceIdentifier,
-        NamespaceHierarchy, NamespaceId, NamespaceIdentOrId, NamespaceNotFound,
-        NamespaceWithParent, ResolvedWarehouse, SerializationError,
+        ArcResolvedWarehouse, AuthZNamespaceInfo, CachePolicy, CatalogBackendError,
+        CatalogGetNamespaceError, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps,
+        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceIdentOrId,
+        NamespaceNotFound, NamespaceWithParent, ResolvedWarehouse, SerializationError,
         authz::{
             AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
             AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
@@ -325,7 +325,7 @@ pub trait AuthzNamespaceOps: Authorizer {
         action: impl Into<Self::NamespaceAction> + Send,
         cache_policy: CachePolicy,
         catalog_state: C::State,
-    ) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), LoadAndAuthorizeNamespaceError> {
+    ) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy), LoadAndAuthorizeNamespaceError> {
         let warehouse_id = namespace.warehouse_id;
         let namespace_ident_or_id = namespace.namespace.clone();
         let action = action.into();

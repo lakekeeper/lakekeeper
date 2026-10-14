@@ -166,13 +166,20 @@ Lakekeeper uses [rust-rdkafka](https://github.com/fede1024/rust-rdkafka) to enab
 The following features of rust-rdkafka are enabled:
 
 - tokio
-- ztstd
-- gssapi-vendored
+- zstd
 - curl-static
 - ssl-vendored
 - libz-static
 
-This means that all features of [librdkafka](https://github.com/confluentinc/librdkafka) are usable. All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
+Lakekeeper can connect to Kafka in these ways:
+
+- Without authentication (`security.protocol` `PLAINTEXT`).
+- With TLS, including client certificates (`SSL`).
+- With SASL, also over TLS (`SASL_PLAINTEXT` or `SASL_SSL`), using the mechanisms `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` or `OAUTHBEARER`. For `OAUTHBEARER`, set `sasl.oauthbearer.method` to `oidc`, so that the Kafka client fetches tokens from your identity provider.
+
+Kerberos (SASL mechanism `GSSAPI`) is not supported.
+
+All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
 
 To publish events to Kafka, set the following environment variables:
 
@@ -938,7 +945,7 @@ LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE=member
 
 | Variable                  | Default      | Description                       |
 |---------------------------|--------------|-----------------------------------|
-| `…__IDP_IDS` | _(all IDPs)_ | JSON array of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
+| `…__IDP_IDS` | _(the only IdP)_ | JSON array of the identity provider IDs whose users this provider resolves: the default OIDC provider's reserved id `oidc`, a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id, or `kubernetes`. **Required when Lakekeeper authenticates more than one identity provider** (Kubernetes authentication counts as one): the server refuses to start without it, and also when an entry names an identity provider it does not authenticate. With a single identity provider, an omitted value binds this provider to it. |
 
 **Example — minimal LDAP provider (env vars):**
 
@@ -1017,7 +1024,7 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `…__IDP_IDS` | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Entra subjects are object ids and carry no domain to filter on. |
+| `…__IDP_IDS` | _(the only IdP)_ | JSON array of the identity provider IDs whose users this provider resolves: the default OIDC provider's reserved id `oidc`, a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id, or `kubernetes`. **Required when Lakekeeper authenticates more than one identity provider** (Kubernetes authentication counts as one): the server refuses to start without it, and also when an entry names an identity provider it does not authenticate. With a single identity provider, an omitted value binds this provider to it. |
 
 **Example — client-secret credential (env vars):**
 
@@ -1095,7 +1102,7 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `…__IDP_IDS` | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Okta subjects are user ids and carry no domain to filter on. |
+| `…__IDP_IDS` | _(the only IdP)_ | JSON array of the identity provider IDs whose users this provider resolves: the default OIDC provider's reserved id `oidc`, a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id, or `kubernetes`. **Required when Lakekeeper authenticates more than one identity provider** (Kubernetes authentication counts as one): the server refuses to start without it, and also when an entry names an identity provider it does not authenticate. With a single identity provider, an omitted value binds this provider to it. |
 
 **Example — inline JWK key (env vars):**
 

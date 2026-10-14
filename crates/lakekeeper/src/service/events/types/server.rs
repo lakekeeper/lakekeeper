@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use crate::{
-    api::RequestMetadata,
+    api::ArcRequestMetadata,
     service::{
         ArcProjectId, ServerId,
         events::{
@@ -16,7 +14,7 @@ use crate::{
 pub struct CreateProjectEvent {
     pub project_id: ArcProjectId,
     pub project_name: String,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 impl<A: APIEventActions> APIEventContext<ServerId, Unresolved, A, AuthzChecked> {
