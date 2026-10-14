@@ -832,7 +832,7 @@ The following table describes all configuration parameters for a GCS storage pro
 | `sts-enabled`    | Boolean | No       | `true`                | Whether to enable STS (Security Token Service) downscoped token generation for GCS. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true`. |
 | `storage-layout` | Object  | No       | `{"type": "default"}` | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
 
-The service account should have appropriate permissions (such as Storage Admin role) on the bucket. Since Lakekeeper Version 0.8.2, hierarchical Namespaces are supported.
+The service account needs access to the objects of the bucket. The Storage Object User role (`roles/storage.objectUser`) on the bucket is enough, with or without hierarchical namespaces: Lakekeeper only reads, writes, lists and deletes objects, and the tokens it vends are downscoped to at most that role. Permissions to administer the bucket itself, such as those in Storage Admin, are not needed. Since Lakekeeper Version 0.8.2, hierarchical Namespaces are supported.
 
 ### Authentication Options
 
@@ -870,7 +870,7 @@ You can provide a service account key directly when creating a warehouse. This i
 }
 ```
 
-The service account key should be created in the Google Cloud Console and should have the necessary permissions to access the bucket (typically Storage Admin role on the bucket).
+The service account key should be created in the Google Cloud Console and should have the necessary permissions to access the bucket (the Storage Object User role on the bucket).
 
 ##### GCP System Identity
 
@@ -883,4 +883,4 @@ GCP system identities allow Lakekeeper to authenticate using the service account
 LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS=true
 ```
 
-When using system identity, Lakekeeper will use the service account associated with the application or virtual machine to access Google Cloud Storage (GCS). Ensure that the service account has the necessary permissions, such as the Storage Admin role on the target bucket.
+When using system identity, Lakekeeper will use the service account associated with the application or virtual machine to access Google Cloud Storage (GCS). Ensure that the service account has the necessary permissions, such as the Storage Object User role on the target bucket.
