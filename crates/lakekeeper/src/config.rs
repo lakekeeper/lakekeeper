@@ -1203,6 +1203,31 @@ pub(crate) struct Cache {
     pub(crate) role_ancestors: RoleAncestorsCache,
     /// User cache: `UserId → the user's email`, for audit email enrichment.
     pub(crate) user: UserCache,
+    /// Eviction of entries that another Lakekeeper instance changed.
+    pub(crate) invalidation: CacheInvalidation,
+}
+
+/// Eviction of cache entries that another Lakekeeper instance changed.
+///
+/// Every write that changes cached data records the changed keys in the database.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct CacheInvalidation {
+    /// Record changed keys. Off, other instances keep changed entries until their
+    /// time-to-live ends. An emergency switch only.
+    pub(crate) recording_enabled: bool,
+    /// A write that changes more keys of one domain than this records the whole domain.
+    /// `0` records every change as the whole domain.
+    pub(crate) fanout_cap: u64,
+}
+
+impl Default for CacheInvalidation {
+    fn default() -> Self {
+        Self {
+            recording_enabled: true,
+            fanout_cap: 50_000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

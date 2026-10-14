@@ -7,6 +7,7 @@
 
 mod advisory_lock;
 mod bootstrap;
+pub mod cache_change_log;
 mod catalog;
 pub mod config;
 pub(crate) mod dbutils;

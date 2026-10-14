@@ -68,6 +68,7 @@ use lakekeeper::{
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
         },
+        cache_invalidation::ChangeSet,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -82,6 +83,8 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
+    cache_change_log::record_cache_changes,
+    dbutils::DBErrorHandler,
     grant::{
         SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
         insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
@@ -157,6 +160,15 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn reopen_for_bootstrap(catalog_state: Self::State) -> Result<ServerId> {
         reopen_for_bootstrap(&catalog_state.write_pool()).await
+    }
+
+    async fn record_cache_changes_impl<'a>(
+        change_set: &ChangeSet,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CatalogBackendError> {
+        record_cache_changes(change_set, transaction)
+            .await
+            .map_err(DBErrorHandler::into_catalog_backend_error)
     }
 
     async fn get_warehouse_by_name_impl(

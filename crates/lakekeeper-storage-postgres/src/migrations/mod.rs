@@ -1037,6 +1037,107 @@ mod tests {
         pool_b.close().await;
     }
 
+    /// Call `lakekeeper_record_cache_change` through a Lakekeeper pool, as the code and
+    /// extension triggers in its sessions do.
+    async fn record_cache_change(pool: &PgPool, key: &str) {
+        sqlx::query("SELECT lakekeeper_record_cache_change('secret', ARRAY[$1])")
+            .bind(key)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn cache_change_keys_in_schema(admin_pool: &PgPool, schema: &str) -> Vec<Vec<String>> {
+        sqlx::query_scalar(AssertSqlSafe(format!(
+            r#"SELECT keys FROM "{schema}".cache_change_log ORDER BY id"#
+        )))
+        .fetch_all(admin_pool)
+        .await
+        .unwrap()
+    }
+
+    /// Each deployment's record function writes to the change log in its own schema.
+    #[sqlx::test(migrations = false)]
+    async fn test_record_cache_change_writes_to_its_own_schema(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema_a = unique_schema("lk_a");
+        let schema_b = unique_schema("lk_b");
+        let pool_a = app_pool(&admin_pool, Some(&schema_a)).await;
+        let pool_b = app_pool(&admin_pool, Some(&schema_b)).await;
+        migrate_in_schema(&pool_a, Vec::new(), Some(&schema_a))
+            .await
+            .unwrap();
+        migrate_in_schema(&pool_b, Vec::new(), Some(&schema_b))
+            .await
+            .unwrap();
+
+        record_cache_change(&pool_a, "a").await;
+        record_cache_change(&pool_b, "b").await;
+
+        assert_eq!(
+            cache_change_keys_in_schema(&admin_pool, schema_a.as_str()).await,
+            vec![vec!["a".to_string()]]
+        );
+        assert_eq!(
+            cache_change_keys_in_schema(&admin_pool, schema_b.as_str()).await,
+            vec![vec!["b".to_string()]]
+        );
+        pool_a.close().await;
+        pool_b.close().await;
+    }
+
+    /// With `LAKEKEEPER__PG_SCHEMA` unset and the schema chosen by the role's
+    /// `search_path` (the pooler setup), the function writes to that schema's log.
+    #[sqlx::test(migrations = false)]
+    async fn test_record_cache_change_follows_the_role_search_path(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema = create_schema(&admin_pool, "lk_role").await;
+        // Same session state as `ALTER ROLE … SET search_path`: the path is set
+        // before Lakekeeper runs, and `migrate` is given no schema.
+        let pool = app_pool(&admin_pool, Some(&schema)).await;
+        migrate_in_schema(&pool, Vec::new(), None).await.unwrap();
+
+        record_cache_change(&pool, "k").await;
+
+        assert_eq!(
+            cache_change_keys_in_schema(&admin_pool, schema.as_str()).await,
+            vec![vec!["k".to_string()]]
+        );
+        assert!(!table_exists_in_schema(&admin_pool, "public", "cache_change_log").await);
+        pool.close().await;
+    }
+
+    /// Renaming the schema of a deployment keeps the record function working.
+    #[sqlx::test(migrations = false)]
+    async fn test_record_cache_change_survives_a_schema_rename(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let old = unique_schema("lk_old");
+        let pool = app_pool(&admin_pool, Some(&old)).await;
+        migrate_in_schema(&pool, Vec::new(), Some(&old))
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let new = unique_schema("lk_new");
+        sqlx::query(AssertSqlSafe(format!(
+            r#"ALTER SCHEMA "{}" RENAME TO "{}""#,
+            old.as_str(),
+            new.as_str()
+        )))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+        let pool = app_pool(&admin_pool, Some(&new)).await;
+
+        record_cache_change(&pool, "k").await;
+
+        assert_eq!(
+            cache_change_keys_in_schema(&admin_pool, new.as_str()).await,
+            vec![vec!["k".to_string()]]
+        );
+        pool.close().await;
+    }
+
     /// The advisory lock is keyed on the database, so concurrent migrations into
     /// different schemas serialize instead of racing on the database-global
     /// `CREATE EXTENSION`.

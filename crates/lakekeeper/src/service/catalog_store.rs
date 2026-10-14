@@ -43,6 +43,7 @@ use crate::{
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
         },
+        cache_invalidation::ChangeSet,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -356,6 +357,15 @@ where
     /// bootstrap or no server row exists, so the operator notices when
     /// the call is a no-op.
     async fn reopen_for_bootstrap(catalog_state: Self::State) -> Result<ServerId>;
+
+    // ---------------- Cache Invalidation ----------------
+    /// Record in `transaction` that it changes the cache entries in `change_set`. An empty
+    /// set records nothing, and so does every set while
+    /// [`recording_enabled`](crate::service::cache_invalidation::recording_enabled) is off.
+    async fn record_cache_changes_impl<'a>(
+        change_set: &ChangeSet,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CatalogBackendError>;
 
     // ---------------- Project Management ----------------
     /// Create a project
