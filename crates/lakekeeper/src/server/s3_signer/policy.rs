@@ -244,8 +244,9 @@ const X_HEADERS: &[&str] = &[
 /// Checksums of every algorithm, and user metadata.
 const X_HEADER_PREFIXES: &[&str] = &["x-amz-checksum-", "x-amz-meta-"];
 
-/// User metadata some stores act on: they unpack an archive and store each entry under its
-/// own key, whatever key was signed.
+/// User metadata MinIO acts on: it unpacks an archive and stores each entry under its own key,
+/// whatever key was signed. Refusing these headers only stops a client that sends them to be
+/// signed: MinIO also acts on them when they are added after signing.
 const ARCHIVE_EXTRACT_HEADER_PREFIXES: &[&str] = &["x-amz-meta-minio-", "x-amz-meta-snowball-"];
 
 /// Header namespaces outside `x-` that some stores dispatch on.
@@ -262,6 +263,7 @@ const READABLE_STORAGE_CLASSES: &[&str] = &[
     "GLACIER_IR",
     "INTELLIGENT_TIERING",
     "ONEZONE_IA",
+    "REDUCED_REDUNDANCY",
     "STANDARD",
     "STANDARD_IA",
 ];
@@ -465,12 +467,17 @@ fn require_signable_encryption(
                 refuse("Objects may only be encrypted with the KMS key of the warehouse")
             }
         }
+        // `aws:kms` without a key id encrypts with the bucket's default key. Bucket policies
+        // often require the header on every write.
         None => {
-            if matches!(encryption, None | Some("AES256")) && key_id.is_none() && !has_kms_options {
+            if matches!(encryption, None | Some("AES256" | "aws:kms"))
+                && key_id.is_none()
+                && !has_kms_options
+            {
                 Ok(())
             } else {
                 refuse(
-                    "Objects may only be encrypted with keys S3 manages, as the warehouse has no KMS key",
+                    "Objects may only be encrypted with keys S3 manages or the bucket's default KMS key, as the warehouse has no KMS key",
                 )
             }
         }
@@ -871,14 +878,7 @@ mod test {
             )
             .unwrap_or_else(|e| panic!("{class} must be signable: {e:?}"));
         }
-        for class in [
-            "GLACIER",
-            "DEEP_ARCHIVE",
-            "REDUCED_REDUNDANCY",
-            "OUTPOSTS",
-            "standard",
-            "",
-        ] {
+        for class in ["GLACIER", "DEEP_ARCHIVE", "OUTPOSTS", "standard", ""] {
             assert_eq!(
                 check_err(&[("x-amz-storage-class", class)], &http::Method::PUT),
                 (403, "StorageClassNotSignable".to_string()),
@@ -928,16 +928,24 @@ mod test {
 
     #[test]
     fn test_encryption_without_a_warehouse_key() {
-        for headers in [vec![], vec![("x-amz-server-side-encryption", "AES256")]] {
+        for headers in [
+            vec![],
+            vec![("x-amz-server-side-encryption", "AES256")],
+            vec![("x-amz-server-side-encryption", "aws:kms")],
+        ] {
             check(&owned(&headers), &http::Method::PUT, None)
                 .unwrap_or_else(|e| panic!("{headers:?} must be signable: {e:?}"));
         }
         for headers in [
-            vec![("x-amz-server-side-encryption", "aws:kms")],
             vec![
                 ("x-amz-server-side-encryption", "aws:kms"),
                 ("x-amz-server-side-encryption-aws-kms-key-id", KMS_KEY),
             ],
+            vec![
+                ("x-amz-server-side-encryption", "aws:kms"),
+                ("x-amz-server-side-encryption-context", "e30="),
+            ],
+            vec![("x-amz-server-side-encryption", "aws:kms:dsse")],
             vec![("x-amz-server-side-encryption-context", "e30=")],
         ] {
             assert_eq!(

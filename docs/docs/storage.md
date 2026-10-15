@@ -64,7 +64,7 @@ Each storage profile turns the methods on or off for its Warehouse. Disabled met
 
 Remote signing applies to [Generic Tables](./generic-tables.md) as well as Iceberg tables.
 
-Remote signing keeps a client inside its table only if the object store checks every part of a signed request, as AWS S3 does. A store that does not lets a client change a request after it was signed, for example to read or delete data outside its table, so prefer vended credentials there. Clients that may write a table can also set tags on its files, so do not base access or lifecycle rules on object tags.
+Remote signing keeps a client inside its table only if the object store checks every part of a signed request, as AWS S3 and Garage do. MinIO, SeaweedFS, and Ceph RGW before versions 19.2.6 and 20.2.4 or with `rgw_sigv4_insecure` enabled do not. On these stores a client can change a request after it was signed, for example to copy data from another table into its own or to delete files outside its table. Use vended credentials with these stores. Clients that may write a table can also set tags on its files, so do not base access or lifecycle rules on object tags.
 
 ## CORS
 
