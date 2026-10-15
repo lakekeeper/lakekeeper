@@ -190,6 +190,7 @@ impl ResolvedTaskEntity {
 
 /// How deleting a warehouse treats a queue's tasks in it, see [`TaskConfig::on_warehouse_delete`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OnWarehouseDelete {
     /// Default. Deleting the warehouse fails while a task of this queue exists (purge, soft
     /// deletion).
