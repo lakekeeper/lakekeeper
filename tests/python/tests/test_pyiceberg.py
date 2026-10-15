@@ -271,7 +271,11 @@ def test_drop_purge_table(namespace: conftest.Namespace, storage_config):
         properties["s3.secret-access-key"] = storage_config["storage-credential"][
             "aws-secret-access-key"
         ]
-        properties["s3.endpoint"] = storage_config["storage-profile"]["endpoint"]
+        profile = storage_config["storage-profile"]
+        if profile.get("endpoint"):
+            properties["s3.endpoint"] = profile["endpoint"]
+        if profile.get("region"):
+            properties["s3.region"] = profile["region"]
 
     file_io = io._infer_file_io_from_scheme(tab.location(), properties)
 

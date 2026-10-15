@@ -35,6 +35,8 @@ bash run.sh spark_onelake-1.10.1
 bash run.sh pyiceberg
 # Pyiceberg with legacy MD5 checksums for S3
 bash run.sh pyiceberg-legacy_md5
+# Pyiceberg against AWS S3 with remote signing
+bash run.sh pyiceberg_aws_remote_signing
 # With OpenFGA Authorization
 bash run.sh spark_openfga-1.10.1
 # Starrocks

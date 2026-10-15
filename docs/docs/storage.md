@@ -27,6 +27,8 @@ You can disable credential vending and remote signing on a per-warehouse basis u
 
 Clients can also control credential delegation per request using the `X-Iceberg-Access-Delegation` header. Lakekeeper supports the standard Iceberg REST spec values (`vended-credentials` and `remote-signing`), plus a special `client-managed` value. When set to `client-managed`, no credentials or signing information are returned, regardless of storage profile configuration. This allows clients to use their own credentials for direct storage access.
 
+Remote signing keeps a client inside its table only if the object store checks every part of a signed request, as AWS S3 and Garage do. MinIO, SeaweedFS, and Ceph RGW before versions 19.2.6 and 20.2.4 or with `rgw_sigv4_insecure` enabled do not. On these stores a client can change a request after it was signed, for example to copy data from another table into its own or to delete files outside its table. Use vended credentials with these stores. Clients that may write a table can also set tags on its files, so do not base access or lifecycle rules on object tags.
+
 ## Allowing Alternative Protocols (s3a, s3n, wasbs)
 
 For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additional protocols. To enable these, activate the "Allow Alternative Protocols" flag in the storage profile of the Warehouse. When enabled, the following additional protocols are accepted for table creation or registration:
