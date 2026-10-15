@@ -54,6 +54,20 @@ fn is_unsigned_header(name: &str) -> bool {
         .any(|unsigned| name.eq_ignore_ascii_case(unsigned))
 }
 
+const PAYLOAD_HASH_HEADER: &str = "x-amz-content-sha256";
+const STREAMING_UNSIGNED_PAYLOAD_TRAILER: &str = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
+
+/// Whether the client uploads an unsigned payload with a checksum trailer, in any spelling of
+/// the header name.
+fn sends_unsigned_trailer(headers: &HashMap<String, Vec<String>>) -> bool {
+    headers.iter().any(|(name, values)| {
+        name.eq_ignore_ascii_case(PAYLOAD_HASH_HEADER)
+            && values
+                .iter()
+                .any(|value| value == STREAMING_UNSIGNED_PAYLOAD_TRAILER)
+    })
+}
+
 const HOST_HEADER: &str = "host";
 const CACHEABLE_METHODS: &[http::Method] = &[http::Method::GET, http::Method::HEAD];
 // The two values the Iceberg REST spec defines for a sign response: `private` lets the
@@ -392,6 +406,11 @@ async fn sign(
     let body = request_body.map(std::string::String::into_bytes);
     let signable_body = if let Some(body) = &body {
         SignableBody::Bytes(body)
+    } else if sends_unsigned_trailer(&request_headers) {
+        // botocore 1.36 and later upload with `aws-chunked` and a checksum trailer. S3 refuses
+        // that body with `UNSIGNED-PAYLOAD`, so sign the mode the client chose. The payload
+        // stays unsigned either way.
+        SignableBody::Precomputed(STREAMING_UNSIGNED_PAYLOAD_TRAILER.to_string())
     } else {
         SignableBody::UnsignedPayload
     };
@@ -462,6 +481,9 @@ async fn sign(
 
     let mut headers_returned_in_body = request_headers;
     for (key, value) in signing_instructions.headers() {
+        // Header names ignore upper and lower case. A client that spelled a header the signer
+        // sets differently must get the signer's value only, not both.
+        headers_returned_in_body.retain(|name, _| !name.eq_ignore_ascii_case(key));
         headers_returned_in_body.insert(key.to_string(), vec![value.to_string()]);
     }
 
@@ -1577,6 +1599,104 @@ mod test {
     /// `private`. Every batch delete of a bucket goes to the same URI with another body, so
     /// only reads may be reused. The JSON headers are copied onto the S3 request, so the
     /// caching decision must not appear among them.
+    /// Signs a PUT of `data/x.parquet` with the given client headers and returns the headers
+    /// of the response body.
+    async fn sign_put(headers: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
+        let profile = S3Profile::builder()
+            .region("local".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .bucket("bucket".to_string())
+            .build();
+        let credential = S3Credential::AccessKey(S3AccessKeyCredential {
+            access_key_id: "access-key".to_string(),
+            secret_access_key: "secret-key".to_string(),
+            external_id: None,
+        });
+        let uri =
+            url::Url::parse("http://s3.example.com:8333/bucket/wh/tbl/data/x.parquet").unwrap();
+        let (_, body) = sign(
+            &profile,
+            Some(&credential),
+            None,
+            "local",
+            &uri,
+            &http::Method::PUT,
+            headers
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), vec![(*value).to_string()]))
+                .collect(),
+        )
+        .await
+        .unwrap();
+        body.headers
+    }
+
+    /// Every entry of `headers` named `wanted`, ignoring upper and lower case.
+    fn named<'a>(
+        headers: &'a HashMap<String, Vec<String>>,
+        wanted: &str,
+    ) -> Vec<(&'a str, &'a [String])> {
+        headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case(wanted))
+            .map(|(name, values)| (name.as_str(), values.as_slice()))
+            .collect()
+    }
+
+    /// botocore spells `X-Amz-Content-SHA256` and `X-Amz-Date` in mixed case. The response
+    /// must carry the signer's value under one name, or the client sends both values.
+    #[tokio::test]
+    async fn test_signer_headers_replace_the_client_spelling() {
+        let headers = sign_put(&[
+            ("X-Amz-Content-SHA256", "UNSIGNED-PAYLOAD"),
+            ("X-Amz-Date", "20200101T000000Z"),
+            ("Content-Type", "application/octet-stream"),
+        ])
+        .await;
+
+        assert_eq!(
+            named(&headers, "x-amz-content-sha256"),
+            [(
+                "x-amz-content-sha256",
+                ["UNSIGNED-PAYLOAD".to_string()].as_slice()
+            )]
+        );
+        let date = named(&headers, "x-amz-date");
+        assert_eq!(date.len(), 1, "{date:?}");
+        assert_eq!(date[0].0, "x-amz-date");
+        assert_ne!(date[0].1, ["20200101T000000Z".to_string()].as_slice());
+        assert_eq!(
+            named(&headers, "content-type"),
+            [(
+                "Content-Type",
+                ["application/octet-stream".to_string()].as_slice()
+            )]
+        );
+    }
+
+    /// botocore 1.36 and later upload with `aws-chunked` and a checksum trailer. S3 refuses that
+    /// body unless the signature names the same mode.
+    #[tokio::test]
+    async fn test_an_unsigned_trailer_is_signed_as_sent() {
+        for spelling in ["X-Amz-Content-SHA256", "x-amz-content-sha256"] {
+            let headers = sign_put(&[
+                (spelling, "STREAMING-UNSIGNED-PAYLOAD-TRAILER"),
+                ("Content-Encoding", "aws-chunked"),
+                ("X-Amz-Trailer", "x-amz-checksum-crc32"),
+            ])
+            .await;
+            assert_eq!(
+                named(&headers, "x-amz-content-sha256"),
+                [(
+                    "x-amz-content-sha256",
+                    ["STREAMING-UNSIGNED-PAYLOAD-TRAILER".to_string()].as_slice()
+                )],
+                "{spelling}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_cache_control_is_an_http_header_set_by_method() {
         let profile = S3Profile::builder()
