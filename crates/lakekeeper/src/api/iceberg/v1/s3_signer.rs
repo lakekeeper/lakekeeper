@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
+    http::HeaderMap,
     routing::post,
 };
 use iceberg_ext::catalog::rest::{S3SignRequest, S3SignResponse};
@@ -28,7 +29,7 @@ where
         request: S3SignRequest,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-    ) -> Result<S3SignResponse>;
+    ) -> Result<(HeaderMap, S3SignResponse)>;
 }
 
 pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {

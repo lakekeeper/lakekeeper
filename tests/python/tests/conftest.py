@@ -555,15 +555,26 @@ class Server:
         return uuid.UUID(project_id)
 
     def create_warehouse(
-        self, name: str, project_id: uuid.UUID, storage_config: dict
+        self,
+        name: str,
+        project_id: uuid.UUID,
+        storage_config: dict,
+        overrides: Optional[dict] = None,
     ) -> uuid.UUID:
-        """Create a warehouse in this server"""
+        """Create a warehouse in this server.
+
+        `overrides` holds fields of the create request, keyed as in the API,
+        that replace the defaults. The defaults:
+
+        - `delete-profile`: soft deletion, expired after 2 seconds.
+        """
 
         create_payload = {
             "project-id": str(project_id),
             "warehouse-name": name,
             **storage_config,
             "delete-profile": {"type": "soft", "expiration-seconds": 2},
+            **(overrides or {}),
         }
 
         warehouse_url = self.warehouse_url
@@ -793,12 +804,31 @@ def spark(warehouse: Warehouse, storage_config):
         f"org.apache.iceberg:iceberg-gcp-bundle:{settings.spark_iceberg_version}"
     )
 
-    # random 5 char string
     catalog_name = warehouse.normalized_catalog_name
     configuration = {
         "spark.jars.packages": spark_jars_packages,
         "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         "spark.sql.defaultCatalog": catalog_name,
+        **spark_catalog_configuration(warehouse, storage_config),
+    }
+
+    spark_conf = pyspark.SparkConf().setMaster("local[*]")
+
+    for k, v in configuration.items():
+        spark_conf = spark_conf.set(k, v)
+
+    spark = pyspark.sql.SparkSession.builder.config(conf=spark_conf).getOrCreate()
+    spark.sql(f"USE {catalog_name}")
+    yield spark
+    spark.stop()
+
+
+def spark_catalog_configuration(warehouse: Warehouse, storage_config: dict) -> dict:
+    """The Spark settings of an Iceberg catalog named
+    `warehouse.normalized_catalog_name` that reads and writes `warehouse`.
+    Set them on a session's config to add the catalog to it."""
+    catalog_name = warehouse.normalized_catalog_name
+    configuration = {
         f"spark.sql.catalog.{catalog_name}": "org.apache.iceberg.spark.SparkCatalog",
         f"spark.sql.catalog.{catalog_name}.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
         f"spark.sql.catalog.{catalog_name}.uri": warehouse.server.catalog_url,
@@ -818,16 +848,7 @@ def spark(warehouse: Warehouse, storage_config):
         configuration[
             f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"
         ] = "remote-signing"
-
-    spark_conf = pyspark.SparkConf().setMaster("local[*]")
-
-    for k, v in configuration.items():
-        spark_conf = spark_conf.set(k, v)
-
-    spark = pyspark.sql.SparkSession.builder.config(conf=spark_conf).getOrCreate()
-    spark.sql(f"USE {catalog_name}")
-    yield spark
-    spark.stop()
+    return configuration
 
 
 @pytest.fixture(scope="session")

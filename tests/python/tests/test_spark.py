@@ -1,6 +1,9 @@
 import time
+import urllib.parse
 import uuid
 
+import boto3
+import botocore.config
 import conftest
 import fsspec
 import pandas as pd
@@ -237,6 +240,120 @@ def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_co
         warehouse.pyiceberg_catalog.load_table(
             ("test_drop_table_purge_spark", "my_table")
         )
+
+
+@pytest.fixture(scope="function")
+def hard_delete_warehouse(
+    server: conftest.Server, project, storage_config
+) -> conftest.Warehouse:
+    if storage_config["storage-profile"]["type"] != "s3":
+        pytest.skip("S3FileIO batch deletes run against S3 only.")
+    test_id = uuid.uuid4().hex
+    warehouse_name = f"warehouse-hard-delete-{test_id}"
+    # Next to the session warehouse, below the same configured root, so the
+    # locations do not overlap.
+    root = storage_config["storage-profile"].get("key-prefix", "").rstrip("/")
+    root = root.rsplit("/", 1)[0] if "/" in root else ""
+    warehouse_id = server.create_warehouse(
+        warehouse_name,
+        project_id=project,
+        storage_config={
+            **storage_config,
+            "storage-profile": {
+                **storage_config["storage-profile"],
+                "key-prefix": f"{root}/hard-delete-spark-test/{test_id}".lstrip("/"),
+            },
+        },
+        overrides={"delete-profile": {"type": "hard"}},
+    )
+    return conftest.Warehouse(
+        access_token=server.access_token,
+        server=server,
+        project_id=project,
+        warehouse_id=warehouse_id,
+        warehouse_name=warehouse_name,
+    )
+
+
+def test_expire_snapshots_deletes_files_in_several_batches(
+    spark, hard_delete_warehouse: conftest.Warehouse, storage_config
+):
+    # Expiring a snapshot deletes its files on the client, through the table's
+    # FileIO, while the table still exists. S3FileIO sends at most 250 keys per
+    # batch delete (`s3.delete.batch-size`), all to the same URL, and each batch
+    # must be signed for its own body. This test sends batches in two delete
+    # calls a few seconds apart: one with 300 files, so two batches, then one
+    # more. A client that caches the signature of the first call sends the
+    # second batch with it, and the store refuses it.
+    for key, value in conftest.spark_catalog_configuration(
+        hard_delete_warehouse, storage_config
+    ).items():
+        spark.conf.set(key, value)
+    catalog = hard_delete_warehouse.normalized_catalog_name
+    namespace = "test_expire_snapshots_deletes_files_in_several_batches"
+    spark.sql(f"CREATE NAMESPACE {catalog}.{namespace}")
+    spark.sql(
+        f"CREATE TABLE {catalog}.{namespace}.my_table (id BIGINT) USING iceberg "
+        "TBLPROPERTIES ('write.distribution-mode'='none')"
+    )
+
+    write_and_expire(spark, catalog, f"{namespace}.my_table", 300)
+    data_dir = write_and_expire(spark, catalog, f"{namespace}.my_table", 1)
+
+    # Spark logs a failed batch delete and carries on; the deleted file counts
+    # above already exclude the failed files. With access keys, also check the
+    # storage itself. A system identity cannot list the bucket from here.
+    if "aws-access-key-id" in storage_config["storage-credential"]:
+        assert s3_files(storage_config, data_dir) == []
+    assert spark.sql(f"SELECT * FROM {catalog}.{namespace}.my_table").count() == 0
+
+
+def write_and_expire(spark, catalog: str, table: str, n_files: int) -> str:
+    """Write `n_files` data files to `table` in `catalog`, remove them from the
+    current snapshot, expire the snapshot that still references them, and
+    return the data directory."""
+    # One row per partition and no shuffle: one data file per partition.
+    spark.range(0, n_files, 1, n_files).writeTo(f"{catalog}.{table}").append()
+    data_files = [
+        row.file_path
+        for row in spark.sql(f"SELECT file_path FROM {catalog}.{table}.files").collect()
+    ]
+    assert len(data_files) == n_files
+    spark.sql(f"DELETE FROM {catalog}.{table}")
+    expire_before = spark.sql(
+        "SELECT CAST(current_timestamp() + INTERVAL 1 MINUTE AS STRING)"
+    ).collect()[0][0]
+    result = spark.sql(
+        f"CALL {catalog}.system.expire_snapshots(table => '{table}', "
+        f"older_than => TIMESTAMP '{expire_before}', retain_last => 1)"
+    ).collect()[0]
+    assert result.deleted_data_files_count == n_files
+    return data_files[0].rsplit("/", 1)[0] + "/"
+
+
+def s3_files(storage_config, location: str) -> list[str]:
+    """The keys of every object under the `s3://` or `s3a://` `location`, listed with the
+    warehouse's own S3 credentials, so the result does not depend on remote
+    signing."""
+    credential = storage_config["storage-credential"]
+    profile = storage_config["storage-profile"]
+    s3 = boto3.client(
+        "s3",
+        aws_access_key_id=credential["aws-access-key-id"],
+        aws_secret_access_key=credential["aws-secret-access-key"],
+        region_name=profile.get("region"),
+        endpoint_url=profile.get("endpoint"),
+        config=botocore.config.Config(
+            s3={"addressing_style": "path" if profile.get("path-style-access") else "auto"}
+        ),
+    )
+    parsed = urllib.parse.urlparse(location)
+    assert parsed.scheme in ("s3", "s3a") and parsed.netloc, f"not an S3 location: {location}"
+    bucket, prefix = parsed.netloc, parsed.path.lstrip("/")
+    keys = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        keys.extend(item["Key"] for item in page.get("Contents", []))
+    return sorted(keys)
 
 
 def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_config):

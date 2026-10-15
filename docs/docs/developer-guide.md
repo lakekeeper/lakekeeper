@@ -13,7 +13,9 @@ To work on small and self-contained features, it is usually enough to have a Pos
 
 ```bash
 # start postgres
-docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
+# Many tests run their migrations at the same time. More lock slots than the default
+# keep them from failing with "out of shared memory".
+docker run -d --name postgres-17 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17 -c max_locks_per_transaction=1024
 # set envs
 echo 'export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres' > .env
 echo 'export ICEBERG_REST__PG_ENCRYPTION_KEY="abc"' >> .env

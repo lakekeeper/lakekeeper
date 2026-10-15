@@ -5,6 +5,7 @@ use aws_sigv4::{
     sign::v4,
     {self},
 };
+use axum::http::{HeaderMap, HeaderValue, header};
 use lakekeeper_io::{Location, s3::S3Location};
 
 use super::{super::CatalogServer, error::SignError};
@@ -65,9 +66,10 @@ const OBJECT_LOCK_HEADER_PREFIX: &str = "x-amz-object-lock-";
 const BYPASS_GOVERNANCE_HEADER: &str = "x-amz-bypass-governance-retention";
 const OBJECT_LOCK_SUB_RESOURCES: &[&str] = &["retention", "legal-hold", "object-lock"];
 const CACHEABLE_METHODS: &[http::Method] = &[http::Method::GET, http::Method::HEAD];
-const CACHE_CONTROL_HEADER: &str = "Cache-Control";
-const CACHE_CONTROL_NO_CACHE: &str = "no-cache";
-const CACHE_CONTROL_PRIVATE: &str = "private";
+// The two values the Iceberg REST spec defines for a sign response: `private` lets the
+// client reuse the signature for the same method, region and URI; `no-cache` does not.
+static CACHE_CONTROL_NO_CACHE: HeaderValue = HeaderValue::from_static("no-cache");
+static CACHE_CONTROL_PRIVATE: HeaderValue = HeaderValue::from_static("private");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
@@ -136,7 +138,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request: S3SignRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<S3SignResponse> {
+    ) -> Result<(HeaderMap, S3SignResponse)> {
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
         let authorizer = state.v1_state.authz.clone();
 
@@ -353,7 +355,7 @@ async fn sign(
     request_url: &url::Url,
     request_method: &http::Method,
     request_headers: HashMap<String, Vec<String>>,
-) -> Result<S3SignResponse> {
+) -> Result<(HeaderMap, S3SignResponse)> {
     let body = request_body.map(std::string::String::into_bytes);
     let signable_body = if let Some(body) = &body {
         SignableBody::Bytes(body)
@@ -425,26 +427,27 @@ async fn sign(
         output_uri.query_pairs_mut().append_pair(key, value);
     }
 
-    let mut output_headers = request_headers;
+    let mut headers_returned_in_body = request_headers;
     for (key, value) in signing_instructions.headers() {
-        output_headers.insert(key.to_string(), vec![value.to_string()]);
+        headers_returned_in_body.insert(key.to_string(), vec![value.to_string()]);
     }
 
-    output_headers.insert(
-        CACHE_CONTROL_HEADER.to_string(),
-        vec![if CACHEABLE_METHODS.contains(request_method) {
-            CACHE_CONTROL_PRIVATE.to_string()
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        if CACHEABLE_METHODS.contains(request_method) {
+            CACHE_CONTROL_PRIVATE.clone()
         } else {
-            CACHE_CONTROL_NO_CACHE.to_string()
-        }],
+            CACHE_CONTROL_NO_CACHE.clone()
+        },
     );
 
     let sign_response = S3SignResponse {
         uri: output_uri,
-        headers: output_headers,
+        headers: headers_returned_in_body,
     };
 
-    Ok(sign_response)
+    Ok((headers, sign_response))
 }
 
 fn urldecode_uri_path_segments(uri: &url::Url) -> Result<url::Url> {
@@ -1470,7 +1473,66 @@ mod test {
     use itertools::Itertools as _;
 
     use super::*;
-    use crate::service::storage::S3Flavor;
+    use crate::service::storage::{S3Flavor, s3::S3AccessKeyCredential};
+
+    /// A sign response says in its HTTP `Cache-Control` whether the client may reuse the
+    /// signature: Iceberg caches it per method, region and URI when the header is exactly
+    /// `private`. Every batch delete of a bucket goes to the same URI with another body, so
+    /// only reads may be reused. The JSON headers are copied onto the S3 request, so the
+    /// caching decision must not appear among them.
+    #[tokio::test]
+    async fn test_cache_control_is_an_http_header_set_by_method() {
+        let profile = S3Profile::builder()
+            .region("local".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .bucket("bucket".to_string())
+            .build();
+        let credential = S3Credential::AccessKey(S3AccessKeyCredential {
+            access_key_id: "access-key".to_string(),
+            secret_access_key: "secret-key".to_string(),
+            external_id: None,
+        });
+        let uri =
+            url::Url::parse("http://s3.example.com:8333/bucket/wh/tbl/data/x.parquet").unwrap();
+
+        for (method, expected) in [
+            (http::Method::GET, "private"),
+            (http::Method::HEAD, "private"),
+            (http::Method::PUT, "no-cache"),
+            (http::Method::POST, "no-cache"),
+            (http::Method::DELETE, "no-cache"),
+        ] {
+            let (http_headers, body) = sign(
+                &profile,
+                Some(&credential),
+                None,
+                "local",
+                &uri,
+                &method,
+                HashMap::from([(
+                    "x-amz-content-sha256".to_string(),
+                    vec!["UNSIGNED-PAYLOAD".to_string()],
+                )]),
+            )
+            .await
+            .unwrap();
+
+            let http_headers: Vec<_> = http_headers
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.to_str().unwrap()))
+                .collect();
+            assert_eq!(http_headers, [("cache-control", expected)], "{method}");
+            assert!(
+                !body
+                    .headers
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case("cache-control")),
+                "{method}: {:?}",
+                body.headers
+            );
+        }
+    }
 
     #[derive(Debug)]
     struct TC {
