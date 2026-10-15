@@ -34,7 +34,7 @@ create table cache_change_log_checkpoint (
     snapshot pg_snapshot not null
 );
 
--- All rows with an xid below `pruned_below` were deleted.
+-- Rows with an xid below `pruned_below` may have been deleted; rows at or above it were not.
 create table cache_change_log_horizon (
     singleton bool primary key default true check (singleton),
     system_identifier bigint not null,

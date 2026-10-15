@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pg_is_in_recovery() AS \"in_recovery!\",\n               pg_postmaster_start_time() AS \"postmaster_start!\",\n               pg_current_snapshot()::text AS \"snapshot!\",\n               has_function_privilege('pg_control_system()', 'execute') AS \"can_read_system_id!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "in_recovery!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "postmaster_start!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "snapshot!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "can_read_system_id!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "afa9adb5163b17e814520bffef75659563df7430c6bb5073b28cebf8d9b0901a"
+}

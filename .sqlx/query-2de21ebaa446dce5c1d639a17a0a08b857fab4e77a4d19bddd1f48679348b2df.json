@@ -1,0 +1,91 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH s AS (\n            SELECT coalesce($1::text::pg_snapshot, pg_current_snapshot()) AS next\n        ),\n        page AS (\n            (SELECT l.id, l.xid, l.domain, l.keys, l.version\n             FROM cache_change_log l CROSS JOIN s\n             WHERE l.xid = ANY(ARRAY(SELECT pg_snapshot_xip($2::text::pg_snapshot)))\n               AND pg_visible_in_snapshot(l.xid, s.next)\n               AND (l.xid, l.id) > ($3::text::xid8, $4::bigint)\n             ORDER BY l.xid, l.id\n             LIMIT $5)\n            UNION ALL\n            (SELECT l.id, l.xid, l.domain, l.keys, l.version\n             FROM cache_change_log l CROSS JOIN s\n             WHERE l.xid >= pg_snapshot_xmax($2::text::pg_snapshot)\n               AND pg_visible_in_snapshot(l.xid, s.next)\n               AND (l.xid, l.id) > ($3::text::xid8, $4::bigint)\n             ORDER BY l.xid, l.id\n             LIMIT $5)\n            ORDER BY xid, id\n            LIMIT $5\n        )\n        SELECT pg_is_in_recovery() AS \"in_recovery!\",\n               pg_postmaster_start_time() AS \"postmaster_start!\",\n               s.next::text AS \"next!\",\n               pg_snapshot_xmax(pg_current_snapshot())::text AS \"now_xmax!\",\n               (SELECT h.pruned_below::text FROM cache_change_log_horizon h\n                WHERE h.system_identifier = $6) AS \"pruned_below\",\n               p.id AS \"id?\",\n               p.xid::text AS \"xid?\",\n               p.domain AS \"domain?\",\n               p.keys AS \"keys?\",\n               p.version AS \"version?\"\n        FROM s LEFT JOIN page p ON true\n        ORDER BY p.xid, p.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "in_recovery!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "postmaster_start!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "next!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "now_xmax!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "pruned_below",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "id?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "xid?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "domain?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "keys?",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "version?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "2de21ebaa446dce5c1d639a17a0a08b857fab4e77a4d19bddd1f48679348b2df"
+}

@@ -1,6 +1,10 @@
 //! The cache change log: which cache keys each transaction changed.
 
+mod reader;
+mod snapshot;
+
 use lakekeeper::service::cache_invalidation::{self, ChangeSet};
+pub use reader::PostgresCacheChangeLog;
 use sqlx::PgConnection;
 
 /// The most keys one change-log row carries. A larger key set is split into several rows.

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (pg_control_system()).system_identifier AS \"system_identifier!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "system_identifier!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1c90a3bb23049083fe250f0a546ea9375111700ebc6cd2d49131e99e5ad0c4de"
+}

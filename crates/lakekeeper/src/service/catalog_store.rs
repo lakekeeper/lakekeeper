@@ -43,7 +43,7 @@ use crate::{
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
         },
-        cache_invalidation::ChangeSet,
+        cache_invalidation::{BoxedCacheChangeLog, ChangeLogSettings, ChangeSet},
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -366,6 +366,13 @@ where
         change_set: &ChangeSet,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<(), CatalogBackendError>;
+
+    /// The change log as the cache poller reads it. The log opens its own connection to
+    /// the primary on first use.
+    fn cache_change_log(
+        catalog_state: Self::State,
+        settings: ChangeLogSettings,
+    ) -> BoxedCacheChangeLog;
 
     // ---------------- Project Management ----------------
     /// Create a project

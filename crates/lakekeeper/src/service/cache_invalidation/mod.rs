@@ -4,8 +4,13 @@
 //! transaction. Every instance reads the log and evicts those keys from its own caches.
 
 mod change_set;
+mod log;
 
 pub use change_set::{CacheDomain, CacheKey, CacheKeyDecodeError, ChangeSet};
+pub use log::{
+    BARRIER_DOMAIN, BoxedCacheChangeLog, CacheChangeLog, ChangeLogError, ChangeLogSettings,
+    ChangeMarker, LoggedChange, PollOutcome, ResetReason,
+};
 
 /// Whether writes record their changed keys (`cache.invalidation.recording_enabled`).
 #[must_use]
