@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH dropped_tabulars AS (\n            DELETE FROM tabular\n            WHERE warehouse_id = $1 AND (namespace_id = any($2) or namespace_id = $3)\n        ),\n        cleared_view_defaults AS (\n            UPDATE view_version SET default_namespace_id = NULL\n            WHERE default_namespace_id = any($2) or default_namespace_id = $3\n        )\n        DELETE FROM namespace\n            WHERE warehouse_id = $1\n            -- If recursive is true, delete all child namespaces...\n            AND (namespace_id = any($2) or namespace_id = $3)\n            AND warehouse_id IN (\n                SELECT warehouse_id FROM warehouse WHERE status = 'active'\n                AND warehouse_id = $1\n            )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9d5492aa71fae8de35533ecdc3f30d05fee2d1d2bca380c73fb4c3a3609ff91b"
+}
