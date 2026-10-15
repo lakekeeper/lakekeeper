@@ -188,6 +188,20 @@ impl ResolvedTaskEntity {
     }
 }
 
+/// How deleting a warehouse treats a queue's tasks in it, see [`TaskConfig::on_warehouse_delete`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnWarehouseDelete {
+    /// Default. Deleting the warehouse fails while a task of this queue exists (purge, soft
+    /// deletion).
+    Block,
+    /// Deleting the warehouse cancels the queue's tasks, running ones included. A running worker
+    /// sees [`TaskCheckState::NotActive`] at its next heartbeat. In a transaction, a worker must
+    /// lock its task row (record its outcome or heartbeat) before it writes anything else that
+    /// references the warehouse, and keep the transaction short. Otherwise it can deadlock with
+    /// or stall the delete.
+    Cancel,
+}
+
 #[cfg(feature = "open-api")]
 pub trait TaskConfig:
     utoipa::ToSchema + Serialize + DeserializeOwned + Clone + Send + Sync
@@ -209,6 +223,16 @@ pub trait TaskConfig:
     #[must_use]
     fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
         Vec::new()
+    }
+
+    /// How deleting a warehouse treats this queue's tasks in it, entity and warehouse tasks alike.
+    /// Project tasks are never affected. Default: [`OnWarehouseDelete::Block`].
+    ///
+    /// Only processes that register the queue apply it, so register the queue (zero workers is
+    /// fine) wherever the management API runs.
+    #[must_use]
+    fn on_warehouse_delete() -> OnWarehouseDelete {
+        OnWarehouseDelete::Block
     }
 
     /// Decide whether a manual schedule call is acceptable right now.
@@ -257,6 +281,12 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
     #[must_use]
     fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
         Vec::new()
+    }
+
+    /// See the `open-api`-enabled trait for full documentation.
+    #[must_use]
+    fn on_warehouse_delete() -> OnWarehouseDelete {
+        OnWarehouseDelete::Block
     }
 
     /// See the `open-api`-enabled trait for full documentation.
@@ -1087,6 +1117,14 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     );
                     return;
                 }
+                Err(e) if is_task_gone(&e) => {
+                    tracing::info!(
+                        "Not recording error for task {} in queue '{}': the task no longer exists, for example because its warehouse was deleted. {e}. Original Error: {error}",
+                        self.id,
+                        Self::queue_name(),
+                    );
+                    return;
+                }
                 Err(e) => {
                     tracing::warn!(
                         "Failed to record error for task {} in queue '{}' on attempt {attempt}/5: {e}",
@@ -1127,6 +1165,14 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Ok(()) => {
                     tracing::debug!(
                         "Successfully recorded success for task {} in queue '{}' on attempt {attempt}",
+                        self.id,
+                        Self::queue_name(),
+                    );
+                    return;
+                }
+                Err(e) if is_task_gone(&e) => {
+                    tracing::info!(
+                        "Not recording success for task {} in queue '{}': the task no longer exists, for example because its warehouse was deleted. {e}",
                         self.id,
                         Self::queue_name(),
                     );
@@ -1176,6 +1222,13 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     Self::queue_name(),
                 );
             }
+            Err(e) if is_task_gone(&e) => {
+                tracing::info!(
+                    "Not recording success for task {} in queue '{}': the task no longer exists, for example because its warehouse was deleted. {e}",
+                    self.id,
+                    Self::queue_name(),
+                );
+            }
             Err(e) => {
                 tracing::error!(
                     "Failed to record success for task {} in queue '{}': {e}. Original Success Details: {}",
@@ -1220,12 +1273,22 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             .append_detail(format!("Original Error: {error}"))
         });
 
-        if let Err(e) = r {
-            tracing::error!(
-                "Failed to record deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
-                Q::queue_name()
-            );
-            return;
+        match r {
+            Ok(()) => {}
+            Err(e) if is_task_gone(&e) => {
+                tracing::info!(
+                    "Not recording deserialization failure for `{id}` task {}: the task no longer exists. {e}",
+                    Q::queue_name()
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to record deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
+                    Q::queue_name()
+                );
+                return;
+            }
         }
 
         if let Err(e) = trx.commit().await {
@@ -1303,6 +1366,12 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 }
 
+/// Recording an outcome returns 404 when neither the task nor a log of the attempt exists, e.g.
+/// after its warehouse was deleted. Retrying cannot succeed then.
+fn is_task_gone(e: &IcebergErrorResponse) -> bool {
+    e.error.code == http::StatusCode::NOT_FOUND.as_u16()
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, EnumIter, Hash, Eq)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
@@ -1347,6 +1416,19 @@ mod test {
     use uuid::Uuid;
 
     use super::*;
+
+    #[test]
+    fn test_is_task_gone() {
+        assert!(is_task_gone(
+            &ErrorModel::not_found("gone", "TaskNotFound", None).into()
+        ));
+        assert!(!is_task_gone(
+            &ErrorModel::conflict("recorded", "TaskAttemptAlreadyCompleted", None).into()
+        ));
+        assert!(!is_task_gone(
+            &ErrorModel::internal("failed", "DatabaseError", None).into()
+        ));
+    }
 
     #[test]
     fn test_task_entity_serde_table() {

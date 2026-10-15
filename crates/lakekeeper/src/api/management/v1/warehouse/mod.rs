@@ -38,7 +38,7 @@ use crate::{
     server::{UnfilteredPage, maybe_get_secret},
     service::{
         AllowedFormatVersions, ArcProjectId, ArcResolvedWarehouse, CachePolicy,
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps,
         EnsureWarehouseSpecMutableError, NamespaceId, State, TabularId, TabularListFlags,
         Transaction, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy, WarehouseSpecLocked,
         authz::{
@@ -62,7 +62,8 @@ use crate::{
         },
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
+            CancelTasksFilter, RegisteredTaskQueues, TaskQueueName,
+            tabular_expiration_queue::TabularExpirationTask,
         },
         warehouse_cache::warehouse_cache_invalidate,
     },
@@ -1235,6 +1236,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        // Cancel before ensure_warehouse_spec_mutable locks the warehouse row: a worker recording
+        // its outcome holds its task row and needs the warehouse row for the task_log foreign key.
+        cancel_tasks_on_warehouse_delete::<C>(
+            &context.v1_state.registered_task_queues,
+            warehouse_id,
+            &mut transaction,
+        )
+        .await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -2383,6 +2392,26 @@ where
         }
         other => other.into(),
     }
+}
+
+/// Cancels this warehouse's tasks, running ones included, of every registered queue whose
+/// `TaskConfig::on_warehouse_delete` is `Cancel`.
+async fn cancel_tasks_on_warehouse_delete<C: CatalogStore>(
+    task_queues: &RegisteredTaskQueues,
+    warehouse_id: WarehouseId,
+    transaction: &mut C::Transaction,
+) -> Result<()> {
+    for (queue_name, legacy_names) in task_queues.queues_cancelled_on_warehouse_delete().await {
+        C::cancel_scheduled_tasks(
+            Some(queue_name),
+            &legacy_names,
+            CancelTasksFilter::WarehouseId { warehouse_id },
+            true,
+            transaction.transaction(),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Reject creation when the new storage profile overlaps the location of an

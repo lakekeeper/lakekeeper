@@ -8,7 +8,7 @@ use crate::{
         CatalogStore, SecretStore,
         authz::Authorizer,
         tasks::{
-            TaskConfig, TaskQueueName, TaskQueueWorkerFn, TaskQueuesRunner,
+            OnWarehouseDelete, TaskConfig, TaskQueueName, TaskQueueWorkerFn, TaskQueuesRunner,
             task_queues_runner::QueueWorkerConfig,
         },
     },
@@ -108,6 +108,8 @@ struct RegisteredQueue {
     /// `task-queue/{name}/config` path keep working. From
     /// `TaskConfig::legacy_queue_names` at registration time.
     legacy_names: Vec<&'static TaskQueueName>,
+    /// From `TaskConfig::on_warehouse_delete` at registration time.
+    on_warehouse_delete: OnWarehouseDelete,
 }
 
 impl std::fmt::Debug for RegisteredQueue {
@@ -118,6 +120,7 @@ impl std::fmt::Debug for RegisteredQueue {
             .field("schedule_eligibility_fn", &"Fn(...)")
             .field("payload_validator_fn", &"Fn(...)")
             .field("legacy_names", &self.legacy_names)
+            .field("on_warehouse_delete", &self.on_warehouse_delete)
             .finish()
     }
 }
@@ -252,6 +255,24 @@ impl RegisteredTaskQueues {
         v.sort_unstable();
         v
     }
+
+    /// Queues whose tasks are cancelled when their warehouse is deleted, each with its
+    /// legacy names. Sorted by name for stable output.
+    #[must_use]
+    pub(crate) async fn queues_cancelled_on_warehouse_delete(
+        &self,
+    ) -> Vec<(&'static TaskQueueName, Vec<&'static TaskQueueName>)> {
+        let mut v: Vec<_> = self
+            .queues
+            .read()
+            .await
+            .iter()
+            .filter(|(_, q)| q.on_warehouse_delete == OnWarehouseDelete::Cancel)
+            .map(|(name, q)| (*name, q.legacy_names.clone()))
+            .collect();
+        v.sort_unstable();
+        v
+    }
 }
 
 #[derive(Clone)]
@@ -379,6 +400,7 @@ impl TaskQueueRegistry {
                 schedule_eligibility_fn,
                 payload_validator_fn,
                 legacy_names: T::legacy_queue_names(),
+                on_warehouse_delete: T::on_warehouse_delete(),
             },
         ) {
             tracing::warn!("Overwriting registration for queue `{queue_name}`");
@@ -1099,6 +1121,91 @@ mod test {
         assert!(
             required_validator(serde_json::json!({"must_have": "yes"})).is_ok(),
             "valid shape must pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_queues_cancelled_on_warehouse_delete() {
+        use crate::service::tasks::{
+            tabular_expiration_queue::SoftDeletionQueueConfig,
+            tabular_purge_queue::PurgeQueueConfig, task_log_cleanup_queue::TaskLogCleanupConfig,
+        };
+
+        static BLOCKING_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "blocking-queue".into());
+        static CANCELLED_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "cancelled-queue".into());
+        static CANCELLED_LEGACY_QN: LazyLock<TaskQueueName> =
+            LazyLock::new(|| "cancelled-queue-legacy".into());
+
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct BlockingCfg {}
+        impl TaskConfig for BlockingCfg {
+            fn queue_name() -> &'static TaskQueueName {
+                &BLOCKING_QN
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+        }
+
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct CancelledCfg {}
+        impl TaskConfig for CancelledCfg {
+            fn queue_name() -> &'static TaskQueueName {
+                &CANCELLED_QN
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+            fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
+                vec![&CANCELLED_LEGACY_QN]
+            }
+            fn on_warehouse_delete() -> OnWarehouseDelete {
+                OnWarehouseDelete::Cancel
+            }
+        }
+
+        // Built-in queues keep the default, so pending purges and soft deletions keep their
+        // warehouse.
+        assert_eq!(
+            SoftDeletionQueueConfig::on_warehouse_delete(),
+            OnWarehouseDelete::Block
+        );
+        assert_eq!(
+            PurgeQueueConfig::on_warehouse_delete(),
+            OnWarehouseDelete::Block
+        );
+        assert_eq!(
+            TaskLogCleanupConfig::on_warehouse_delete(),
+            OnWarehouseDelete::Block
+        );
+
+        let registry = TaskQueueRegistry::new();
+        let queues = registry.registered_task_queues();
+        assert_eq!(queues.queues_cancelled_on_warehouse_delete().await, vec![]);
+        registry
+            .register_queue::<BlockingCfg, TestPayload>(QueueRegistration {
+                queue_name: &BLOCKING_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+        registry
+            .register_queue::<CancelledCfg, TestPayload>(QueueRegistration {
+                queue_name: &CANCELLED_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+
+        assert_eq!(
+            queues.queues_cancelled_on_warehouse_delete().await,
+            vec![(&*CANCELLED_QN, vec![&*CANCELLED_LEGACY_QN])]
         );
     }
 }
