@@ -342,7 +342,7 @@ async fn sign_warehouse_scoped<A: Authorizer>(
     warehouse_id: WarehouseId,
     base_location: &str,
     method: Method,
-) -> lakekeeper::api::Result<S3SignResponse> {
+) -> lakekeeper::api::Result<(http::HeaderMap, S3SignResponse)> {
     sign_warehouse_scoped_request(
         ctx,
         warehouse_id,
@@ -355,7 +355,7 @@ async fn sign_warehouse_scoped_request<A: Authorizer>(
     ctx: &Ctx<A>,
     warehouse_id: WarehouseId,
     request: S3SignRequest,
-) -> lakekeeper::api::Result<S3SignResponse> {
+) -> lakekeeper::api::Result<(http::HeaderMap, S3SignResponse)> {
     CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::FromRequestUri,
@@ -374,7 +374,7 @@ async fn sign_table_scoped<A: Authorizer>(
     tabular_id: uuid::Uuid,
     base_location: &str,
     method: Method,
-) -> lakekeeper::api::Result<S3SignResponse> {
+) -> lakekeeper::api::Result<(http::HeaderMap, S3SignResponse)> {
     CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::TabularId(tabular_id),
@@ -412,7 +412,7 @@ async fn test_sign_generic_table_warehouse_scoped(pool: PgPool) {
         create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
 
     for method in [Method::GET, Method::HEAD, Method::PUT, Method::DELETE] {
-        let Ok(response) =
+        let Ok((_, response)) =
             sign_warehouse_scoped(&ctx, warehouse_id, &base_location, method.clone()).await
         else {
             panic!("a {method} under the generic table's base-location must be signed");
@@ -432,9 +432,10 @@ async fn test_sign_generic_table_table_scoped(pool: PgPool) {
         create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
     let tabular_id = generic_table_id(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
 
-    let response = sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
-        .await
-        .expect("table-scoped signer must resolve the generic table by id");
+    let (_, response) =
+        sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
+            .await
+            .expect("table-scoped signer must resolve the generic table by id");
 
     assert_signed(&response);
 }
@@ -450,9 +451,12 @@ async fn test_sign_generic_table_falls_back_to_location_on_foreign_id(pool: PgPo
     create_generic_table(&ctx, &namespace_name, warehouse_id, "other-blobs").await;
     let other_id = generic_table_id(&ctx, &namespace_name, warehouse_id, "other-blobs").await;
 
-    let response = sign_table_scoped(&ctx, warehouse_id, other_id, &base_location, Method::GET)
-        .await
-        .expect("signer must fall back to location lookup when the path id does not match the URI");
+    let (_, response) =
+        sign_table_scoped(&ctx, warehouse_id, other_id, &base_location, Method::GET)
+            .await
+            .expect(
+                "signer must fall back to location lookup when the path id does not match the URI",
+            );
 
     assert_signed(&response);
 }
@@ -479,7 +483,7 @@ async fn test_sign_generic_table_requires_write_data(pool: PgPool) {
     }
 
     // Reads are unaffected.
-    let response = sign_warehouse_scoped(&ctx, warehouse_id, &base_location, Method::GET)
+    let (_, response) = sign_warehouse_scoped(&ctx, warehouse_id, &base_location, Method::GET)
         .await
         .expect("read_data is still granted");
     assert_signed(&response);
@@ -502,9 +506,10 @@ async fn test_sign_generic_table_table_scoped_requires_write_data(pool: PgPool) 
     assert_forbidden(&err);
 
     // A read through the same by-id route still works.
-    let response = sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
-        .await
-        .expect("read_data is still granted");
+    let (_, response) =
+        sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
+            .await
+            .expect("read_data is still granted");
     assert_signed(&response);
 }
 
@@ -525,7 +530,7 @@ async fn test_sign_generic_table_requires_read_data(pool: PgPool) {
     assert_forbidden(&err);
 
     // Writes are unaffected.
-    let response = sign_warehouse_scoped(&ctx, warehouse_id, &base_location, Method::PUT)
+    let (_, response) = sign_warehouse_scoped(&ctx, warehouse_id, &base_location, Method::PUT)
         .await
         .expect("write_data is still granted");
     assert_signed(&response);
@@ -545,7 +550,7 @@ async fn test_sign_generic_table_batch_delete(pool: PgPool) {
         key_under(&base_location, "data/b.bin"),
     ]);
 
-    let response = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
+    let (_, response) = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
         .await
         .expect("a bulk delete of the generic table's own files must be signed");
     assert_signed(&response);
@@ -596,7 +601,7 @@ async fn test_sign_generic_table_list_prefix(pool: PgPool) {
         dir_key_of(&base_location).replace('/', "%2F"),
     ] {
         let request = list_prefix_request(&prefix);
-        let response = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
+        let (_, response) = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
             .await
             .unwrap_or_else(|e| panic!("listing `{prefix}` must be signed: {e:?}"));
         assert_signed(&response);
@@ -639,7 +644,7 @@ async fn test_sign_list_prefix_requires_a_directory_prefix(pool: PgPool) {
     assert_eq!(err.error.r#type, "RequestUriMismatch", "{err:?}");
 
     // The directory form of the very same location is signable.
-    let response = sign_warehouse_scoped_request(
+    let (_, response) = sign_warehouse_scoped_request(
         &ctx,
         warehouse_id,
         list_prefix_request(&dir_key_of(&location)),
@@ -688,12 +693,13 @@ async fn test_sign_iceberg_table_list_prefix(pool: PgPool) {
         create_catalog_table(&ctx, &namespace_name, warehouse_id, "my_table").await;
     let prefix = dir_key_of(location.as_ref());
 
-    let response = sign_warehouse_scoped_request(&ctx, warehouse_id, list_prefix_request(&prefix))
-        .await
-        .expect("warehouse-scoped signer must sign list requests for iceberg tables");
+    let (_, response) =
+        sign_warehouse_scoped_request(&ctx, warehouse_id, list_prefix_request(&prefix))
+            .await
+            .expect("warehouse-scoped signer must sign list requests for iceberg tables");
     assert_signed(&response);
 
-    let response = CatalogServer::sign(
+    let (_, response) = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::TabularId(*table_id),
         list_prefix_request(&prefix),
@@ -747,12 +753,12 @@ async fn test_sign_iceberg_table_is_unaffected(pool: PgPool) {
         create_catalog_table(&ctx, &namespace_name, warehouse_id, "my_table").await;
     let location = location.to_string();
 
-    let response = sign_warehouse_scoped(&ctx, warehouse_id, &location, Method::GET)
+    let (_, response) = sign_warehouse_scoped(&ctx, warehouse_id, &location, Method::GET)
         .await
         .expect("warehouse-scoped signer must sign iceberg tables");
     assert_signed(&response);
 
-    let response = sign_table_scoped(&ctx, warehouse_id, *table_id, &location, Method::PUT)
+    let (_, response) = sign_table_scoped(&ctx, warehouse_id, *table_id, &location, Method::PUT)
         .await
         .expect("table-scoped signer must sign iceberg tables");
     assert_signed(&response);
@@ -942,7 +948,7 @@ async fn test_sign_by_table_name(pool: PgPool) {
     let (_table_id, location) =
         create_catalog_table(&ctx, &namespace_name, warehouse_id, "by_name").await;
 
-    let response = CatalogServer::sign(
+    let (_, response) = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::Table(Box::new(TableIdent::new(
             NamespaceIdent::new(namespace_name),
@@ -966,7 +972,7 @@ async fn test_sign_by_table_name_falls_back_to_the_request_location(pool: PgPool
     let (_table_id, location) =
         create_catalog_table(&ctx, &namespace_name, warehouse_id, "real_name").await;
 
-    let response = CatalogServer::sign(
+    let (_, response) = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::Table(Box::new(TableIdent::new(
             NamespaceIdent::new(namespace_name),
@@ -1033,7 +1039,7 @@ async fn test_sign_rejects_a_foreign_provider(pool: PgPool) {
     assert_eq!(err.error.r#type, "UnsupportedSignerProvider", "{err:?}");
 
     // Absent still means s3.
-    let response = CatalogServer::sign(
+    let (_, response) = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::TabularId(*table_id),
         sign_request(Method::GET, sign_url(location.as_ref(), "data/file.bin")),
@@ -1141,7 +1147,7 @@ mod s3_compat_integration_tests {
             .headers(request_headers)
             .body(None)
             .build();
-        let response = sign_warehouse_scoped_request(ctx, warehouse_id, request)
+        let (_, response) = sign_warehouse_scoped_request(ctx, warehouse_id, request)
             .await
             .expect("signing must succeed");
         assert_signed(&response);
