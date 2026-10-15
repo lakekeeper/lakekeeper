@@ -1,9 +1,14 @@
+use std::{
+    collections::HashSet,
+    sync::{LazyLock, Mutex},
+};
+
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::{Itertools, izip};
 use lakekeeper::{
     api::{
-        endpoints::{Endpoint, EndpointFlat},
+        endpoints::Endpoint,
         management::v1::project::{
             EndpointStatistic, EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter,
         },
@@ -47,23 +52,42 @@ pub(crate) async fn list_statistics(
 
     let row = sqlx::query!(
         r#"
-        SELECT timestamp,
-               array_agg(matched_path) as "matched_path!: Vec<EndpointFlat>",
-               array_agg(status_code) as "status_code!",
-               array_agg(count) as "count!",
+        WITH es AS (
+            -- Rows recorded before endpoint names were stored as text live in the legacy
+            -- table. The hour of that migration can have rows in both tables.
+            SELECT warehouse_id,
+                   matched_path,
+                   status_code,
+                   timestamp,
+                   sum(count)::bigint as count,
+                   min(created_at) as created_at,
+                   max(updated_at) as updated_at
+            FROM (
+                SELECT warehouse_id, matched_path, status_code, count, timestamp, created_at, updated_at, project_id
+                FROM endpoint_statistics
+                UNION ALL
+                SELECT warehouse_id, matched_path::text, status_code, count, timestamp, created_at, updated_at, project_id
+                FROM endpoint_statistics_legacy
+            ) u
+            WHERE project_id = $1
+                AND (warehouse_id = $2 OR $3)
+                AND (status_code = ANY($4) OR $4 IS NULL)
+                AND timestamp >  (date_trunc(get_stats_interval_unit(), $5::timestamptz) + get_stats_interval())
+                AND timestamp <= (date_trunc(get_stats_interval_unit(), $6::timestamptz) + get_stats_interval())
+            GROUP BY warehouse_id, matched_path, status_code, timestamp
+        )
+        SELECT es.timestamp as "timestamp!",
+               array_agg(es.matched_path) as "matched_path!: Vec<String>",
+               array_agg(es.status_code) as "status_code!",
+               array_agg(es.count) as "count!: Vec<i64>",
                array_agg(es.warehouse_id) as "warehouse_id!: Vec<Option<Uuid>>",
-               array_agg(warehouse_name) as "warehouse_name!: Vec<Option<String>>",
-               array_agg(es.created_at) as "created_at!",
+               array_agg(w.warehouse_name) as "warehouse_name!: Vec<Option<String>>",
+               array_agg(es.created_at) as "created_at!: Vec<chrono::DateTime<Utc>>",
                array_agg(es.updated_at) as "updated_at!: Vec<Option<chrono::DateTime<Utc>>>"
-        FROM endpoint_statistics es
+        FROM es
         LEFT JOIN warehouse w ON es.warehouse_id = w.warehouse_id
-        WHERE es.project_id = $1
-            AND (es.warehouse_id = $2 OR $3)
-            AND (status_code = ANY($4) OR $4 IS NULL)
-            AND timestamp >  (date_trunc(get_stats_interval_unit(), $5::timestamptz) + get_stats_interval())
-            AND timestamp <= (date_trunc(get_stats_interval_unit(), $6::timestamptz) + get_stats_interval())
-        group by timestamp
-        order by timestamp desc
+        group by es.timestamp
+        order by es.timestamp desc
         "#,
         project.as_str(),
         warehouse_filter,
@@ -92,26 +116,32 @@ pub(crate) async fn list_statistics(
                 r.created_at,
                 r.updated_at
             )
-            .map(
+            .filter_map(
                 |(
-                    uri,
+                    name,
                     status_code,
                     count,
                     warehouse_id,
                     warehouse_name,
                     created_at,
                     updated_at,
-                )| EndpointStatistic {
-                    count,
-                    http_route: Endpoint::from(uri).as_http_route().to_string(),
-                    status_code: status_code
-                        .clamp(i32::from(u16::MIN), i32::from(u16::MAX))
-                        .try_into()
-                        .expect("status code is valid since we just clamped it"),
-                    warehouse_id,
-                    warehouse_name,
-                    created_at,
-                    updated_at,
+                )| {
+                    let Some(endpoint) = Endpoint::from_name(&name) else {
+                        warn_unknown_endpoint_name(&name);
+                        return None;
+                    };
+                    Some(EndpointStatistic {
+                        count,
+                        http_route: endpoint.as_http_route().to_string(),
+                        status_code: status_code
+                            .clamp(i32::from(u16::MIN), i32::from(u16::MAX))
+                            .try_into()
+                            .expect("status code is valid since we just clamped it"),
+                        warehouse_id,
+                        warehouse_name,
+                        created_at,
+                        updated_at,
+                    })
                 },
             )
             .collect();
@@ -134,6 +164,21 @@ pub(crate) async fn list_statistics(
         })
         .to_string(),
     })
+}
+
+/// Stored names come from newer servers after a rolling downgrade, or from endpoints this
+/// server does not serve. They are left out of the listing; each is logged once.
+fn warn_unknown_endpoint_name(name: &str) {
+    static LOGGED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+    let first = LOGGED
+        .lock()
+        .map_or(true, |mut logged| logged.insert(name.to_string()));
+    if first {
+        tracing::warn!(
+            endpoint = name,
+            "Endpoint statistics contain an endpoint this server does not serve. It is left out of the listing."
+        );
+    }
 }
 
 fn parse_token(token: &str) -> Result<(chrono::DateTime<Utc>, chrono::Duration), ErrorModel> {

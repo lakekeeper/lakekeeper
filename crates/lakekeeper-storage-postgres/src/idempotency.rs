@@ -69,16 +69,12 @@ impl PostgresBackend {
         // authoritative. It is a primary-key lookup and only runs when the
         // client sent the header.
         //
-        // `operation` is read as text rather than decoded into `EndpointFlat`.
-        // The `api_endpoints` enum grows over time, so during a rolling
-        // downgrade this replica can encounter a value written by a newer one.
-        // Decoding would fail the whole query and 500 every idempotent request
-        // in the warehouse until the records expire; a text compare just fails
-        // to match, which is the same answer for any endpoint this binary can
-        // actually serve.
+        // `operation` is compared as text: after a rolling downgrade this replica
+        // can read a name written by a newer one, and a mismatch is the right
+        // answer for any endpoint this binary serves.
         let record = sqlx::query!(
             r#"
-            SELECT http_status, operation::text as "operation!"
+            SELECT http_status, operation
             FROM idempotency_record
             WHERE warehouse_id = $1 AND idempotency_key = $2
             "#,
@@ -155,7 +151,7 @@ impl PostgresBackend {
         // The spec makes the key globally unique — never reused across operations.
         // A client that breaks that rule must not be handed a replay of the other
         // operation's response, which would be of the wrong shape entirely.
-        if record.operation != endpoint.to_string() {
+        if record.operation != endpoint.name() {
             return Err(lakekeeper::api::ErrorModel::bad_request(
                 "Idempotency-Key was already used for a different operation. \
                  Keys must be globally unique and must not be reused across operations.",
@@ -205,7 +201,7 @@ impl PostgresBackend {
             "#,
             info.key.as_uuid(),
             *warehouse_id,
-            info.endpoint as EndpointFlat,
+            info.endpoint.name(),
             i32::from(info.http_status.as_u16()),
         )
         .fetch_optional(&mut **transaction)

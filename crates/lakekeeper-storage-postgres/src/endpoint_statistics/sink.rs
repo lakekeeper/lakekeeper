@@ -3,7 +3,6 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use itertools::Itertools;
 use lakekeeper::{
     ProjectId, XXHashSet,
-    api::endpoints::EndpointFlat,
     service::{
         ArcProjectId,
         endpoint_statistics::{EndpointIdentifier, EndpointStatisticsSink},
@@ -89,7 +88,7 @@ impl PostgresStatisticsSink {
 
         // Aggregate stats to prevent duplicate constraint violations
         // Key: (project_id, warehouse_id, matched_path, status_code)
-        let mut aggregated_stats: HashMap<(String, Option<Uuid>, EndpointFlat, i32), i64> =
+        let mut aggregated_stats: HashMap<(String, Option<Uuid>, &'static str, i32), i64> =
             HashMap::new();
 
         for (project, endpoints) in stats.iter() {
@@ -112,7 +111,7 @@ impl PostgresStatisticsSink {
                 count,
             ) in endpoints
             {
-                let uri_flat = EndpointFlat::from(*uri);
+                let endpoint_name = uri.name();
                 let status_code_i32 = i32::from(status_code.as_u16());
 
                 let resolved_warehouse = warehouse.as_ref().map(|w| **w).or_else(|| {
@@ -125,7 +124,7 @@ impl PostgresStatisticsSink {
                 let key = (
                     project_str.clone(),
                     resolved_warehouse,
-                    uri_flat,
+                    endpoint_name,
                     status_code_i32,
                 );
                 *aggregated_stats.entry(key).or_insert(0) += count;
@@ -162,7 +161,7 @@ impl PostgresStatisticsSink {
                         FROM unnest(
                                 $1::text[],
                                 $2::UUID[],
-                                $3::api_endpoints[],
+                                $3::text[],
                                 $4::INT[],
                                 $5::BIGINT[]
                             ) AS u(project_id, warehouse, uri, status_code, cnt)
