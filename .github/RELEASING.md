@@ -103,7 +103,7 @@ git switch -c "release-notes-$VERSION"   # every change below goes on this branc
    sed -i.bak -E "s|^(site_name:[[:space:]]+docs/).*|\1$MINOR|" "../lakekeeper-docs/$MINOR/mkdocs.yml" && rm "../lakekeeper-docs/$MINOR/mkdocs.yml.bak"
    ```
 
-   Check that `logging.md` in the snapshot differs from the tag's only by the table row (`git diff --no-index`); if `main` changed it further since the tag, keep the tag's version and add the row by hand. Commit the folder to the `docs` branch through a pull request. Once that pull request has merged, add `- Release X.Y.x: "!include versions/X.Y.x/mkdocs.yml"` above the previous release under `Docs:` in `site/mkdocs.yml`, in a pull request to `main`. For a patch release, the folder stays as it is: a patch never changes the audit log format.
+   Check that `logging.md` in the snapshot differs from the tag's only by the table row (`git diff --no-index`); if `main` changed it further since the tag, keep the tag's version and add the row by hand. Commit the folder to the `docs` branch through a pull request. Merging it deploys the site. Once it has merged, add `- Release X.Y.x: "!include versions/X.Y.x/mkdocs.yml"` above the previous release under `Docs:` in `site/mkdocs.yml`, in a pull request to `main`. A patch release refreshes the folder: see [Patch releases](#patch-releases).
 
 ## After the release
 
@@ -113,7 +113,29 @@ git switch -c "release-notes-$VERSION"   # every change below goes on this branc
 
 ## Patch releases
 
-A patch is released from a `rel-X-Y` branch cut at the `vX.Y.0` tag. That tag holds the `"release-as"` of the minor release, so before merging the branch's release-please pull request, set `"release-as"` to the patch version on the branch in a pull request (as `chore: Release-As 0.13.4` did on `rel-0-13`).
+A patch is released from a `rel-X-Y` branch cut at the `vX.Y.0` tag. Set the branch up before the first backport:
+
+- In `.github/workflows/release.yml`, set `target-branch: rel-X-Y` on the release-please step, so that release-please opens its pull request against the branch (as `chore(ci): rel-0-14 target branch` did on `rel-0-14`).
+- The tag holds the `"release-as"` of the minor release: set it to the patch version (as `chore: Release as 0.14.1` did on `rel-0-14`).
+- Cherry-pick the pull request from step 5 of the minor release. It deletes the fragments the tag shipped and adds the table row to `docs/docs/logging.md`.
+
+release-please opens the branch's pull request only once the branch has a commit outside the `exclude-paths` of `release-please/release-please-config.json`. The setup commits alone open none.
+
+Backport docs changes that apply to the release line together with the code. The site serves the `X.Y.x` docs from the `docs` branch, not from `rel-X-Y`, so they reach readers only when the folder is refreshed. A push to `rel-X-Y` does not deploy the site. Branches cut before this rule (`rel-0-13`, `rel-0-14`) still carry the old trigger in their own `.github/workflows/site.yml`: after a push there that changes `docs/` or `site/`, run `gh workflow run site.yml --ref main`.
+
+**Refresh the versioned docs** after each patch release, once the tag exists. Replace the folder with the tag's docs, keeping the folder's `site_name`:
+
+```bash
+MINOR="${VERSION%.*}.x"                                  # e.g. 0.14.x
+git worktree add ../lakekeeper-docs origin/docs -b "docs-$VERSION"
+rm -r "../lakekeeper-docs/$MINOR"
+mkdir "../lakekeeper-docs/$MINOR"
+git archive "$TAG" docs/docs docs/hooks docs/mkdocs.yml | tar -x -C "../lakekeeper-docs/$MINOR" --strip-components=1
+sed -i.bak -E "s|^(site_name:[[:space:]]+docs/).*|\1$MINOR|" "../lakekeeper-docs/$MINOR/mkdocs.yml" && rm "../lakekeeper-docs/$MINOR/mkdocs.yml.bak"
+git -C ../lakekeeper-docs add -A "$MINOR" && git -C ../lakekeeper-docs diff --cached --stat
+```
+
+The diff should show only the docs changes backported since the last refresh. Commit the folder to the `docs` branch through a pull request. Merging it deploys the site.
 
 A patch never changes the audit log format: CI rejects a pull request to the branch that adds a fragment, moves `AUDIT_FORMAT` or changes a record. `just audit-format-release-notes "$VERSION"` prints `_No audit log format changes in this release._` for it, so a patch's notes carry no audit log block, `just audit-format-release` is not run, and the table gets no row.
 
