@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO cache_change_log_checkpoint (system_identifier, snapshot)\n         VALUES ($1, pg_current_snapshot())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f5ddc5f66116ebb35eedf82137583fd96b71274f266bd5d28c913e972664aa23"
+}

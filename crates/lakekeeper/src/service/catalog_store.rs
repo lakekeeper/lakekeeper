@@ -43,7 +43,9 @@ use crate::{
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
         },
-        cache_invalidation::{BoxedCacheChangeLog, ChangeLogSettings, ChangeSet},
+        cache_invalidation::{
+            BoxedCacheChangeLog, ChangeLogSettings, ChangeSet, PruneOutcome, PruneSettings,
+        },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -373,6 +375,13 @@ where
         catalog_state: Self::State,
         settings: ChangeLogSettings,
     ) -> BoxedCacheChangeLog;
+
+    /// Delete change-log rows that no reader needs any more, if no other instance is
+    /// pruning. A reader whose cursor is older than `settings.retention` may reset.
+    async fn prune_cache_change_log(
+        catalog_state: Self::State,
+        settings: PruneSettings,
+    ) -> std::result::Result<PruneOutcome, CatalogBackendError>;
 
     // ---------------- Project Management ----------------
     /// Create a project

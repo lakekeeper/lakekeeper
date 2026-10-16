@@ -1,11 +1,15 @@
 //! The cache change log: which cache keys each transaction changed.
 
 mod reader;
+mod retention;
 mod snapshot;
+
+use std::time::Duration;
 
 use lakekeeper::service::cache_invalidation::{self, ChangeSet};
 pub use reader::PostgresCacheChangeLog;
-use sqlx::PgConnection;
+pub(crate) use retention::prune;
+use sqlx::{Connection, PgConnection};
 
 /// The most keys one change-log row carries. A larger key set is split into several rows.
 const KEYS_PER_ROW: usize = 1000;
@@ -56,6 +60,66 @@ pub async fn record_cache_changes(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// A transaction whose statements end after `statement_timeout` on the server. A
+/// transaction-scoped setting also holds behind a pooler in transaction mode.
+async fn begin_with_timeout(
+    conn: &mut PgConnection,
+    statement_timeout: Duration,
+) -> sqlx::Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+    let mut tx = conn.begin().await?;
+    sqlx::query("SELECT set_config('statement_timeout', $1, true)")
+        // At least 1 ms: `0` would turn the timeout off.
+        .bind(format!("{}ms", statement_timeout.as_millis().max(1)))
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
+/// The cluster's system identifier, or `0` where `pg_control_system()` may not be called.
+/// Transaction ids are comparable only within one cluster.
+async fn system_identifier(conn: &mut PgConnection) -> sqlx::Result<i64> {
+    let can_read = sqlx::query_scalar!(
+        r#"SELECT has_function_privilege('pg_control_system()', 'execute') AS "can_read!""#
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if !can_read {
+        return Ok(0);
+    }
+    // A separate statement: Postgres checks EXECUTE on every function of a statement
+    // before running it, also in a branch that is never taken.
+    sqlx::query_scalar!(r#"SELECT (pg_control_system()).system_identifier AS "system_identifier!""#)
+        .fetch_one(conn)
+        .await
+}
+
+#[cfg(test)]
+mod test_support {
+    use sqlx::{PgConnection, PgPool};
+
+    /// Record one change in its own transaction and return its xid.
+    pub(super) async fn record(pool: &PgPool, domain: &str, key: &str) -> u64 {
+        let mut tx = pool.begin().await.unwrap();
+        let xid = record_in(&mut tx, domain, key).await;
+        tx.commit().await.unwrap();
+        xid
+    }
+
+    pub(super) async fn record_in(conn: &mut PgConnection, domain: &str, key: &str) -> u64 {
+        sqlx::query("SELECT lakekeeper_record_cache_change($1, ARRAY[$2])")
+            .bind(domain)
+            .bind(key)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        let xid: String = sqlx::query_scalar("SELECT pg_current_xact_id()::text")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        xid.parse().unwrap()
+    }
 }
 
 #[cfg(test)]

@@ -4,9 +4,9 @@ use lakekeeper::service::cache_invalidation::{
     BARRIER_DOMAIN, CacheChangeLog, ChangeLogError, ChangeLogSettings, ChangeMarker, LoggedChange,
     PollOutcome, ResetReason,
 };
-use sqlx::{Connection, PgConnection, PgPool};
+use sqlx::{PgConnection, PgPool};
 
-use super::snapshot::PgSnapshot;
+use super::{begin_with_timeout, snapshot::PgSnapshot, system_identifier};
 
 /// Rows per page of a poll. A row holds at most 1000 keys, so a page holds at most
 /// 100 000.
@@ -157,6 +157,20 @@ impl PostgresCacheChangeLog {
         }
     }
 
+    /// A log on `pool`'s database, connecting with `pool`'s options; reads come from the
+    /// primary.
+    #[cfg(test)]
+    pub(super) fn for_test_pool(pool: &PgPool, settings: ChangeLogSettings) -> Self {
+        let options: sqlx::postgres::PgConnectOptions = (*pool.connect_options()).clone();
+        let connect: Connector = Box::new(move || {
+            let options = options.clone();
+            Box::pin(
+                async move { <PgConnection as sqlx::Connection>::connect_with(&options).await },
+            )
+        });
+        Self::new(connect, pool.clone(), false, settings)
+    }
+
     /// Run `f` on the connection, connecting first if needed, all within the client
     /// timeout. On any error the connection is dropped, so the next call reconnects.
     async fn guarded<T>(
@@ -238,13 +252,12 @@ async fn read_identity_on(
     conn: &mut PgConnection,
     settings: ChangeLogSettings,
 ) -> Result<(ServerIdentity, PgSnapshot), IdentityError> {
-    let mut tx = begin_with_timeout(conn, settings).await?;
+    let mut tx = begin_with_timeout(conn, settings.statement_timeout).await?;
     let row = sqlx::query!(
         r#"
         SELECT pg_is_in_recovery() AS "in_recovery!",
                pg_postmaster_start_time() AS "postmaster_start!",
-               pg_current_snapshot()::text AS "snapshot!",
-               has_function_privilege('pg_control_system()', 'execute') AS "can_read_system_id!"
+               pg_current_snapshot()::text AS "snapshot!"
         "#
     )
     .fetch_one(&mut *tx)
@@ -252,17 +265,7 @@ async fn read_identity_on(
     if row.in_recovery {
         return Err(IdentityError::Standby);
     }
-    // A separate statement: Postgres checks EXECUTE on every function of a statement
-    // before running it, also in a branch that is never taken.
-    let system_identifier = if row.can_read_system_id {
-        sqlx::query_scalar!(
-            r#"SELECT (pg_control_system()).system_identifier AS "system_identifier!""#
-        )
-        .fetch_one(&mut *tx)
-        .await?
-    } else {
-        0
-    };
+    let system_identifier = system_identifier(&mut tx).await?;
     tx.commit().await?;
     let snapshot = row.snapshot.parse()?;
     Ok((
@@ -272,24 +275,6 @@ async fn read_identity_on(
         },
         snapshot,
     ))
-}
-
-/// A transaction whose statements end after `settings.statement_timeout` on the server.
-/// A transaction-scoped setting also holds behind a pooler in transaction mode.
-async fn begin_with_timeout(
-    conn: &mut PgConnection,
-    settings: ChangeLogSettings,
-) -> sqlx::Result<sqlx::Transaction<'_, sqlx::Postgres>> {
-    let mut tx = conn.begin().await?;
-    sqlx::query("SELECT set_config('statement_timeout', $1, true)")
-        // At least 1 ms: `0` would turn the timeout off.
-        .bind(format!(
-            "{}ms",
-            settings.statement_timeout.as_millis().max(1)
-        ))
-        .execute(&mut *tx)
-        .await?;
-    Ok(tx)
 }
 
 /// One page of a poll.
@@ -339,7 +324,7 @@ async fn read_page(
         limit,
         system_identifier,
     } = request;
-    let mut tx = begin_with_timeout(conn, settings).await?;
+    let mut tx = begin_with_timeout(conn, settings.statement_timeout).await?;
     // Two branches, each on its own range of the (xid, id) key: transactions running at
     // the previous snapshot, and transactions started after it. Both keep only rows
     // visible in the poll's snapshot, so a transaction is returned once it committed.
@@ -423,7 +408,7 @@ async fn unconfirmed_xids(
     settings: ChangeLogSettings,
     xids: &[String],
 ) -> sqlx::Result<Vec<String>> {
-    let mut tx = begin_with_timeout(conn, settings).await?;
+    let mut tx = begin_with_timeout(conn, settings.statement_timeout).await?;
     let missing = sqlx::query_scalar!(
         r#"
         SELECT x::text AS "xid!"
@@ -529,7 +514,7 @@ impl CacheChangeLog for PostgresCacheChangeLog {
         let xid = self
             .guarded(|conn| {
                 Box::pin(async move {
-                    let mut tx = begin_with_timeout(conn, settings)
+                    let mut tx = begin_with_timeout(conn, settings.statement_timeout)
                         .await
                         .map_err(query_error)?;
                     let xid = sqlx::query_scalar!(
@@ -589,45 +574,19 @@ mod tests {
         time::Duration,
     };
 
-    use sqlx::{Executor, postgres::PgConnectOptions};
+    use sqlx::{Connection, Executor};
 
     use super::*;
+    use crate::cache_change_log::test_support::{record, record_in};
 
     const SETTINGS: ChangeLogSettings = ChangeLogSettings {
         statement_timeout: Duration::from_secs(10),
     };
 
     fn log(pool: &PgPool, page_rows: i64) -> PostgresCacheChangeLog {
-        let options: PgConnectOptions = (*pool.connect_options()).clone();
-        let connect: Connector = Box::new(move || {
-            let options = options.clone();
-            Box::pin(async move { PgConnection::connect_with(&options).await })
-        });
-        let mut log = PostgresCacheChangeLog::new(connect, pool.clone(), false, SETTINGS);
+        let mut log = PostgresCacheChangeLog::for_test_pool(pool, SETTINGS);
         log.page_rows = page_rows;
         log
-    }
-
-    /// Record one change in its own transaction and return its xid.
-    async fn record(pool: &PgPool, domain: &str, key: &str) -> u64 {
-        let mut tx = pool.begin().await.unwrap();
-        let xid = record_in(&mut tx, domain, key).await;
-        tx.commit().await.unwrap();
-        xid
-    }
-
-    async fn record_in(conn: &mut PgConnection, domain: &str, key: &str) -> u64 {
-        sqlx::query("SELECT lakekeeper_record_cache_change($1, ARRAY[$2])")
-            .bind(domain)
-            .bind(key)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        let xid: String = sqlx::query_scalar("SELECT pg_current_xact_id()::text")
-            .fetch_one(&mut *conn)
-            .await
-            .unwrap();
-        xid.parse().unwrap()
     }
 
     fn change(xid: u64, domain: &str, key: &str) -> LoggedChange {

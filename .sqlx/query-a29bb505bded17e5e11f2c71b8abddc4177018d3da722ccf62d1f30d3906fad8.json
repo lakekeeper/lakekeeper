@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT max(pg_snapshot_xmin(snapshot))::text AS \"below\",\n               max(taken_at) AS \"taken_at\"\n        FROM cache_change_log_checkpoint\n        WHERE system_identifier = $1\n          AND taken_at <= clock_timestamp() - make_interval(secs => $2)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "below",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "taken_at",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "a29bb505bded17e5e11f2c71b8abddc4177018d3da722ccf62d1f30d3906fad8"
+}

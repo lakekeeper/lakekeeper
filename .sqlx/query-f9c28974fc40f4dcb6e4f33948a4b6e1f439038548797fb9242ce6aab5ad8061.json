@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH deleted AS (\n            DELETE FROM cache_change_log\n            WHERE ctid = ANY(ARRAY(\n                SELECT ctid FROM cache_change_log\n                WHERE xid >= pg_snapshot_xmax(pg_current_snapshot())\n                LIMIT $1))\n            RETURNING 1\n        )\n        SELECT count(*) AS \"rows!\" FROM deleted\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f9c28974fc40f4dcb6e4f33948a4b6e1f439038548797fb9242ce6aab5ad8061"
+}

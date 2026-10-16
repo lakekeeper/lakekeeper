@@ -68,7 +68,9 @@ use lakekeeper::{
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
         },
-        cache_invalidation::{BoxedCacheChangeLog, ChangeLogSettings, ChangeSet},
+        cache_invalidation::{
+            BoxedCacheChangeLog, ChangeLogSettings, ChangeSet, PruneOutcome, PruneSettings,
+        },
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -83,7 +85,9 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
-    cache_change_log::{PostgresCacheChangeLog, record_cache_changes},
+    cache_change_log::{
+        PostgresCacheChangeLog, prune as prune_cache_change_log, record_cache_changes,
+    },
     dbutils::DBErrorHandler,
     grant::{
         SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
@@ -176,6 +180,15 @@ impl CatalogStore for super::PostgresBackend {
         settings: ChangeLogSettings,
     ) -> BoxedCacheChangeLog {
         Box::new(PostgresCacheChangeLog::for_state(&catalog_state, settings))
+    }
+
+    async fn prune_cache_change_log(
+        catalog_state: Self::State,
+        settings: PruneSettings,
+    ) -> std::result::Result<PruneOutcome, CatalogBackendError> {
+        prune_cache_change_log(&catalog_state.write_pool(), settings)
+            .await
+            .map_err(DBErrorHandler::into_catalog_backend_error)
     }
 
     async fn get_warehouse_by_name_impl(

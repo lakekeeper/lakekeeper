@@ -1,6 +1,6 @@
 //! Reading the change log: the contract between a storage backend and the poller.
 
-use std::time::Duration;
+use std::{num::NonZeroU32, time::Duration};
 
 /// The domain of barrier rows. A barrier names no cache entry; see
 /// [`CacheChangeLog::insert_barrier`].
@@ -80,6 +80,27 @@ pub enum ChangeLogError {
 pub struct ChangeLogSettings {
     /// The longest one statement of the log may run.
     pub statement_timeout: Duration,
+}
+
+/// Settings of one pruning run of the change log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PruneSettings {
+    /// Rows are kept at least this long after their transaction finished, and longer while
+    /// an older transaction of the database server is still open.
+    pub retention: Duration,
+    /// The most rows one delete transaction removes.
+    pub batch_size: NonZeroU32,
+    /// The longest one statement of the run may run.
+    pub statement_timeout: Duration,
+}
+
+/// The result of one pruning run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PruneOutcome {
+    /// Another instance is pruning.
+    Skipped,
+    /// The run deleted `deleted_rows` rows. It stops early when another instance takes over.
+    Pruned { deleted_rows: u64 },
 }
 
 /// The change log as the poller sees it.

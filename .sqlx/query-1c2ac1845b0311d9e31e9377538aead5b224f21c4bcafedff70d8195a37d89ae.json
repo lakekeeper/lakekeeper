@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT pg_is_in_recovery() AS \"in_recovery!\",\n               pg_postmaster_start_time() AS \"postmaster_start!\",\n               pg_current_snapshot()::text AS \"snapshot!\",\n               has_function_privilege('pg_control_system()', 'execute') AS \"can_read_system_id!\"\n        ",
+  "query": "\n        SELECT pg_is_in_recovery() AS \"in_recovery!\",\n               pg_postmaster_start_time() AS \"postmaster_start!\",\n               pg_current_snapshot()::text AS \"snapshot!\"\n        ",
   "describe": {
     "columns": [
       {
@@ -20,12 +20,6 @@
         "name": "snapshot!",
         "type_info": "Text",
         "origin": "Expression"
-      },
-      {
-        "ordinal": 3,
-        "name": "can_read_system_id!",
-        "type_info": "Bool",
-        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -34,9 +28,8 @@
     "nullable": [
       null,
       null,
-      null,
       null
     ]
   },
-  "hash": "afa9adb5163b17e814520bffef75659563df7430c6bb5073b28cebf8d9b0901a"
+  "hash": "1c2ac1845b0311d9e31e9377538aead5b224f21c4bcafedff70d8195a37d89ae"
 }

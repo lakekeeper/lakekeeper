@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO cache_change_log_horizon AS h (system_identifier, pruned_below)\n        VALUES ($1, $2::text::xid8)\n        ON CONFLICT (singleton) DO UPDATE SET\n            pruned_below = CASE WHEN h.system_identifier = excluded.system_identifier\n                                 AND h.pruned_below <= pg_snapshot_xmax(pg_current_snapshot())\n                                THEN greatest(h.pruned_below, excluded.pruned_below)\n                                ELSE excluded.pruned_below END,\n            system_identifier = excluded.system_identifier\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d86afe6c27040cb3d9285305a8cc6cf7126f8a480eae0f079d97f6cc6e2bc5da"
+}

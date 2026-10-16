@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM cache_change_log_checkpoint\n         WHERE system_identifier <> $1 OR taken_at < $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f641c174608424193ce266fcd0317d9ad1ca90d79bbc8cca44b77d20f39a6003"
+}
