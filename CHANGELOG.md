@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.14.1](https://github.com/lakekeeper/lakekeeper/compare/v0.14.0...v0.14.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **deps:** bump rustls to 0.23.46 and chacha20 to 0.10.2 ([#2125](https://github.com/lakekeeper/lakekeeper/issues/2125)) ([e21201a](https://github.com/lakekeeper/lakekeeper/commit/e21201aa69eec8f5d660c4e47ad15c13803833dc))
+* return correct Cache-Control header values from S3 signer ([#2124](https://github.com/lakekeeper/lakekeeper/issues/2124)) ([bed849b](https://github.com/lakekeeper/lakekeeper/commit/bed849b0e3baf27b5f863697c51dbc76149a00d6))
+* **s3-signer:** sign only allowlisted query parameters and headers ([#2102](https://github.com/lakekeeper/lakekeeper/issues/2102)) ([55583aa](https://github.com/lakekeeper/lakekeeper/commit/55583aad38df69b05b23c8f63311744222998912))
+* **signer:** exclude unsigned headers regardless of name case ([#2104](https://github.com/lakekeeper/lakekeeper/issues/2104)) ([c8421d6](https://github.com/lakekeeper/lakekeeper/commit/c8421d6eb9df294a73a49f1ca76d2f95a14fc486))
+* sort insert_snapshot_refs, remove early return and add 40P01 as retry-able error ([#2117](https://github.com/lakekeeper/lakekeeper/issues/2117)) ([ae511b1](https://github.com/lakekeeper/lakekeeper/commit/ae511b17536573e3545f0e0ac05a6ff65c9316d0))
+* **ui:** preserve nested ui path segments ([#2119](https://github.com/lakekeeper/lakekeeper/issues/2119)) ([1352359](https://github.com/lakekeeper/lakekeeper/commit/135235984f006dc2bc935dc0fa883a82c92877e1))
+
+
+### Documentation
+
+* **authz-cedar:** document tabular move actions and the predefined move policies ([b46b6bf](https://github.com/lakekeeper/lakekeeper/commit/b46b6bfeea4fd015ae738d3a9f1ff419b3293b70))
+* **cedar:** failed policy refreshes keep pods healthy; document refresh metrics ([453ba52](https://github.com/lakekeeper/lakekeeper/commit/453ba521c8e0012571eb47699e5ae809e2fe21b0))
+* **storage:** recommend Storage Object User for GCS instead of Storage Admin ([#2114](https://github.com/lakekeeper/lakekeeper/issues/2114)) ([4cddb3d](https://github.com/lakekeeper/lakekeeper/commit/4cddb3da3dacd79ca7ec270d6bb0108700aea0fa))
+
+
+### Miscellaneous Chores
+
+* 0.14.x docs ([7599665](https://github.com/lakekeeper/lakekeeper/commit/759966569d56728dabb789f682b2654d1614112c))
+* **ci:** start migration tests from the branch's last release ([#2132](https://github.com/lakekeeper/lakekeeper/issues/2132)) ([003ec1d](https://github.com/lakekeeper/lakekeeper/commit/003ec1ded55503bbd0b71173647329673856ca25))
+* clean up after the 0.14.0 release and fix the Cedar tag docs ([#2096](https://github.com/lakekeeper/lakekeeper/issues/2096)) ([751b705](https://github.com/lakekeeper/lakekeeper/commit/751b705fc961c823fd1c75df4d414328ab9bd8fc))
+* **docs:** Sync documentation from lakekeeper plus ([#2089](https://github.com/lakekeeper/lakekeeper/issues/2089)) ([49422ae](https://github.com/lakekeeper/lakekeeper/commit/49422aed5205432ccc67c0f669f45a290e1b05e6))
+* **docs:** Sync documentation from lakekeeper plus ([#2098](https://github.com/lakekeeper/lakekeeper/issues/2098)) ([18fafd0](https://github.com/lakekeeper/lakekeeper/commit/18fafd086b3a207f3f0cd5220ff8bf8a3975d416))
+* **docs:** Sync documentation from lakekeeper plus ([#2101](https://github.com/lakekeeper/lakekeeper/issues/2101)) ([293e476](https://github.com/lakekeeper/lakekeeper/commit/293e4764d94d447cb135a3d9d8de7f48fc45229c))
+* fix release notes and checker alongside ([#2103](https://github.com/lakekeeper/lakekeeper/issues/2103)) ([bcac4b1](https://github.com/lakekeeper/lakekeeper/commit/bcac4b1a02811f42ffee6976069435f9a7479bfb))
+* follow Arc&lt;AType&gt; is ATypeArc rule ([#2106](https://github.com/lakekeeper/lakekeeper/issues/2106)) ([1c8f17d](https://github.com/lakekeeper/lakekeeper/commit/1c8f17ddf50e2be2f59981cb23304d8259b43dfa))
+* name every shared arc alias the same way ([#2111](https://github.com/lakekeeper/lakekeeper/issues/2111)) ([30119f8](https://github.com/lakekeeper/lakekeeper/commit/30119f8f9d59515e8088d9575aa0562cf9669576))
+* release-please crate check, bounded DB dump, idp_ids docs ([#2100](https://github.com/lakekeeper/lakekeeper/issues/2100)) ([8bb827a](https://github.com/lakekeeper/lakekeeper/commit/8bb827a6b41d9ef465cc70643c2dae2b916bbed9))
+* update quinn-proton to 0.11.19 (RUSTSEC-2026-0338 to -0342) ([#2112](https://github.com/lakekeeper/lakekeeper/issues/2112)) ([556adaa](https://github.com/lakekeeper/lakekeeper/commit/556adaae25b52a2cab33fb6b9662bfa414897354))
+* use shared references in audit log ([#2105](https://github.com/lakekeeper/lakekeeper/issues/2105)) ([2d4a159](https://github.com/lakekeeper/lakekeeper/commit/2d4a159ee012c3843008bdd7957c61efcd336594))
+
 ## [0.14.0](https://github.com/lakekeeper/lakekeeper/compare/v0.13.1...v0.14.0) (2026-10-07)
 
 
