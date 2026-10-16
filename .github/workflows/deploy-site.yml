@@ -1,0 +1,21 @@
+# The site workflow (`site.yml`) lives on `main` and reads the versioned docs
+# from this branch. A push here runs it on `main`, so the new docs go live.
+name: Deploy site from main
+
+on:
+  push:
+    branches:
+      - docs
+
+permissions:
+  actions: write # Needed to start the site workflow on main
+
+jobs:
+  deploy-site:
+    name: Start site deploy on main
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run site.yml on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run site.yml --repo "$GITHUB_REPOSITORY" --ref main
