@@ -27,6 +27,8 @@ You can disable credential vending and remote signing on a per-warehouse basis u
 
 Clients can also control credential delegation per request using the `X-Iceberg-Access-Delegation` header. Lakekeeper supports the standard Iceberg REST spec values (`vended-credentials` and `remote-signing`), plus a special `client-managed` value. When set to `client-managed`, no credentials or signing information are returned, regardless of storage profile configuration. This allows clients to use their own credentials for direct storage access.
 
+Remote signing keeps a client inside its table only if the object store checks every part of a signed request, as AWS S3 and Garage do. MinIO, SeaweedFS, and Ceph RGW before versions 19.2.6 and 20.2.4 or with `rgw_sigv4_insecure` enabled do not. On these stores a client can change a request after it was signed, for example to copy data from another table into its own or to delete files outside its table. Use vended credentials with these stores. Clients that may write a table can also set tags on its files, so do not base access or lifecycle rules on object tags.
+
 ## Allowing Alternative Protocols (s3a, s3n, wasbs)
 
 For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additional protocols. To enable these, activate the "Allow Alternative Protocols" flag in the storage profile of the Warehouse. When enabled, the following additional protocols are accepted for table creation or registration:
@@ -183,8 +185,13 @@ When a client requests table configuration, Lakekeeper selects between remote si
 - If the header specifies `vended-credentials` or `remote-signing`, that method is used if enabled in the storage profile
 - If both methods are requested or neither is specified, Lakekeeper attempts to provide vended credentials first (if STS is enabled), then falls back to remote signing (if enabled)
 - If both methods are disabled at the storage profile level, no credentials are returned regardless of the header value
+- If the method Lakekeeper offers is not implemented by the client — DuckDB, for example, does not support remote signing — the client needs its own S3 credentials. Region, endpoint and path-style settings are still returned in the table `config`, but no `storage-credentials` entry is returned.
 
 For maximum client compatibility, we recommend enabling both STS and remote signing when your S3 storage supports it.
+
+Remote signing applies to [Generic Tables](./generic-tables.md) as well as Iceberg tables — see [Remote signing for generic tables](./generic-tables.md#remote-signing-s3-without-sts).
+
+Remote signing also covers prefix listings (`ListObjectsV2`), which clients use for maintenance operations such as Spark's `remove_orphan_files` with `prefix_listing => true` (requires `iceberg-spark-runtime` 1.10 or newer). The `prefix` must address a directory inside the table's location, i.e. it has to end with a `/` when listing the table location itself. S3 matches list prefixes as raw strings, so the prefix `warehouse/ns/table` would also return the keys of a sibling `warehouse/ns/table_other`, and is rejected. Iceberg's `FileSystemWalker` appends the `/` before listing; clients that don't are expected to normalize their prefix.
 
 For some older remote signing clients that cannot handle table-specific remote signing endpoint locations, Lakekeeper needs to identifying a table by its location in the storage. Since there are multiple canonical ways to specify S3 resources (virtual-host & path), Lakekeeper warehouses by default use a heuristic to determine which style is used. For some setups these heuristics may not work, or you may want to enforce a specific style. In this case, you can set the `remote-signing-url-style` field to either `path` or `virtual-host` in your storage profile. `path` will always use the first path segment as the bucket name. `virtual-host` will use the first subdomain if it is followed by `.s3` or `.s3-`. The default mode is `auto` which first tries `virtual-host` and falls back to `path` if it fails.
 
@@ -195,7 +202,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | Parameter                     | Type    | Required | Default                    | Description |
 |-------------------------------|---------|----------|----------------------------|-----|
 | `bucket`                      | String  | Yes      | -                          | Name of the S3 bucket. Must be between 3-63 characters, containing only lowercase letters, numbers, dots, and hyphens. Must begin and end with a letter or number. |
-| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). |
+| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). For `flavor` `aws` without an explicit `endpoint`, a `us-gov-*`, `cn-*`, ISO or `eusc-de-*` region also selects the AWS partition of the vended-credential policy; otherwise the role ARN does. |
 | `sts-enabled`                 | Boolean | Yes      | -                          | Whether to enable STS for vended credentials. Not all S3 compatible object stores support "AssumeRole" via STS. We strongly recommend to enable sts if the storage system supports it. |
 | `remote-signing-enabled`      | Boolean | No       | `true`                     | Whether to enable remote signing for S3 requests. When disabled, clients cannot use remote signing for this storage profile even if STS is disabled. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                       | Subpath in the bucket to use for this warehouse. |
@@ -308,6 +315,25 @@ We are now ready to create the Warehouse via the UI or REST-API using the follow
 ```
 
 As part of the `storage-profile`, the field `assume-role-arn` can optionally be specified. If it is specified, this role is assumed for every IO Operation of Lakekeeper. It is also used as `sts-role-arn`, unless `sts-role-arn` is specified explicitly. If no `assume-role-arn` is specified, whatever authentication method / user os configured via the `storage-credential` is used directly for IO Operations, so needs to have S3 access policies attached directly (as shown in the example above).
+
+##### AWS Partitions (GovCloud, China, ISO)
+
+Buckets in AWS GovCloud (`us-gov-*` regions) and in the China regions (`cn-*`) live in their own AWS partition, so their ARNs are prefixed with `arn:aws-us-gov:` and `arn:aws-cn:` instead of `arn:aws:`. Lakekeeper builds the S3 ARNs of the downscoped policy it sends when vending credentials with the matching prefix, so there is nothing to configure beyond using ARNs of that partition for `sts-role-arn`, `assume-role-arn` and `aws-kms-key-arn`:
+
+```json
+{
+    "storage-profile": {
+        "type": "s3",
+        "bucket": "<name of the bucket>",
+        "region": "us-gov-west-1",
+        "sts-enabled": true,
+        "flavor": "aws",
+        "sts-role-arn": "arn:aws-us-gov:iam::<aws account id>:role/LakekeeperWarehouseDevRole"
+    }
+}
+```
+
+A `us-gov-*` or `cn-*` region determines the partition, as do the ISO regions (`us-iso-*`, `us-isob-*`, `us-isof-*`, `eu-isoe-*`) and the European Sovereign Cloud (`eusc-de-*`). This applies to profiles that let the AWS SDK resolve the endpoint from the region. For every other profile — an explicit `endpoint`, a commercial region, or a region of a partition newer than your Lakekeeper release — the partition of `sts-role-arn` or `assume-role-arn` is used, and `aws` if neither names an AWS partition. Storage profiles with a `flavor` other than `aws` always use `aws`.
 
 ##### System Identities / Managed Identities
 
@@ -808,7 +834,7 @@ The following table describes all configuration parameters for a GCS storage pro
 | `sts-enabled`    | Boolean | No       | `true`                | Whether to enable STS (Security Token Service) downscoped token generation for GCS. When disabled, clients cannot use vended credentials for this storage profile. Defaults to `true`. |
 | `storage-layout` | Object  | No       | `{"type": "default"}` | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
 
-The service account should have appropriate permissions (such as Storage Admin role) on the bucket. Since Lakekeeper Version 0.8.2, hierarchical Namespaces are supported.
+The service account needs access to the objects of the bucket. The Storage Object User role (`roles/storage.objectUser`) on the bucket is enough, with or without hierarchical namespaces: Lakekeeper only reads, writes, lists and deletes objects, and the tokens it vends are downscoped to at most that role. Permissions to administer the bucket itself, such as those in Storage Admin, are not needed. Since Lakekeeper Version 0.8.2, hierarchical Namespaces are supported.
 
 ### Authentication Options
 
@@ -846,7 +872,7 @@ You can provide a service account key directly when creating a warehouse. This i
 }
 ```
 
-The service account key should be created in the Google Cloud Console and should have the necessary permissions to access the bucket (typically Storage Admin role on the bucket).
+The service account key should be created in the Google Cloud Console and should have the necessary permissions to access the bucket (the Storage Object User role on the bucket).
 
 ##### GCP System Identity
 
@@ -859,4 +885,4 @@ GCP system identities allow Lakekeeper to authenticate using the service account
 LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS=true
 ```
 
-When using system identity, Lakekeeper will use the service account associated with the application or virtual machine to access Google Cloud Storage (GCS). Ensure that the service account has the necessary permissions, such as the Storage Admin role on the target bucket.
+When using system identity, Lakekeeper will use the service account associated with the application or virtual machine to access Google Cloud Storage (GCS). Ensure that the service account has the necessary permissions, such as the Storage Object User role on the target bucket.
