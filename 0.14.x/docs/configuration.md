@@ -938,7 +938,7 @@ LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE=member
 
 | Variable                  | Default      | Description                       |
 |---------------------------|--------------|-----------------------------------|
-| `…__IDP_IDS` | _(all IDPs)_ | JSON array of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
+| `…__IDP_IDS` | _(the only IdP)_ | JSON array of the identity provider IDs whose users this provider resolves: the default OIDC provider's reserved id `oidc`, a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id, or `kubernetes`. **Required when Lakekeeper authenticates more than one identity provider** (Kubernetes authentication counts as one): the server refuses to start without it, and also when an entry names an identity provider it does not authenticate. With a single identity provider, an omitted value binds this provider to it. |
 
 **Example — minimal LDAP provider (env vars):**
 
@@ -1017,7 +1017,7 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `…__IDP_IDS` | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Entra subjects are object ids and carry no domain to filter on. |
+| `…__IDP_IDS` | _(the only IdP)_ | JSON array of the identity provider IDs whose users this provider resolves: the default OIDC provider's reserved id `oidc`, a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id, or `kubernetes`. **Required when Lakekeeper authenticates more than one identity provider** (Kubernetes authentication counts as one): the server refuses to start without it, and also when an entry names an identity provider it does not authenticate. With a single identity provider, an omitted value binds this provider to it. |
 
 **Example — client-secret credential (env vars):**
 
@@ -1095,7 +1095,7 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `…__IDP_IDS` | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Okta subjects are user ids and carry no domain to filter on. |
+| `…__IDP_IDS` | _(the only IdP)_ | JSON array of the identity provider IDs whose users this provider resolves: the default OIDC provider's reserved id `oidc`, a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id, or `kubernetes`. **Required when Lakekeeper authenticates more than one identity provider** (Kubernetes authentication counts as one): the server refuses to start without it, and also when an entry names an identity provider it does not authenticate. With a single identity provider, an omitted value binds this provider to it. |
 
 **Example — inline JWK key (env vars):**
 
