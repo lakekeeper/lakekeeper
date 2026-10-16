@@ -8,7 +8,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::{Itertools, izip};
 use lakekeeper::{
     api::{
-        endpoints::Endpoint,
+        endpoints::ServedEndpoint,
         management::v1::project::{
             EndpointStatistic, EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter,
         },
@@ -126,13 +126,13 @@ pub(crate) async fn list_statistics(
                     created_at,
                     updated_at,
                 )| {
-                    let Some(endpoint) = Endpoint::from_name(&name) else {
+                    let Some(endpoint) = ServedEndpoint::from_name(&name) else {
                         warn_unknown_endpoint_name(&name);
                         return None;
                     };
                     Some(EndpointStatistic {
                         count,
-                        http_route: endpoint.as_http_route().to_string(),
+                        http_route: endpoint.http_route().into_owned(),
                         status_code: status_code
                             .clamp(i32::from(u16::MIN), i32::from(u16::MAX))
                             .try_into()

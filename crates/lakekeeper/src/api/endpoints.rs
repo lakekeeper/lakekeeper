@@ -1,7 +1,14 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{LazyLock, OnceLock},
+};
 
 use http::Method;
 use strum::IntoEnumIterator;
+
+#[cfg(feature = "router")]
+use crate::api::management::v1::extension::ManagementApiExtensionError;
 
 macro_rules! generate_endpoints {
     (
@@ -402,8 +409,10 @@ impl Endpoint {
         name.parse::<EndpointFlat>().ok().map(Into::into)
     }
 
-    pub fn from_method_and_matched_path(method: &Method, inp: &str) -> Option<Self> {
-        if inp.starts_with("/management/v1/permissions") {
+    /// The Lakekeeper endpoint axum matched for a request. Use
+    /// [`ServedEndpoint::from_method_and_matched_path`] to include extension endpoints.
+    pub(crate) fn from_method_and_matched_path(method: &Method, inp: &str) -> Option<Self> {
+        if inp.starts_with(PERMISSIONS_PREFIX) {
             return match *method {
                 Method::GET => Some(PermissionV1Endpoint::Get.into()),
                 Method::POST => Some(PermissionV1Endpoint::Post.into()),
@@ -413,19 +422,204 @@ impl Endpoint {
                 _ => None,
             };
         }
-        ROUTE_MAP
-            .get(&(
-                match method {
-                    &Method::GET => Method::GET,
-                    &Method::POST => Method::POST,
-                    &Method::HEAD => Method::HEAD,
-                    &Method::DELETE => Method::DELETE,
-                    &Method::PUT => Method::PUT,
-                    x => x.clone(),
-                },
-                inp,
-            ))
-            .copied()
+        head_served_by_get(method, |method| {
+            ROUTE_MAP.get(&(method.clone(), inp)).copied()
+        })
+    }
+}
+
+/// The authorizer's management routes. Every path starting with this is a permission endpoint.
+pub(crate) const PERMISSIONS_PREFIX: &str = "/management/v1/permissions";
+
+/// Looks up `method`, and for a HEAD request without its own endpoint the GET endpoint:
+/// axum serves such a request with the route's GET handler.
+fn head_served_by_get<T>(method: &Method, lookup: impl Fn(&Method) -> Option<T>) -> Option<T> {
+    lookup(method).or_else(|| {
+        if method == Method::HEAD {
+            lookup(&Method::GET)
+        } else {
+            None
+        }
+    })
+}
+
+/// An endpoint that a management API extension serves, or served in an earlier release.
+///
+/// Endpoint statistics store it under [`name`](Self::name), which starts with `ext-`. Like
+/// Lakekeeper's own names, a released name never changes: keep a removed endpoint listable
+/// with [`ExtensionRoutes::retired`](crate::api::management::v1::extension::ExtensionRoutes::retired).
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct ExtensionEndpoint {
+    name: &'static str,
+    method: Method,
+    path: &'static str,
+}
+
+impl ExtensionEndpoint {
+    /// `path` is the full route, starting with `/management/v1/`, as axum reports it as the
+    /// matched path. Declare the endpoint as a `static`: `Method` has drop glue, so a
+    /// reference to a constant is not `'static`.
+    #[must_use]
+    pub const fn new(name: &'static str, method: Method, path: &'static str) -> Self {
+        Self { name, method, path }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    #[must_use]
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &'static str {
+        self.path
+    }
+}
+
+/// An endpoint this server serves: one of Lakekeeper's own, or one a management API extension
+/// adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServedEndpoint {
+    Lakekeeper(Endpoint),
+    Extension(&'static ExtensionEndpoint),
+}
+
+impl From<Endpoint> for ServedEndpoint {
+    fn from(endpoint: Endpoint) -> Self {
+        Self::Lakekeeper(endpoint)
+    }
+}
+
+impl From<&'static ExtensionEndpoint> for ServedEndpoint {
+    fn from(endpoint: &'static ExtensionEndpoint) -> Self {
+        Self::Extension(endpoint)
+    }
+}
+
+impl ServedEndpoint {
+    /// The endpoint axum matched for a request. A HEAD request to a route without a HEAD
+    /// endpoint resolves to the route's GET endpoint, whose handler serves it.
+    #[must_use]
+    pub(crate) fn from_method_and_matched_path(
+        method: &Method,
+        matched_path: &str,
+    ) -> Option<Self> {
+        Self::from_method_and_matched_path_in(EXTENSION_ENDPOINTS.get(), method, matched_path)
+    }
+
+    fn from_method_and_matched_path_in(
+        extensions: Option<&ExtensionEndpoints>,
+        method: &Method,
+        matched_path: &str,
+    ) -> Option<Self> {
+        Endpoint::from_method_and_matched_path(method, matched_path)
+            .map(Self::Lakekeeper)
+            .or_else(|| {
+                extensions?
+                    .served(method, matched_path)
+                    .map(Self::Extension)
+            })
+    }
+
+    /// The endpoint stored under `name`, if this server knows it. Retired extension endpoints
+    /// are known.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::from_name_in(EXTENSION_ENDPOINTS.get(), name)
+    }
+
+    fn from_name_in(extensions: Option<&ExtensionEndpoints>, name: &str) -> Option<Self> {
+        Endpoint::from_name(name)
+            .map(Self::Lakekeeper)
+            .or_else(|| extensions?.by_name.get(name).copied().map(Self::Extension))
+    }
+
+    /// The name this endpoint is stored under (see [`EndpointFlat::name`]).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Lakekeeper(endpoint) => endpoint.name(),
+            Self::Extension(endpoint) => endpoint.name(),
+        }
+    }
+
+    /// `METHOD /path`, e.g. `GET /management/v1/info`.
+    #[must_use]
+    pub fn http_route(self) -> Cow<'static, str> {
+        match self {
+            Self::Lakekeeper(endpoint) => Cow::Borrowed(endpoint.as_http_route()),
+            Self::Extension(endpoint) => {
+                Cow::Owned(format!("{} {}", endpoint.method(), endpoint.path()))
+            }
+        }
+    }
+}
+
+/// The extension endpoints of this process, routed and retired.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExtensionEndpoints {
+    routed: HashMap<(Method, &'static str), &'static ExtensionEndpoint>,
+    by_name: HashMap<&'static str, &'static ExtensionEndpoint>,
+}
+
+impl ExtensionEndpoints {
+    /// Names and routes must be unique; validation of the extensions ensures that.
+    pub(crate) fn new(
+        routed: impl IntoIterator<Item = &'static ExtensionEndpoint>,
+        retired: impl IntoIterator<Item = &'static ExtensionEndpoint>,
+    ) -> Self {
+        let mut endpoints = Self::default();
+        for endpoint in routed {
+            endpoints
+                .routed
+                .insert((endpoint.method().clone(), endpoint.path()), endpoint);
+            endpoints.by_name.insert(endpoint.name(), endpoint);
+        }
+        for endpoint in retired {
+            endpoints.by_name.insert(endpoint.name(), endpoint);
+        }
+        endpoints
+    }
+
+    fn served(&self, method: &Method, matched_path: &str) -> Option<&'static ExtensionEndpoint> {
+        head_served_by_get(method, |method| {
+            self.routed.get(&(method.clone(), matched_path)).copied()
+        })
+    }
+}
+
+/// Process-global like [`ROUTE_MAP`]: the statistics listing resolves stored names without
+/// access to the server's state.
+static EXTENSION_ENDPOINTS: OnceLock<ExtensionEndpoints> = OnceLock::new();
+
+/// Installs the extension endpoints of this process. Installing an equal set again succeeds,
+/// since a process can build its router more than once; an empty set installs nothing.
+///
+/// # Errors
+/// A different set is already installed.
+#[cfg(feature = "router")]
+pub(crate) fn install_extension_endpoints(
+    endpoints: ExtensionEndpoints,
+) -> Result<(), ManagementApiExtensionError> {
+    install_extension_endpoints_into(&EXTENSION_ENDPOINTS, endpoints)
+}
+
+#[cfg(feature = "router")]
+fn install_extension_endpoints_into(
+    installed: &OnceLock<ExtensionEndpoints>,
+    endpoints: ExtensionEndpoints,
+) -> Result<(), ManagementApiExtensionError> {
+    if endpoints.by_name.is_empty() {
+        return Ok(());
+    }
+    match installed.set(endpoints) {
+        Ok(()) => Ok(()),
+        Err(rejected) if installed.get() == Some(&rejected) => Ok(()),
+        Err(_) => Err(ManagementApiExtensionError::DifferentEndpointsInstalled),
     }
 }
 
@@ -961,5 +1155,197 @@ mod test {
             reserved.is_empty(),
             "`ext-` is reserved for extensions: {reserved:?}"
         );
+    }
+
+    #[test]
+    fn test_head_to_a_get_only_route_resolves_to_the_get_endpoint() {
+        for endpoint in [
+            Endpoint::from(CatalogV1Endpoint::ListNamespaces),
+            Endpoint::from(ManagementV1Endpoint::ServerInfo),
+            Endpoint::from(ManagementV1Endpoint::GetWarehouse),
+        ] {
+            assert_eq!(
+                Endpoint::from_method_and_matched_path(&Method::HEAD, endpoint.path()),
+                Some(endpoint)
+            );
+            assert_eq!(
+                ServedEndpoint::from_method_and_matched_path(&Method::HEAD, endpoint.path()),
+                Some(ServedEndpoint::Lakekeeper(endpoint))
+            );
+        }
+
+        // A route's own HEAD endpoint wins over its GET endpoint.
+        for endpoint in [
+            Endpoint::from(CatalogV1Endpoint::NamespaceExists),
+            Endpoint::from(CatalogV1Endpoint::TableExists),
+            Endpoint::from(CatalogV1Endpoint::ViewExists),
+            Endpoint::from(PermissionV1Endpoint::Head),
+        ] {
+            assert_eq!(
+                Endpoint::from_method_and_matched_path(&Method::HEAD, endpoint.path()),
+                Some(endpoint)
+            );
+        }
+
+        // Only HEAD falls back, and only to GET.
+        assert_eq!(
+            Endpoint::from_method_and_matched_path(
+                &Method::HEAD,
+                ManagementV1Endpoint::Bootstrap.path()
+            ),
+            None
+        );
+        assert_eq!(
+            Endpoint::from_method_and_matched_path(
+                &Method::DELETE,
+                CatalogV1Endpoint::GetConfig.path()
+            ),
+            None
+        );
+    }
+
+    static HEALTH: ExtensionEndpoint = ExtensionEndpoint::new(
+        "ext-table-health",
+        Method::GET,
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+    );
+    static RECHECK: ExtensionEndpoint = ExtensionEndpoint::new(
+        "ext-table-health-recheck",
+        Method::POST,
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+    );
+    static HEALTH_EXISTS: ExtensionEndpoint = ExtensionEndpoint::new(
+        "ext-table-health-exists",
+        Method::HEAD,
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+    );
+    static REMOVED: ExtensionEndpoint = ExtensionEndpoint::new(
+        "ext-table-health-v0",
+        Method::GET,
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health-v0",
+    );
+
+    fn extension_endpoints() -> ExtensionEndpoints {
+        ExtensionEndpoints::new([&HEALTH, &RECHECK], [&REMOVED])
+    }
+
+    #[test]
+    fn test_extension_endpoints_resolve_from_method_and_matched_path() {
+        let extensions = extension_endpoints();
+        let lookup = |method: &Method, path: &str| {
+            ServedEndpoint::from_method_and_matched_path_in(Some(&extensions), method, path)
+        };
+        assert_eq!(
+            lookup(&Method::GET, HEALTH.path()),
+            Some(ServedEndpoint::Extension(&HEALTH))
+        );
+        assert_eq!(
+            lookup(&Method::HEAD, HEALTH.path()),
+            Some(ServedEndpoint::Extension(&HEALTH))
+        );
+        assert_eq!(
+            lookup(&Method::POST, RECHECK.path()),
+            Some(ServedEndpoint::Extension(&RECHECK))
+        );
+        assert_eq!(lookup(&Method::DELETE, HEALTH.path()), None);
+        // A retired endpoint is not routed.
+        assert_eq!(lookup(&Method::GET, REMOVED.path()), None);
+        assert_eq!(
+            lookup(&Method::GET, ManagementV1Endpoint::ServerInfo.path()),
+            Some(ServedEndpoint::Lakekeeper(
+                ManagementV1Endpoint::ServerInfo.into()
+            ))
+        );
+        assert_eq!(
+            ServedEndpoint::from_method_and_matched_path_in(None, &Method::GET, HEALTH.path()),
+            None
+        );
+
+        let with_head = ExtensionEndpoints::new([&HEALTH, &HEALTH_EXISTS], []);
+        assert_eq!(
+            ServedEndpoint::from_method_and_matched_path_in(
+                Some(&with_head),
+                &Method::HEAD,
+                HEALTH.path()
+            ),
+            Some(ServedEndpoint::Extension(&HEALTH_EXISTS))
+        );
+    }
+
+    #[test]
+    fn test_from_name_knows_lakekeeper_routed_and_retired_extension_endpoints() {
+        let extensions = extension_endpoints();
+        let from_name = |name: &str| ServedEndpoint::from_name_in(Some(&extensions), name);
+        assert_eq!(
+            from_name("management-v1-server-info"),
+            Some(ServedEndpoint::Lakekeeper(
+                ManagementV1Endpoint::ServerInfo.into()
+            ))
+        );
+        assert_eq!(
+            from_name("ext-table-health"),
+            Some(ServedEndpoint::Extension(&HEALTH))
+        );
+        assert_eq!(
+            from_name("ext-table-health-v0"),
+            Some(ServedEndpoint::Extension(&REMOVED))
+        );
+        assert_eq!(from_name("ext-unknown"), None);
+        assert_eq!(ServedEndpoint::from_name_in(None, "ext-table-health"), None);
+        for endpoint in [&HEALTH, &RECHECK, &REMOVED] {
+            let served = ServedEndpoint::Extension(endpoint);
+            assert_eq!(from_name(served.name()), Some(served));
+        }
+    }
+
+    #[test]
+    fn test_served_endpoint_name_and_http_route() {
+        let lakekeeper = ServedEndpoint::from(Endpoint::from(ManagementV1Endpoint::ServerInfo));
+        assert_eq!(lakekeeper.name(), "management-v1-server-info");
+        assert_eq!(lakekeeper.http_route(), "GET /management/v1/info");
+
+        let extension = ServedEndpoint::from(&RECHECK);
+        assert_eq!(extension.name(), "ext-table-health-recheck");
+        assert_eq!(
+            extension.http_route(),
+            "POST /management/v1/warehouse/{warehouse_id}/table/{table_id}/health"
+        );
+    }
+
+    #[cfg(feature = "router")]
+    #[test]
+    fn test_installing_extension_endpoints() {
+        let installed = OnceLock::new();
+        assert_eq!(
+            install_extension_endpoints_into(&installed, ExtensionEndpoints::default()),
+            Ok(())
+        );
+        assert_eq!(installed.get(), None);
+
+        assert_eq!(
+            install_extension_endpoints_into(&installed, extension_endpoints()),
+            Ok(())
+        );
+        assert_eq!(
+            install_extension_endpoints_into(&installed, extension_endpoints()),
+            Ok(())
+        );
+        // An empty set changes nothing.
+        assert_eq!(
+            install_extension_endpoints_into(&installed, ExtensionEndpoints::default()),
+            Ok(())
+        );
+        assert_eq!(
+            install_extension_endpoints_into(
+                &installed,
+                ExtensionEndpoints::new([&HEALTH, &RECHECK, &REMOVED], [])
+            ),
+            Err(ManagementApiExtensionError::DifferentEndpointsInstalled)
+        );
+        assert_eq!(
+            install_extension_endpoints_into(&installed, ExtensionEndpoints::new([&HEALTH], [])),
+            Err(ManagementApiExtensionError::DifferentEndpointsInstalled)
+        );
+        assert_eq!(installed.get(), Some(&extension_endpoints()));
     }
 }

@@ -50,7 +50,7 @@ mod test {
         for uri in Endpoint::iter() {
             s.insert(
                 lakekeeper::service::endpoint_statistics::EndpointIdentifier {
-                    uri,
+                    uri: uri.into(),
                     status_code,
                     warehouse: ident,
                     warehouse_name: warehouse_name.clone(),
