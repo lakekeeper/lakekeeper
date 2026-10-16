@@ -109,7 +109,7 @@ git switch --no-track -c "release-notes-$VERSION" origin/main
     just audit-format-release "$VERSION"
     ```
 
-    It refuses, and changes nothing, until the first line of every fragment appears in the `## $TAG` section of `$NOTES`: a fragment's text exists nowhere else. It then deletes the fragments. When the format moved, it also prints a row such as `| 0.14.0 | \`1.0\` |`: add it at the bottom of the table under "Which release ships which version" in `docs/docs/logging.md`. When it prints no row, the table needs none.
+    It refuses, and changes nothing, until the first line of every fragment appears in the `## $TAG` section of `$NOTES`: a fragment's text exists nowhere else. It then deletes the fragments. When the format moved, it also prints a row such as ``| 0.14.0 | `1.0` |``: add it at the bottom of the table under "Which release ships which version" in `docs/docs/logging.md`. When it prints no row, the table needs none.
 
 5. **Open one pull request to `main`** with `$NOTES`, the deleted `audit-format/unreleased/*.md` fragments and the table row. `check-audit-format` must pass on it, with no warning about shipped fragments. Do **not** edit the release pull request: release-please regenerates that branch on every push to `main`.
 6. **Set the GitHub Release body** from the new section, once the pull request has merged:
