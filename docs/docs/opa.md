@@ -178,6 +178,6 @@ Properties specified during creation (e.g. `WITH (format='PARQUET')`) are also f
 
 A rename into another catalog is refused.
 
-Deploy the bridge policies together with the Lakekeeper server version they were released with. The policies ask the server for actions, such as `move`, that older servers do not know.
+Deploy the bridge policies together with the Lakekeeper server version they were released with. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: they let a holder of the OpenFGA [`write`](./authorization-openfga.md#write) privilege change columns and comments, add files and expire snapshots through Trino. Upgrade the policies before granting `write`.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).

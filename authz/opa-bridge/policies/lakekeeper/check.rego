@@ -142,10 +142,22 @@ require_table_access_simple(lakekeeper_id, warehouse_name, namespace_name, table
 	count(value.results) == 1
 }
 
-# Check access to a table
+# Check access to a table commit that may change anything.
 require_table_access_commit(
 	lakekeeper_id, warehouse_name, namespace_name,
 	table_name, user, updated_properties, removed_properties,
+) if {
+	require_table_access_commit_kinds(
+		lakekeeper_id, warehouse_name, namespace_name,
+		table_name, user, updated_properties, removed_properties, [],
+	)
+}
+
+# Check access to a table commit that makes only the given kinds of update, e.g.
+# `["add-schema"]`. A check that names none is a commit of any kind.
+require_table_access_commit_kinds(
+	lakekeeper_id, warehouse_name, namespace_name,
+	table_name, user, updated_properties, removed_properties, update_kinds,
 ) if {
 	value := authenticated_http_send(
 		lakekeeper_id,
@@ -158,6 +170,7 @@ require_table_access_commit(
 						"action": "commit",
 						"updated_properties": updated_properties,
 						"removed_properties": removed_properties,
+						"update_kinds": update_kinds,
 					},
 					"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
 					"namespace": namespace_name,
