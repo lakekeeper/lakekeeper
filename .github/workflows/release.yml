@@ -318,6 +318,8 @@ jobs:
       - build-binary
       - release_please
       - test-docker
+    # latest-main is the build of the newest commit on main.
+    if: github.ref == 'refs/heads/main'
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -432,69 +434,80 @@ jobs:
           docker push vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-amd64
           docker push vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-arm64
 
-      - name: Check if Tag is vX.Y.Z
-        id: check-tag
+      # A patch of an older release line can be released after a newer line.
+      # Each floating tag moves only when this release is the highest version
+      # it covers in that registry. quay.io carries every release, so its
+      # versions come from the repository's tags: this branch does not know
+      # newer release lines. Docker Hub skipped the releases published while
+      # its publishing was paused, so its versions come from its own tags.
+      - name: Decide which floating tags to move
+        id: floating
+        env:
+          TAG: ${{ needs.release_please.outputs.tag_name }}
         run: |
-          if [[ ${{ needs.release_please.outputs.tag_name }} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "match=true" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+            echo "$TAG is not a vX.Y.Z tag: no version or floating tags are pushed"
+            exit 0
           fi
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          # floating_tags <registry>: reads release tags from stdin and prints
+          # the floating tags that move to $TAG.
+          floating_tags() {
+            local releases candidate name highest floating=""
+            releases=$({ cat; echo "$TAG"; } | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -uV)
+            for candidate in "v$major.$minor:^v$major\.$minor\." "v$major:^v$major\." "latest:."; do
+              name="${candidate%%:*}"
+              highest=$(grep -E "${candidate#*:}" <<<"$releases" | tail -n1)
+              if [[ "$highest" == "$TAG" ]]; then
+                echo "$1: $name moves to $TAG" >&2
+                floating="${floating:+$floating }$name"
+              else
+                echo "$1: $name not moved: $TAG < $highest" >&2
+              fi
+            done
+            echo "$floating"
+          }
+          dockerhub_tags() {
+            local url="https://hub.docker.com/v2/repositories/vakamo/lakekeeper/tags?page_size=100&name=v" page
+            while [[ -n "$url" && "$url" != "null" ]]; do
+              page=$(curl -fsSL --retry 3 "$url")
+              jq -r '.results[].name' <<<"$page"
+              url=$(jq -r '.next' <<<"$page")
+            done
+          }
+          quay=$(git ls-remote --tags --refs "https://github.com/${GITHUB_REPOSITORY}.git" 'v*' | sed 's|.*refs/tags/||' | floating_tags quay.io)
+          dockerhub=$(dockerhub_tags | floating_tags "Docker Hub")
+          {
+            echo "release=true"
+            echo "quay=$quay"
+            echo "dockerhub=$dockerhub"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Push Partial Tag to quay.io
-        if: steps.check-tag.outputs.match == 'true'
+      - name: Push version and floating tags
+        if: steps.floating.outputs.release == 'true'
+        env:
+          TAG: ${{ needs.release_please.outputs.tag_name }}
+          FLOATING_QUAY: ${{ steps.floating.outputs.quay }}
+          FLOATING_DOCKERHUB: ${{ steps.floating.outputs.dockerhub }}
         run: |
-          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:latest-amd64
-          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-amd64
-          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
-          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
-          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:latest-arm64
-          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-arm64
-          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker push quay.io/lakekeeper/catalog:latest-amd64
-          docker push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-amd64
-          docker push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
-          docker push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
-          docker push quay.io/lakekeeper/catalog:latest-arm64
-          docker push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-arm64
-          docker push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker manifest create quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }} quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-arm64
-          docker manifest push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}
-          docker manifest create quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }} quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker manifest push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}
-          docker manifest create quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }} quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker manifest push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}
-          docker image rm quay.io/lakekeeper/catalog:latest || true
-          docker manifest rm quay.io/lakekeeper/catalog:latest || true
-          docker manifest create quay.io/lakekeeper/catalog:latest quay.io/lakekeeper/catalog:latest-amd64 quay.io/lakekeeper/catalog:latest-arm64
-          docker manifest push quay.io/lakekeeper/catalog:latest
-
-      - name: Push Partial Tag to Dockerhub
-        if: steps.check-tag.outputs.match == 'true'
-        run: |
-          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:latest-amd64
-          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-amd64
-          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
-          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
-          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:latest-arm64
-          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-arm64
-          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker push vakamo/lakekeeper:latest-amd64
-          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-amd64
-          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
-          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
-          docker push vakamo/lakekeeper:latest-arm64
-          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-arm64
-          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker manifest create vakamo/lakekeeper:v${{ needs.release_please.outputs.major }} vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-arm64
-          docker manifest push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}
-          docker manifest create vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }} vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker manifest push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}
-          docker manifest create vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }} vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker manifest push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}
-          docker image rm vakamo/lakekeeper:latest || true
-          docker manifest rm vakamo/lakekeeper:latest || true
-          docker manifest create vakamo/lakekeeper:latest vakamo/lakekeeper:latest-amd64 vakamo/lakekeeper:latest-arm64
-          docker manifest push vakamo/lakekeeper:latest
+          set -euo pipefail
+          # push_tags <repository> <floating tags>: the multi-arch manifest of
+          # the version tag, and each floating tag with its per-arch tags.
+          push_tags() {
+            local repository=$1 floating=$2 ref arch
+            docker manifest create "$repository:$TAG" "$repository:$TAG-amd64" "$repository:$TAG-arm64"
+            docker manifest push "$repository:$TAG"
+            for ref in $floating; do
+              for arch in amd64 arm64; do
+                docker tag "localhost/lakekeeper-local:$arch" "$repository:$ref-$arch"
+                docker push "$repository:$ref-$arch"
+              done
+              docker manifest rm "$repository:$ref" 2>/dev/null || true
+              docker manifest create "$repository:$ref" "$repository:$ref-amd64" "$repository:$ref-arm64"
+              docker manifest push "$repository:$ref"
+            done
+          }
+          push_tags quay.io/lakekeeper/catalog "$FLOATING_QUAY"
+          push_tags vakamo/lakekeeper "$FLOATING_DOCKERHUB"
