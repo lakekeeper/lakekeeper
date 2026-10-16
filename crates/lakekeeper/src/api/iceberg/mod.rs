@@ -337,6 +337,11 @@ mod test {
             "/v1/{prefix}/namespaces/{namespace}/tables/{table}/plan",
             "/v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}",
             "/v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks",
+            // Upstream routes Lakekeeper does not serve and has no `CatalogV1Endpoint` for.
+            "/v1/{prefix}/namespaces/{namespace}/functions",
+            "/v1/{prefix}/namespaces/{namespace}/functions/{function}",
+            "/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister",
+            "/v1/{prefix}/namespaces/{namespace}/register-view",
         ];
         // Check that openapi endpoints are in the supported endpoints
         paths
@@ -349,7 +354,10 @@ mod test {
                     .filter(|m| *m != "parameters")
                     .for_each(|method| {
                         let route = format!("{} {}", method.to_uppercase(), path);
-                        assert!(super::supported_endpoints().contains(&route), "{route}");
+                        assert!(
+                            super::supported_endpoints_with_signing().contains(&route),
+                            "{route}"
+                        );
                     });
             });
 
