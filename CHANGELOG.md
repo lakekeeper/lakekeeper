@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.13.7](https://github.com/lakekeeper/lakekeeper/compare/v0.13.6...v0.13.7) (2026-10-16)
+
+
+### Bug Fixes
+
+* **catalog:** authorize list pages without holding a read connection ([#2058](https://github.com/lakekeeper/lakekeeper/issues/2058)) ([4bc9032](https://github.com/lakekeeper/lakekeeper/commit/4bc9032415d7f1e6e339f96bb3fe3cac7db2a35f))
+* **catalog:** drop namespaces regardless of foreign-key trigger order ([#2062](https://github.com/lakekeeper/lakekeeper/issues/2062)) ([5e41420](https://github.com/lakekeeper/lakekeeper/commit/5e41420bd0ac6542846bdc639e4bd1c00f0d24d9))
+* **deps:** bump rustls to 0.23.46 and chacha20 to 0.10.2 ([#2125](https://github.com/lakekeeper/lakekeeper/issues/2125)) ([9c5abe2](https://github.com/lakekeeper/lakekeeper/commit/9c5abe234a5f69f14b78cea64b323ed4f7a96015))
+* **gcs:** accept bucket names with underscores ([#2080](https://github.com/lakekeeper/lakekeeper/issues/2080)) ([46b3467](https://github.com/lakekeeper/lakekeeper/commit/46b34671b3c145a8d601f8554eb273a36faa3d99))
+* **gcs:** accept long dotted bucket names ([#2081](https://github.com/lakekeeper/lakekeeper/issues/2081)) ([278af71](https://github.com/lakekeeper/lakekeeper/commit/278af715d2c700cec8d6902786b5b98bee200110))
+* **opa-bridge:** short TTL for unusable warehouse config responses ([#2052](https://github.com/lakekeeper/lakekeeper/issues/2052)) ([8c7796b](https://github.com/lakekeeper/lakekeeper/commit/8c7796bb31e7ed81e27fc31b429f07c03e06a12e))
+* **openfga:** return 403 for denied permission-API actions ([#2087](https://github.com/lakekeeper/lakekeeper/issues/2087)) ([961eb93](https://github.com/lakekeeper/lakekeeper/commit/961eb931d62154496b4643bf662ec047621f7022))
+* return correct Cache-Control header values from S3 signer ([#2124](https://github.com/lakekeeper/lakekeeper/issues/2124)) ([242f33e](https://github.com/lakekeeper/lakekeeper/commit/242f33e205eb5eb3f4d37fb7d1bdc264c6f9afdc))
+* **s3-signer, tables:** confine signed requests and metadata deletes to the table location ([2882e84](https://github.com/lakekeeper/lakekeeper/commit/2882e84465556c1412e03fb347e268d8ee5866e8))
+* **s3-signer:** sign only allowlisted query parameters and headers ([#2102](https://github.com/lakekeeper/lakekeeper/issues/2102)) ([a6e7446](https://github.com/lakekeeper/lakekeeper/commit/a6e74469d8bb60ae8ad9302f4eede4ca34bd1429))
+* **s3:** vended-credential validation write names the warehouse KMS key ([#2036](https://github.com/lakekeeper/lakekeeper/issues/2036)) ([899671f](https://github.com/lakekeeper/lakekeeper/commit/899671f37a095a60731a2585483220a608b3b7b5))
+* **signer:** exclude unsigned headers regardless of name case ([#2104](https://github.com/lakekeeper/lakekeeper/issues/2104)) ([f635d8b](https://github.com/lakekeeper/lakekeeper/commit/f635d8be23931b04ded687259dfda2252d4ca831))
+* sort insert_snapshot_refs, remove early return and add 40P01 as retry-able error ([#2117](https://github.com/lakekeeper/lakekeeper/issues/2117)) ([652dfa1](https://github.com/lakekeeper/lakekeeper/commit/652dfa1fc445734cc64947969c1bd8e0b3132f41))
+* **tables:** refuse deprecated data-path table properties ([#2044](https://github.com/lakekeeper/lakekeeper/issues/2044)) ([38330d5](https://github.com/lakekeeper/lakekeeper/commit/38330d54f449edb7dab221a6e6927aecc8dc805f))
+* **tests:** pull the legacy-md5 MinIO image from bitnamilegacy ([#2046](https://github.com/lakekeeper/lakekeeper/issues/2046)) ([068dedf](https://github.com/lakekeeper/lakekeeper/commit/068dedf2e704f3ee9c51be3db28e0a49ecc038fa))
+* **ui:** preserve nested ui path segments ([#2119](https://github.com/lakekeeper/lakekeeper/issues/2119)) ([709f43f](https://github.com/lakekeeper/lakekeeper/commit/709f43fb30e35bf5803523acf42ca9361891dab2))
+
+
+### Documentation
+
+* **storage:** recommend Storage Object User for GCS instead of Storage Admin ([#2114](https://github.com/lakekeeper/lakekeeper/issues/2114)) ([3a89a26](https://github.com/lakekeeper/lakekeeper/commit/3a89a26ec2d7e188af0e3647c1f637bee3584a11))
+
+
+### Miscellaneous Chores
+
+* **ci:** start migration tests from the branch's last release ([#2132](https://github.com/lakekeeper/lakekeeper/issues/2132)) ([55c5b4f](https://github.com/lakekeeper/lakekeeper/commit/55c5b4fc4b8cc6fa557000c11d4177af8db3e001))
+* **deps:** update rust crate xxhash-rust to v0.8.16 [security] ([#2083](https://github.com/lakekeeper/lakekeeper/issues/2083)) ([550a36e](https://github.com/lakekeeper/lakekeeper/commit/550a36e71102aceb6a623a6d2d5a20d3353bfc9f))
+* update quinn-proton to 0.11.19 (RUSTSEC-2026-0338 to -0342) ([#2112](https://github.com/lakekeeper/lakekeeper/issues/2112)) ([7de9304](https://github.com/lakekeeper/lakekeeper/commit/7de93044849e8861a32527358599d46e8638fee4))
+
 ## [0.13.6](https://github.com/lakekeeper/lakekeeper/compare/v0.13.5...v0.13.6) (2026-09-22)
 
 
