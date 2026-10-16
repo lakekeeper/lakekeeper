@@ -16,6 +16,18 @@ For Lakekeeper+ releases, see the [Lakekeeper+ Release Notes](enterprise-release
 
 _[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
 
+## v0.14.1 (2026-10-16)
+
+### Bug Fixes
+
+- **Security: S3 remote signing signs only what it knows.** The S3 signer signs requests only with query parameters and headers it knows, and signs a copy only when its source is inside the table. Unknown parameters and headers are refused, and so are writes that use an encryption key other than the warehouse's ([#2102](https://github.com/lakekeeper/lakekeeper/pull/2102)).
+- **Remote signing with Iceberg 1.12 or later.** Clients no longer get `403 SignatureDoesNotMatch` errors when they delete more than 250 files at once, or delete files several times in a row, for example in `expire_snapshots` or `remove_orphan_files`. The signer now tells clients in the `Cache-Control` HTTP header that a signature for a write must not be reused ([#2124](https://github.com/lakekeeper/lakekeeper/pull/2124)).
+- **Ranged reads with remote signing.** Clients that reuse signatures, such as Iceberg's `S3FileIO`, no longer get `403 SignatureDoesNotMatch` errors on the second ranged read of a file. The signer now leaves the `Range` header out of the signature in upper and lower case (thanks @Mohil-Ahuja) ([#2104](https://github.com/lakekeeper/lakekeeper/pull/2104)).
+- **Removing the last branch or tag.** A commit that removes the last branch or tag of a table, such as `main`, is now kept. Before, the reference came back when the table was loaded again ([#2117](https://github.com/lakekeeper/lakekeeper/pull/2117)).
+- **Concurrent commits to one table.** When commits to the same table block each other in the database, the client gets a `409` error, which it retries. Before, it got a `503` error ([#2117](https://github.com/lakekeeper/lakekeeper/pull/2117)).
+- **UI paths.** The UI no longer serves a file for a path that contains `ui/` a second time. Such a path now returns `404` (thanks @sivakumar-mahalingam) ([#2119](https://github.com/lakekeeper/lakekeeper/pull/2119)).
+- **Security updates of dependencies.** Updated `rustls` and `quinn-proto` to fix security advisories RUSTSEC-2026-0338 to -0342 and RUSTSEC-2026-0346 to -0349 ([#2125](https://github.com/lakekeeper/lakekeeper/pull/2125), [#2112](https://github.com/lakekeeper/lakekeeper/pull/2112)).
+
 ## v0.14.0 (2026-10-07)
 
 ### Highlights
@@ -312,7 +324,8 @@ Records from v0.14.0 carry `audit_format` **1.0** (the first version).
 - **Security: S3 remote signing and metadata cleanup stay inside the table.** The S3 signer signs only requests for objects inside the table's location, and only with query parameters and headers it knows. A copy is signed only when its source is inside the table, too. Unknown parameters and headers are refused, and so are writes that use an encryption key other than the warehouse's. When a commit expires old metadata files, Lakekeeper deletes only files inside the table location ([#2102](https://github.com/lakekeeper/lakekeeper/pull/2102)).
 - **Remote signing with Iceberg 1.12 or later.** Clients no longer get `403 SignatureDoesNotMatch` errors when they delete more than 250 files at once, or delete files several times in a row, for example in `expire_snapshots` or `remove_orphan_files`. The signer now tells clients in the `Cache-Control` HTTP header that a signature for a write must not be reused ([#2124](https://github.com/lakekeeper/lakekeeper/pull/2124)).
 - **Ranged reads with remote signing.** Clients that reuse signatures, such as Iceberg's `S3FileIO`, no longer get `403 SignatureDoesNotMatch` errors on the second ranged read of a file. The signer now leaves the `Range` header out of the signature in upper and lower case (thanks @Mohil-Ahuja) ([#2104](https://github.com/lakekeeper/lakekeeper/pull/2104)).
-- **Snapshot references.** A commit that removes the last branch or tag of a table, such as `main`, is now kept. Before, the reference came back when the table was loaded again. When two commits to the same table conflict in the database, the client gets a `409` error, which it retries. Before, it got a `500` error ([#2117](https://github.com/lakekeeper/lakekeeper/pull/2117)).
+- **Removing the last branch or tag.** A commit that removes the last branch or tag of a table, such as `main`, is now kept. Before, the reference came back when the table was loaded again ([#2117](https://github.com/lakekeeper/lakekeeper/pull/2117)).
+- **Concurrent commits to one table.** When commits to the same table block each other in the database, the client gets a `409` error, which it retries. Before, it got a `503` error ([#2117](https://github.com/lakekeeper/lakekeeper/pull/2117)).
 - Dropping a namespace no longer fails when a view uses it as its default namespace ([#2062](https://github.com/lakekeeper/lakekeeper/pull/2062)).
 - Listing namespaces, tables and views no longer keeps a database connection open while permissions are checked. Before, many list requests at the same time could use up the read connections and make other requests wait ([#2058](https://github.com/lakekeeper/lakekeeper/pull/2058)).
 - Tables can no longer set `write.object-storage.path` or `write.folder-storage.path`. These old names of `write.data.path` make engines write data files outside the table location. Tables that already have them can remove them ([#2044](https://github.com/lakekeeper/lakekeeper/pull/2044)).
