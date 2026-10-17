@@ -195,7 +195,9 @@ pub enum OnWarehouseDelete {
     /// Default. Deleting the warehouse fails while a task of this queue exists (purge, soft
     /// deletion).
     Block,
-    /// Deleting the warehouse cancels the queue's tasks, running ones included. A running worker
+    /// Deleting the warehouse cancels the queue's tasks, running ones included. A warehouse with
+    /// namespaces cannot be deleted, so these tasks belong to deleted entities or to the warehouse
+    /// itself. If the delete fails, the tasks are kept. A running worker
     /// sees [`TaskCheckState::NotActive`] at its next heartbeat. In a transaction, a worker must
     /// lock its task row (record its outcome or heartbeat) before it writes anything else that
     /// references the warehouse, and keep the transaction short. Otherwise it can deadlock with
@@ -229,8 +231,8 @@ pub trait TaskConfig:
     /// How deleting a warehouse treats this queue's tasks in it, entity and warehouse tasks alike.
     /// Project tasks are never affected. Default: [`OnWarehouseDelete::Block`].
     ///
-    /// Only processes that register the queue apply it, so register the queue (zero workers is
-    /// fine) wherever the management API runs.
+    /// Only processes that register the queue apply it; elsewhere its tasks block the delete. So
+    /// register the queue (zero workers is fine) wherever the management API runs.
     #[must_use]
     fn on_warehouse_delete() -> OnWarehouseDelete {
         OnWarehouseDelete::Block
@@ -1118,9 +1120,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     );
                     return;
                 }
-                Err(e) if is_task_gone(&e) => {
+                Err(e) if is_task_attempt_closed(&e) => {
                     tracing::info!(
-                        "Not recording error for task {} in queue '{}': the task no longer exists, for example because its warehouse was deleted. {e}. Original Error: {error}",
+                        "Not recording error for task {} in queue '{}': the task no longer exists or this attempt already has an outcome. {e}. Original Error: {error}",
                         self.id,
                         Self::queue_name(),
                     );
@@ -1171,9 +1173,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     );
                     return;
                 }
-                Err(e) if is_task_gone(&e) => {
+                Err(e) if is_task_attempt_closed(&e) => {
                     tracing::info!(
-                        "Not recording success for task {} in queue '{}': the task no longer exists, for example because its warehouse was deleted. {e}",
+                        "Not recording success for task {} in queue '{}': the task no longer exists or this attempt already has an outcome. {e}",
                         self.id,
                         Self::queue_name(),
                     );
@@ -1223,9 +1225,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     Self::queue_name(),
                 );
             }
-            Err(e) if is_task_gone(&e) => {
+            Err(e) if is_task_attempt_closed(&e) => {
                 tracing::info!(
-                    "Not recording success for task {} in queue '{}': the task no longer exists, for example because its warehouse was deleted. {e}",
+                    "Not recording success for task {} in queue '{}': the task no longer exists or this attempt already has an outcome. {e}",
                     self.id,
                     Self::queue_name(),
                 );
@@ -1276,9 +1278,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
 
         match r {
             Ok(()) => {}
-            Err(e) if is_task_gone(&e) => {
+            Err(e) if is_task_attempt_closed(&e) => {
                 tracing::info!(
-                    "Not recording deserialization failure for `{id}` task {}: the task no longer exists. {e}",
+                    "Not recording deserialization failure for `{id}` task {}: the task no longer exists or this attempt already has an outcome. {e}",
                     Q::queue_name()
                 );
                 return;
@@ -1367,10 +1369,24 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 }
 
-/// Recording an outcome returns 404 when neither the task nor a log of the attempt exists, e.g.
-/// after its warehouse was deleted. Retrying cannot succeed then.
-fn is_task_gone(e: &IcebergErrorResponse) -> bool {
-    e.error.code == http::StatusCode::NOT_FOUND.as_u16()
+/// Error type of the 409 for recording a success of an attempt that already has an outcome.
+pub const TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE: &str = "TaskAttemptAlreadyCompleted";
+/// Error type of the 409 for recording a failure of an attempt that already has an outcome.
+pub const TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE: &str = "TaskAttemptAlreadyFailed";
+
+/// Whether a `CatalogTaskOps::record_task_*` error means the attempt is closed: the task is gone
+/// (404, e.g. its warehouse was deleted) or the attempt already has an outcome (409). Retrying
+/// cannot succeed then. Other errors, like a failed transaction, may succeed in a new transaction.
+#[must_use]
+pub fn is_task_attempt_closed(e: &IcebergErrorResponse) -> bool {
+    let error = &e.error;
+    error.code == http::StatusCode::NOT_FOUND.as_u16()
+        || (error.code == http::StatusCode::CONFLICT.as_u16()
+            && [
+                TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
+                TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE,
+            ]
+            .contains(&error.r#type.as_str()))
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, EnumIter, Hash, Eq)]
@@ -1419,16 +1435,33 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_is_task_gone() {
-        assert!(is_task_gone(
-            &ErrorModel::not_found("gone", "TaskNotFound", None).into()
+    fn test_is_task_attempt_closed() {
+        let concurrent_modification = ErrorModel::from(crate::service::CatalogBackendError::new(
+            std::io::Error::other("changed"),
+            crate::service::CatalogBackendErrorType::ConcurrentModification,
         ));
-        assert!(!is_task_gone(
-            &ErrorModel::conflict("recorded", "TaskAttemptAlreadyCompleted", None).into()
-        ));
-        assert!(!is_task_gone(
-            &ErrorModel::internal("failed", "DatabaseError", None).into()
-        ));
+        assert_eq!(concurrent_modification.code, 409);
+        let cases: [(ErrorModel, bool); 6] = [
+            (ErrorModel::not_found("gone", "TaskNotFound", None), true),
+            (
+                ErrorModel::conflict("recorded", "TaskAttemptAlreadyCompleted", None),
+                true,
+            ),
+            (
+                ErrorModel::conflict("recorded", "TaskAttemptAlreadyFailed", None),
+                true,
+            ),
+            (
+                ErrorModel::conflict("deadlock", "TransactionFailed", None),
+                false,
+            ),
+            (concurrent_modification, false),
+            (ErrorModel::internal("failed", "DatabaseError", None), false),
+        ];
+        for (error, closed) in cases {
+            let r#type = error.r#type.clone();
+            assert_eq!(is_task_attempt_closed(&error.into()), closed, "{type}");
+        }
     }
 
     #[test]

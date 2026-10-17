@@ -34,8 +34,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    TestWarehouseResponse, eventually, memory_io_profile, random_request_metadata,
-    setup_with_registry, spawn_build_in_queues,
+    TestWarehouseResponse, create_ns, create_table, eventually, memory_io_profile,
+    random_request_metadata, setup_with_registry, spawn_build_in_queues,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use serde::{Deserialize, Serialize};
@@ -555,6 +555,54 @@ async fn test_protected_warehouse_delete_keeps_cancel_queue_tasks(pool: PgPool) 
         .await
         .unwrap();
     assert_eq!(task_rows(&pool, warehouse.warehouse_id).await, vec![]);
+}
+
+/// `(task_id, status, attempt)` of every task row of the warehouse, sorted by status.
+async fn task_attempts(pool: &PgPool, warehouse_id: WarehouseId) -> Vec<(Uuid, String, i32)> {
+    sqlx::query_as(
+        r#"SELECT task_id, status::text, attempt FROM task WHERE warehouse_id = $1
+           ORDER BY status::text COLLATE "C""#,
+    )
+    .bind(*warehouse_id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test]
+async fn test_non_empty_warehouse_delete_keeps_cancel_queue_tasks(pool: PgPool) {
+    let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 1).await;
+    let prefix = warehouse.warehouse_id.to_string();
+    create_ns(ctx.clone(), prefix.clone(), "ns".to_string()).await;
+    create_table(ctx.clone(), prefix, "ns", "table", false)
+        .await
+        .unwrap();
+    let project_id = &warehouse.project_id;
+    let entity = table_entity(warehouse.warehouse_id);
+    enqueue_entity(&ctx, &CANCEL_QUEUE, project_id, entity).await;
+    let running = pick(&ctx).await.id.task_id;
+    let entity = table_entity(warehouse.warehouse_id);
+    let scheduled = enqueue_entity(&ctx, &CANCEL_QUEUE, project_id, entity).await;
+    let expected_rows = vec![
+        (*running, "running".to_string(), 1),
+        (*scheduled, "scheduled".to_string(), 0),
+    ];
+    assert_eq!(
+        task_attempts(&pool, warehouse.warehouse_id).await,
+        expected_rows
+    );
+
+    let query = DeleteWarehouseQuery::builder().build();
+    let err = delete_warehouse(&ctx, warehouse.warehouse_id, query)
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.r#type, "WarehouseNotEmpty");
+    assert_eq!(err.error.code, 409);
+    // The cancellation rolled back with the failed delete.
+    assert_eq!(
+        task_attempts(&pool, warehouse.warehouse_id).await,
+        expected_rows
+    );
 }
 
 /// Every queue the built-in registration adds keeps the default: its tasks block the delete.
