@@ -288,47 +288,14 @@ pub fn with_search_path(pool_opts: PgPoolOptions, schema: Option<&PgSchema>) -> 
     let search_path = schema.search_path_value();
     pool_opts.after_connect(move |conn, _meta| {
         let search_path = search_path.clone();
-        Box::pin(async move { set_search_path(conn, search_path).await })
+        Box::pin(async move {
+            sqlx::query("SELECT set_config('search_path', $1, false)")
+                .bind(search_path)
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        })
     })
-}
-
-/// Set the session's `search_path`; see [`with_search_path`].
-async fn set_search_path(conn: &mut sqlx::PgConnection, search_path: String) -> sqlx::Result<()> {
-    sqlx::query("SELECT set_config('search_path', $1, false)")
-        .bind(search_path)
-        .execute(conn)
-        .await?;
-    Ok(())
-}
-
-/// Open a connection of its own to the primary from the process configuration, with the
-/// same `search_path` as the pools.
-pub(crate) async fn connect_owned_to_primary() -> sqlx::Result<sqlx::PgConnection> {
-    let options = build_connect_ops(ConnectionType::Write)
-        .map_err(|e| sqlx::Error::Configuration(e.into()))?;
-    let mut conn = <sqlx::PgConnection as sqlx::Connection>::connect_with(&options).await?;
-    if let Some(schema) = CONFIG.pg_schema.as_ref() {
-        set_search_path(&mut conn, schema.search_path_value()).await?;
-    }
-    Ok(conn)
-}
-
-/// Whether the configured read connection reaches the same server and database as the
-/// write connection.
-pub(crate) fn reads_from_primary() -> bool {
-    match (
-        build_connect_ops(ConnectionType::Read),
-        build_connect_ops(ConnectionType::Write),
-    ) {
-        (Ok(read), Ok(write)) => same_server(&read, &write),
-        _ => false,
-    }
-}
-
-fn same_server(read: &PgConnectOptions, write: &PgConnectOptions) -> bool {
-    read.get_host() == write.get_host()
-        && read.get_port() == write.get_port()
-        && read.get_database() == write.get_database()
 }
 
 impl DynAppConfig {
@@ -479,29 +446,5 @@ mod search_path_tests {
         assert_eq!(current, "public");
 
         pool.close().await;
-    }
-}
-
-#[cfg(test)]
-mod connection_tests {
-    use std::str::FromStr;
-
-    use sqlx::postgres::PgConnectOptions;
-
-    use super::same_server;
-
-    #[test]
-    fn reads_come_from_the_primary_only_for_the_same_server_and_database() {
-        let options = |url: &str| PgConnectOptions::from_str(url).unwrap();
-        let write = options("postgres://lk:pw@db.example:5432/catalog");
-        for (read, expected) in [
-            ("postgres://lk:pw@db.example:5432/catalog", true),
-            ("postgres://reader:other@db.example:5432/catalog", true),
-            ("postgres://lk:pw@replica.example:5432/catalog", false),
-            ("postgres://lk:pw@db.example:5433/catalog", false),
-            ("postgres://lk:pw@db.example:5432/other", false),
-        ] {
-            assert_eq!(same_server(&options(read), &write), expected, "{read}");
-        }
     }
 }

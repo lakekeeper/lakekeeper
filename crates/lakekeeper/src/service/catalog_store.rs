@@ -369,15 +369,14 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<(), CatalogBackendError>;
 
-    /// The change log as the cache poller reads it. The log opens its own connection to
-    /// the primary on first use.
+    /// The change log as the cache poller reads it, from the primary.
     fn cache_change_log(
         catalog_state: Self::State,
         settings: ChangeLogSettings,
     ) -> BoxedCacheChangeLog;
 
-    /// Delete change-log rows that no reader needs any more, if no other instance is
-    /// pruning. A reader whose cursor is older than `settings.retention` may reset.
+    /// Delete change-log rows older than `settings.retention`, if no other instance is
+    /// pruning.
     async fn prune_cache_change_log(
         catalog_state: Self::State,
         settings: PruneSettings,

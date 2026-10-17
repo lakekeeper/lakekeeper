@@ -8,8 +8,8 @@ mod log;
 
 pub use change_set::{CacheDomain, CacheKey, CacheKeyDecodeError, ChangeSet};
 pub use log::{
-    BARRIER_DOMAIN, BoxedCacheChangeLog, CacheChangeLog, ChangeLogError, ChangeLogSettings,
-    ChangeMarker, LoggedChange, PollOutcome, PruneOutcome, PruneSettings, ResetReason,
+    BoxedCacheChangeLog, CacheChangeLog, ChangeLogError, ChangeLogSettings, LoggedChange,
+    PollOutcome, PruneOutcome, PruneSettings, ResetReason,
 };
 
 /// Whether writes record their changed keys (`cache.invalidation.recording_enabled`).

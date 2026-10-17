@@ -8,10 +8,10 @@ create table cache_change_log (
     keys text[] not null,
     -- A version the writer holds under a row lock, for domains whose readers compare versions.
     version bigint,
-    -- Informational only: rows are read and pruned by xid.
+    -- Rows older than the retention are pruned.
     changed_at timestamptz not null default clock_timestamp(),
-    -- Rows are read and pruned in (xid, id) order. The key also gives deletes a replica
-    -- identity under a publication FOR ALL TABLES.
+    -- Rows are read in (xid, id) order. The key also gives deletes a replica identity under
+    -- a publication FOR ALL TABLES.
     constraint cache_change_log_pkey primary key (xid, id)
 );
 
@@ -23,22 +23,6 @@ alter table cache_change_log set (
     autovacuum_vacuum_threshold = 5000,
     autovacuum_vacuum_insert_scale_factor = 0,
     autovacuum_vacuum_insert_threshold = 10000
-);
-
--- Snapshots taken by the pruning task. Rows older than the retention are pruned up to the
--- oldest xid still running when such a snapshot was taken.
-create table cache_change_log_checkpoint (
-    id bigint generated always as identity primary key,
-    taken_at timestamptz not null default clock_timestamp(),
-    system_identifier bigint not null,
-    snapshot pg_snapshot not null
-);
-
--- Rows with an xid below `pruned_below` may have been deleted; rows at or above it were not.
-create table cache_change_log_horizon (
-    singleton bool primary key default true check (singleton),
-    system_identifier bigint not null,
-    pruned_below xid8 not null
 );
 
 -- Stable entry point for extensions: record that the current transaction changed `p_keys`

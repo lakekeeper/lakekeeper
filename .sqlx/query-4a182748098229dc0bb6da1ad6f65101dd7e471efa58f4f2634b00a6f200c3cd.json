@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH s AS (SELECT pg_current_snapshot() AS next),\n        changed AS (\n            (SELECT l.xid, l.id, l.domain, l.keys, l.version\n             FROM cache_change_log l\n             WHERE l.xid = ANY(ARRAY(SELECT pg_snapshot_xip($1::text::pg_snapshot)))\n             ORDER BY l.xid, l.id\n             LIMIT $2)\n            UNION ALL\n            (SELECT l.xid, l.id, l.domain, l.keys, l.version\n             FROM cache_change_log l\n             WHERE l.xid >= pg_snapshot_xmax($1::text::pg_snapshot)\n             ORDER BY l.xid, l.id\n             LIMIT $2)\n            ORDER BY xid, id\n            LIMIT $2\n        )\n        SELECT pg_is_in_recovery() AS \"in_recovery!\",\n               pg_postmaster_start_time() AS \"postmaster_start!\",\n               s.next::text AS \"snapshot!\",\n               coalesce(pg_snapshot_xmax(s.next) < pg_snapshot_xmax($1::text::pg_snapshot), false)\n                   AS \"went_back!\",\n               c.domain AS \"domain?\",\n               c.keys AS \"keys?\",\n               c.version AS \"version?\"\n        FROM s LEFT JOIN changed c ON true\n        ORDER BY c.xid, c.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "in_recovery!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "postmaster_start!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "snapshot!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "went_back!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "domain?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "keys?",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "version?",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "4a182748098229dc0bb6da1ad6f65101dd7e471efa58f4f2634b00a6f200c3cd"
+}

@@ -2,7 +2,6 @@
 
 mod reader;
 mod retention;
-mod snapshot;
 
 use std::time::Duration;
 
@@ -27,35 +26,24 @@ pub async fn record_cache_changes(
     if !cache_invalidation::recording_enabled() {
         return Ok(());
     }
-    let mut domains: Vec<&str> = Vec::new();
-    let mut keys: Vec<serde_json::Value> = Vec::new();
     for (domain, domain_keys) in change_set.encoded() {
         let Some(domain_keys) = domain_keys else {
-            domains.push(domain.as_str());
-            keys.push(serde_json::Value::Array(Vec::new()));
+            insert_row(conn, domain.as_str(), &[]).await?;
             continue;
         };
         let domain_keys: Vec<&str> = domain_keys.collect();
         for chunk in domain_keys.chunks(KEYS_PER_ROW) {
-            domains.push(domain.as_str());
-            keys.push(serde_json::Value::from_iter(chunk.iter().copied()));
+            insert_row(conn, domain.as_str(), chunk).await?;
         }
     }
-    if domains.is_empty() {
-        return Ok(());
-    }
+    Ok(())
+}
+
+async fn insert_row(conn: &mut PgConnection, domain: &str, keys: &[&str]) -> sqlx::Result<()> {
     sqlx::query!(
-        r#"
-        INSERT INTO cache_change_log (domain, keys)
-        SELECT r.domain,
-               ARRAY(SELECT e.key
-                     FROM jsonb_array_elements_text(r.keys) WITH ORDINALITY AS e(key, n)
-                     ORDER BY e.n)
-        FROM unnest($1::text[], $2::jsonb[]) WITH ORDINALITY AS r(domain, keys, n)
-        ORDER BY r.n
-        "#,
-        &domains as &[&str],
-        &keys,
+        "INSERT INTO cache_change_log (domain, keys) VALUES ($1, $2)",
+        domain,
+        keys as &[&str],
     )
     .execute(conn)
     .await?;
@@ -75,24 +63,6 @@ async fn begin_with_timeout(
         .execute(&mut *tx)
         .await?;
     Ok(tx)
-}
-
-/// The cluster's system identifier, or `0` where `pg_control_system()` may not be called.
-/// Transaction ids are comparable only within one cluster.
-async fn system_identifier(conn: &mut PgConnection) -> sqlx::Result<i64> {
-    let can_read = sqlx::query_scalar!(
-        r#"SELECT has_function_privilege('pg_control_system()', 'execute') AS "can_read!""#
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-    if !can_read {
-        return Ok(0);
-    }
-    // A separate statement: Postgres checks EXECUTE on every function of a statement
-    // before running it, also in a branch that is never taken.
-    sqlx::query_scalar!(r#"SELECT (pg_control_system()).system_identifier AS "system_identifier!""#)
-        .fetch_one(conn)
-        .await
 }
 
 #[cfg(test)]
