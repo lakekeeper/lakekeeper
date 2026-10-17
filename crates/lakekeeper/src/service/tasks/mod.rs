@@ -192,16 +192,18 @@ impl ResolvedTaskEntity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnWarehouseDelete {
-    /// Default. Deleting the warehouse fails while a task of this queue exists (purge, soft
-    /// deletion).
+    /// Default. Deleting the warehouse fails while a task of this queue exists. The built-in
+    /// queues use it.
     Block,
     /// Deleting the warehouse cancels the queue's tasks, running ones included. A warehouse with
     /// namespaces cannot be deleted, so these tasks belong to deleted entities or to the warehouse
     /// itself. If the delete fails, the tasks are kept. A running worker
-    /// sees [`TaskCheckState::NotActive`] at its next heartbeat. In a transaction, a worker must
-    /// lock its task row (record its outcome or heartbeat) before it writes anything else that
-    /// references the warehouse, and keep the transaction short. Otherwise it can deadlock with
-    /// or stall the delete.
+    /// sees [`TaskCheckState::NotActive`] at its next heartbeat.
+    ///
+    /// A transaction that writes a row referencing the warehouse or locks one of its tasks, and
+    /// then waits on another task of the warehouse (update, delete or conflicting enqueue), can
+    /// deadlock with the delete; one side then fails with a retryable conflict. So a worker records
+    /// its outcome or heartbeats first, then writes, and keeps the transaction short.
     Cancel,
 }
 

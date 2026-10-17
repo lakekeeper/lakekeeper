@@ -257,7 +257,7 @@ impl RegisteredTaskQueues {
     }
 
     /// Queues whose tasks are cancelled when their warehouse is deleted, each with its
-    /// legacy names. Sorted by name for stable output.
+    /// legacy names. Sorted by name, so concurrent deletes cancel the queues in the same order.
     #[must_use]
     pub(crate) async fn queues_cancelled_on_warehouse_delete(
         &self,
@@ -267,7 +267,10 @@ impl RegisteredTaskQueues {
             .read()
             .await
             .iter()
-            .filter(|(_, q)| q.on_warehouse_delete == OnWarehouseDelete::Cancel)
+            .filter(|(_, q)| match q.on_warehouse_delete {
+                OnWarehouseDelete::Cancel => true,
+                OnWarehouseDelete::Block => false,
+            })
             .map(|(name, q)| (*name, q.legacy_names.clone()))
             .collect();
         v.sort_unstable();

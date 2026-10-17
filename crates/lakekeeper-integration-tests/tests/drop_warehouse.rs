@@ -620,7 +620,13 @@ async fn test_built_in_queue_tasks_block_warehouse_delete(pool: PgPool) {
     )
     .await;
     let built_in_queues = ctx.v1_state.registered_task_queues.queue_names().await;
-    assert_ne!(built_in_queues, Vec::<&TaskQueueName>::new());
+    assert_eq!(
+        built_in_queues
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["soft_deletion", "tabular_purge", "task_log_cleanup"]
+    );
 
     let warehouse_entity = TaskEntity::Warehouse {
         warehouse_id: warehouse.warehouse_id,
