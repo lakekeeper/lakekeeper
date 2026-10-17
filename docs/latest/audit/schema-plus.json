@@ -1,0 +1,560 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Audit records emitted by lakekeeper_plus",
+  "x-audit-emitter": {
+    "name": "lakekeeper_plus",
+    "format": "1.0"
+  },
+  "$defs": {
+    "AppliedPolicyContext": {
+      "type": "object",
+      "properties": {
+        "created": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many policies the apply created."
+        },
+        "updated": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many it updated."
+        },
+        "deleted": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many it deleted."
+        },
+        "deleted_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The names it deleted, as many as fit. Absent when it deleted none."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "`true` when more names were deleted than are listed. Absent when all of them are."
+        },
+        "scope-version": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The scope's version after the write. The key keeps the management API's spelling; a\ncaller sends the value back as `if-scope-version`."
+        }
+      },
+      "required": [
+        "created",
+        "updated",
+        "deleted",
+        "scope-version"
+      ],
+      "description": "What one policy apply left behind: the value of `context.applied`.\n\nThe counts are exact. The list of deleted names is capped in size; `truncated` says when\nit is shorter than `deleted`.",
+      "x-audit-kind": "part"
+    },
+    "ApplyOutcome": {
+      "type": "string",
+      "description": "Values of `apply_outcome`. A later release may add a value without a format change.",
+      "x-audit-values": [
+        "failed",
+        "refused"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "apply_outcome",
+      "x-audit-descriptions": {
+        "failed": "The write was attempted and failed.",
+        "refused": "Validation refused the policies before anything was written."
+      }
+    },
+    "CedarApiAction": {
+      "type": "string",
+      "description": "Values of `action_name`. A later release may add a value without a format change.",
+      "x-audit-values": [
+        "apply_cedar_policies",
+        "get_cedar_policy",
+        "introspect_authorization",
+        "list_cedar_entity_sources",
+        "list_cedar_policies",
+        "list_cedar_policies_from_server_sources",
+        "list_cedar_policy_sources",
+        "reset_predefined_policies",
+        "toggle_predefined_policy"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "action_name",
+      "x-audit-descriptions": {
+        "apply_cedar_policies": "Create, update or delete the stored Cedar policies of a project or a warehouse.",
+        "get_cedar_policy": "Read one stored Cedar policy of a project or a warehouse.",
+        "introspect_authorization": "Introspect which actions another principal may perform on a resource.",
+        "list_cedar_entity_sources": "List the server-level entity sources.",
+        "list_cedar_policies": "List the stored Cedar policies of a project or a warehouse.",
+        "list_cedar_policies_from_server_sources": "List every Cedar policy the server-level sources provide.",
+        "list_cedar_policy_sources": "List the server-level policy sources.",
+        "reset_predefined_policies": "Return a project or a warehouse to the shipped predefined-policy defaults.",
+        "toggle_predefined_policy": "Switch one predefined policy on or off for a project or a warehouse. Recorded once\nper switch in a request."
+      }
+    },
+    "ChainNoProviderCtx": {
+      "type": "object",
+      "properties": {
+        "providers_checked": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoleProviderId"
+          },
+          "description": "IDs of all providers in the chain that were consulted (sorted)."
+        }
+      },
+      "required": [
+        "providers_checked"
+      ],
+      "description": "Context of a `resolve_roles` record with outcome `no_provider_applicable`.",
+      "x-audit-kind": "context"
+    },
+    "ChainRolesResolvedCtx": {
+      "type": "object",
+      "properties": {
+        "role_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many roles the user holds after every provider has answered."
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoleRecord"
+          },
+          "description": "The roles the user holds, ordered by provider and source id."
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ResolvedSource"
+          },
+          "description": "Per-provider resolution source, e.g. `{\"my-ldap\": \"cache_hit\", \"oidc\": \"in_request\"}`."
+        }
+      },
+      "required": [
+        "role_count",
+        "roles",
+        "sources"
+      ],
+      "description": "Context of a `resolve_roles` record with outcome `roles_resolved`.",
+      "x-audit-kind": "context"
+    },
+    "HandlerContext": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "The keys this product contributes to the record's `context` object. Another product's keys are described by its own schema.",
+      "x-audit-kind": "part",
+      "properties": {
+        "applied": {
+          "$ref": "#/$defs/AppliedPolicyContext",
+          "description": "What a policy apply left behind, one count per operation."
+        },
+        "break_glass": {
+          "type": "string",
+          "description": "The break-glass reason the caller stated, which a policy may route on."
+        },
+        "changes": {
+          "$ref": "#/$defs/PolicyChangesContext",
+          "description": "The predefined-policy switches the request asked for."
+        },
+        "scope_changes": {
+          "$ref": "#/$defs/ScopePolicyChangesContext",
+          "description": "The scope-policy writes and deletes the request asked for."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Whether the call only reports what it would do, changing nothing. Present on every\npolicy apply."
+        },
+        "apply_outcome": {
+          "$ref": "#/$defs/ApplyOutcome",
+          "description": "How a policy apply ended when it did not apply. Absent when it applied."
+        },
+        "apply_error": {
+          "type": "string",
+          "description": "Why a policy apply did not apply, as the caller was told. Present with `apply_outcome`."
+        }
+      }
+    },
+    "LdapAmbiguousCtx": {
+      "type": "object",
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that ran the search, as it names itself in configuration."
+        },
+        "filter": {
+          "type": "string",
+          "description": "The LDAP filter the search ran with, after substitution."
+        },
+        "count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many entries the filter matched. Always more than one here."
+        },
+        "mode": {
+          "$ref": "#/$defs/ResolveMode",
+          "description": "Which resolution path was active."
+        }
+      },
+      "required": [
+        "provider_id",
+        "filter",
+        "count",
+        "mode"
+      ],
+      "description": "The `context` of an `ldap_resolve_roles` record with `outcome: \"ambiguous_user\"`.",
+      "x-audit-kind": "context"
+    },
+    "LdapDnNoMatchCtx": {
+      "type": "object",
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that answered, as it names itself in configuration."
+        },
+        "user_dn": {
+          "type": "string",
+          "description": "The distinguished name the pattern was tested against."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "The DN regex that did not match, verbatim from configuration."
+        },
+        "mode": {
+          "$ref": "#/$defs/ResolveMode",
+          "description": "Which resolution path was active."
+        }
+      },
+      "required": [
+        "provider_id",
+        "user_dn",
+        "pattern",
+        "mode"
+      ],
+      "description": "Context of an `ldap_resolve_roles` record with outcome `dn_no_match` (branching mode,\n`else.mode = none`).",
+      "x-audit-kind": "context"
+    },
+    "LdapNoRolesCtx": {
+      "type": "object",
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that answered, as it names itself in configuration."
+        },
+        "attribute": {
+          "type": "string",
+          "description": "The group-membership attribute that was read and found absent or empty."
+        },
+        "mode": {
+          "$ref": "#/$defs/ResolveMode",
+          "description": "Which resolution path was active."
+        }
+      },
+      "required": [
+        "provider_id",
+        "attribute",
+        "mode"
+      ],
+      "description": "The `context` of an `ldap_resolve_roles` record with `outcome: \"no_roles\"`.",
+      "x-audit-kind": "context"
+    },
+    "LdapResolvedCtx": {
+      "type": "object",
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that resolved the roles, as it names itself in configuration."
+        },
+        "role_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many roles this provider resolved for the user."
+        },
+        "mode": {
+          "$ref": "#/$defs/ResolveMode",
+          "description": "Which resolution path was active."
+        }
+      },
+      "required": [
+        "provider_id",
+        "role_count",
+        "mode"
+      ],
+      "description": "The `context` of an `ldap_resolve_roles` record with `outcome: \"success\"`.",
+      "x-audit-kind": "context"
+    },
+    "LdapSearchCtx": {
+      "type": "object",
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that ran the search, as it names itself in configuration."
+        },
+        "filter": {
+          "type": "string",
+          "description": "The LDAP filter the search ran with, after substitution."
+        },
+        "mode": {
+          "$ref": "#/$defs/ResolveMode",
+          "description": "Which resolution path was active when the lookup failed."
+        }
+      },
+      "required": [
+        "provider_id",
+        "filter",
+        "mode"
+      ],
+      "description": "The `context` of an `ldap_resolve_roles` record with `outcome: \"user_not_found\"`.",
+      "x-audit-kind": "context"
+    },
+    "Operation": {
+      "type": "string",
+      "description": "Values of `operation`. A later release may add a value without a format change.",
+      "x-audit-values": [
+        "admission_enforce_check",
+        "cached_role_provider",
+        "ldap_resolve_roles",
+        "resolve_roles"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "operation",
+      "x-audit-descriptions": {
+        "admission_enforce_check": "An external enforce endpoint was asked whether a caller may use this instance.",
+        "cached_role_provider": "A cached role provider answered from its cache, not from its upstream.",
+        "ldap_resolve_roles": "An LDAP provider resolved one user's roles.",
+        "resolve_roles": "The provider chain resolved one user's roles, across every provider that handled them."
+      }
+    },
+    "Outcome": {
+      "type": "string",
+      "description": "Values of `outcome`. A later release may add a value without a format change.",
+      "x-audit-values": [
+        "ambiguous_user",
+        "dn_no_match",
+        "no_provider_applicable",
+        "no_roles",
+        "role_withheld",
+        "roles_resolved",
+        "stale_cache_fallback",
+        "success",
+        "user_not_found"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "outcome",
+      "x-audit-descriptions": {
+        "ambiguous_user": "An LDAP search matched more than one entry, so no principal could be resolved.",
+        "dn_no_match": "A branching provider's DN pattern did not match, and it is configured to assign no\nroles in that case.",
+        "no_provider_applicable": "No provider in the chain handled this user; they receive no provider-assigned roles.",
+        "no_roles": "The user was found and carries no group membership, so the role list is empty.",
+        "role_withheld": "An enforce check did not grant its admission role. The request itself may still stand.",
+        "roles_resolved": "The provider chain resolved the user's roles.",
+        "stale_cache_fallback": "One or more providers failed to refresh, and cached roles were served instead.",
+        "success": "The operation completed.",
+        "user_not_found": "The user was not found, so the role list is empty."
+      }
+    },
+    "PolicyChange": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable key of the policy, as the caller named it."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the caller asked for the policy to be in force."
+        }
+      },
+      "required": [
+        "id",
+        "enabled"
+      ],
+      "description": "One enablement change a request asked for.",
+      "x-audit-kind": "part"
+    },
+    "PolicyChangesContext": {
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PolicyChange"
+          },
+          "description": "The changes the request asked for, as many as fit."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "`true` when the request asked for more changes than are listed."
+        }
+      },
+      "required": [
+        "changes"
+      ],
+      "description": "The policy changes a request asked for: the value of `context.changes`.\n\nThe list is capped in size; `truncated` says when fewer changes are listed than were\nasked for.",
+      "x-audit-kind": "part"
+    },
+    "ResolveMode": {
+      "type": "string",
+      "description": "Values of `mode`. A later release may add a value without a format change.",
+      "x-audit-values": [
+        "attribute",
+        "branch_else_attribute",
+        "branch_else_none",
+        "branch_then",
+        "branching",
+        "search"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "mode",
+      "x-audit-descriptions": {
+        "attribute": "Attribute mode.",
+        "branch_else_attribute": "Branching mode, `else.mode = attribute`: the DN did not match.",
+        "branch_else_none": "Branching mode, `else.mode = none`: the DN did not match, so no roles are assigned.",
+        "branch_then": "Branching mode, `then` branch: the DN matched the pattern.",
+        "branching": "Branching mode, before the DN pattern was tested (for example, the user was not found).",
+        "search": "Search mode."
+      }
+    },
+    "ResolvedSource": {
+      "type": "string",
+      "description": "Values of `sources`. A later release may add a value without a format change.",
+      "x-audit-values": [
+        "cache_hit",
+        "fresh",
+        "in_request",
+        "persisted",
+        "stale_fallback"
+      ],
+      "x-audit-kind": "enum",
+      "x-audit-field": "sources",
+      "x-audit-descriptions": {
+        "cache_hit": "Roles were served from a cache that is still within its TTL.",
+        "fresh": "Roles were fetched live from the upstream source (e.g. LDAP query).",
+        "in_request": "Roles were extracted from in-request data (e.g. JWT token claims).",
+        "persisted": "Roles were read from a durable catalog-backed store with no TTL — e.g.\ntoken roles persisted on a previous login, served for a user who is not\nthe live caller (DEFINER views).",
+        "stale_fallback": "The upstream source failed but stale cached roles were served as fallback."
+      }
+    },
+    "RoleProviderId": {
+      "type": "string",
+      "description": "Identifies the system of record that owns a role.\n\nMust be non-empty and contain only lowercase ASCII letters (a-z), digits (0-9),\nand hyphens (-). Must not contain the `~` separator or any other special characters.\nWell-known values: `\"lakekeeper\"` (server-managed), `\"oidc\"`, `\"ldap\"`, etc.",
+      "x-audit-kind": "part"
+    },
+    "RoleRecord": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "description": "The role's id in this catalog. Absent when the role has no catalog row for this\nanswer: roles from a token or an admission gate, and roles resolved above projects."
+        },
+        "provider_id": {
+          "type": "string",
+          "description": "The provider that supplied the role."
+        },
+        "source_id": {
+          "type": "string",
+          "description": "The role's id at the provider, for looking it up there. Absent when the operator\nturned role source ids off."
+        }
+      },
+      "required": [
+        "provider_id"
+      ],
+      "description": "A role a record names: `{\"role\": …, \"provider_id\": …, \"source_id\": …}`, the keys\nLakekeeper's own records name a role with.",
+      "x-audit-kind": "part"
+    },
+    "ScopePolicyChangesContext": {
+      "type": "object",
+      "properties": {
+        "writes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many policies the request writes."
+        },
+        "deletes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many it names for deletion. Zero for a `replace`, which can still remove every\npolicy the writes do not name."
+        },
+        "replace": {
+          "type": "boolean",
+          "description": "`true` when the request states the whole desired set, not a delta. Absent otherwise."
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The names it asked for — writes first, then deletes — as many as fit."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "`true` when more names were asked for than are listed. Absent when all of them are."
+        }
+      },
+      "required": [
+        "writes",
+        "deletes",
+        "names"
+      ],
+      "description": "The writes and deletes a scope-policy apply was asked to make, recorded before it made\nthem: the value of `context.scope_changes`.\n\nThe counts are exact. The list of names is capped in size; `truncated` says when fewer\nare listed than were asked for.",
+      "x-audit-kind": "part"
+    },
+    "StaleCacheCtx": {
+      "type": "object",
+      "properties": {
+        "provider_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoleProviderId"
+          },
+          "description": "Sorted list of provider IDs whose fresh data could not be obtained."
+        }
+      },
+      "required": [
+        "provider_ids"
+      ],
+      "description": "The `context` of a `cached_role_provider` record with `outcome: \"stale_cache_fallback\"`.",
+      "x-audit-kind": "context"
+    },
+    "WithheldContext": {
+      "type": "object",
+      "properties": {
+        "gate": {
+          "type": "string",
+          "description": "The admission gate that asked, as it names itself in configuration."
+        },
+        "check": {
+          "type": "string",
+          "description": "The check within that gate whose endpoint answered."
+        },
+        "role": {
+          "$ref": "#/$defs/RoleRecord",
+          "description": "The admission role this check would have granted, and did not. An admission role has\nno catalog id."
+        },
+        "cache_ttl_secs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "How long this answer may be replayed before the endpoint is asked\nagain, so a reader can bound the staleness of the requests that follow\nwithout knowing the deployment's configuration."
+        }
+      },
+      "required": [
+        "gate",
+        "check",
+        "role",
+        "cache_ttl_secs"
+      ],
+      "description": "Context for the withheld-role audit record.",
+      "x-audit-kind": "context"
+    }
+  }
+}
