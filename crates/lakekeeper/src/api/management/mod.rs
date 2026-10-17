@@ -2,6 +2,7 @@
 
 pub mod v1 {
     pub mod check;
+    pub mod extension;
     pub mod generic_table;
     pub mod grant;
     pub mod lakekeeper_actions;
