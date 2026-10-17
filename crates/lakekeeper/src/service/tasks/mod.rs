@@ -188,6 +188,25 @@ impl ResolvedTaskEntity {
     }
 }
 
+/// How deleting a warehouse treats a queue's tasks in it, see [`TaskConfig::on_warehouse_delete`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OnWarehouseDelete {
+    /// Default. Deleting the warehouse fails while a task of this queue exists. The built-in
+    /// queues use it.
+    Block,
+    /// Deleting the warehouse cancels the queue's tasks, running ones included. A warehouse with
+    /// namespaces cannot be deleted, so these tasks belong to deleted entities or to the warehouse
+    /// itself. If the delete fails, the tasks are kept. A running worker
+    /// sees [`TaskCheckState::NotActive`] at its next heartbeat.
+    ///
+    /// A transaction that writes a row referencing the warehouse or locks one of its tasks, and
+    /// then waits on another task of the warehouse (update, delete or conflicting enqueue), can
+    /// deadlock with the delete; one side then fails with a retryable conflict. So a worker records
+    /// its outcome or heartbeats first, then writes, and keeps the transaction short.
+    Cancel,
+}
+
 #[cfg(feature = "open-api")]
 pub trait TaskConfig:
     utoipa::ToSchema + Serialize + DeserializeOwned + Clone + Send + Sync
@@ -209,6 +228,16 @@ pub trait TaskConfig:
     #[must_use]
     fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
         Vec::new()
+    }
+
+    /// How deleting a warehouse treats this queue's tasks in it, entity and warehouse tasks alike.
+    /// Project tasks are never affected. Default: [`OnWarehouseDelete::Block`].
+    ///
+    /// Only processes that register the queue apply it; elsewhere its tasks block the delete. So
+    /// register the queue (zero workers is fine) wherever the management API runs.
+    #[must_use]
+    fn on_warehouse_delete() -> OnWarehouseDelete {
+        OnWarehouseDelete::Block
     }
 
     /// Decide whether a manual schedule call is acceptable right now.
@@ -257,6 +286,12 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
     #[must_use]
     fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
         Vec::new()
+    }
+
+    /// See the `open-api`-enabled trait for full documentation.
+    #[must_use]
+    fn on_warehouse_delete() -> OnWarehouseDelete {
+        OnWarehouseDelete::Block
     }
 
     /// See the `open-api`-enabled trait for full documentation.
@@ -1087,6 +1122,14 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     );
                     return;
                 }
+                Err(e) if is_task_attempt_closed(&e) => {
+                    tracing::info!(
+                        "Not recording error for task {} in queue '{}': the task no longer exists or this attempt already has an outcome. {e}. Original Error: {error}",
+                        self.id,
+                        Self::queue_name(),
+                    );
+                    return;
+                }
                 Err(e) => {
                     tracing::warn!(
                         "Failed to record error for task {} in queue '{}' on attempt {attempt}/5: {e}",
@@ -1127,6 +1170,14 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Ok(()) => {
                     tracing::debug!(
                         "Successfully recorded success for task {} in queue '{}' on attempt {attempt}",
+                        self.id,
+                        Self::queue_name(),
+                    );
+                    return;
+                }
+                Err(e) if is_task_attempt_closed(&e) => {
+                    tracing::info!(
+                        "Not recording success for task {} in queue '{}': the task no longer exists or this attempt already has an outcome. {e}",
                         self.id,
                         Self::queue_name(),
                     );
@@ -1176,6 +1227,13 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     Self::queue_name(),
                 );
             }
+            Err(e) if is_task_attempt_closed(&e) => {
+                tracing::info!(
+                    "Not recording success for task {} in queue '{}': the task no longer exists or this attempt already has an outcome. {e}",
+                    self.id,
+                    Self::queue_name(),
+                );
+            }
             Err(e) => {
                 tracing::error!(
                     "Failed to record success for task {} in queue '{}': {e}. Original Success Details: {}",
@@ -1220,12 +1278,22 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             .append_detail(format!("Original Error: {error}"))
         });
 
-        if let Err(e) = r {
-            tracing::error!(
-                "Failed to record deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
-                Q::queue_name()
-            );
-            return;
+        match r {
+            Ok(()) => {}
+            Err(e) if is_task_attempt_closed(&e) => {
+                tracing::info!(
+                    "Not recording deserialization failure for `{id}` task {}: the task no longer exists or this attempt already has an outcome. {e}",
+                    Q::queue_name()
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to record deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
+                    Q::queue_name()
+                );
+                return;
+            }
         }
 
         if let Err(e) = trx.commit().await {
@@ -1303,6 +1371,26 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 }
 
+/// Error type of the 409 for recording a success of an attempt that already has an outcome.
+pub const TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE: &str = "TaskAttemptAlreadyCompleted";
+/// Error type of the 409 for recording a failure of an attempt that already has an outcome.
+pub const TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE: &str = "TaskAttemptAlreadyFailed";
+
+/// Whether a `CatalogTaskOps::record_task_*` error means the attempt is closed: the task is gone
+/// (404, e.g. its warehouse was deleted) or the attempt already has an outcome (409). Retrying
+/// cannot succeed then. Other errors, like a failed transaction, may succeed in a new transaction.
+#[must_use]
+pub fn is_task_attempt_closed(e: &IcebergErrorResponse) -> bool {
+    let error = &e.error;
+    error.code == http::StatusCode::NOT_FOUND.as_u16()
+        || (error.code == http::StatusCode::CONFLICT.as_u16()
+            && [
+                TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
+                TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE,
+            ]
+            .contains(&error.r#type.as_str()))
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, EnumIter, Hash, Eq)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
@@ -1347,6 +1435,36 @@ mod test {
     use uuid::Uuid;
 
     use super::*;
+
+    #[test]
+    fn test_is_task_attempt_closed() {
+        let concurrent_modification = ErrorModel::from(crate::service::CatalogBackendError::new(
+            std::io::Error::other("changed"),
+            crate::service::CatalogBackendErrorType::ConcurrentModification,
+        ));
+        assert_eq!(concurrent_modification.code, 409);
+        let cases: [(ErrorModel, bool); 6] = [
+            (ErrorModel::not_found("gone", "TaskNotFound", None), true),
+            (
+                ErrorModel::conflict("recorded", "TaskAttemptAlreadyCompleted", None),
+                true,
+            ),
+            (
+                ErrorModel::conflict("recorded", "TaskAttemptAlreadyFailed", None),
+                true,
+            ),
+            (
+                ErrorModel::conflict("deadlock", "TransactionFailed", None),
+                false,
+            ),
+            (concurrent_modification, false),
+            (ErrorModel::internal("failed", "DatabaseError", None), false),
+        ];
+        for (error, closed) in cases {
+            let r#type = error.r#type.clone();
+            assert_eq!(is_task_attempt_closed(&error.into()), closed, "{type}");
+        }
+    }
 
     #[test]
     fn test_task_entity_serde_table() {

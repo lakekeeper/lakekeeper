@@ -12,17 +12,18 @@ use lakekeeper::{
         },
     },
     service::{
-        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogCreateWarehouseRequest,
-        CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
-        CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogRoleOps,
-        DatabaseIntegrityError, EnsureWarehouseSpecMutableError, GetProjectResponse, ManagedBy,
-        ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
-        SystemRoleSeederCap, UpdateWarehouseStorageProfileError, WarehouseAlreadyExists,
-        WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdAlreadyExists,
-        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked,
-        WarehouseStatus, WarehouseVersion, registered_system_roles, storage::StorageProfile,
+        AllowedFormatVersions, CatalogBackendError, CatalogBackendErrorType,
+        CatalogCreateWarehouseError, CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
+        CatalogRenameWarehouseError, CatalogRoleOps, DatabaseIntegrityError,
+        EnsureWarehouseSpecMutableError, GetProjectResponse, ManagedBy, ProjectIdNotFoundError,
+        ResolvedWarehouse, SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
+        WarehouseAlreadyExists, WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks,
+        WarehouseIdAlreadyExists, WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected,
+        WarehouseSpecLocked, WarehouseStatus, WarehouseVersion, registered_system_roles,
+        storage::StorageProfile,
     },
 };
 use sqlx::{PgPool, types::Json};
@@ -573,6 +574,7 @@ pub(crate) async fn delete_warehouse(
            deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND (not protected OR $2)
                        RETURNING storage_secret_id)
            SELECT protected as "protected!",
+                  EXISTS(SELECT 1 FROM deleted) as "deleted!",
                   (SELECT storage_secret_id FROM deleted) as "storage_secret_id"
            FROM delete_info"#,
         *warehouse_id,
@@ -580,25 +582,45 @@ pub(crate) async fn delete_warehouse(
     )
     .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| match &e {
-        sqlx::Error::RowNotFound => {
-            CatalogDeleteWarehouseError::from(WarehouseIdNotFound::new(warehouse_id))
-        }
-        sqlx::Error::Database(db_error) => {
-            if db_error.is_foreign_key_violation() {
-                WarehouseNotEmpty::new().into()
-            } else {
-                e.into_catalog_backend_error().into()
-            }
-        }
-        _ => e.into_catalog_backend_error().into(),
-    })?;
+    .map_err(|e| delete_warehouse_error(e, warehouse_id))?;
 
     if deleted.protected && !force {
         return Err(WarehouseProtected::new().into());
     }
+    // A transaction that committed while the DELETE waited for the row (setting `protected`,
+    // or deleting the warehouse) makes the DELETE skip it.
+    if !deleted.deleted {
+        return Err(CatalogBackendError::new(
+            WarehouseChangedDuringDelete(warehouse_id),
+            CatalogBackendErrorType::ConcurrentModification,
+        )
+        .into());
+    }
 
     Ok(deleted.storage_secret_id.map(Into::into))
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Warehouse {0} was changed concurrently and was not deleted.")]
+struct WarehouseChangedDuringDelete(WarehouseId);
+
+/// A task inserted after [`delete_warehouse`] checked for unfinished tasks fails the DELETE
+/// on `task_warehouse_id_fk`, and gets the same error as that check.
+fn delete_warehouse_error(
+    e: sqlx::Error,
+    warehouse_id: WarehouseId,
+) -> CatalogDeleteWarehouseError {
+    match &e {
+        sqlx::Error::RowNotFound => WarehouseIdNotFound::new(warehouse_id).into(),
+        sqlx::Error::Database(db_error) if db_error.is_foreign_key_violation() => {
+            if db_error.constraint() == Some("task_warehouse_id_fk") {
+                WarehouseHasUnfinishedTasks::new().into()
+            } else {
+                WarehouseNotEmpty::new().into()
+            }
+        }
+        _ => e.into_catalog_backend_error().into(),
+    }
 }
 
 pub(crate) async fn rename_warehouse(
@@ -1687,6 +1709,162 @@ pub mod test {
             None
         );
         trx.commit().await.unwrap();
+    }
+
+    /// A task committed after the unfinished-task check, while the DELETE waits for the
+    /// warehouse row, fails the DELETE on `task_warehouse_id_fk`.
+    #[sqlx::test]
+    async fn test_delete_warehouse_with_concurrently_inserted_task(pool: sqlx::PgPool) {
+        use lakekeeper::service::tasks::{
+            ScheduleTaskMetadata, TaskEntity, TaskInput, TaskQueueName, WarehouseTaskEntityId,
+        };
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // Until it commits, the inserting transaction holds a key-share lock on the warehouse row.
+        let mut inserter = pool.begin().await.unwrap();
+        crate::tasks::queue_task_batch(
+            &mut inserter,
+            &TaskQueueName::from("concurrent-queue"),
+            vec![TaskInput {
+                task_metadata: ScheduleTaskMetadata {
+                    project_id,
+                    parent_task_id: None,
+                    scheduled_for: None,
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id,
+                        entity_id: WarehouseTaskEntityId::Table {
+                            table_id: uuid::Uuid::now_v7().into(),
+                        },
+                        entity_name: vec!["table".to_string()],
+                    },
+                },
+                payload: serde_json::json!({}),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let delete = tokio::spawn({
+            let pool = pool.clone();
+            async move {
+                let mut trx = pool.begin().await.unwrap();
+                delete_warehouse(
+                    warehouse_id,
+                    DeleteWarehouseQuery { force: false },
+                    &mut trx,
+                )
+                .await
+            }
+        });
+        wait_for_a_lock_wait(&pool).await;
+        inserter.commit().await.unwrap();
+
+        let err = delete.await.unwrap().unwrap_err();
+        let CatalogDeleteWarehouseError::WarehouseHasUnfinishedTasks(err) = err else {
+            panic!("{err:?}");
+        };
+        // The unfinished-task check would have added an "Unfinished tasks: ..." entry.
+        assert_eq!(
+            err.stack,
+            vec!["Error deleting warehouse in catalog".to_string()]
+        );
+        assert_eq!(ErrorModel::from(err).code, StatusCode::CONFLICT.as_u16());
+    }
+
+    /// A transaction that sets `protected` while the DELETE waits for the warehouse row makes
+    /// the DELETE skip the row; the warehouse is kept and the caller gets a retryable 409.
+    #[sqlx::test]
+    async fn test_delete_warehouse_protected_concurrently(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let mut protector = pool.begin().await.unwrap();
+        sqlx::query("UPDATE warehouse SET protected = true WHERE warehouse_id = $1")
+            .bind(*warehouse_id)
+            .execute(&mut *protector)
+            .await
+            .unwrap();
+
+        let delete = tokio::spawn({
+            let pool = pool.clone();
+            async move {
+                let mut trx = pool.begin().await.unwrap();
+                delete_warehouse(
+                    warehouse_id,
+                    DeleteWarehouseQuery { force: false },
+                    &mut trx,
+                )
+                .await
+            }
+        });
+        wait_for_a_lock_wait(&pool).await;
+        protector.commit().await.unwrap();
+
+        let err = delete.await.unwrap().unwrap_err();
+        let CatalogDeleteWarehouseError::CatalogBackendError(err) = err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(err.r#type, CatalogBackendErrorType::ConcurrentModification);
+        assert_eq!(ErrorModel::from(err).code, StatusCode::CONFLICT.as_u16());
+        let protected: Vec<bool> =
+            sqlx::query_scalar("SELECT protected FROM warehouse WHERE warehouse_id = $1")
+                .bind(*warehouse_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(protected, vec![true]);
+    }
+
+    /// Returns once a session of this test's database waits for a lock.
+    #[cfg(test)]
+    async fn wait_for_a_lock_wait(pool: &sqlx::PgPool) {
+        let waiting = async {
+            loop {
+                let waiting: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                )
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                if waiting > 0 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .expect("a session waits for a lock");
+    }
+
+    #[sqlx::test]
+    async fn test_delete_warehouse_with_namespace_is_not_empty(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        crate::namespace::tests::initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &iceberg::NamespaceIdent::new("ns".to_string()),
+            None,
+        )
+        .await;
+
+        let mut trx = PostgresTransaction::begin_write(state).await.unwrap();
+        let err = delete_warehouse(
+            warehouse_id,
+            DeleteWarehouseQuery { force: false },
+            trx.transaction(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, CatalogDeleteWarehouseError::WarehouseNotEmpty(_)),
+            "{err:?}"
+        );
     }
 
     #[sqlx::test]

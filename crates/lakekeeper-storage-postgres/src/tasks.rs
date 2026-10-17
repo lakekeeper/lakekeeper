@@ -12,7 +12,8 @@ use lakekeeper::{
         ArcProjectId, DatabaseIntegrityError, TableId, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
+            CancelTasksFilter, ScheduleTaskMetadata, TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
+            TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE, Task, TaskAttemptId, TaskCheckState,
             TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
             TaskQueueName, WarehouseTaskEntityId,
         },
@@ -478,6 +479,7 @@ pub(crate) async fn pick_task(
     Ok(None)
 }
 
+/// Leaves a `scheduled` row alone: it waits for its next pick, so this attempt is closed.
 pub(crate) async fn record_success(
     id: impl AsRef<TaskAttemptId>,
     pool: &mut PgConnection,
@@ -487,7 +489,7 @@ pub(crate) async fn record_success(
     let (task_log_exists, log_inserted, conflicting_message, conflicting_created_at) = sqlx::query!(
         r#"
         WITH moved AS (
-            DELETE FROM task WHERE task_id = $1 AND attempt = $3 RETURNING *
+            DELETE FROM task WHERE task_id = $1 AND attempt = $3 AND status != 'scheduled' RETURNING *
         ),
         task_log_attempt AS (
             SELECT message, task_created_at FROM task_log WHERE task_id = $1 AND attempt = $3
@@ -557,7 +559,7 @@ pub(crate) async fn record_success(
             format!(
                 "Task {task_id} with attempt {attempt} has already been recorded as completed."
             ),
-            "TaskAttemptAlreadyCompleted",
+            TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
             None,
         )
         .append_detail("Error recording task success.");
@@ -586,6 +588,7 @@ pub(crate) async fn record_success(
     Ok(())
 }
 
+/// Leaves a `scheduled` row alone: it waits for its next pick, so this attempt is closed.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn record_failure(
     id: impl AsRef<TaskAttemptId>,
@@ -599,7 +602,7 @@ pub(crate) async fn record_failure(
         sqlx::query!(
             r#"
             WITH moved AS (
-                DELETE FROM task WHERE task_id = $1 AND attempt = $2 RETURNING *
+                DELETE FROM task WHERE task_id = $1 AND attempt = $2 AND status != 'scheduled' RETURNING *
             ),
             task_log_attempt AS (
                 SELECT message, task_created_at FROM task_log WHERE task_id = $1 AND attempt = $2
@@ -668,7 +671,7 @@ pub(crate) async fn record_failure(
         sqlx::query!(
             r#"
             WITH locked AS (
-                SELECT * FROM task WHERE task_id = $1 AND attempt = $3 FOR UPDATE
+                SELECT * FROM task WHERE task_id = $1 AND attempt = $3 AND status != 'scheduled' FOR UPDATE
             ),
             task_log_attempt AS (
                 SELECT message, task_created_at FROM task_log WHERE task_id = $1 AND attempt = $3
@@ -752,7 +755,7 @@ pub(crate) async fn record_failure(
     if task_log_exists && !log_inserted {
         let err = ErrorModel::conflict(
             format!("Task {task_id} with attempt {attempt} has already been recorded as failed."),
-            "TaskAttemptAlreadyFailed",
+            TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE,
             None,
         )
         .append_detail("Error recording task attempt failure.");
@@ -1288,9 +1291,11 @@ pub(crate) async fn cancel_scheduled_tasks(
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, vec};
+    use std::{collections::HashMap, sync::LazyLock, vec};
 
     use chrono::{DateTime, Utc};
+    #[cfg(feature = "open-api")]
+    use lakekeeper::utoipa;
     use lakekeeper::{
         WarehouseId,
         api::management::v1::{
@@ -1301,11 +1306,13 @@ mod test {
             CatalogStore, Transaction,
             authz::AllowAllAuthorizer,
             tasks::{
-                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, TaskDetailsScope, TaskId, TaskInput,
-                TaskIntermediateStatus, WarehouseTaskEntityId,
+                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, SpecializedTask, TaskConfig, TaskData,
+                TaskDetailsScope, TaskExecutionDetails, TaskId, TaskInput, TaskIntermediateStatus,
+                WarehouseTaskEntityId,
             },
         },
     };
+    use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use sqlx::PgPool;
     use uuid::Uuid;
@@ -3532,6 +3539,98 @@ mod test {
         assert_eq!(now_task.task_id(), task_id);
         assert_eq!(now_task.status, TaskIntermediateStatus::Running);
         assert_eq!(now_task.attempt(), 2); // Attempt 2 now as the task used to be running
+    }
+
+    /// `(status, attempt)` of the task row and `(attempt, status, message)` of its log entries.
+    async fn task_and_log_rows(
+        pool: &PgPool,
+        task_id: TaskId,
+    ) -> (Vec<(String, i32)>, Vec<(i32, String, Option<String>)>) {
+        let task = sqlx::query_as("SELECT status::text, attempt FROM task WHERE task_id = $1")
+            .bind(*task_id)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        let log = sqlx::query_as(
+            "SELECT attempt, status::text, message FROM task_log WHERE task_id = $1 ORDER BY attempt",
+        )
+        .bind(*task_id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        (task, log)
+    }
+
+    /// A stopped attempt that records its success after "run now" keeps the rescheduled task.
+    #[sqlx::test]
+    async fn test_record_success_in_transaction_keeps_rescheduled_task(pool: PgPool) {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct Config {}
+        impl TaskConfig for Config {
+            fn queue_name() -> &'static TaskQueueName {
+                &QUEUE_NAME
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(3600)
+            }
+        }
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct Empty {}
+        impl TaskData for Empty {}
+        impl TaskExecutionDetails for Empty {}
+        static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| "test-closed-attempt".into());
+
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let entity = TaskEntity::EntityInWarehouse {
+            warehouse_id,
+            entity_id,
+            entity_name: vec!["table".to_string()],
+        };
+        let task_id = queue_task(&mut conn, &QUEUE_NAME, None, project_id, None, None, entity)
+            .await
+            .unwrap()
+            .unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let picked = SpecializedTask::<Config, Empty, Empty>::pick_new_task::<PostgresBackend>(
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            picked.id(),
+            TaskAttemptId {
+                task_id,
+                attempt: 1
+            }
+        );
+
+        request_tasks_stop(&mut conn, &[task_id]).await.unwrap();
+        reschedule_tasks_for(&mut conn, &[task_id], None)
+            .await
+            .unwrap();
+        let expected_rows = (
+            vec![("scheduled".to_string(), 1)],
+            vec![(
+                1,
+                "failed".to_string(),
+                Some("Task did not stop in time before being rescheduled.".to_string()),
+            )],
+        );
+        assert_eq!(task_and_log_rows(&pool, task_id).await, expected_rows);
+
+        let mut transaction = PostgresTransaction::begin_write(state).await.unwrap();
+        picked
+            .record_success_in_transaction::<PostgresBackend>(transaction.transaction(), None)
+            .await;
+        transaction.commit().await.unwrap();
+
+        assert_eq!(task_and_log_rows(&pool, task_id).await, expected_rows);
     }
 
     async fn setup_project(state: CatalogState) -> lakekeeper::api::Result<ArcProjectId> {
