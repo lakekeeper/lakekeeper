@@ -122,6 +122,13 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default)]
     pub sts_session_tags: BTreeMap<String, String>, // HashMap is not Hash
+    /// Add `"Principal": "*"` to every statement of the STS session policy.
+    /// Some S3-compatible STS implementations, such as Yandex Object Storage, reject
+    /// session policies without a principal, while AWS and MinIO reject policies that
+    /// have one. Defaults to false.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub sts_session_policy_principal: Option<bool>,
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -1351,6 +1358,12 @@ impl S3Profile {
                 "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
                 "Resource": kms_key_arn,
             }));
+        }
+
+        if self.sts_session_policy_principal.unwrap_or_default() {
+            for statement in &mut statements {
+                statement["Principal"] = json!("*");
+            }
         }
 
         let policy = json!({
@@ -4153,6 +4166,64 @@ pub(crate) mod test {
             )
             .unwrap();
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+    }
+
+    fn session_policy_statements(principal: Option<bool>) -> Vec<serde_json::Value> {
+        let mut profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("path/to/table".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        profile.sts_session_policy_principal = principal;
+        let policy = profile
+            .get_sts_policy_string(
+                &"s3://bucket-name/path/to/table".parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let policy = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+        policy["Statement"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn session_policy_has_no_principal_by_default() {
+        // AWS and MinIO reject a session policy that names a principal.
+        let statements = session_policy_statements(Some(false));
+        assert!(!statements.is_empty());
+        assert!(statements.iter().all(|s| s.get("Principal").is_none()));
+    }
+
+    #[test]
+    fn session_policy_principal_is_set_on_every_statement() {
+        // Yandex Object Storage rejects requests made with temporary credentials
+        // whose session policy statements carry no principal.
+        let statements = session_policy_statements(Some(true));
+        assert!(!statements.is_empty());
+        for statement in &statements {
+            assert_eq!(
+                statement["Principal"],
+                serde_json::json!("*"),
+                "{statement}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_policy_principal_defaults_to_false_when_omitted() {
+        let profile: S3Profile = serde_json::from_value(serde_json::json!({
+            "bucket": "bucket-name",
+            "region": "us-east-1",
+            "sts-enabled": true,
+        }))
+        .unwrap();
+        assert_eq!(profile.sts_session_policy_principal, None);
+        assert!(
+            session_policy_statements(None)
+                .iter()
+                .all(|s| s.get("Principal").is_none())
+        );
     }
 
     #[test]
