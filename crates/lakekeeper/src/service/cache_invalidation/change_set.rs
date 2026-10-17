@@ -196,7 +196,7 @@ impl ChangeSet {
         Self::with_cap(FANOUT_CAP)
     }
 
-    /// An empty set with a fixed fan-out cap, independent of the configuration.
+    /// An empty set with a fan-out cap of `fanout_cap` keys.
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn with_fanout_cap(fanout_cap: usize) -> Self {
