@@ -26,12 +26,12 @@ jobs:
   docker:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: Docker info
         run: docker info
@@ -40,7 +40,7 @@ jobs:
       # tar) can exhaust the ~14 GB free on hosted runners, failing with
       # "no space left on device". Reclaim preinstalled toolchains we don't use.
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@3f13feab2962a87273d379ebc36ea159527e6cc9 # v1.3.2
         with:
           docker-images: false # we build and save Docker images in this job
           large-packages: false # apt purge is slow; the toolchain dirs free enough
@@ -52,7 +52,7 @@ jobs:
           docker save -o /tmp/${{ inputs.image_name }}-${{ inputs.platform }}.tar localhost/${{ inputs.image_name }}:${{ inputs.platform }}
 
       - name: Save Docker
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: lakekeeper-image
           path: /tmp/*.tar
