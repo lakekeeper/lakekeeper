@@ -26,19 +26,16 @@ alter table cache_change_log set (
 );
 
 -- Stable entry point for extensions: record that the current transaction changed `p_keys`
--- of `p_domain`. Returns the number of rows inserted. Like every Lakekeeper table, the log
--- is found through the session's search_path, so call it from a Lakekeeper session.
+-- of `p_domain`. Each call adds one row, so pass all keys of a domain in one call. Like
+-- every Lakekeeper table, the log is found through the session's search_path, so call it
+-- from a Lakekeeper session.
 create function lakekeeper_record_cache_change(
     p_domain text,
     p_keys text[],
     p_version bigint default null
-) returns bigint
+) returns void
 language sql
 as $$
-    with inserted as (
-        insert into cache_change_log (domain, keys, version)
-        values (p_domain, p_keys, p_version)
-        returning 1
-    )
-    select count(*) from inserted
+    insert into cache_change_log (domain, keys, version)
+    values (p_domain, p_keys, p_version)
 $$;

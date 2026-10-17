@@ -85,8 +85,9 @@ async fn read_poll(
     limit: i64,
 ) -> sqlx::Result<Poll> {
     let mut tx = begin_with_timeout(conn, settings.statement_timeout).await?;
-    // Two branches, each an index range: transactions running at the previous snapshot,
-    // and transactions started after it. `pg_current_snapshot()` is the statement's own
+    // Two branches: transactions running at the previous snapshot, and transactions
+    // started after it, below the new snapshot's xmax. A row with a higher xid came from
+    // another server, by a dump and restore. `pg_current_snapshot()` is the statement's own
     // snapshot, so the rows it reads are those of transactions committed in it.
     let rows = sqlx::query!(
         r#"
@@ -101,6 +102,7 @@ async fn read_poll(
             (SELECT l.xid, l.id, l.domain, l.keys, l.version
              FROM cache_change_log l
              WHERE l.xid >= pg_snapshot_xmax($1::text::pg_snapshot)
+               AND l.xid < pg_snapshot_xmax(pg_current_snapshot())
              ORDER BY l.xid, l.id
              LIMIT $2)
             ORDER BY xid, id
@@ -123,9 +125,7 @@ async fn read_poll(
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
-    let first = rows
-        .first()
-        .ok_or_else(|| sqlx::Error::Protocol("a poll returned no row".to_string()))?;
+    let first = rows.first().ok_or(sqlx::Error::RowNotFound)?;
     let poll = Poll {
         in_recovery: first.in_recovery,
         postmaster_start: first.postmaster_start,
@@ -159,7 +159,7 @@ impl CacheChangeLog for PostgresCacheChangeLog {
         // One row more than a poll returns shows that there are more.
         let read = read_poll(&mut conn, self.settings, prev, self.max_rows + 1);
         // The client-side limit also covers a connection that stopped answering.
-        let poll = match tokio::time::timeout(timeout + timeout / 2, read).await {
+        let poll = match tokio::time::timeout(timeout.saturating_add(timeout / 2), read).await {
             Ok(poll) => poll.map_err(query_error)?,
             Err(_) => {
                 conn.close_on_drop();
@@ -333,6 +333,23 @@ mod tests {
                 ("role", "c")
             ])
         );
+        assert_eq!(log.poll().await.unwrap(), changes(&[]));
+    }
+
+    #[sqlx::test]
+    async fn rows_with_an_xid_this_server_has_not_reached_are_never_returned(pool: PgPool) {
+        // Such rows come from another server, by a dump and restore.
+        sqlx::query(
+            "INSERT INTO cache_change_log (xid, domain, keys)
+             VALUES ('1000000000000', 'secret', ARRAY['foreign'])",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut log = started(&pool).await;
+        record(&pool, "secret", "own").await;
+
+        assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "own")]));
         assert_eq!(log.poll().await.unwrap(), changes(&[]));
     }
 

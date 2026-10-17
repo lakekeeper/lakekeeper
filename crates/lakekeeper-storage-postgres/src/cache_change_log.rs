@@ -6,7 +6,7 @@ mod retention;
 use std::time::Duration;
 
 use lakekeeper::service::cache_invalidation::{self, ChangeSet};
-pub use reader::PostgresCacheChangeLog;
+pub(crate) use reader::PostgresCacheChangeLog;
 pub(crate) use retention::prune;
 use sqlx::{Connection, PgConnection};
 
@@ -19,7 +19,7 @@ const KEYS_PER_ROW: usize = 1000;
 ///
 /// # Errors
 /// Returns an error if the insert fails.
-pub async fn record_cache_changes(
+pub(crate) async fn record_cache_changes(
     change_set: &ChangeSet,
     conn: &mut PgConnection,
 ) -> sqlx::Result<()> {
@@ -149,7 +149,7 @@ mod tests {
 
     #[sqlx::test]
     async fn many_keys_are_split_into_rows_of_at_most_1000(pool: PgPool) {
-        let mut set = ChangeSet::with_fanout_cap(5000);
+        let mut set = ChangeSet::new();
         for n in 0..2001 {
             set.insert(warehouse(n));
         }
@@ -200,19 +200,16 @@ mod tests {
     #[sqlx::test]
     async fn the_extension_function_records_a_versioned_row(pool: PgPool) {
         let mut tx = pool.begin().await.unwrap();
-        let inserted: i64 = sqlx::query_scalar(
-            "SELECT lakekeeper_record_cache_change('cedar_scope', ARRAY['project:p1'], 7)",
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap();
+        sqlx::query("SELECT lakekeeper_record_cache_change('cedar_scope', ARRAY['project:p1'], 7)")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         let current: String = sqlx::query_scalar("SELECT pg_current_xact_id()::text")
             .fetch_one(&mut *tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
 
-        assert_eq!(inserted, 1);
         assert_eq!(
             log_rows(&pool).await,
             vec![(

@@ -11,9 +11,9 @@ const PRUNE_LOCK_SEED: i64 = 0x6361_6368_656C_6F67;
 /// The most rows one delete transaction removes.
 const PRUNE_BATCH_ROWS: i64 = 10_000;
 
-/// One pruning run on `pool`'s database: delete the rows older than the retention, and
-/// rows from another cluster. Every transaction of the run takes the pruning lock; the run
-/// skips or stops when another instance holds it.
+/// One pruning run on `pool`'s database: delete the rows older than the retention. Every
+/// transaction of the run takes the pruning lock; the run skips or stops when another
+/// instance holds it.
 pub(crate) async fn prune(pool: &PgPool, settings: PruneSettings) -> sqlx::Result<PruneOutcome> {
     prune_in_batches(pool, settings, PRUNE_BATCH_ROWS).await
 }
@@ -57,9 +57,7 @@ async fn delete_batch(
     if !locked {
         return Ok(None);
     }
-    // No transaction of this cluster has an xid at or above the current xmax: such rows
-    // came from another cluster, by a dump and restore. Deleted by ctid: log rows are
-    // never updated.
+    // Deleted by ctid: log rows are never updated.
     let rows = sqlx::query_scalar!(
         r#"
         WITH deleted AS (
@@ -67,7 +65,6 @@ async fn delete_batch(
             WHERE ctid = ANY(ARRAY(
                 SELECT ctid FROM cache_change_log
                 WHERE changed_at < clock_timestamp() - make_interval(secs => $1)
-                   OR xid >= pg_snapshot_xmax(pg_current_snapshot())
                 LIMIT $2))
             RETURNING 1
         )
@@ -141,25 +138,6 @@ mod tests {
             PruneOutcome::Pruned { deleted_rows: 1 }
         );
         assert_eq!(remaining_keys(&pool).await, ["young", "new"]);
-    }
-
-    #[sqlx::test]
-    async fn deletes_rows_from_another_cluster(pool: PgPool) {
-        // No transaction of this cluster has an xid at or above the current xmax.
-        sqlx::query(
-            "INSERT INTO cache_change_log (xid, domain, keys)
-             VALUES ('1000000000000', 'secret', ARRAY['foreign'])",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        record(&pool, "secret", "own").await;
-
-        assert_eq!(
-            prune(&pool, SETTINGS).await.unwrap(),
-            PruneOutcome::Pruned { deleted_rows: 1 }
-        );
-        assert_eq!(remaining_keys(&pool).await, ["own"]);
     }
 
     #[sqlx::test]

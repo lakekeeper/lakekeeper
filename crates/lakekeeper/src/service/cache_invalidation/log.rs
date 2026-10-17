@@ -53,7 +53,8 @@ pub enum ChangeLogError {
 /// Settings of a [`CacheChangeLog`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChangeLogSettings {
-    /// The longest one poll may run.
+    /// The longest the poll statement may run on the server. The poll gives up after one
+    /// and a half times as long.
     pub statement_timeout: Duration,
 }
 

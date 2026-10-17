@@ -4,7 +4,7 @@ use iceberg::NamespaceIdent;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    CONFIG, ProjectId, WarehouseId,
+    ProjectId, WarehouseId,
     service::{NamespaceId, RoleId, RoleIdent, SecretId, UserId},
 };
 
@@ -165,6 +165,9 @@ fn parse_json<T: DeserializeOwned>(key: &str) -> Option<T> {
     serde_json::from_str(key).ok()
 }
 
+/// The most keys of one domain a change set lists; more make it a whole-domain change.
+const FANOUT_CAP: usize = 50_000;
+
 /// The cache entries a write makes stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
@@ -186,11 +189,11 @@ impl Default for ChangeSet {
 }
 
 impl ChangeSet {
-    /// An empty set. A domain that collects more than `cache.invalidation.fanout_cap` keys
-    /// becomes a whole-domain change.
+    /// An empty set. A domain that collects more than 50 000 keys becomes a whole-domain
+    /// change.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_cap(usize::try_from(CONFIG.cache.invalidation.fanout_cap).unwrap_or(usize::MAX))
+        Self::with_cap(FANOUT_CAP)
     }
 
     /// An empty set with a fixed fan-out cap, independent of the configuration.

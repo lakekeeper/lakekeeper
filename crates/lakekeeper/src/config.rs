@@ -1216,16 +1216,12 @@ pub(crate) struct CacheInvalidation {
     /// Record changed keys. Off, other instances keep changed entries until their
     /// time-to-live ends. An emergency switch only.
     pub(crate) recording_enabled: bool,
-    /// A write that changes more keys of one domain than this records the whole domain.
-    /// `0` records every change as the whole domain.
-    pub(crate) fanout_cap: u64,
 }
 
 impl Default for CacheInvalidation {
     fn default() -> Self {
         Self {
             recording_enabled: true,
-            fanout_cap: 50_000,
         }
     }
 }
