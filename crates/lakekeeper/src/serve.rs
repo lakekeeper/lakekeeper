@@ -145,7 +145,7 @@ pub struct ServeConfiguration<
     /// A function to modify the router before serving
     pub modify_router_fn: Option<fn(axum::Router) -> axum::Router>,
     /// Routes added to the management API. They are authenticated and counted in endpoint
-    /// statistics like Lakekeeper's own routes; each handler authorizes its request itself.
+    /// statistics like Lakekeeper's own routes; each handler authorizes and audits its request.
     #[builder(default)]
     pub management_api_extensions: Vec<ArcManagementApiExtension<A, C, S>>,
     /// Cloud events sinks / publishers.

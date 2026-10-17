@@ -1,10 +1,13 @@
--- Endpoint names are stored as text, so a new endpoint needs no migration.
---
--- endpoint_statistics is replaced by a new table: rewriting it in place would hold
--- its lock for the whole migration batch while servers of the previous release
--- block on their inserts. The previous table is kept read-only as
--- endpoint_statistics_legacy; it still uses the api_endpoints type, which those
--- servers also cast their inserts to.
+-- Endpoint names are stored as text.
+-- Default collation: older servers cache the result type of queries on this column.
+ALTER TABLE idempotency_record
+    DROP CONSTRAINT idempotency_operation_check,
+    ALTER COLUMN operation TYPE text;
+
+-- Same lock order as a project delete: project, then endpoint_statistics.
+LOCK TABLE project IN SHARE ROW EXCLUSIVE MODE;
+
+-- Renamed, not rewritten, to keep the lock short. The legacy table is only read.
 ALTER TABLE endpoint_statistics RENAME TO endpoint_statistics_legacy;
 ALTER TABLE endpoint_statistics_legacy
     RENAME CONSTRAINT endpoint_statistics_pkey TO endpoint_statistics_legacy_pkey;
@@ -34,8 +37,3 @@ CREATE INDEX idx_endpoint_stats_project_status_time ON endpoint_statistics (proj
 
 select trigger_updated_at('endpoint_statistics');
 call add_time_columns('endpoint_statistics');
-
--- idempotency_record is small (its rows expire) and is changed in place. The server
--- writes operation from a closed set, so the list of allowed names is not repeated here.
-ALTER TABLE idempotency_record DROP CONSTRAINT idempotency_operation_check;
-ALTER TABLE idempotency_record ALTER COLUMN operation TYPE text COLLATE "C";

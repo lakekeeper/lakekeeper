@@ -443,11 +443,10 @@ fn head_served_by_get<T>(method: &Method, lookup: impl Fn(&Method) -> Option<T>)
     })
 }
 
-/// An endpoint that a management API extension serves, or served in an earlier release.
+/// An endpoint that a management API extension serves.
 ///
 /// Endpoint statistics store it under [`name`](Self::name), which starts with `ext-`. Like
-/// Lakekeeper's own names, a released name never changes: keep a removed endpoint listable
-/// with [`ExtensionRoutes::retired`](crate::api::management::v1::extension::ExtensionRoutes::retired).
+/// Lakekeeper's own names, a released name never changes.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ExtensionEndpoint {
     name: &'static str,
@@ -525,8 +524,7 @@ impl ServedEndpoint {
             })
     }
 
-    /// The endpoint stored under `name`, if this server knows it. Retired extension endpoints
-    /// are known.
+    /// The endpoint stored under `name`, if this server serves it.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::from_name_in(EXTENSION_ENDPOINTS.get(), name)
@@ -559,7 +557,7 @@ impl ServedEndpoint {
     }
 }
 
-/// The extension endpoints of this process, routed and retired.
+/// The extension endpoints this process routes.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ExtensionEndpoints {
     routed: HashMap<(Method, &'static str), &'static ExtensionEndpoint>,
@@ -567,19 +565,13 @@ pub(crate) struct ExtensionEndpoints {
 }
 
 impl ExtensionEndpoints {
-    /// Names and routes must be unique; validation of the extensions ensures that.
-    pub(crate) fn new(
-        routed: impl IntoIterator<Item = &'static ExtensionEndpoint>,
-        retired: impl IntoIterator<Item = &'static ExtensionEndpoint>,
-    ) -> Self {
+    /// Validation rejects a repeated name, and axum panics on a repeated route.
+    pub(crate) fn new(routed: impl IntoIterator<Item = &'static ExtensionEndpoint>) -> Self {
         let mut endpoints = Self::default();
         for endpoint in routed {
             endpoints
                 .routed
                 .insert((endpoint.method().clone(), endpoint.path()), endpoint);
-            endpoints.by_name.insert(endpoint.name(), endpoint);
-        }
-        for endpoint in retired {
             endpoints.by_name.insert(endpoint.name(), endpoint);
         }
         endpoints
@@ -1159,34 +1151,17 @@ mod test {
 
     #[test]
     fn test_head_to_a_get_only_route_resolves_to_the_get_endpoint() {
-        for endpoint in [
-            Endpoint::from(CatalogV1Endpoint::ListNamespaces),
-            Endpoint::from(ManagementV1Endpoint::ServerInfo),
-            Endpoint::from(ManagementV1Endpoint::GetWarehouse),
-        ] {
-            assert_eq!(
-                Endpoint::from_method_and_matched_path(&Method::HEAD, endpoint.path()),
-                Some(endpoint)
-            );
-            assert_eq!(
-                ServedEndpoint::from_method_and_matched_path(&Method::HEAD, endpoint.path()),
-                Some(ServedEndpoint::Lakekeeper(endpoint))
-            );
-        }
-
+        let server_info = Endpoint::from(ManagementV1Endpoint::ServerInfo);
+        assert_eq!(
+            ServedEndpoint::from_method_and_matched_path(&Method::HEAD, server_info.path()),
+            Some(ServedEndpoint::Lakekeeper(server_info))
+        );
         // A route's own HEAD endpoint wins over its GET endpoint.
-        for endpoint in [
-            Endpoint::from(CatalogV1Endpoint::NamespaceExists),
-            Endpoint::from(CatalogV1Endpoint::TableExists),
-            Endpoint::from(CatalogV1Endpoint::ViewExists),
-            Endpoint::from(PermissionV1Endpoint::Head),
-        ] {
-            assert_eq!(
-                Endpoint::from_method_and_matched_path(&Method::HEAD, endpoint.path()),
-                Some(endpoint)
-            );
-        }
-
+        let table_exists = Endpoint::from(CatalogV1Endpoint::TableExists);
+        assert_eq!(
+            Endpoint::from_method_and_matched_path(&Method::HEAD, table_exists.path()),
+            Some(table_exists)
+        );
         // Only HEAD falls back, and only to GET.
         assert_eq!(
             Endpoint::from_method_and_matched_path(
@@ -1214,19 +1189,9 @@ mod test {
         Method::POST,
         "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
     );
-    static HEALTH_EXISTS: ExtensionEndpoint = ExtensionEndpoint::new(
-        "ext-table-health-exists",
-        Method::HEAD,
-        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
-    );
-    static REMOVED: ExtensionEndpoint = ExtensionEndpoint::new(
-        "ext-table-health-v0",
-        Method::GET,
-        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health-v0",
-    );
 
     fn extension_endpoints() -> ExtensionEndpoints {
-        ExtensionEndpoints::new([&HEALTH, &RECHECK], [&REMOVED])
+        ExtensionEndpoints::new([&HEALTH, &RECHECK])
     }
 
     #[test]
@@ -1248,8 +1213,6 @@ mod test {
             Some(ServedEndpoint::Extension(&RECHECK))
         );
         assert_eq!(lookup(&Method::DELETE, HEALTH.path()), None);
-        // A retired endpoint is not routed.
-        assert_eq!(lookup(&Method::GET, REMOVED.path()), None);
         assert_eq!(
             lookup(&Method::GET, ManagementV1Endpoint::ServerInfo.path()),
             Some(ServedEndpoint::Lakekeeper(
@@ -1260,20 +1223,10 @@ mod test {
             ServedEndpoint::from_method_and_matched_path_in(None, &Method::GET, HEALTH.path()),
             None
         );
-
-        let with_head = ExtensionEndpoints::new([&HEALTH, &HEALTH_EXISTS], []);
-        assert_eq!(
-            ServedEndpoint::from_method_and_matched_path_in(
-                Some(&with_head),
-                &Method::HEAD,
-                HEALTH.path()
-            ),
-            Some(ServedEndpoint::Extension(&HEALTH_EXISTS))
-        );
     }
 
     #[test]
-    fn test_from_name_knows_lakekeeper_routed_and_retired_extension_endpoints() {
+    fn test_from_name_knows_lakekeeper_and_extension_endpoints() {
         let extensions = extension_endpoints();
         let from_name = |name: &str| ServedEndpoint::from_name_in(Some(&extensions), name);
         assert_eq!(
@@ -1286,16 +1239,8 @@ mod test {
             from_name("ext-table-health"),
             Some(ServedEndpoint::Extension(&HEALTH))
         );
-        assert_eq!(
-            from_name("ext-table-health-v0"),
-            Some(ServedEndpoint::Extension(&REMOVED))
-        );
         assert_eq!(from_name("ext-unknown"), None);
         assert_eq!(ServedEndpoint::from_name_in(None, "ext-table-health"), None);
-        for endpoint in [&HEALTH, &RECHECK, &REMOVED] {
-            let served = ServedEndpoint::Extension(endpoint);
-            assert_eq!(from_name(served.name()), Some(served));
-        }
     }
 
     #[test]
@@ -1316,6 +1261,7 @@ mod test {
     #[test]
     fn test_installing_extension_endpoints() {
         let installed = OnceLock::new();
+        // An empty set installs nothing.
         assert_eq!(
             install_extension_endpoints_into(&installed, ExtensionEndpoints::default()),
             Ok(())
@@ -1330,20 +1276,8 @@ mod test {
             install_extension_endpoints_into(&installed, extension_endpoints()),
             Ok(())
         );
-        // An empty set changes nothing.
         assert_eq!(
-            install_extension_endpoints_into(&installed, ExtensionEndpoints::default()),
-            Ok(())
-        );
-        assert_eq!(
-            install_extension_endpoints_into(
-                &installed,
-                ExtensionEndpoints::new([&HEALTH, &RECHECK, &REMOVED], [])
-            ),
-            Err(ManagementApiExtensionError::DifferentEndpointsInstalled)
-        );
-        assert_eq!(
-            install_extension_endpoints_into(&installed, ExtensionEndpoints::new([&HEALTH], [])),
+            install_extension_endpoints_into(&installed, ExtensionEndpoints::new([&HEALTH])),
             Err(ManagementApiExtensionError::DifferentEndpointsInstalled)
         );
         assert_eq!(installed.get(), Some(&extension_endpoints()));

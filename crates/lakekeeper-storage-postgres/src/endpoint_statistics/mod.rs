@@ -7,10 +7,11 @@ pub use sink::PostgresStatisticsSink;
 mod test {
     use std::{collections::HashMap, sync::Arc};
 
+    use itertools::Itertools;
     use lakekeeper::{
         DEFAULT_PROJECT_ID,
         api::{
-            endpoints::{CatalogV1Endpoint, Endpoint},
+            endpoints::{CatalogV1Endpoint, Endpoint, ManagementV1Endpoint},
             management::v1::{
                 project::{TimeWindowSelector, WarehouseFilter},
                 warehouse::TabularDeleteProfile,
@@ -152,5 +153,79 @@ mod test {
             Endpoint::from(CatalogV1Endpoint::CreateTable).as_http_route()
         );
         assert_eq!(stats[0].count, 7);
+    }
+
+    #[sqlx::test]
+    async fn test_listing_filters_by_warehouse(pool: sqlx::PgPool) {
+        let (_api, warehouse) = crate::tests::setup(
+            pool.clone(),
+            crate::tests::memory_io_profile(),
+            None,
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            None,
+            1,
+            None,
+        )
+        .await;
+        let project = DEFAULT_PROJECT_ID.clone().unwrap();
+        let warehouse_id = *warehouse.warehouse_id;
+
+        sqlx::query(
+            "INSERT INTO endpoint_statistics (project_id, warehouse_id, matched_path, status_code, count)
+             VALUES ($1, $2, 'catalog-v1-create-table', 200, 2),
+                    ($1, NULL, 'management-v1-server-info', 200, 5)",
+        )
+        .bind(project.as_str())
+        .bind(warehouse_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let list = async |filter| {
+            let response = crate::endpoint_statistics::list::list_statistics(
+                project.clone(),
+                filter,
+                None,
+                TimeWindowSelector::Window {
+                    end: chrono::Utc::now(),
+                    interval: chrono::Duration::days(1),
+                },
+                &pool,
+            )
+            .await
+            .unwrap();
+            response
+                .called_endpoints
+                .into_iter()
+                .flatten()
+                .map(|s| (s.warehouse_id, s.http_route, s.count))
+                .sorted()
+                .collect::<Vec<_>>()
+        };
+        let mapped = (
+            Some(warehouse_id),
+            Endpoint::from(CatalogV1Endpoint::CreateTable)
+                .as_http_route()
+                .to_string(),
+            2,
+        );
+        let unmapped = (
+            None,
+            Endpoint::from(ManagementV1Endpoint::ServerInfo)
+                .as_http_route()
+                .to_string(),
+            5,
+        );
+
+        assert_eq!(
+            list(WarehouseFilter::All).await,
+            vec![unmapped.clone(), mapped.clone()]
+        );
+        assert_eq!(
+            list(WarehouseFilter::WarehouseId { id: warehouse_id }).await,
+            vec![mapped]
+        );
+        assert_eq!(list(WarehouseFilter::Unmapped).await, vec![unmapped]);
     }
 }

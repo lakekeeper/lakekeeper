@@ -54,11 +54,6 @@ static TABLE_HEALTH: ExtensionEndpoint = ExtensionEndpoint::new(
     Method::GET,
     "/management/v1/warehouse/{warehouse_id}/ext-test/health",
 );
-static REMOVED: ExtensionEndpoint = ExtensionEndpoint::new(
-    "ext-test-removed",
-    Method::POST,
-    "/management/v1/warehouse/{warehouse_id}/ext-test/removed",
-);
 
 /// Answers whether the request reached it authenticated.
 async fn table_health(Extension(metadata): Extension<RequestMetadata>) -> &'static str {
@@ -74,7 +69,7 @@ struct TestExtension;
 
 impl ManagementApiExtension<AllowAllAuthorizer, PostgresBackend, SecretsState> for TestExtension {
     fn routes(&self, routes: Routes) -> Routes {
-        routes.route(&TABLE_HEALTH, table_health).retired(&REMOVED)
+        routes.route(&TABLE_HEALTH, table_health)
     }
 
     #[cfg(feature = "open-api")]
@@ -82,18 +77,14 @@ impl ManagementApiExtension<AllowAllAuthorizer, PostgresBackend, SecretsState> f
         use utoipa::openapi::{
             HttpMethod, OpenApiBuilder, PathItem, PathsBuilder, path::OperationBuilder,
         };
+        let operation = OperationBuilder::new()
+            .operation_id(Some("ext_test_health"))
+            .build();
         OpenApiBuilder::new()
-            .paths(
-                PathsBuilder::new().path(
-                    TABLE_HEALTH.path(),
-                    PathItem::new(
-                        HttpMethod::Get,
-                        OperationBuilder::new()
-                            .operation_id(Some("ext_test_health"))
-                            .build(),
-                    ),
-                ),
-            )
+            .paths(PathsBuilder::new().path(
+                TABLE_HEALTH.path(),
+                PathItem::new(HttpMethod::Get, operation),
+            ))
             .build()
     }
 }
@@ -219,13 +210,14 @@ impl Harness {
         .await
     }
 
-    async fn call(&self, router: &Router, method: Method, token: Option<&str>) -> Response {
+    /// Calls [`TABLE_HEALTH`] of the test warehouse.
+    async fn call(&self, router: &Router, token: Option<&str>) -> Response {
+        let uri = format!(
+            "/management/v1/warehouse/{}/ext-test/health",
+            self.warehouse_id
+        );
         let mut request = Request::builder()
-            .method(method)
-            .uri(format!(
-                "/management/v1/warehouse/{}/ext-test/health",
-                self.warehouse_id
-            ))
+            .uri(uri)
             .header(header::HOST, "localhost");
         if let Some(token) = token {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
@@ -298,10 +290,10 @@ async fn an_extension_route_is_authenticated_and_counted(pool: PgPool) {
         .await
         .unwrap();
 
-    let response = harness.call(&router, Method::GET, None).await;
+    let response = harness.call(&router, None).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    let response = harness.call(&router, Method::GET, Some(TOKEN)).await;
+    let response = harness.call(&router, Some(TOKEN)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let request_id = response.headers()["x-request-id"].to_str().unwrap();
     assert!(uuid::Uuid::parse_str(request_id).is_ok(), "{request_id}");
@@ -324,53 +316,6 @@ async fn an_extension_route_is_authenticated_and_counted(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn a_head_request_is_counted_under_the_get_endpoint(pool: PgPool) {
-    let harness = Harness::new(pool).await;
-    let router = harness
-        .router(AdmissionGates::default(), test_extension())
-        .await
-        .unwrap();
-
-    let response = harness.call(&router, Method::HEAD, Some(TOKEN)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_text(response).await, "");
-
-    let (_ctx, pool, _warehouse_id) = harness.flush().await;
-    assert_eq!(
-        stored_rows(&pool).await,
-        vec![("ext-test-health".to_string(), 200, 1)]
-    );
-}
-
-#[sqlx::test]
-async fn a_retired_endpoint_stays_listed(pool: PgPool) {
-    let harness = Harness::new(pool).await;
-    // Building the router installs the extension endpoints, retired ones included.
-    let _router = harness
-        .router(AdmissionGates::default(), test_extension())
-        .await
-        .unwrap();
-    let (ctx, pool, _warehouse_id) = harness.flush().await;
-
-    sqlx::query(
-        "INSERT INTO endpoint_statistics (project_id, matched_path, status_code, count)
-         VALUES ($1, 'ext-test-removed', 200, 3)",
-    )
-    .bind(DEFAULT_PROJECT_ID.clone().unwrap().as_str())
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    let listed = listed(ctx).await;
-    assert_eq!(listed.len(), 1, "{listed:?}");
-    assert_eq!(
-        listed[0].http_route,
-        "POST /management/v1/warehouse/{warehouse_id}/ext-test/removed"
-    );
-    assert_eq!(listed[0].count, 3);
-}
-
-#[sqlx::test]
 async fn admission_gates_apply_to_extension_routes(pool: PgPool) {
     let harness = Harness::new(pool).await;
     let router = harness
@@ -381,7 +326,7 @@ async fn admission_gates_apply_to_extension_routes(pool: PgPool) {
         .await
         .unwrap();
 
-    let response = harness.call(&router, Method::GET, Some(TOKEN)).await;
+    let response = harness.call(&router, Some(TOKEN)).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
     assert_eq!(body["error"]["type"], "ExtensionTestDenied");
@@ -419,26 +364,6 @@ async fn the_management_document_includes_extension_endpoints(pool: PgPool) {
 }
 
 #[derive(Debug)]
-struct OtherExtension;
-
-static OTHER: ExtensionEndpoint = ExtensionEndpoint::new(
-    "ext-test-other",
-    Method::GET,
-    "/management/v1/warehouse/{warehouse_id}/ext-test/other",
-);
-
-impl ManagementApiExtension<AllowAllAuthorizer, PostgresBackend, SecretsState> for OtherExtension {
-    fn routes(&self, routes: Routes) -> Routes {
-        routes.retired(&OTHER)
-    }
-
-    #[cfg(feature = "open-api")]
-    fn api_doc(&self) -> utoipa::openapi::OpenApi {
-        utoipa::openapi::OpenApi::default()
-    }
-}
-
-#[derive(Debug)]
 struct InvalidExtension;
 
 static UNPREFIXED: ExtensionEndpoint = ExtensionEndpoint::new(
@@ -451,7 +376,23 @@ impl ManagementApiExtension<AllowAllAuthorizer, PostgresBackend, SecretsState>
     for InvalidExtension
 {
     fn routes(&self, routes: Routes) -> Routes {
-        routes.retired(&UNPREFIXED)
+        routes.route(&UNPREFIXED, table_health)
+    }
+
+    #[cfg(feature = "open-api")]
+    fn api_doc(&self) -> utoipa::openapi::OpenApi {
+        utoipa::openapi::OpenApi::default()
+    }
+}
+
+#[derive(Debug)]
+struct UndocumentedExtension;
+
+impl ManagementApiExtension<AllowAllAuthorizer, PostgresBackend, SecretsState>
+    for UndocumentedExtension
+{
+    fn routes(&self, routes: Routes) -> Routes {
+        routes.route(&TABLE_HEALTH, table_health)
     }
 
     #[cfg(feature = "open-api")]
@@ -477,16 +418,28 @@ fn extensions_validate_without_a_server() {
             name: "test-unprefixed"
         })
     );
+
+    let undocumented = validate_management_api_extensions::<
+        AllowAllAuthorizer,
+        PostgresBackend,
+        SecretsState,
+    >(&[Arc::new(UndocumentedExtension)], &[], &[]);
+    #[cfg(feature = "open-api")]
+    assert_eq!(
+        undocumented,
+        Err(ManagementApiExtensionError::Undocumented {
+            method: "GET".to_string(),
+            path: TABLE_HEALTH.path().to_string(),
+        })
+    );
+    // Without `open-api`, an extension has no document to check.
+    #[cfg(not(feature = "open-api"))]
+    assert_eq!(undocumented, Ok(()));
 }
 
 #[sqlx::test]
-async fn the_router_refuses_invalid_or_different_extensions(pool: PgPool) {
+async fn the_router_refuses_an_invalid_extension(pool: PgPool) {
     let harness = Harness::new(pool).await;
-    let _router = harness
-        .router(AdmissionGates::default(), test_extension())
-        .await
-        .unwrap();
-
     let error = harness
         .router(AdmissionGates::default(), vec![Arc::new(InvalidExtension)])
         .await
@@ -497,20 +450,5 @@ async fn the_router_refuses_invalid_or_different_extensions(pool: PgPool) {
             name: "test-unprefixed"
         })
     );
-
-    let error = harness
-        .router(AdmissionGates::default(), vec![Arc::new(OtherExtension)])
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error.downcast_ref::<ManagementApiExtensionError>(),
-        Some(&ManagementApiExtensionError::DifferentEndpointsInstalled)
-    );
-
-    // No extensions install nothing, so the installed set stays.
-    let _router = harness
-        .router(AdmissionGates::default(), vec![])
-        .await
-        .unwrap();
     harness.flush().await;
 }

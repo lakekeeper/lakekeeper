@@ -138,7 +138,10 @@ impl PostgresStatisticsSink {
         let mut counts = Vec::with_capacity(final_count);
         let mut projects = Vec::with_capacity(final_count);
 
-        for ((project, warehouse, uri, status_code), count) in aggregated_stats {
+        // Sorted by key, so concurrent flushes take row locks in the same order.
+        for ((project, warehouse, uri, status_code), count) in
+            aggregated_stats.into_iter().sorted_unstable()
+        {
             projects.push(project);
             warehouses.push(warehouse);
             uris.push(uri);

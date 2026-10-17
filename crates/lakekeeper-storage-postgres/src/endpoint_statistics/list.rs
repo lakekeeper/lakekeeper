@@ -24,7 +24,6 @@ use crate::{
     pagination::{PaginateToken, V1PaginateToken},
 };
 
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn list_statistics(
     project: ArcProjectId,
     warehouse_filter: WarehouseFilter,
@@ -39,15 +38,15 @@ pub(crate) async fn list_statistics(
 
     let from = until - interval;
 
-    let get_all = matches!(warehouse_filter, WarehouseFilter::All);
-    let warehouse_filter = match warehouse_filter {
-        WarehouseFilter::WarehouseId { id } => Some(id),
-        _ => None,
+    let (warehouse_id, get_all, unmapped) = match warehouse_filter {
+        WarehouseFilter::WarehouseId { id } => (Some(id), false, false),
+        WarehouseFilter::Unmapped => (None, false, true),
+        WarehouseFilter::All => (None, true, false),
     };
     let status_codes = status_codes.map(|s| s.iter().map(|i| i32::from(*i)).collect_vec());
 
     tracing::trace!(
-        "Listing stats for project: '{project:?}', warehouse_filter: '{warehouse_filter:?}', returning full stats: '{get_all}', interval: {interval:?}, start: {from:?}, end: {until:?}",
+        "Listing stats for project: '{project:?}', warehouse_id: '{warehouse_id:?}', returning full stats: '{get_all}', unmapped only: '{unmapped}', interval: {interval:?}, start: {from:?}, end: {until:?}",
     );
 
     let row = sqlx::query!(
@@ -70,10 +69,12 @@ pub(crate) async fn list_statistics(
                 FROM endpoint_statistics_legacy
             ) u
             WHERE project_id = $1
-                AND (warehouse_id = $2 OR $3)
+                AND (warehouse_id = $2 OR $3 OR (warehouse_id IS NULL AND $7))
                 AND (status_code = ANY($4) OR $4 IS NULL)
-                AND timestamp >  (date_trunc(get_stats_interval_unit(), $5::timestamptz) + get_stats_interval())
-                AND timestamp <= (date_trunc(get_stats_interval_unit(), $6::timestamptz) + get_stats_interval())
+                -- The interval functions are volatile. A scalar subquery is evaluated once, so the
+                -- bounds become index conditions.
+                AND timestamp >  (SELECT date_trunc(get_stats_interval_unit(), $5::timestamptz) + get_stats_interval())
+                AND timestamp <= (SELECT date_trunc(get_stats_interval_unit(), $6::timestamptz) + get_stats_interval())
             GROUP BY warehouse_id, matched_path, status_code, timestamp
         )
         SELECT es.timestamp as "timestamp!",
@@ -90,11 +91,12 @@ pub(crate) async fn list_statistics(
         order by es.timestamp desc
         "#,
         project.as_str(),
-        warehouse_filter,
+        warehouse_id,
         get_all,
         status_codes.as_deref(),
         from,
         until,
+        unmapped,
     )
     .fetch_all(conn)
     .await
@@ -116,34 +118,7 @@ pub(crate) async fn list_statistics(
                 r.created_at,
                 r.updated_at
             )
-            .filter_map(
-                |(
-                    name,
-                    status_code,
-                    count,
-                    warehouse_id,
-                    warehouse_name,
-                    created_at,
-                    updated_at,
-                )| {
-                    let Some(endpoint) = ServedEndpoint::from_name(&name) else {
-                        warn_unknown_endpoint_name(&name);
-                        return None;
-                    };
-                    Some(EndpointStatistic {
-                        count,
-                        http_route: endpoint.http_route().into_owned(),
-                        status_code: status_code
-                            .clamp(i32::from(u16::MIN), i32::from(u16::MAX))
-                            .try_into()
-                            .expect("status code is valid since we just clamped it"),
-                        warehouse_id,
-                        warehouse_name,
-                        created_at,
-                        updated_at,
-                    })
-                },
-            )
+            .filter_map(endpoint_statistic)
             .collect();
 
             (ts, row_stats)
@@ -163,6 +138,37 @@ pub(crate) async fn list_statistics(
             id: interval,
         })
         .to_string(),
+    })
+}
+
+type StatisticRow = (
+    String,
+    i32,
+    i64,
+    Option<Uuid>,
+    Option<String>,
+    chrono::DateTime<Utc>,
+    Option<chrono::DateTime<Utc>>,
+);
+
+fn endpoint_statistic(
+    (name, status_code, count, warehouse_id, warehouse_name, created_at, updated_at): StatisticRow,
+) -> Option<EndpointStatistic> {
+    let Some(endpoint) = ServedEndpoint::from_name(&name) else {
+        warn_unknown_endpoint_name(&name);
+        return None;
+    };
+    Some(EndpointStatistic {
+        count,
+        http_route: endpoint.http_route().into_owned(),
+        status_code: status_code
+            .clamp(i32::from(u16::MIN), i32::from(u16::MAX))
+            .try_into()
+            .expect("status code is valid since we just clamped it"),
+        warehouse_id,
+        warehouse_name,
+        created_at,
+        updated_at,
     })
 }
 
