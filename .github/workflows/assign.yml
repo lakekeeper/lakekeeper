@@ -1,0 +1,25 @@
+name: Assign issue from comment
+
+on:
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  issues: write
+
+jobs:
+  assign:
+    if: ${{ !github.event.issue.pull_request && github.event.comment.body == '/assign' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign issue to commenter
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              assignees: [context.payload.comment.user.login],
+            });
