@@ -4,6 +4,31 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
+## `v4.14`
+
+```text
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+Adds a `write` privilege between `select` and `modify`, for principals that change a table's data but not its structure, and cannot drop, rename or protect it. No tuple is written, rewritten or backfilled: `modify` implies `write`, so every existing grant authorizes exactly what it did before.
+
+`project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_generic_table`:
+
+- Add `write` (`[user, role#assignee]`) and `write_effective`: `write or modify_effective` on the project, and `write or ownership or modify_effective` plus `write_effective` from the parent below it. `select_effective` now reads `write_effective` where it read `modify_effective`, which still includes it.
+- Add `can_grant_write` and, below the project, `can_revoke_write`, following `select`; below the project, `can_read_assignments` includes `can_grant_write`.
+- Below the project, `write` is a visibility source in `visible_below`, like the other grantable privileges, so a principal granted `write` on one deep table reaches the warehouse and the listings above it.
+
+`lakekeeper_table`, `lakekeeper_generic_table`:
+
+- `can_write_data` reads `write_effective`.
+
+`lakekeeper_table`:
+
+- Add `can_commit_data` (from `write_effective`), asked for a commit whose updates only change data: snapshots, branch and tag moves, and statistics, plus the encryption key of a snapshot it adds. Every other commit still asks `can_commit`, which stays at `modify_effective`.
+
+Views get no `write`: a view commit replaces its definition. A `write` grant on a namespace or above still yields `select` on the views below it.
+
 ## `v4.13`
 
 ```text

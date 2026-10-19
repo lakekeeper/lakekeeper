@@ -67,8 +67,6 @@ allow_table_rename if {
 
 allow_table_modify if {
 	input.action.operation in [
-		"SetTableComment", "SetColumnComment",
-		"AddColumn", "AlterColumn", "DropColumn", "RenameColumn",
 		"InsertIntoTable", "DeleteFromTable", "TruncateTable",
 		"UpdateTableColumns",
 	]
@@ -79,6 +77,25 @@ allow_table_modify if {
 	require_table_access_simple(catalog, schema, table, "write_data")
 }
 
+# Column changes and column comments add a schema; a table comment is a property.
+allow_table_modify if {
+	input.action.operation in ["SetColumnComment", "AddColumn", "AlterColumn", "DropColumn", "RenameColumn"]
+	table := input.action.resource.table.tableName
+	is_metadata_table(table) == false
+	catalog := input.action.resource.table.catalogName
+	schema := input.action.resource.table.schemaName
+	require_table_access_commit_kinds(catalog, schema, table, {}, [], ["add-schema", "set-current-schema"])
+}
+
+allow_table_modify if {
+	input.action.operation == "SetTableComment"
+	table := input.action.resource.table.tableName
+	is_metadata_table(table) == false
+	catalog := input.action.resource.table.catalogName
+	schema := input.action.resource.table.schemaName
+	require_table_access_commit_kinds(catalog, schema, table, {}, [], ["set-properties"])
+}
+
 allow_table_modify if {
 	input.action.operation == "SetTableProperties"
 	table := input.action.resource.table.tableName
@@ -87,7 +104,7 @@ allow_table_modify if {
 	schema := input.action.resource.table.schemaName
 	properties := object.get(input.action.resource.table, "properties", {})
 	flattened_properties := flatten_properties(properties)
-	require_table_access_commit(catalog, schema, table, flattened_properties, [])
+	require_table_access_commit_kinds(catalog, schema, table, flattened_properties, [], ["set-properties"])
 }
 
 allow_table_metadata if {
@@ -121,14 +138,36 @@ allow_table_procedure if {
 	input.action.resource.function.functionName in [
 		"OPTIMIZE",
 		"OPTIMIZE_MANIFESTS",
-		"EXPIRE_SNAPSHOTS",
 		"DROP_EXTENDED_STATS",
-		"REMOVE_ORPHAN_FILES",
-		"ADD_FILES",
 	]
 	table := input.action.resource.table.tableName
 	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_simple(catalog, schema, table, "write_data")
+}
+
+# Adding files also sets the table's name mapping if it has none.
+allow_table_procedure if {
+	input.action.operation == "ExecuteTableProcedure"
+	input.action.resource.function.functionName == "ADD_FILES"
+	table := input.action.resource.table.tableName
+	is_metadata_table(table) == false
+	catalog := input.action.resource.table.catalogName
+	schema := input.action.resource.table.schemaName
+	require_table_access_commit_kinds(
+		catalog, schema, table, {}, [],
+		["add-snapshot", "set-snapshot-ref", "set-properties"],
+	)
+}
+
+# Expiring snapshots and removing orphan files delete history and files for good.
+allow_table_procedure if {
+	input.action.operation == "ExecuteTableProcedure"
+	input.action.resource.function.functionName in ["EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"]
+	table := input.action.resource.table.tableName
+	is_metadata_table(table) == false
+	catalog := input.action.resource.table.catalogName
+	schema := input.action.resource.table.schemaName
+	require_table_access_commit_kinds(catalog, schema, table, {}, [], ["remove-snapshots"])
 }
