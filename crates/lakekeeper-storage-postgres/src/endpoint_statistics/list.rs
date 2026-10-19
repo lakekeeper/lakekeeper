@@ -51,42 +51,23 @@ pub(crate) async fn list_statistics(
 
     let row = sqlx::query!(
         r#"
-        WITH es AS (
-            -- Rows recorded before endpoint names were stored as text live in the legacy
-            -- table. The hour of that migration can have rows in both tables.
-            SELECT warehouse_id,
-                   matched_path,
-                   status_code,
-                   timestamp,
-                   sum(count)::bigint as count,
-                   min(created_at) as created_at,
-                   max(updated_at) as updated_at
-            FROM (
-                SELECT warehouse_id, matched_path, status_code, count, timestamp, created_at, updated_at, project_id
-                FROM endpoint_statistics
-                UNION ALL
-                SELECT warehouse_id, matched_path::text, status_code, count, timestamp, created_at, updated_at, project_id
-                FROM endpoint_statistics_legacy
-            ) u
-            WHERE project_id = $1
-                AND (warehouse_id = $2 OR $3 OR (warehouse_id IS NULL AND $7))
-                AND (status_code = ANY($4) OR $4 IS NULL)
-                -- The interval functions are volatile. A scalar subquery is evaluated once, so the
-                -- bounds become index conditions.
-                AND timestamp >  (SELECT date_trunc(get_stats_interval_unit(), $5::timestamptz) + get_stats_interval())
-                AND timestamp <= (SELECT date_trunc(get_stats_interval_unit(), $6::timestamptz) + get_stats_interval())
-            GROUP BY warehouse_id, matched_path, status_code, timestamp
-        )
-        SELECT es.timestamp as "timestamp!",
+        SELECT es.timestamp,
                array_agg(es.matched_path) as "matched_path!: Vec<String>",
                array_agg(es.status_code) as "status_code!",
-               array_agg(es.count) as "count!: Vec<i64>",
+               array_agg(es.count) as "count!",
                array_agg(es.warehouse_id) as "warehouse_id!: Vec<Option<Uuid>>",
                array_agg(w.warehouse_name) as "warehouse_name!: Vec<Option<String>>",
-               array_agg(es.created_at) as "created_at!: Vec<chrono::DateTime<Utc>>",
+               array_agg(es.created_at) as "created_at!",
                array_agg(es.updated_at) as "updated_at!: Vec<Option<chrono::DateTime<Utc>>>"
-        FROM es
+        FROM endpoint_statistics es
         LEFT JOIN warehouse w ON es.warehouse_id = w.warehouse_id
+        WHERE es.project_id = $1
+            AND (es.warehouse_id = $2 OR $3 OR (es.warehouse_id IS NULL AND $7))
+            AND (es.status_code = ANY($4) OR $4 IS NULL)
+            -- The interval functions are volatile. A scalar subquery is evaluated once, so the
+            -- bounds become index conditions.
+            AND es.timestamp >  (SELECT date_trunc(get_stats_interval_unit(), $5::timestamptz) + get_stats_interval())
+            AND es.timestamp <= (SELECT date_trunc(get_stats_interval_unit(), $6::timestamptz) + get_stats_interval())
         group by es.timestamp
         order by es.timestamp desc
         "#,

@@ -19,6 +19,7 @@ mod test {
         },
         service::authz::AllowAllAuthorizer,
     };
+    use sqlx::migrate::Migrate as _;
     use strum::IntoEnumIterator;
 
     use crate::endpoint_statistics::sink::PostgresStatisticsSink;
@@ -95,10 +96,46 @@ mod test {
         }
     }
 
-    /// Rows recorded before names were stored as text live in the legacy table. The listing
-    /// merges both tables and leaves out names this server does not know.
+    /// Storing names as text keeps the recorded rows, older periods and the current one.
+    #[sqlx::test(migrations = false)]
+    async fn test_names_as_text_migration_keeps_rows(pool: sqlx::PgPool) {
+        const NAMES_AS_TEXT: i64 = 20_261_015_120_000;
+        let mut conn = pool.acquire().await.unwrap();
+        conn.ensure_migrations_table("_sqlx_migrations")
+            .await
+            .unwrap();
+        for migration in sqlx::migrate!()
+            .iter()
+            .filter(|m| m.version < NAMES_AS_TEXT)
+        {
+            conn.apply("_sqlx_migrations", migration).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO project (project_id, project_name) VALUES ('p', 'p');
+             INSERT INTO endpoint_statistics (project_id, matched_path, status_code, count, timestamp)
+             VALUES ('p', 'catalog-v1-create-table', 200, 3, get_stats_date_default() - interval '1 day'),
+                    ('p', 'catalog-v1-create-table', 200, 5, get_stats_date_default())",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        drop(conn);
+
+        crate::migrations::migrate_core_only(&pool).await.unwrap();
+
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT matched_path, count FROM endpoint_statistics ORDER BY timestamp",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let name = "catalog-v1-create-table".to_string();
+        assert_eq!(rows, [(name.clone(), 3), (name, 5)]);
+    }
+
+    /// The listing leaves out names this server does not know.
     #[sqlx::test]
-    async fn test_listing_merges_legacy_rows_and_skips_unknown_names(pool: sqlx::PgPool) {
+    async fn test_listing_skips_unknown_names(pool: sqlx::PgPool) {
         let (_api, _warehouse) = crate::tests::setup(
             pool.clone(),
             crate::tests::memory_io_profile(),
@@ -112,14 +149,6 @@ mod test {
         .await;
         let project = DEFAULT_PROJECT_ID.clone().unwrap();
 
-        sqlx::query(
-            "INSERT INTO endpoint_statistics_legacy (project_id, matched_path, status_code, count)
-             VALUES ($1, 'catalog-v1-create-table', 200, 3)",
-        )
-        .bind(project.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
         sqlx::query(
             "INSERT INTO endpoint_statistics (project_id, matched_path, status_code, count)
              VALUES ($1, 'catalog-v1-create-table', 200, 4), ($1, 'ext-removed-endpoint', 200, 1)",
@@ -152,7 +181,7 @@ mod test {
             stats[0].http_route,
             Endpoint::from(CatalogV1Endpoint::CreateTable).as_http_route()
         );
-        assert_eq!(stats[0].count, 7);
+        assert_eq!(stats[0].count, 4);
     }
 
     #[sqlx::test]
