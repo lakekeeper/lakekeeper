@@ -15,8 +15,7 @@ CREATE TABLE endpoint_statistics_text
 );
 call add_time_columns('endpoint_statistics_text');
 
--- Copied without locking endpoint_statistics, so older servers keep serving. What they record
--- after the copy is lost.
+-- Copied without blocking writes of older servers; what they write after the copy is lost.
 INSERT INTO endpoint_statistics_text
     (endpoint_statistics_id, warehouse_id, project_id, matched_path, status_code, count, timestamp, created_at, updated_at)
 SELECT endpoint_statistics_id, warehouse_id, project_id, matched_path::text, status_code, count, timestamp, created_at, updated_at
@@ -33,7 +32,8 @@ CREATE INDEX idx_endpoint_stats_text_project_timestamp ON endpoint_statistics_te
 CREATE INDEX idx_endpoint_stats_text_project_warehouse_time ON endpoint_statistics_text (project_id, warehouse_id, timestamp DESC);
 CREATE INDEX idx_endpoint_stats_text_project_status_time ON endpoint_statistics_text (project_id, status_code, timestamp DESC);
 
--- Locks project exclusively.
+-- Locks project exclusively. Fails after 5 s instead of stalling older servers; the next start retries.
+SET LOCAL lock_timeout = '5s';
 DROP TABLE endpoint_statistics;
 ALTER TABLE endpoint_statistics_text RENAME TO endpoint_statistics;
 ALTER TABLE endpoint_statistics RENAME CONSTRAINT endpoint_statistics_text_pkey TO endpoint_statistics_pkey;
@@ -45,8 +45,8 @@ ALTER INDEX idx_endpoint_stats_text_project_status_time RENAME TO idx_endpoint_s
 
 select trigger_updated_at('endpoint_statistics');
 
--- After the drop: older servers lock project before idempotency_record.
--- Default collation: older servers cache the result type of queries on this column.
+-- After the drop, in older servers' lock order; default collation for their cached plans.
 ALTER TABLE idempotency_record
     DROP CONSTRAINT idempotency_operation_check,
     ALTER COLUMN operation TYPE text;
+SET LOCAL lock_timeout TO DEFAULT;
