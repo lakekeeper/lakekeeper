@@ -236,6 +236,68 @@ pub trait StateOrTransaction<S, T>: Send {
     /// Takes &mut self to allow multiple uses (State will be cloned, Transaction will be borrowed)
     /// The returned enum cannot outlive the borrow lifetime 'b
     fn as_enum_mut(&mut self) -> StateOrTransactionEnum<'_, S, T>;
+
+    /// Whether every read through `self` sees only committed data, so its results may fill
+    /// the shared caches: true for a `State` and for [`CommittedReads`].
+    fn reads_committed_only(&mut self) -> bool {
+        matches!(self.as_enum_mut(), StateOrTransactionEnum::State(_))
+    }
+}
+
+/// The handle of a [`ReadTransaction`]. Its reads see only committed data.
+#[derive(Debug)]
+pub struct CommittedReads<T>(T);
+
+impl<T> CommittedReads<T> {
+    pub(crate) fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<S, T: Send> StateOrTransaction<S, T> for CommittedReads<T> {
+    fn as_enum_mut(&mut self) -> StateOrTransactionEnum<'_, S, T> {
+        StateOrTransactionEnum::Transaction(&mut self.0)
+    }
+
+    fn reads_committed_only(&mut self) -> bool {
+        true
+    }
+}
+
+/// A transaction started with [`Transaction::begin_read`]. It cannot write, so at the default
+/// isolation level each of its statements sees only committed data.
+pub struct ReadTransaction<C: CatalogStore>(C::Transaction);
+
+impl<C: CatalogStore> std::fmt::Debug for ReadTransaction<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ReadTransaction").finish_non_exhaustive()
+    }
+}
+
+impl<C: CatalogStore> ReadTransaction<C> {
+    /// # Errors
+    /// Returns an error if the transaction cannot be started.
+    pub async fn begin(db_state: C::State) -> Result<Self> {
+        C::Transaction::begin_read(db_state).await.map(Self)
+    }
+
+    /// # Errors
+    /// Returns an error if the commit fails.
+    pub async fn commit(self) -> Result<()> {
+        self.0.commit().await
+    }
+
+    /// The handle for calls that take a transaction.
+    pub fn transaction(&mut self) -> <C::Transaction as Transaction<C::State>>::Transaction<'_> {
+        self.0.transaction()
+    }
+
+    /// The handle for reads whose results may fill the shared caches.
+    pub fn committed_reads(
+        &mut self,
+    ) -> CommittedReads<<C::Transaction as Transaction<C::State>>::Transaction<'_>> {
+        CommittedReads(self.0.transaction())
+    }
 }
 
 #[async_trait::async_trait]

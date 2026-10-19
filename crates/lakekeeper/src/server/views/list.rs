@@ -16,7 +16,7 @@ use crate::{
     },
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        NamespaceHierarchy, ResolvedWarehouse, SecretStore, State, Transaction,
+        NamespaceHierarchy, ResolvedWarehouse, SecretStore, State,
         authz::{
             AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogNamespaceAction, CatalogViewAction,

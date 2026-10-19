@@ -26,7 +26,7 @@ use crate::{
         iceberg::v1::{PageToken, Prefix},
     },
     service::{
-        CatalogStore, Transaction, authz::Authorizer, secrets::SecretStore,
+        CatalogStore, ReadTransaction, authz::Authorizer, secrets::SecretStore,
         storage::StorageCredential,
     },
 };
@@ -230,7 +230,7 @@ pub(crate) async fn fetch_until_full_page<'a, Entity, EntityId, Page, C: Catalog
     mut fetch_fn: impl for<'c> FnMut(
         i64,
         Option<String>,
-        &'c mut C::Transaction,
+        &'c mut ReadTransaction<C>,
     ) -> BoxFuture<'c, Result<Page>>,
     mut authorize_fn: impl FnMut(i64, Page) -> BoxFuture<'a, Result<UnfilteredPage<Entity, EntityId>>>,
 ) -> Result<(Vec<Entity>, Vec<EntityId>, Option<String>)>
@@ -297,10 +297,10 @@ async fn read_page<C: CatalogStore, Page>(
     fetch_fn: &mut impl for<'c> FnMut(
         i64,
         Option<String>,
-        &'c mut C::Transaction,
+        &'c mut ReadTransaction<C>,
     ) -> BoxFuture<'c, Result<Page>>,
 ) -> Result<Page> {
-    let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
+    let mut t = ReadTransaction::<C>::begin(catalog_state.clone()).await?;
     let page = fetch_fn(page_size, page_token, &mut t).await?;
     t.commit().await?;
     Ok(page)

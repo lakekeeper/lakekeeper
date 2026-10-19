@@ -2121,7 +2121,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                     .iter()
                                     .map(ViewOrTableDeletionInfo::namespace_id)
                                     .collect_vec(),
-                                t.transaction(),
+                                t.committed_reads(),
                             )
                             .await?,
                         )

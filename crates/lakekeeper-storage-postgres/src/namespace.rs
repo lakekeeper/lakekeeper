@@ -1461,7 +1461,7 @@ pub mod tests {
     use lakekeeper::{
         api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
         service::{
-            CachePolicy, CatalogNamespaceOps, Transaction as _, ViewId,
+            CachePolicy, CatalogNamespaceOps, ReadTransaction, Transaction as _, ViewId,
             is_same_namespace_path_ignoring_ascii_case,
         },
     };
@@ -1561,7 +1561,7 @@ pub mod tests {
 
         assert_eq!(namespace_hierarchy_by_id, namespace_hierarchy_by_name);
 
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -1584,7 +1584,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap()
@@ -1667,7 +1667,7 @@ pub mod tests {
         let namespace_info_3 =
             initialize_namespace(state.clone(), warehouse_id, &namespace, properties.clone()).await;
 
-        let mut t = PostgresTransaction::begin_read(state.clone())
+        let mut t = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -1680,7 +1680,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            t.transaction(),
+            t.committed_reads(),
         )
         .await
         .unwrap()
@@ -1696,7 +1696,7 @@ pub mod tests {
         // Root namespaces should have no parents
         assert!(namespaces[&namespace_info_1.namespace_id()].is_root());
 
-        let mut t = PostgresTransaction::begin_read(state.clone())
+        let mut t = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -1712,7 +1712,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            t.transaction(),
+            t.committed_reads(),
         )
         .await
         .unwrap()
@@ -1748,7 +1748,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            t.transaction(),
+            t.committed_reads(),
         )
         .await
         .unwrap()
@@ -2860,7 +2860,7 @@ pub mod tests {
             initialize_namespace(state.clone(), warehouse_id, &grandchild, None).await;
 
         // List all root namespaces (no parent filter)
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -2873,7 +2873,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap();
@@ -2889,7 +2889,7 @@ pub mod tests {
         assert!(root_hierarchy.is_root());
 
         // List children of root
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -2902,7 +2902,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap();
@@ -2918,7 +2918,7 @@ pub mod tests {
         assert!(!child_hierarchy.is_root());
 
         // List children of root.child
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -2931,7 +2931,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap();
@@ -2968,7 +2968,7 @@ pub mod tests {
         let child_b1_ns = initialize_namespace(state.clone(), warehouse_id, &child_b1, None).await;
 
         // List all root namespaces
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -2981,7 +2981,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap();
@@ -2996,7 +2996,7 @@ pub mod tests {
         assert!(result_map[&root_b_ns.namespace_id()].is_root());
 
         // List children of root A
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -3009,7 +3009,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap();
@@ -3027,7 +3027,7 @@ pub mod tests {
         );
 
         // List children of root B
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -3040,7 +3040,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap();
@@ -3080,7 +3080,7 @@ pub mod tests {
         let child3_ns = initialize_namespace(state.clone(), warehouse_id, &child3, None).await;
 
         // List children with pagination (page_size = 2)
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -3093,7 +3093,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap();
@@ -3122,7 +3122,7 @@ pub mod tests {
         }
 
         // Get second page
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -3135,7 +3135,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap()
@@ -3185,7 +3185,7 @@ pub mod tests {
         let level4_ns = initialize_namespace(state.clone(), warehouse_id, &level4, None).await;
 
         // List at level 4 (deepest)
-        let mut transaction = PostgresTransaction::begin_read(state.clone())
+        let mut transaction = ReadTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -3198,7 +3198,7 @@ pub mod tests {
                 return_uuids: false,
                 return_protection_status: false,
             },
-            transaction.transaction(),
+            transaction.committed_reads(),
         )
         .await
         .unwrap();
@@ -3612,56 +3612,228 @@ pub mod tests {
         assert_eq!(third.namespace_ident(), &other);
     }
 
-    /// The transaction path of `get_namespace` must NOT warm the shared
-    /// `NAMESPACE_CACHE`. A transaction can observe its own uncommitted writes, so
-    /// publishing what it reads into the cross-request cache could expose state
-    /// that later rolls back. Cache warming is reserved for the pooled-`State`
-    /// path, which only ever reads committed data. The contrast assertion (State
-    /// path *does* warm) keeps this honest: it proves the cache is enabled, so the
-    /// "not warmed" assertion cannot pass vacuously.
+    /// Reads through a transaction that may write leave the shared namespace caches cold: a
+    /// transaction can observe its own uncommitted writes. The contrast assertion proves the
+    /// cache is enabled.
     #[sqlx::test]
-    async fn get_namespace_transaction_path_does_not_warm_shared_cache(pool: sqlx::PgPool) {
+    async fn write_transaction_reads_do_not_warm_shared_cache(pool: sqlx::PgPool) {
+        use lakekeeper::service::namespace_cache::{IDENT_TO_ID_CACHE, NAMESPACE_CACHE};
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["txn_no_warm_many".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+        let ident_key = (warehouse_id, vec!["txn_no_warm_many".to_string()]);
+        NAMESPACE_CACHE.invalidate(&namespace_id).await;
+        IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
+
+        let mut txn = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let by_id =
+            PostgresBackend::get_namespaces_by_id(warehouse_id, &[namespace_id], txn.transaction())
+                .await
+                .unwrap();
+        let by_ident = PostgresBackend::get_namespaces_by_ident(
+            warehouse_id,
+            &[&namespace],
+            txn.transaction(),
+        )
+        .await
+        .unwrap();
+        let cache_aware = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            namespace_id,
+            CachePolicy::Skip,
+            txn.transaction(),
+        )
+        .await
+        .unwrap();
+        let required = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            namespace_id,
+            CachePolicy::RequireMinimumVersion(0),
+            txn.transaction(),
+        )
+        .await
+        .unwrap();
+        let single = PostgresBackend::get_namespace(warehouse_id, namespace_id, txn.transaction())
+            .await
+            .unwrap();
+        txn.rollback().await.unwrap();
+
+        assert_eq!(
+            (
+                by_id.contains_key(&namespace_id),
+                by_ident.contains_key(&namespace_id),
+                cache_aware.is_some(),
+                required.is_some(),
+                single.is_some(),
+            ),
+            (true, true, true, true, true)
+        );
+        assert!(NAMESPACE_CACHE.get(&namespace_id).await.is_none());
+        assert!(IDENT_TO_ID_CACHE.get(&ident_key).await.is_none());
+
+        PostgresBackend::get_namespaces_by_id(warehouse_id, &[namespace_id], state.clone())
+            .await
+            .unwrap();
+        assert!(NAMESPACE_CACHE.get(&namespace_id).await.is_some());
+    }
+
+    /// Reads through a read transaction see only committed data, so each of them warms the
+    /// shared namespace caches.
+    #[sqlx::test]
+    async fn read_transaction_reads_warm_shared_cache(pool: sqlx::PgPool) {
+        use lakekeeper::service::namespace_cache::{IDENT_TO_ID_CACHE, NAMESPACE_CACHE};
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["txn_warm_read".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+        let ident_key = (warehouse_id, vec!["txn_warm_read".to_string()]);
+        let evict = || async {
+            NAMESPACE_CACHE.invalidate(&namespace_id).await;
+            IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
+        };
+        let cached = || async {
+            (
+                NAMESPACE_CACHE.get(&namespace_id).await.is_some(),
+                IDENT_TO_ID_CACHE.get(&ident_key).await.is_some(),
+            )
+        };
+
+        let mut txn = ReadTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        let mut warmed = Vec::new();
+
+        evict().await;
+        PostgresBackend::get_namespaces_by_id(warehouse_id, &[namespace_id], txn.committed_reads())
+            .await
+            .unwrap();
+        warmed.push(cached().await);
+
+        evict().await;
+        PostgresBackend::get_namespaces_by_ident(
+            warehouse_id,
+            &[&namespace],
+            txn.committed_reads(),
+        )
+        .await
+        .unwrap();
+        warmed.push(cached().await);
+
+        evict().await;
+        PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            namespace_id,
+            CachePolicy::Skip,
+            txn.committed_reads(),
+        )
+        .await
+        .unwrap();
+        warmed.push(cached().await);
+
+        evict().await;
+        PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            namespace_id,
+            CachePolicy::RequireMinimumVersion(0),
+            txn.committed_reads(),
+        )
+        .await
+        .unwrap();
+        warmed.push(cached().await);
+
+        evict().await;
+        PostgresBackend::get_namespace(warehouse_id, namespace_id, txn.committed_reads())
+            .await
+            .unwrap();
+        warmed.push(cached().await);
+
+        evict().await;
+        PostgresBackend::list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: lakekeeper::api::iceberg::v1::PageToken::NotSpecified,
+                page_size: None,
+                parent: None,
+                return_uuids: true,
+                return_protection_status: false,
+            },
+            txn.committed_reads(),
+        )
+        .await
+        .unwrap();
+        warmed.push(cached().await);
+        txn.commit().await.unwrap();
+
+        assert_eq!(warmed, vec![(true, true); 6]);
+    }
+
+    /// A transaction that changed a cached namespace and reads it again, through the
+    /// version-conflict refetch of the multi-get or a stale minimum version, leaves the
+    /// cached entry as it was: the change may still roll back.
+    #[sqlx::test]
+    async fn rereads_in_a_transaction_keep_the_cached_namespace(pool: sqlx::PgPool) {
         use lakekeeper::service::namespace_cache::NAMESPACE_CACHE;
 
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
-
-        let namespace = NamespaceIdent::from_vec(vec!["txn_no_warm".to_string()]).unwrap();
-        let ns = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
-        let namespace_id = ns.namespace_id();
-
-        // Clean slate: creation may have warmed the cache for this id.
-        NAMESPACE_CACHE.invalidate(&namespace_id).await;
-        assert!(
-            NAMESPACE_CACHE.get(&namespace_id).await.is_none(),
-            "precondition: namespace must not be cached"
-        );
-
-        // Transaction path: read through an active (read) transaction.
-        let mut txn = PostgresTransaction::begin_read(state.clone())
+        let parent = NamespaceIdent::from_vec(vec!["txn_reread".to_string()]).unwrap();
+        let parent_id = initialize_namespace(state.clone(), warehouse_id, &parent, None)
+            .await
+            .namespace_id();
+        let child =
+            NamespaceIdent::from_vec(vec!["txn_reread".to_string(), "child".to_string()]).unwrap();
+        let child_id = initialize_namespace(state.clone(), warehouse_id, &child, None)
+            .await
+            .namespace_id();
+        NAMESPACE_CACHE.invalidate(&child_id).await;
+        PostgresBackend::get_namespaces_by_id(warehouse_id, &[parent_id], state.clone())
             .await
             .unwrap();
-        let found = PostgresBackend::get_namespace(warehouse_id, namespace_id, txn.transaction())
+        let cached = NAMESPACE_CACHE.get(&parent_id).await.expect("cached");
+
+        let mut txn = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        assert!(found.is_some(), "the committed namespace must be returned");
+        // A rename, as a move writes it: the parent and the paths beneath it.
+        sqlx::query(
+            "UPDATE namespace SET namespace_name = ARRAY['renamed'] || namespace_name[2:]
+             WHERE namespace_id = ANY($1)",
+        )
+        .bind([*parent_id, *child_id])
+        .execute(&mut **txn.transaction())
+        .await
+        .unwrap();
+        // The parent is cached, the child is not: the child's read returns the renamed
+        // parent, which conflicts with the cached one and makes the multi-get read both again.
+        PostgresBackend::get_namespaces_by_id(
+            warehouse_id,
+            &[parent_id, child_id],
+            txn.transaction(),
+        )
+        .await
+        .unwrap();
+        PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            parent_id,
+            CachePolicy::RequireMinimumVersion(*cached.version() + 1),
+            txn.transaction(),
+        )
+        .await
+        .unwrap();
         txn.rollback().await.unwrap();
 
-        assert!(
-            NAMESPACE_CACHE.get(&namespace_id).await.is_none(),
-            "transaction-path get_namespace must NOT warm the shared NAMESPACE_CACHE"
-        );
-
-        // Contrast: the pooled-`State` path DOES warm the cache. This proves the
-        // cache is enabled, so the assertion above is meaningful (not vacuous).
-        let found = PostgresBackend::get_namespace(warehouse_id, namespace_id, state.clone())
-            .await
-            .unwrap();
-        assert!(found.is_some());
-        assert!(
-            NAMESPACE_CACHE.get(&namespace_id).await.is_some(),
-            "State-path get_namespace must warm the shared NAMESPACE_CACHE"
-        );
+        let after = NAMESPACE_CACHE.get(&parent_id).await.expect("still cached");
+        assert_eq!(after.namespace_ident(), &parent);
+        assert!(NAMESPACE_CACHE.get(&child_id).await.is_none());
     }
 
     // ------------------------ create_namespace prefix casing ------------------------

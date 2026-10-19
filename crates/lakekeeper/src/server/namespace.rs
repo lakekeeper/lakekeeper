@@ -122,7 +122,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         return_uuids: true,
                         return_protection_status: true,
                     };
-                    Ok(C::list_namespaces(warehouse_id, &query, trx.transaction()).await?)
+                    Ok(C::list_namespaces(warehouse_id, &query, trx.committed_reads()).await?)
                 }
                 .boxed()
             },
