@@ -145,9 +145,30 @@ pub(crate) fn get_config() -> DynAppConfig {
     }
 
     validate_cache_ttls(&mut config);
+    validate_cache_invalidation(&mut config.cache.invalidation);
     warn_deprecated_cache_options(&config);
 
     config
+}
+
+/// The poll interval is kept between 100 ms and 60 s, the grace period at most 60 s.
+fn validate_cache_invalidation(config: &mut CacheInvalidation) {
+    let interval = config.poll_interval;
+    config.poll_interval = interval.clamp(Duration::from_millis(100), Duration::from_secs(60));
+    if config.poll_interval != interval {
+        tracing::warn!(
+            "LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL ({interval:?}) is outside 100 ms to \
+             60 s; using {:?}",
+            config.poll_interval
+        );
+    }
+    let grace = config.reevict_grace;
+    config.reevict_grace = grace.min(Duration::from_secs(60));
+    if config.reevict_grace != grace {
+        tracing::warn!(
+            "LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE ({grace:?}) is above 60 s; using 60 s"
+        );
+    }
 }
 
 fn warn_deprecated_cache_options(config: &DynAppConfig) {
@@ -1213,15 +1234,29 @@ pub(crate) struct Cache {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub(crate) struct CacheInvalidation {
+    /// Evict entries that other instances changed. Off, changed entries stay until their
+    /// time-to-live ends.
+    pub(crate) enabled: bool,
     /// Record changed keys. Off, other instances keep changed entries until their
     /// time-to-live ends. An emergency switch only.
     pub(crate) recording_enabled: bool,
+    /// How often the change log is read (ISO-8601 duration, 100 ms to 60 s).
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub(crate) poll_interval: Duration,
+    /// How long after a change its entries are evicted a second time, for a read replica
+    /// that had not yet replayed the change at the first eviction (ISO-8601 duration, up to
+    /// 60 s).
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub(crate) reevict_grace: Duration,
 }
 
 impl Default for CacheInvalidation {
     fn default() -> Self {
         Self {
+            enabled: true,
             recording_enabled: true,
+            poll_interval: Duration::from_secs(1),
+            reevict_grace: Duration::from_secs(10),
         }
     }
 }
@@ -2091,6 +2126,71 @@ mod test {
             assert!(!config.debug.log_authorization_header);
             Ok(())
         });
+    }
+
+    #[test]
+    fn cache_invalidation_settings() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.invalidation.enabled);
+            assert!(config.cache.invalidation.recording_enabled);
+            assert_eq!(
+                config.cache.invalidation.poll_interval,
+                Duration::from_secs(1)
+            );
+            assert_eq!(
+                config.cache.invalidation.reevict_grace,
+                Duration::from_secs(10)
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__INVALIDATION__ENABLED", "false");
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__INVALIDATION__POLL_INTERVAL",
+                "PT0.5S",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__INVALIDATION__REEVICT_GRACE",
+                "PT30S",
+            );
+            let config = get_config();
+            assert!(!config.cache.invalidation.enabled);
+            assert_eq!(
+                config.cache.invalidation.poll_interval,
+                Duration::from_millis(500)
+            );
+            assert_eq!(
+                config.cache.invalidation.reevict_grace,
+                Duration::from_secs(30)
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__INVALIDATION__REEVICT_GRACE",
+                "PT10M",
+            );
+            assert_eq!(
+                get_config().cache.invalidation.reevict_grace,
+                Duration::from_secs(60)
+            );
+            Ok(())
+        });
+
+        // The poll interval is kept between 100 ms and 60 s.
+        for (set, expected) in [
+            ("PT0.01S", Duration::from_millis(100)),
+            ("PT5M", Duration::from_secs(60)),
+        ] {
+            figment::Jail::expect_with(|jail| {
+                jail.set_env("LAKEKEEPER_TEST__CACHE__INVALIDATION__POLL_INTERVAL", set);
+                assert_eq!(get_config().cache.invalidation.poll_interval, expected);
+                Ok(())
+            });
+        }
     }
 
     #[test]

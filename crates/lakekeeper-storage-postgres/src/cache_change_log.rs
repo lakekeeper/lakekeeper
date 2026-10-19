@@ -200,7 +200,7 @@ mod tests {
     #[sqlx::test]
     async fn the_extension_function_records_a_versioned_row(pool: PgPool) {
         let mut tx = pool.begin().await.unwrap();
-        sqlx::query("SELECT lakekeeper_record_cache_change('cedar_scope', ARRAY['project:p1'], 7)")
+        sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', ARRAY['key-1'], 7)")
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -213,8 +213,8 @@ mod tests {
         assert_eq!(
             log_rows(&pool).await,
             vec![(
-                "cedar_scope".to_string(),
-                vec!["project:p1".to_string()],
+                "extension_domain".to_string(),
+                vec!["key-1".to_string()],
                 Some(7),
                 current
             )]
@@ -223,11 +223,11 @@ mod tests {
 
     #[sqlx::test]
     async fn the_extension_function_records_a_whole_domain_and_rejects_null_keys(pool: PgPool) {
-        sqlx::query("SELECT lakekeeper_record_cache_change('cedar_scope', '{}')")
+        sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', '{}')")
             .execute(&pool)
             .await
             .unwrap();
-        let err = sqlx::query("SELECT lakekeeper_record_cache_change('cedar_scope', NULL)")
+        let err = sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', NULL)")
             .execute(&pool)
             .await
             .unwrap_err();
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             (rows[0].0.as_str(), rows[0].1.clone(), rows[0].2),
-            ("cedar_scope", vec![], None)
+            ("extension_domain", vec![], None)
         );
     }
 }

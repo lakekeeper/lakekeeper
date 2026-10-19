@@ -73,6 +73,12 @@ impl Invalidations {
             .collect()
     }
 
+    fn bump_all(&self) {
+        for stripe in &self.0 {
+            stripe.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
     /// Bump each stripe that holds one of `keys`, once.
     fn bump_many<K: Hash>(&self, keys: &[K]) {
         let mut bumped = [false; STRIPES];
@@ -271,6 +277,17 @@ where
         }
     }
 
+    /// Count an invalidation of every key, then drop every entry. A sync or a load that
+    /// read its count before leaves its result uncached.
+    pub(super) fn invalidate_all(&self) {
+        if self.enabled {
+            tracing::debug!("Invalidating all {} from cache", self.noun.1);
+            self.invalidations.bump_all();
+            self.cache.invalidate_all();
+            self.update_size_metric();
+        }
+    }
+
     /// [`Self::invalidate`] for every key in `keys`, bumping each distinct stripe
     /// once.
     async fn invalidate_many(&self, keys: &[K]) {
@@ -440,9 +457,13 @@ pub(super) static USER_ASSIGNMENTS_CACHE: std::sync::LazyLock<
     )
 });
 
-#[allow(dead_code)] // Not required for all features
 pub(crate) async fn user_assignments_cache_invalidate(user_id: &UserId) {
     USER_ASSIGNMENTS_CACHE.invalidate(user_id).await;
+}
+
+/// Drop the assignments of every user from this replica's cache.
+pub(crate) fn user_assignments_cache_invalidate_all() {
+    USER_ASSIGNMENTS_CACHE.invalidate_all();
 }
 
 /// Invalidate the user-assignments cache entry for every user in `user_ids`.
@@ -1234,6 +1255,24 @@ mod tests {
             cache.get(&second).await.is_none(),
             "the overlapping sync removes its entry"
         );
+    }
+
+    /// Invalidating all drops every entry and fences a sync that read its count before.
+    #[tokio::test]
+    async fn invalidate_all_drops_every_entry_and_fences_an_overlapping_sync() {
+        let cache = ua_cache();
+        let cached = test_user_id("invalidate-all-cached");
+        let syncing = test_user_id("invalidate-all-syncing");
+        insert_for_test(&cache, &cached, empty_user_result()).await;
+        let syncing_before = cache.invalidations(&syncing);
+
+        cache.invalidate_all();
+
+        assert!(cache.get(&cached).await.is_none());
+        cache
+            .cache_after_commit(&syncing, empty_user_result(), syncing_before)
+            .await;
+        assert!(cache.get(&syncing).await.is_none());
     }
 
     /// The production functions count in the process's caches: each invalidation

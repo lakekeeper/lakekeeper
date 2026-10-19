@@ -14,7 +14,7 @@ use super::secondary_index_get_or_load;
 #[cfg(feature = "router")]
 use crate::service::events::{self, EventListener};
 use crate::{
-    CONFIG, WarehouseId,
+    CONFIG, ProjectId, WarehouseId,
     service::{
         ArcProjectId, ResolvedWarehouse,
         cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
@@ -125,6 +125,28 @@ pub async fn warehouse_cache_invalidate(warehouse_id: WarehouseId) {
             .entry(warehouse_id)
             .and_compute_with(|_| async { Op::Remove })
             .await;
+        update_cache_size_metric();
+    }
+}
+
+/// Drop the entry that resolves `name` in `project_id` to a warehouse id from this
+/// replica's cache.
+pub(crate) async fn warehouse_cache_invalidate_name(project_id: &ProjectId, name: &str) {
+    if CONFIG.cache.warehouse.enabled {
+        tracing::debug!("Invalidating warehouse name {name} from cache");
+        NAME_TO_ID_CACHE
+            .invalidate(&(Arc::new(project_id.clone()), UniCase::new(name.to_string())))
+            .await;
+        update_cache_size_metric();
+    }
+}
+
+/// Drop every warehouse from this replica's cache.
+pub(crate) fn warehouse_cache_invalidate_all() {
+    if CONFIG.cache.warehouse.enabled {
+        tracing::debug!("Invalidating all warehouses from cache");
+        WAREHOUSE_CACHE.invalidate_all();
+        NAME_TO_ID_CACHE.invalidate_all();
         update_cache_size_metric();
     }
 }
@@ -589,6 +611,24 @@ mod tests {
         // Verify name-to-id cache is also invalidated
         let cached_by_name = warehouse_cache_get_by_name(&name, &project_id).await;
         assert!(cached_by_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalidating_a_name_keeps_the_warehouse_by_id() {
+        let warehouse_id = WarehouseId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        let name = "test-warehouse-invalidate-name".to_string();
+        let warehouse = test_warehouse(warehouse_id, name.clone(), project_id.clone(), None, 0);
+        warehouse_cache_insert(warehouse).await;
+
+        warehouse_cache_invalidate_name(&project_id, &name).await;
+
+        assert!(
+            warehouse_cache_get_by_name(&name, &project_id)
+                .await
+                .is_none()
+        );
+        assert!(warehouse_cache_get_by_id(warehouse_id).await.is_some());
     }
 
     #[tokio::test]

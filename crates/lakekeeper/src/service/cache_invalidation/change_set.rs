@@ -281,7 +281,7 @@ mod tests {
         for domain in CacheDomain::iter() {
             assert_eq!(CacheDomain::from_name(domain.as_str()), Some(domain));
         }
-        assert_eq!(CacheDomain::from_name("cedar_scope"), None);
+        assert_eq!(CacheDomain::from_name("extension_domain"), None);
     }
 
     #[test]

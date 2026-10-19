@@ -622,6 +622,20 @@ async fn serve_inner<
         "Endpoint Statistics Tracker".to_string(),
     );
 
+    // Cache invalidation: reading and pruning the change log.
+    for (service_name, task) in crate::service::cache_invalidation::background_tasks::<C>(
+        state.v1_state.catalog.clone(),
+        &cancellation_token,
+    )
+    .await
+    {
+        let abort_handle = service_futures.spawn(async move {
+            task.await;
+            Ok(())
+        });
+        service_ids.insert(abort_handle.id(), service_name.to_string());
+    }
+
     // Execute additional background services:
     for additional_service_register_fn in additional_background_services {
         let abort_handles = additional_service_register_fn(

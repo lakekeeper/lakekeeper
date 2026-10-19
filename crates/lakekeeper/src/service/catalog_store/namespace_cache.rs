@@ -105,8 +105,7 @@ pub static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, NamespaceId>> =
             .build()
     });
 
-#[allow(dead_code)] // Not required for all features
-async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
+pub(crate) async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
     if CONFIG.cache.namespace.enabled {
         tracing::debug!("Invalidating namespace id {namespace_id} from cache");
         // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare
@@ -132,8 +131,7 @@ async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
 /// eviction cascade is not enough — it only fires when a `NAMESPACE_CACHE` entry actually
 /// exists to be replaced, while `IDENT_TO_ID_CACHE` entries can outlive it (see the
 /// residual note in `namespace_cache_invalidate`).
-#[allow(dead_code)] // Only required for listeners which are behind a feature flag
-pub(super) async fn namespace_cache_invalidate_ident(
+pub(crate) async fn namespace_cache_invalidate_ident(
     warehouse_id: WarehouseId,
     ident: &NamespaceIdent,
 ) {
@@ -142,6 +140,16 @@ pub(super) async fn namespace_cache_invalidate_ident(
         IDENT_TO_ID_CACHE
             .invalidate(&(warehouse_id, namespace_ident_to_cache_key(ident)))
             .await;
+        update_cache_size_metric();
+    }
+}
+
+/// Drop every namespace from this replica's cache.
+pub(crate) fn namespace_cache_invalidate_all() {
+    if CONFIG.cache.namespace.enabled {
+        tracing::debug!("Invalidating all namespaces from cache");
+        NAMESPACE_CACHE.invalidate_all();
+        IDENT_TO_ID_CACHE.invalidate_all();
         update_cache_size_metric();
     }
 }
