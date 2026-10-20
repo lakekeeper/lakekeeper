@@ -70,9 +70,10 @@ async fn a_change_logged_by_another_instance_evicts_the_cached_warehouse(pool: P
     cancellation_token.cancel();
 }
 
-/// The test setup refuses a warehouse, namespace or role membership write that recorded no
-/// cache change of its domain, and a warehouse write that recorded another warehouse, so a
-/// write path that forgets to record fails its tests.
+/// The test setup refuses a warehouse, namespace, role membership or role assignment write,
+/// or a sync record delete, that recorded no cache change of its domain, and a warehouse
+/// write that recorded another warehouse, so a write path that forgets to record fails its
+/// tests.
 #[sqlx::test]
 async fn the_test_setup_refuses_unrecorded_writes(pool: PgPool) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
@@ -156,6 +157,48 @@ async fn the_test_setup_refuses_unrecorded_writes(pool: PgPool) {
         )
         .await,
         Some("a write to role_membership recorded no role_ancestors cache change".to_string())
+    );
+
+    let user_id = "oidc~unrecorded";
+    sqlx::query(
+        "INSERT INTO users (id, name, user_type, last_updated_with) \
+         VALUES ($1, $1, 'human', 'create-endpoint')",
+    )
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO role_assignment_sync (user_id, project_id, provider_id, synced_at) \
+         VALUES ($1, $2, 'ldap', now())",
+    )
+    .bind(user_id)
+    .bind(&**warehouse.project_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            refused(
+                "INSERT INTO role_assignment (user_id, role_id) \
+                 SELECT $1, id FROM role WHERE source_id = 'parent'",
+                user_id.to_string(),
+            )
+            .await,
+            refused(
+                "DELETE FROM role_assignment_sync WHERE user_id = $1",
+                user_id.to_string(),
+            )
+            .await,
+        ),
+        (
+            Some(format!(
+                "a write to role_assignment recorded no user_assignments cache change for {user_id}"
+            )),
+            Some(format!(
+                "a write to role_assignment_sync recorded no user_assignments cache change for {user_id}"
+            )),
+        )
     );
 
     let mut transaction = pool.begin().await.unwrap();

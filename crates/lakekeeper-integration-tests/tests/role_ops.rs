@@ -1930,20 +1930,14 @@ async fn test_delete_lakekeeper_role_keeps_member_syncs(pool: PgPool) {
     sync_into_group(&ctx, &alice, project_id, &provider, "contractors").await;
 
     let role = db_create_role(&ctx, project_id, "lk-role", "src-lk").await;
-    let arc_project: ArcProjectId = project_id.clone();
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    PostgresBackend::add_user_role_assignments_impl(
-        &arc_project,
+    PostgresBackend::add_user_role_assignments_and_invalidate(
+        project_id,
         role.id(),
         std::slice::from_ref(&alice),
-        tx.transaction(),
+        ctx.v1_state.catalog.clone(),
     )
     .await
     .unwrap();
-    tx.commit().await.unwrap();
 
     ApiServer::delete_role(
         ctx.clone(),

@@ -1040,7 +1040,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn delete_user<'a>(
+    async fn delete_user_impl<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<DeletedUser>> {
@@ -1064,11 +1064,10 @@ impl CatalogStore for super::PostgresBackend {
         create_project(project_id, project_name, transaction).await
     }
 
-    /// Delete a project
-    async fn delete_project<'a>(
+    async fn delete_project_impl<'a>(
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> Result<Vec<UserId>> {
         delete_project(project_id, transaction).await
     }
 

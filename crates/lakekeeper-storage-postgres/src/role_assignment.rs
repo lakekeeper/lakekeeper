@@ -26,7 +26,7 @@ use sqlx::Acquire as _;
 use uuid::Uuid;
 
 use super::{
-    dbutils::DBErrorHandler,
+    dbutils::{DBErrorHandler, user_id_from_db},
     pagination::{PaginateToken, V1PaginateToken},
     user::{DbUserLastUpdatedWith, DbUserType, UserRow, user_rows, user_write},
 };
@@ -63,10 +63,6 @@ fn map_user_sync_error(e: sqlx::Error) -> SyncUserRoleAssignmentsError {
             .into();
     }
     map_role_upsert_error(e)
-}
-
-fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
-    UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
 }
 
 // ─── Row type shared by the two role-members list queries ─────────────────────
@@ -2483,11 +2479,11 @@ mod tests {
             management::v1::user::{UserLastUpdatedWith, UserType},
         },
         service::{
-            AddRoleMembersError, ArcProjectId, CatalogCreateRoleRequest, CatalogRoleAssignmentOps,
-            CatalogRoleForAssignment, CatalogRoleMember, CatalogRoleOps, CatalogStore,
-            CatalogUserRoleAssignmentUser, RoleId, RoleIdent, RoleProviderId, RoleSourceId,
-            SyncRoleMembersError, SyncUserRoleAssignmentsError, Transaction, UniqueMembers,
-            UniqueRoles, UserUpsertMode, WriteTransaction,
+            AddRoleMembersError, ArcProjectId, CatalogCreateRoleRequest, CatalogProjectOps,
+            CatalogRoleAssignmentOps, CatalogRoleForAssignment, CatalogRoleMember, CatalogRoleOps,
+            CatalogStore, CatalogUserRoleAssignmentUser, RoleId, RoleIdent, RoleProviderId,
+            RoleSourceId, SyncRoleMembersError, SyncUserRoleAssignmentsError, Transaction,
+            UniqueMembers, UniqueRoles, UserUpsertMode, WriteTransaction,
             authn::{ArcUserId, UserId},
             authz::UserOrRoleId,
         },
@@ -3439,7 +3435,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        let affected = PostgresBackend::delete_user(user_id.clone(), t.transaction())
+        let affected = PostgresBackend::delete_user_impl(user_id.clone(), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -3748,7 +3744,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresBackend::delete_user((*user_id).clone(), t.transaction())
+        PostgresBackend::delete_user_impl((*user_id).clone(), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -6736,6 +6732,53 @@ mod tests {
         );
     }
 
+    /// A project delete that waits for a sync into the project records the synced user: it
+    /// reads the sync records after the lock it waited on.
+    #[sqlx::test]
+    async fn a_project_delete_records_a_user_synced_while_it_waits(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "project-delete-wait"));
+
+        let mut sync = WriteTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::sync_user_role_assignments_by_provider(
+            make_user(&user_id, "Project Delete Wait"),
+            SyncFor::Caller,
+            &project_id,
+            &RoleProviderId::new_unchecked("ldap"),
+            &[],
+            &mut sync,
+        )
+        .await
+        .unwrap();
+        let delete = tokio::spawn({
+            let state = state.clone();
+            let pool = pool.clone();
+            let project_id = project_id.clone();
+            async move {
+                let mut t = WriteTransaction::<PostgresBackend>::begin(state)
+                    .await
+                    .unwrap();
+                PostgresBackend::delete_project(&project_id, &mut t)
+                    .await
+                    .unwrap();
+                crate::test_utils::committed_changes(t, &pool).await
+            }
+        });
+        wait_for_lock_waiter(&pool).await;
+        sync.commit().await.unwrap();
+
+        let user_key =
+            lakekeeper::service::cache_invalidation::CacheKey::UserAssignments((*user_id).clone())
+                .encode();
+        assert_eq!(
+            delete.await.unwrap(),
+            vec![crate::test_utils::change("user_assignments", &[&user_key])]
+        );
+    }
+
     /// Make every commit of a transaction that ran `operation` on `table` fail.
     async fn fail_commits(pool: &sqlx::PgPool, table: &str, operation: &str) {
         sqlx::query(
@@ -6894,7 +6937,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresBackend::delete_user(user_id.clone(), t.transaction())
+        PostgresBackend::delete_user_impl(user_id.clone(), t.transaction())
             .await
             .unwrap()
             .expect("the user is active before the delete");
@@ -7835,7 +7878,7 @@ mod tests {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
                 .unwrap();
-            let affected = PostgresBackend::delete_user((*user_id).clone(), t.transaction())
+            let affected = PostgresBackend::delete_user_impl((*user_id).clone(), t.transaction())
                 .await
                 .unwrap();
             t.commit().await.unwrap();
@@ -7892,7 +7935,7 @@ mod tests {
         let mut delete_tx = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresBackend::delete_user((*user_id).clone(), delete_tx.transaction())
+        PostgresBackend::delete_user_impl((*user_id).clone(), delete_tx.transaction())
             .await
             .unwrap()
             .expect("the user is active");

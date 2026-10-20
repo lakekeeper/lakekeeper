@@ -12,8 +12,8 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
-        UserUpsertMode,
+        CatalogStore, CatalogUserOps, CreateOrUpdateUserResponse, Result, SecretStore, State,
+        Transaction, UserId, UserUpsertMode, WriteTransaction,
         authz::{
             AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction,
             RequireServerActionError,
@@ -555,9 +555,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut t = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         // Soft-deletes the user AND removes their role assignments.
-        let Some(deleted) = C::delete_user(user_id.clone(), t.transaction()).await? else {
+        let Some(deleted) = C::delete_user(user_id.clone(), &mut t).await? else {
             return Err(ErrorModel::not_found(
                 format!("User with id {} not found.", user_id.clone()),
                 "UserNotFound",
@@ -578,18 +578,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .delete_user(event_ctx.request_metadata(), user_id.clone())
             .await?;
 
-        // Post-commit: the user's assignments were removed, so their effective-roles
-        // entry is stale, and the revoked grants are announced. A failed commit may
-        // have landed, so it clears the entry too; only a commit announces.
-        let deleted_user_id = user_id.clone();
+        // Post-commit: announce the deleted user and the revoked grants.
         let request_metadata = event_ctx.request_metadata_arc();
         crate::service::run_to_completion(async move {
-            let committed = t.commit().await;
-            crate::service::role_assignments_cache::user_assignments_cache_invalidate(
-                &deleted_user_id,
-            )
-            .await;
-            committed?;
+            t.commit().await?;
             events.user_deleted_async(UserDeletedEvent {
                 user: Arc::new(deleted.user),
                 request_metadata: Arc::clone(&request_metadata),

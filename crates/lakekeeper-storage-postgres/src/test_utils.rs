@@ -245,11 +245,12 @@ pub async fn setup_with_registry<T: Authorizer>(
     )
 }
 
-/// Make a transaction that writes a warehouse, namespace, role or role membership fail to
-/// commit unless it recorded a cache change of that domain. For warehouses (also inserts)
-/// and roles, the change must name the row's id or the whole domain; a role membership
-/// change must name the role ancestor sets. A transaction that sets
-/// `lakekeeper_test.unrecorded_write` to `on` is exempt.
+/// Make a transaction that writes a warehouse, namespace, role, role membership or role
+/// assignment, or deletes a role-provider sync record, fail to commit unless it recorded a
+/// cache change of that domain. For warehouses (also inserts) and roles, the change must
+/// name the row's id or the whole domain; for assignments and sync records, the user's
+/// assignments or the whole domain; a role membership change must name the role ancestor
+/// sets. A transaction that sets `lakekeeper_test.unrecorded_write` to `on` is exempt.
 pub async fn require_cache_changes(pool: &PgPool) {
     sqlx::raw_sql(
         r"
@@ -292,6 +293,14 @@ pub async fn require_cache_changes(pool: &PgPool) {
         CREATE CONSTRAINT TRIGGER role_membership_requires_cache_change
             AFTER INSERT OR UPDATE OR DELETE ON role_membership DEFERRABLE INITIALLY DEFERRED
             FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('role_ancestors');
+        DROP TRIGGER IF EXISTS role_assignment_requires_cache_change ON role_assignment;
+        CREATE CONSTRAINT TRIGGER role_assignment_requires_cache_change
+            AFTER INSERT OR UPDATE OR DELETE ON role_assignment DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('user_assignments', 'user_id');
+        DROP TRIGGER IF EXISTS role_assignment_sync_requires_cache_change ON role_assignment_sync;
+        CREATE CONSTRAINT TRIGGER role_assignment_sync_requires_cache_change
+            AFTER DELETE ON role_assignment_sync DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('user_assignments', 'user_id');
         ",
     )
     .execute(pool)

@@ -577,11 +577,12 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
 
-    /// Delete a project
-    async fn delete_project<'a>(
+    /// Delete a project. Returns the users whose role-provider sync records the delete
+    /// removed. Use [`CatalogProjectOps::delete_project`], which records them.
+    async fn delete_project_impl<'a>(
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
+    ) -> Result<Vec<UserId>>;
 
     /// Get the project metadata
     async fn get_project<'a>(
@@ -1568,12 +1569,12 @@ where
         catalog_state: Self::State,
     ) -> Result<ListUsersResponse>;
 
-    /// Soft-deletes the user and removes their role assignments + provider sync
-    /// log (so a deleted user is no member of any role, matching the OpenFGA
-    /// authorizer). Returns `None` if absent, else the row as it was before the
-    /// delete and the roles the user was assigned to. The caller evicts the user's
-    /// effective-roles cache after commit.
-    async fn delete_user<'a>(
+    /// Soft-deletes the user and removes their role assignments and provider sync
+    /// records (so a deleted user is not a member of any role, matching the OpenFGA
+    /// authorizer). Returns `None` if no active user has this id, else the row as it
+    /// was before the delete and the roles the user was assigned to. Use
+    /// [`CatalogUserOps::delete_user`], which records the user's assignments.
+    async fn delete_user_impl<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<DeletedUser>>;

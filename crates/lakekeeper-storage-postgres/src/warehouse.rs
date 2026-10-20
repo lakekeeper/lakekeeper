@@ -20,7 +20,7 @@ use lakekeeper::{
         SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
         SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
         StorageProfileSerializationError, UpdateWarehouseStorageProfileError,
-        UpdatedWarehouseStorage, WarehouseAlreadyExists, WarehouseFormatVersionPolicy,
+        UpdatedWarehouseStorage, UserId, WarehouseAlreadyExists, WarehouseFormatVersionPolicy,
         WarehouseHasUnfinishedTasks, WarehouseIdAlreadyExists, WarehouseIdNotFound,
         WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
         WarehouseVersion, registered_system_roles, storage::StorageProfile, system_role_requests,
@@ -30,7 +30,7 @@ use sqlx::{PgPool, types::Json};
 
 use super::CatalogState;
 use crate::{
-    dbutils::DBErrorHandler,
+    dbutils::{DBErrorHandler, user_id_from_db},
     pagination::{PaginateToken, V1PaginateToken},
 };
 
@@ -311,11 +311,36 @@ pub(crate) async fn get_project(
     }
 }
 
+/// Deletes a project and returns the users whose role-provider sync records the delete
+/// removed.
+///
+/// Locks the project row first: a sync record insert checks its project row with a
+/// key-share lock, so the read after this lock sees every record a concurrent sync
+/// committed while this waited, and none can follow.
 pub(crate) async fn delete_project(
     project_id: &ProjectId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> lakekeeper::service::Result<()> {
-    let row_count = sqlx::query_scalar!(r#"DELETE FROM project WHERE project_id = $1"#, project_id)
+) -> lakekeeper::service::Result<Vec<UserId>> {
+    let locked = sqlx::query_scalar!(
+        r#"SELECT 1 AS "locked!" FROM project WHERE project_id = $1 FOR UPDATE"#,
+        project_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| e.into_error_model("Error deleting project"))?;
+    if locked.is_none() {
+        return Err(ErrorModel::not_found("Project not found", "ProjectNotFound", None).into());
+    }
+
+    let synced_users = sqlx::query_scalar!(
+        r#"SELECT DISTINCT user_id FROM role_assignment_sync WHERE project_id = $1"#,
+        project_id
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|e| e.into_error_model("Error deleting project"))?;
+
+    sqlx::query!(r#"DELETE FROM project WHERE project_id = $1"#, project_id)
         .execute(&mut **transaction)
         .await
         .map_err(|e| match &e {
@@ -331,14 +356,12 @@ pub(crate) async fn delete_project(
                 }
             }
             _ => e.into_error_model("Error deleting project"),
-        })?
-        .rows_affected();
+        })?;
 
-    if row_count == 0 {
-        return Err(ErrorModel::not_found("Project not found", "ProjectNotFound", None).into());
-    }
-
-    Ok(())
+    synced_users
+        .iter()
+        .map(|user_id| user_id_from_db(user_id).map_err(|e| ErrorModel::from(e).into()))
+        .collect()
 }
 
 #[derive(sqlx::FromRow, Debug, PartialEq)]

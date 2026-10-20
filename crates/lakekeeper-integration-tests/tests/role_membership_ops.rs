@@ -17,11 +17,12 @@ use lakekeeper::{
         },
     },
     service::{
-        ArcProjectId, ArcRoleIdent, CatalogCreateRoleRequest, CatalogRoleAssignmentOps,
-        CatalogRoleForAssignment, CatalogRoleOps, CatalogStore, CatalogUserRoleAssignmentUser,
-        RoleId, RoleIdent, RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, SyncFor,
-        Transaction, UserId, UserUpsertMode, WriteTransaction, authn::ArcUserId,
-        authz::AllowAllAuthorizer, cache_invalidation::CacheKey, events::EventListener,
+        ArcProjectId, ArcRoleIdent, CatalogCreateRoleRequest, CatalogProjectOps,
+        CatalogRoleAssignmentOps, CatalogRoleForAssignment, CatalogRoleOps, CatalogStore,
+        CatalogUserOps, CatalogUserRoleAssignmentUser, RoleId, RoleIdent, RoleProviderId,
+        RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, SyncFor, Transaction, UserId, UserUpsertMode,
+        WriteTransaction, authn::ArcUserId, authz::AllowAllAuthorizer,
+        cache_invalidation::CacheKey, events::EventListener,
     },
 };
 use lakekeeper_integration_tests::{CapturingAuthzListener, SetupTestCatalog, memory_io_profile};
@@ -1374,6 +1375,80 @@ async fn user_syncs_record_changed_assignments_and_renamed_roles(pool: PgPool) {
             ],
             vec![true, true, true]
         )
+    );
+}
+
+/// A user delete records the user.
+#[sqlx::test]
+async fn a_user_delete_records_the_user(pool: PgPool) {
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let state = ctx.v1_state.catalog.clone();
+    let role = make_role(&ctx, &project_id, "assigned", "assigned").await;
+    let alice = UserId::new_unchecked("oidc", "alice");
+    provision_user(&ctx, &alice, "Alice").await;
+    PostgresBackend::add_user_role_assignments_and_invalidate(
+        &project_id,
+        role,
+        std::slice::from_ref(&alice),
+        state.clone(),
+    )
+    .await
+    .unwrap();
+
+    let mut t = WriteTransaction::<PostgresBackend>::begin(state)
+        .await
+        .unwrap();
+    PostgresBackend::delete_user(alice.clone(), &mut t)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        committed_changes(t, &pool).await,
+        vec![assignments(&[&alice])]
+    );
+}
+
+/// A project delete records the users whose sync records it removed.
+#[sqlx::test]
+async fn a_project_delete_records_the_users_synced_into_it(pool: PgPool) {
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let state = ctx.v1_state.catalog.clone();
+    let events = ctx.v1_state.events.clone();
+    let provider = RoleProviderId::try_new("ldap").unwrap();
+    let doomed = Arc::new(ProjectId::new_random());
+    let mut tx = <PostgresBackend as CatalogStore>::Transaction::begin_write(state.clone())
+        .await
+        .unwrap();
+    PostgresBackend::create_project(&doomed, "doomed".to_string(), tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let [alice, bob] = ["alice", "bob"].map(|u| Arc::new(UserId::new_unchecked("oidc", u)));
+    for (user, project) in [(&alice, &doomed), (&bob, &project_id)] {
+        PostgresBackend::sync_user_role_assignments(
+            sync_user(user),
+            SyncFor::Caller,
+            project,
+            &provider,
+            &[],
+            state.clone(),
+            &events,
+        )
+        .await
+        .unwrap();
+    }
+
+    let mut t = WriteTransaction::<PostgresBackend>::begin(state)
+        .await
+        .unwrap();
+    PostgresBackend::delete_project(&doomed, &mut t)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        committed_changes(t, &pool).await,
+        vec![assignments(&[&alice])]
     );
 }
 
