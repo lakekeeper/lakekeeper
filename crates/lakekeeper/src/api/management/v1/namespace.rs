@@ -10,7 +10,7 @@ use crate::{
     server::namespace::validate_namespace_ident_creation,
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceHierarchy,
-        NamespaceId, NamespaceIdent, ResolvedWarehouse, SecretStore, State, Transaction,
+        NamespaceId, NamespaceIdent, ResolvedWarehouse, SecretStore, State, WriteTransaction,
         authz::{
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
             CatalogWarehouseAction, NamespaceParent,
@@ -331,18 +331,14 @@ where
         });
 
         // ------------------- BUSINESS LOGIC -------------------
-        let mut t = C::Transaction::begin_write(state_catalog).await?;
+        let mut t = WriteTransaction::<C>::begin(state_catalog).await?;
         tracing::debug!(
             "Setting protection status for namespace: {:?} to {protected_request}",
             namespace_id
         );
-        let status = C::set_namespace_protected(
-            warehouse_id,
-            namespace_id,
-            protected_request,
-            t.transaction(),
-        )
-        .await?;
+        let status =
+            C::set_namespace_protected(warehouse_id, namespace_id, protected_request, &mut t)
+                .await?;
         t.commit().await?;
 
         event_ctx.emit_namespace_protection_set(protected_request, status.clone());
@@ -451,15 +447,9 @@ where
 
         // ------------------- BUSINESS LOGIC -------------------
         // Detach-then-commit-then-attach; see this method's docs for why that order.
-        let mut t = C::Transaction::begin_write(state_catalog).await?;
-        let moved = C::move_namespace(
-            warehouse_id,
-            namespace_id,
-            &destination,
-            force,
-            t.transaction(),
-        )
-        .await?;
+        let mut t = WriteTransaction::<C>::begin(state_catalog).await?;
+        let moved =
+            C::move_namespace(warehouse_id, namespace_id, &destination, force, &mut t).await?;
 
         let reparented = moved.changed_parent();
         let old_parent = moved

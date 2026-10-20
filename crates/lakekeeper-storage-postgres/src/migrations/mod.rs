@@ -1965,17 +1965,13 @@ mod tests {
         assert_eq!(*ns.version(), 0, "freshly-inserted namespace starts at v0");
 
         // --- Namespace U: each UPDATE must fire the recreated trigger ---
-        let mut tx = PostgresTransaction::begin_write(state.clone())
+        let mut tx = lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let after_protect = PostgresBackend::set_namespace_protected(
-            warehouse_id,
-            namespace_id,
-            true,
-            tx.transaction(),
-        )
-        .await
-        .expect("set_namespace_protected must succeed post-restore");
+        let after_protect =
+            PostgresBackend::set_namespace_protected(warehouse_id, namespace_id, true, &mut tx)
+                .await
+                .expect("set_namespace_protected must succeed post-restore");
         assert_eq!(*after_protect.version(), 1);
 
         let new_props = HashMap::from([("k".to_string(), "v1".to_string())]);
@@ -1983,7 +1979,7 @@ mod tests {
             warehouse_id,
             namespace_id,
             new_props,
-            tx.transaction(),
+            &mut tx,
         )
         .await
         .expect("update_namespace_properties must succeed post-restore");
@@ -1991,14 +1987,9 @@ mod tests {
 
         // Unprotect so the namespace doesn't block table/view inserts (it
         // doesn't today, but keeps the test resilient to future tightening).
-        PostgresBackend::set_namespace_protected(
-            warehouse_id,
-            namespace_id,
-            false,
-            tx.transaction(),
-        )
-        .await
-        .unwrap();
+        PostgresBackend::set_namespace_protected(warehouse_id, namespace_id, false, &mut tx)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
         // --- Table C / U / D ---

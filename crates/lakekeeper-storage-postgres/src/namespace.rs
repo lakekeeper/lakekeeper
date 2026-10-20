@@ -1462,7 +1462,7 @@ pub mod tests {
         api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
         service::{
             CachePolicy, CatalogNamespaceOps, ReadTransaction, Transaction as _, ViewId,
-            is_same_namespace_path_ignoring_ascii_case,
+            WriteTransaction, is_same_namespace_path_ignoring_ascii_case,
         },
     };
     use lakekeeper_io::Location;
@@ -1594,7 +1594,7 @@ pub mod tests {
         assert_eq!(response.len(), 1);
         assert_eq!(response[&namespace_id].namespace_ident(), &namespace);
 
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -1606,7 +1606,7 @@ pub mod tests {
             warehouse_id,
             namespace_id,
             new_props.clone(),
-            transaction.transaction(),
+            &mut transaction,
         )
         .await
         .unwrap();
@@ -1624,7 +1624,7 @@ pub mod tests {
         .expect("Namespace should exist");
         assert_eq!(response.properties().unwrap(), &new_props);
 
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -1632,7 +1632,7 @@ pub mod tests {
             warehouse_id,
             namespace_id,
             NamespaceDropFlags::default(),
-            transaction.transaction(),
+            &mut transaction,
         )
         .await
         .expect("Error dropping namespace");
@@ -2635,7 +2635,7 @@ pub mod tests {
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         assert_eq!(*response.version(), 0);
 
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -2643,7 +2643,7 @@ pub mod tests {
             warehouse_id,
             response.namespace_id(),
             true,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await
         .unwrap();
@@ -2673,7 +2673,7 @@ pub mod tests {
 
         let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
 
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -2681,7 +2681,7 @@ pub mod tests {
             warehouse_id,
             response.namespace_id(),
             true,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await
         .unwrap();
@@ -3836,6 +3836,108 @@ pub mod tests {
         assert!(NAMESPACE_CACHE.get(&child_id).await.is_none());
     }
 
+    /// Every namespace write records the cache keys it changes: the namespace, and the path a
+    /// move left. A drop records only its root, also when it drops children; a move to the
+    /// current path records nothing.
+    #[sqlx::test]
+    async fn namespace_writes_record_their_cache_keys(pool: sqlx::PgPool) {
+        use lakekeeper::service::cache_invalidation::CacheKey;
+
+        use crate::warehouse::test::{change, committed_changes};
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let ident = |parts: &[&str]| {
+            NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap()
+        };
+        let create = |parts: &'static [&'static str]| {
+            let state = state.clone();
+            async move {
+                initialize_namespace(state, warehouse_id, &ident(parts), None)
+                    .await
+                    .namespace_id()
+            }
+        };
+        let parent = create(&["parent"]).await;
+        let child = create(&["parent", "child"]).await;
+        let other = create(&["other"]).await;
+        create(&["other", "sub"]).await;
+        let begin = || WriteTransaction::<PostgresBackend>::begin(state.clone());
+        let mut logged = Vec::new();
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::update_namespace_properties(
+            warehouse_id,
+            parent,
+            HashMap::from([("key".to_string(), "value".to_string())]),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::set_namespace_protected(warehouse_id, parent, true, &mut t)
+            .await
+            .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::move_namespace(
+            warehouse_id,
+            child,
+            &ident(&["other", "child"]),
+            false,
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::move_namespace(
+            warehouse_id,
+            child,
+            &ident(&["other", "child"]),
+            false,
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::drop_namespace(
+            warehouse_id,
+            other,
+            NamespaceDropFlags {
+                force: true,
+                purge: false,
+                recursive: true,
+            },
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let previous_child = CacheKey::NamespaceIdent {
+            warehouse_id,
+            ident: ident(&["parent", "child"]),
+        }
+        .encode();
+        assert_eq!(
+            logged,
+            vec![
+                vec![change("namespace", &[&parent.to_string()])],
+                vec![change("namespace", &[&parent.to_string()])],
+                vec![change("namespace", &[&child.to_string(), &previous_child])],
+                vec![],
+                vec![change("namespace", &[&other.to_string()])],
+            ]
+        );
+    }
+
     // ------------------------ create_namespace prefix casing ------------------------
 
     /// The parent is matched under the case-insensitive collation, so a caller may spell ancestor
@@ -4811,14 +4913,14 @@ pub mod tests {
 
         let ns = initialize_namespace(state.clone(), warehouse_id, &ident(&["prot"]), None).await;
 
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         PostgresBackend::set_namespace_protected(
             warehouse_id,
             ns.namespace_id(),
             true,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await
         .unwrap();
@@ -4847,14 +4949,14 @@ pub mod tests {
 
         let ns = initialize_namespace(state.clone(), warehouse_id, &ident(&["prot"]), None).await;
 
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         PostgresBackend::set_namespace_protected(
             warehouse_id,
             ns.namespace_id(),
             true,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await
         .unwrap();

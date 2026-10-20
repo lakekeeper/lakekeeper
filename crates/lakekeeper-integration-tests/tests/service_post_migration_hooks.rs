@@ -396,8 +396,15 @@ async fn test_casing_repair_hook_runs_only_when_its_gate_is_open(pool: PgPool) {
         "with its gate open the repair adopts the namespace's stored casing"
     );
     assert_eq!(
-        stored_tabular(pool, in_drifted_id).await,
+        stored_tabular(pool.clone(), in_drifted_id).await,
         vec!["a".to_string(), "B".to_string(), "c".to_string()],
         "a copy inside a repaired namespace must end on the repaired path"
     );
+    // The repair rewrites paths of any namespace, so it names the whole domain as changed.
+    let last_change: (String, Vec<String>) =
+        sqlx::query_as("SELECT domain, keys FROM cache_change_log ORDER BY id DESC LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(last_change, ("namespace".to_string(), Vec::new()));
 }

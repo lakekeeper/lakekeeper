@@ -525,17 +525,6 @@ impl EventListener for NamespaceCacheEventListener {
         Ok(())
     }
 
-    async fn namespace_dropped(&self, event: events::DropNamespaceEvent) -> anyhow::Result<()> {
-        let events::DropNamespaceEvent {
-            namespace,
-            request_metadata: _request_metadata,
-        } = event;
-        // This is sufficient also for recursive drops, as the cache only supports loading the full
-        // hierarchy, which breaks if any of the entries in the path are missing.
-        namespace_cache_invalidate(namespace.namespace_id()).await;
-        Ok(())
-    }
-
     async fn namespace_properties_updated(
         &self,
         event: events::UpdateNamespacePropertiesEvent,
@@ -565,21 +554,14 @@ impl EventListener for NamespaceCacheEventListener {
 
     async fn namespace_moved(&self, event: events::MoveNamespaceEvent) -> anyhow::Result<()> {
         let events::MoveNamespaceEvent {
-            warehouse_id,
+            warehouse_id: _warehouse_id,
             namespace,
-            previous_ident,
+            previous_ident: _previous_ident,
             previous_parent: _previous_parent,
             request_metadata: _request_metadata,
         } = event;
-
-        // Order matters. Retire the old path first: until it is gone the namespace is
-        // reachable under a name it no longer has, and on this replica that is a stale
-        // *hit*, not a miss. Only then publish the new state.
-        //
-        // Moves are leaf-only, so no descendant entries can be holding a stale prefix —
-        // that assumption has to be revisited if recursive moves are added. A move also writes a
-        // canonical destination prefix, so `is_parent_ident` cannot fire for the moved row itself.
-        namespace_cache_invalidate_ident(warehouse_id, &previous_ident).await;
+        // The commit already evicted the path the namespace left. Moves are leaf-only, so
+        // no descendant entries can be holding a stale prefix.
         namespace_cache_insert(namespace).await;
         Ok(())
     }

@@ -245,8 +245,8 @@ pub async fn setup_with_registry<T: Authorizer>(
     )
 }
 
-/// Make a transaction that updates or deletes a warehouse fail to commit unless it recorded
-/// a warehouse cache change. A transaction that sets `lakekeeper_test.unrecorded_write` to
+/// Make a transaction that updates or deletes a warehouse or namespace fail to commit unless
+/// it recorded a cache change of that domain. A transaction that sets `lakekeeper_test.unrecorded_write` to
 /// `on` is exempt.
 pub async fn require_cache_changes(pool: &PgPool) {
     sqlx::raw_sql(
@@ -268,6 +268,10 @@ pub async fn require_cache_changes(pool: &PgPool) {
         CREATE CONSTRAINT TRIGGER warehouse_requires_cache_change
             AFTER UPDATE OR DELETE ON warehouse DEFERRABLE INITIALLY DEFERRED
             FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('warehouse');
+        DROP TRIGGER IF EXISTS namespace_requires_cache_change ON namespace;
+        CREATE CONSTRAINT TRIGGER namespace_requires_cache_change
+            AFTER UPDATE OR DELETE ON namespace DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('namespace');
         ",
     )
     .execute(pool)

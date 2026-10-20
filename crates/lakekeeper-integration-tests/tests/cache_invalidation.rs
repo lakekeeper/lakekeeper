@@ -9,7 +9,7 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, eventually, memory_io_profile};
-use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::{PostgresBackend, test_utils::create_ns};
 use sqlx::PgPool;
 
 #[sqlx::test]
@@ -70,11 +70,11 @@ async fn a_change_logged_by_another_instance_evicts_the_cached_warehouse(pool: P
     cancellation_token.cancel();
 }
 
-/// The test setup refuses a warehouse write that recorded no cache change, so a write path
-/// that forgets to record fails its tests.
+/// The test setup refuses a warehouse or namespace write that recorded no cache change, so a
+/// write path that forgets to record fails its tests.
 #[sqlx::test]
-async fn the_test_setup_refuses_an_unrecorded_warehouse_write(pool: PgPool) {
-    let (_, warehouse) = SetupTestCatalog::builder()
+async fn the_test_setup_refuses_unrecorded_writes(pool: PgPool) {
+    let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
         .storage_profile(memory_io_profile())
         .authorizer(AllowAllAuthorizer::default())
@@ -82,17 +82,41 @@ async fn the_test_setup_refuses_an_unrecorded_warehouse_write(pool: PgPool) {
         .build()
         .setup()
         .await;
-
-    let error = sqlx::query(
-        "UPDATE warehouse SET warehouse_name = 'renamed' WHERE warehouse_id = $1::uuid",
+    create_ns(
+        ctx,
+        warehouse.warehouse_id.to_string(),
+        "unrecorded".to_string(),
     )
-    .bind(warehouse.warehouse_id.to_string())
-    .execute(&pool)
-    .await
-    .unwrap_err();
+    .await;
+    let refused = |statement: &'static str, id: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(statement)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .as_database_error()
+                .map(|e| e.message().to_string())
+        }
+    };
 
     assert_eq!(
-        error.as_database_error().map(|e| e.message().to_string()),
-        Some("a write to warehouse recorded no warehouse cache change".to_string())
+        (
+            refused(
+                "UPDATE warehouse SET warehouse_name = 'renamed' WHERE warehouse_id = $1::uuid",
+                warehouse.warehouse_id.to_string(),
+            )
+            .await,
+            refused(
+                "UPDATE namespace SET namespace_properties = '{}' WHERE warehouse_id = $1::uuid",
+                warehouse.warehouse_id.to_string(),
+            )
+            .await,
+        ),
+        (
+            Some("a write to warehouse recorded no warehouse cache change".to_string()),
+            Some("a write to namespace recorded no namespace cache change".to_string()),
+        )
     );
 }

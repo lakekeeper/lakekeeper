@@ -15,8 +15,9 @@ use crate::{
         BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore, CommittedReads,
         InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
         SerializationError, StateOrTransaction, StateOrTransactionEnum, TableIdent, TabularId,
-        Transaction, WarehouseIdNotFound,
+        Transaction, WarehouseIdNotFound, WriteTransaction,
         authz::AuthZCannotSeeNamespace,
+        cache_invalidation::{CacheDomain, CacheKey},
         define_transparent_error, define_version_newtype,
         events::impl_authorization_failure_source,
         impl_error_stack_methods, impl_from_with_detail,
@@ -1298,57 +1299,103 @@ where
         Self::create_namespace_impl(warehouse_id, namespace_id, request, transaction).await
     }
 
-    async fn drop_namespace<'a>(
+    /// Drop a namespace. A recursive drop also drops its children; only the dropped
+    /// namespace is recorded as changed, because a cached child without its parent is
+    /// dropped on its next lookup.
+    async fn drop_namespace(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         flags: NamespaceDropFlags,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<NamespaceDropInfo, CatalogNamespaceDropError> {
-        Self::drop_namespace_impl(warehouse_id, namespace_id, flags, transaction).await
+        let drop_info =
+            Self::drop_namespace_impl(warehouse_id, namespace_id, flags, transaction.transaction())
+                .await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Namespace(namespace_id));
+        Ok(drop_info)
     }
 
-    async fn update_namespace_properties<'a>(
+    async fn update_namespace_properties(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         properties: HashMap<String, String>,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError> {
-        Self::update_namespace_properties_impl(warehouse_id, namespace_id, properties, transaction)
-            .await
+        let namespace = Self::update_namespace_properties_impl(
+            warehouse_id,
+            namespace_id,
+            properties,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Namespace(namespace_id));
+        Ok(namespace)
     }
 
     async fn set_namespace_protected(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         protect: bool,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<NamespaceWithParent, CatalogSetNamespaceProtectedError> {
-        Self::set_namespace_protected_impl(warehouse_id, namespace_id, protect, transaction).await
+        let namespace = Self::set_namespace_protected_impl(
+            warehouse_id,
+            namespace_id,
+            protect,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Namespace(namespace_id));
+        Ok(namespace)
     }
 
     /// Move a namespace to `destination`. See [`CatalogStore::move_namespace_impl`].
-    ///
-    /// Cache maintenance is *not* done here: it is driven by the `namespace_moved` event,
-    /// which callers emit after committing, the same way `namespace_protection_set` and
-    /// `namespace_created` work. Invalidating before the commit would publish a move that
-    /// may still roll back.
     async fn move_namespace(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         destination: &NamespaceIdent,
         force: bool,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<MovedNamespace, CatalogMoveNamespaceError> {
-        Self::move_namespace_impl(warehouse_id, namespace_id, destination, force, transaction).await
+        let moved = Self::move_namespace_impl(
+            warehouse_id,
+            namespace_id,
+            destination,
+            force,
+            transaction.transaction(),
+        )
+        .await?;
+        if !moved.is_noop() {
+            transaction
+                .changes()
+                .insert(CacheKey::Namespace(namespace_id))
+                .insert(CacheKey::NamespaceIdent {
+                    warehouse_id,
+                    ident: moved.previous_ident.clone(),
+                });
+        }
+        Ok(moved)
     }
 
     /// Repair namespace path prefixes stored with the wrong casing, returning the number of rows
     /// changed. See [`CatalogStore::repair_namespace_path_casing_impl`]. Maintenance only — called
     /// from the post-migration hooks, never from a request path.
     async fn repair_namespace_path_casing(
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<u64, CatalogBackendError> {
-        Self::repair_namespace_path_casing_impl(transaction).await
+        let repaired = Self::repair_namespace_path_casing_impl(transaction.transaction()).await?;
+        if repaired > 0 {
+            transaction
+                .changes()
+                .insert_whole_domain(CacheDomain::Namespace);
+        }
+        Ok(repaired)
     }
 }
 

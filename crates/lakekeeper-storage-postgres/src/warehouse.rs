@@ -1731,7 +1731,7 @@ pub mod test {
     }
 
     /// The change-log rows `transaction` adds when it commits, as `(domain, sorted keys)`.
-    async fn committed_changes(
+    pub async fn committed_changes(
         transaction: WriteTransaction<PostgresBackend>,
         pool: &sqlx::PgPool,
     ) -> Vec<(String, Vec<String>)> {
@@ -1754,7 +1754,8 @@ pub mod test {
             .collect()
     }
 
-    fn change(domain: &str, keys: &[&str]) -> (String, Vec<String>) {
+    /// A change-log row as [`committed_changes`] returns it.
+    pub fn change(domain: &str, keys: &[&str]) -> (String, Vec<String>) {
         let mut keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
         keys.sort();
         (domain.to_string(), keys)
