@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO endpoint_statistics (project_id, warehouse_id, matched_path, status_code, count, timestamp)\n                        SELECT\n                            project_id,\n                            warehouse,\n                            uri,\n                            status_code,\n                            cnt,\n                            get_stats_date_default()\n                        FROM unnest(\n                                $1::text[],\n                                $2::UUID[],\n                                $3::text[],\n                                $4::INT[],\n                                $5::BIGINT[]\n                            ) AS u(project_id, warehouse, uri, status_code, cnt)\n                        ON CONFLICT (project_id, warehouse_id, matched_path, status_code, timestamp)\n                            DO UPDATE SET count = endpoint_statistics.count + EXCLUDED.count",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray",
+        "TextArray",
+        "Int4Array",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de50f712afed17458494add7ed87c3f07aa9ff3d8dd04a177694ce6c08a29bdf"
+}
