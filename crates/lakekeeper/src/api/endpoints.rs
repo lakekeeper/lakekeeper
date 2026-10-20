@@ -1123,6 +1123,7 @@ mod test {
         "management-v1-list-warehouse-subtree-grants",
         "management-v1-revoke-warehouse-subtree-grants",
         "management-v1-set-maintenance-mode",
+        "management-v1-update-warehouse-rollback-compaction-policy",
     ];
 
     #[test]
