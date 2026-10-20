@@ -77,8 +77,8 @@ pub struct UpdateWarehouseFormatVersionPolicyEvent {
 #[derive(Clone, Debug)]
 pub struct SetWarehouseRollbackCompactionPolicyEvent {
     pub requested_enabled: bool,
-    pub updated_warehouse: Arc<ResolvedWarehouse>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// Event emitted when warehouse storage configuration is updated
@@ -201,7 +201,7 @@ impl
     pub(crate) fn emit_warehouse_rollback_compaction_policy_set(
         self,
         requested_enabled: bool,
-        updated_warehouse: Arc<ResolvedWarehouse>,
+        updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = SetWarehouseRollbackCompactionPolicyEvent {
             requested_enabled,

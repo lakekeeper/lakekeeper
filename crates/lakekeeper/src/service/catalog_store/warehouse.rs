@@ -1115,8 +1115,7 @@ where
         warehouse_id: WarehouseId,
         enabled: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> std::result::Result<Arc<ResolvedWarehouse>, SetWarehouseRollbackCompactionPolicyError>
-    {
+    ) -> std::result::Result<ArcResolvedWarehouse, SetWarehouseRollbackCompactionPolicyError> {
         Self::set_warehouse_rollback_compaction_policy_impl(warehouse_id, enabled, transaction)
             .await
             .map(Arc::new)
