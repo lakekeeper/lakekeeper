@@ -26,7 +26,7 @@ use lakekeeper::{
     server::CatalogServer,
     service::{
         ArcProjectId, CatalogNamespaceOps, CreateNamespaceResponse, NamespaceWithParent, State,
-        UserId,
+        UserId, WriteTransaction,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
         events::EventDispatcher,
@@ -246,8 +246,8 @@ pub async fn setup_with_registry<T: Authorizer>(
 }
 
 /// Make a transaction that updates or deletes a warehouse or namespace fail to commit unless
-/// it recorded a cache change of that domain. A transaction that sets `lakekeeper_test.unrecorded_write` to
-/// `on` is exempt.
+/// it recorded a cache change of that domain. A transaction that sets
+/// `lakekeeper_test.unrecorded_write` to `on` is exempt.
 pub async fn require_cache_changes(pool: &PgPool) {
     sqlx::raw_sql(
         r"
@@ -277,6 +277,42 @@ pub async fn require_cache_changes(pool: &PgPool) {
     .execute(pool)
     .await
     .unwrap();
+}
+
+/// The id of the newest change-log row, or 0 if the log is empty.
+pub async fn change_log_head(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM cache_change_log")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// The change-log rows `transaction` adds when it commits, as `(domain, sorted keys)`.
+pub async fn committed_changes(
+    transaction: WriteTransaction<PostgresBackend>,
+    pool: &PgPool,
+) -> Vec<(String, Vec<String>)> {
+    let before = change_log_head(pool).await;
+    transaction.commit().await.unwrap();
+    let rows: Vec<(String, Vec<String>)> =
+        sqlx::query_as("SELECT domain, keys FROM cache_change_log WHERE id > $1 ORDER BY id")
+            .bind(before)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    rows.into_iter()
+        .map(|(domain, mut keys)| {
+            keys.sort();
+            (domain, keys)
+        })
+        .collect()
+}
+
+/// A change-log row as [`committed_changes`] returns it.
+pub fn change(domain: &str, keys: &[&str]) -> (String, Vec<String>) {
+    let mut keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
+    keys.sort();
+    (domain.to_string(), keys)
 }
 
 pub async fn get_api_context<T: Authorizer>(

@@ -778,8 +778,11 @@ pub enum CachePolicy {
 /// A warehouse as [`CatalogStore::delete_warehouse_impl`] removed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeletedWarehouse {
+    /// The project the warehouse belonged to.
     pub project_id: ProjectId,
+    /// The name of the warehouse.
     pub name: String,
+    /// The storage secret the warehouse referenced.
     pub storage_secret_id: Option<SecretId>,
 }
 
@@ -791,10 +794,10 @@ pub struct RenamedWarehouse {
     pub previous_name: String,
 }
 
-/// A warehouse after its storage profile was replaced.
+/// A warehouse after its storage profile and secret were replaced.
 #[derive(Debug, Clone, PartialEq)]
-pub struct UpdatedStorageProfile {
-    pub warehouse: Arc<ResolvedWarehouse>,
+pub struct UpdatedWarehouseStorage {
+    pub warehouse: ResolvedWarehouse,
     /// The storage secret the update replaced.
     pub previous_secret_id: Option<SecretId>,
 }
@@ -813,9 +816,7 @@ where
         let warehouse =
             Self::create_warehouse_impl(project_id, request, transaction.transaction()).await?;
         // A caller can choose the id, so it may name a warehouse that was deleted.
-        transaction
-            .changes()
-            .insert(CacheKey::Warehouse(warehouse.warehouse_id));
+        transaction.record(CacheKey::Warehouse(warehouse.warehouse_id));
         Ok(Arc::new(warehouse))
     }
 
@@ -831,9 +832,7 @@ where
             transaction.transaction(),
         )
         .await?;
-        transaction
-            .changes()
-            .insert(CacheKey::Warehouse(warehouse_id));
+        transaction.record(CacheKey::Warehouse(warehouse_id));
         Ok(Arc::new(warehouse))
     }
 
@@ -870,12 +869,11 @@ where
             name,
             storage_secret_id,
         } = Self::delete_warehouse_impl(warehouse_id, query, transaction.transaction()).await?;
-        let changes = transaction.changes();
-        changes
-            .insert(CacheKey::Warehouse(warehouse_id))
-            .insert(CacheKey::WarehouseName { project_id, name });
+        transaction
+            .record(CacheKey::Warehouse(warehouse_id))
+            .record(CacheKey::WarehouseName { project_id, name });
         if let Some(secret_id) = storage_secret_id {
-            changes.insert(CacheKey::Secret(secret_id));
+            transaction.record(CacheKey::Secret(secret_id));
         }
         Ok(storage_secret_id)
     }
@@ -891,9 +889,8 @@ where
             previous_name,
         } = Self::rename_warehouse_impl(warehouse_id, new_name, transaction.transaction()).await?;
         transaction
-            .changes()
-            .insert(CacheKey::Warehouse(warehouse_id))
-            .insert(CacheKey::WarehouseName {
+            .record(CacheKey::Warehouse(warehouse_id))
+            .record(CacheKey::WarehouseName {
                 project_id: warehouse.project_id.as_ref().clone(),
                 name: previous_name,
             });
@@ -1099,9 +1096,7 @@ where
             transaction.transaction(),
         )
         .await?;
-        transaction
-            .changes()
-            .insert(CacheKey::Warehouse(warehouse_id));
+        transaction.record(CacheKey::Warehouse(warehouse_id));
         Ok(Arc::new(warehouse))
     }
 
@@ -1113,9 +1108,7 @@ where
         let warehouse =
             Self::set_warehouse_status_impl(warehouse_id, status, transaction.transaction())
                 .await?;
-        transaction
-            .changes()
-            .insert(CacheKey::Warehouse(warehouse_id));
+        transaction.record(CacheKey::Warehouse(warehouse_id));
         Ok(Arc::new(warehouse))
     }
 
@@ -1125,7 +1118,7 @@ where
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretId>,
         transaction: &mut WriteTransaction<Self>,
-    ) -> Result<UpdatedStorageProfile, UpdateWarehouseStorageProfileError> {
+    ) -> Result<UpdatedWarehouseStorage, UpdateWarehouseStorageProfileError> {
         let updated = Self::update_storage_profile_impl(
             warehouse_id,
             storage_profile,
@@ -1133,10 +1126,9 @@ where
             transaction.transaction(),
         )
         .await?;
-        let changes = transaction.changes();
-        changes.insert(CacheKey::Warehouse(warehouse_id));
+        transaction.record(CacheKey::Warehouse(warehouse_id));
         if let Some(secret_id) = updated.previous_secret_id {
-            changes.insert(CacheKey::Secret(secret_id));
+            transaction.record(CacheKey::Secret(secret_id));
         }
         Ok(updated)
     }
@@ -1149,9 +1141,7 @@ where
         let warehouse =
             Self::set_warehouse_protected_impl(warehouse_id, protect, transaction.transaction())
                 .await?;
-        transaction
-            .changes()
-            .insert(CacheKey::Warehouse(warehouse_id));
+        transaction.record(CacheKey::Warehouse(warehouse_id));
         Ok(Arc::new(warehouse))
     }
 
@@ -1167,9 +1157,7 @@ where
             transaction.transaction(),
         )
         .await?;
-        transaction
-            .changes()
-            .insert(CacheKey::Warehouse(warehouse_id));
+        transaction.record(CacheKey::Warehouse(warehouse_id));
         Ok(Arc::new(warehouse))
     }
 }

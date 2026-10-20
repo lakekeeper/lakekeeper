@@ -60,7 +60,7 @@ use lakekeeper::{
         TagAttachmentFilter, TagDefinition, TagDefinitionId, TagId, TagSource, TagTarget,
         TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
         UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
-        UpdateWarehouseStorageProfileError, UpdatedStorageProfile, UserMembershipEntry,
+        UpdateWarehouseStorageProfileError, UpdatedWarehouseStorage, UserMembershipEntry,
         UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
         WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
@@ -1184,7 +1184,7 @@ impl CatalogStore for super::PostgresBackend {
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<UpdatedStorageProfile, UpdateWarehouseStorageProfileError> {
+    ) -> std::result::Result<UpdatedWarehouseStorage, UpdateWarehouseStorageProfileError> {
         update_storage_profile(
             warehouse_id,
             storage_profile,

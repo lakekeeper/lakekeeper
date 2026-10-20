@@ -1151,7 +1151,7 @@ where
             .map(|u| (*u.user_id).clone())
             .collect();
         // Also after a failed commit, which may have landed.
-        role_assignments_cache::run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = t.commit().await;
             role_assignments_cache::user_assignments_cache_invalidate_many(&changed_users).await;
             committed
@@ -1270,7 +1270,7 @@ where
         let user_id = Arc::clone(user.user_id);
         let cached = Arc::clone(&list_result);
         // A failed commit may have landed, so it removes the user's entry.
-        role_assignments_cache::run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = t.commit().await;
             if committed.is_ok() {
                 role_assignments_cache::USER_ASSIGNMENTS_CACHE
@@ -1388,7 +1388,7 @@ where
         let added = result.added.clone();
         // A failed commit may have landed, so it still invalidates the users read
         // before it.
-        role_assignments_cache::run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = t.commit().await;
             let affected = if committed.is_ok() {
                 membership_edge_affected_users_after_commit::<Self>(affected, &added, catalog_state)
@@ -1427,7 +1427,7 @@ where
             .map_err(ErrorModel::from)?;
 
         let removed = result.removed.clone();
-        role_assignments_cache::run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = t.commit().await;
             let affected = if committed.is_ok() {
                 membership_edge_affected_users_after_commit::<Self>(
@@ -1495,7 +1495,7 @@ where
         // Post-commit, in-memory. Only the newly-assigned users are affected.
         let added = result.added.clone();
         // Also after a failed commit, which may have landed.
-        role_assignments_cache::run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = t.commit().await;
             role_assignments_cache::user_assignments_cache_invalidate_many(&added).await;
             committed
@@ -1518,7 +1518,7 @@ where
 
         let removed = result.removed.clone();
         // Also after a failed commit, which may have landed.
-        role_assignments_cache::run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = t.commit().await;
             role_assignments_cache::user_assignments_cache_invalidate_many(&removed).await;
             committed
@@ -1578,7 +1578,7 @@ where
         let added_users = user_result.added.clone();
         let added_roles = role_result.added.clone();
         // Also after a failed commit, which may have landed.
-        role_assignments_cache::run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = t.commit().await;
             let edge_affected = if committed.is_ok() {
                 membership_edge_affected_users_after_commit::<Self>(

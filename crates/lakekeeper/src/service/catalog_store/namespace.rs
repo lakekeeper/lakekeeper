@@ -1300,8 +1300,8 @@ where
     }
 
     /// Drop a namespace. A recursive drop also drops its children; only the dropped
-    /// namespace is recorded as changed, because a cached child without its parent is
-    /// dropped on its next lookup.
+    /// namespace is recorded as changed, because a cached child is not served without its
+    /// cached parents.
     async fn drop_namespace(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -1311,9 +1311,7 @@ where
         let drop_info =
             Self::drop_namespace_impl(warehouse_id, namespace_id, flags, transaction.transaction())
                 .await?;
-        transaction
-            .changes()
-            .insert(CacheKey::Namespace(namespace_id));
+        transaction.record(CacheKey::Namespace(namespace_id));
         Ok(drop_info)
     }
 
@@ -1330,9 +1328,7 @@ where
             transaction.transaction(),
         )
         .await?;
-        transaction
-            .changes()
-            .insert(CacheKey::Namespace(namespace_id));
+        transaction.record(CacheKey::Namespace(namespace_id));
         Ok(namespace)
     }
 
@@ -1349,9 +1345,7 @@ where
             transaction.transaction(),
         )
         .await?;
-        transaction
-            .changes()
-            .insert(CacheKey::Namespace(namespace_id));
+        transaction.record(CacheKey::Namespace(namespace_id));
         Ok(namespace)
     }
 
@@ -1373,9 +1367,8 @@ where
         .await?;
         if !moved.is_noop() {
             transaction
-                .changes()
-                .insert(CacheKey::Namespace(namespace_id))
-                .insert(CacheKey::NamespaceIdent {
+                .record(CacheKey::Namespace(namespace_id))
+                .record(CacheKey::NamespaceIdent {
                     warehouse_id,
                     ident: moved.previous_ident.clone(),
                 });
@@ -1391,9 +1384,7 @@ where
     ) -> Result<u64, CatalogBackendError> {
         let repaired = Self::repair_namespace_path_casing_impl(transaction.transaction()).await?;
         if repaired > 0 {
-            transaction
-                .changes()
-                .insert_whole_domain(CacheDomain::Namespace);
+            transaction.record_whole_domain(CacheDomain::Namespace);
         }
         Ok(repaired)
     }

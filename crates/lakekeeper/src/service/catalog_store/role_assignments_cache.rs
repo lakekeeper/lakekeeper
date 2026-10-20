@@ -14,7 +14,6 @@ use moka::{
     future::Cache,
     ops::compute::{CompResult, Op},
 };
-use tracing::Instrument;
 
 use crate::{
     CONFIG,
@@ -413,22 +412,6 @@ where
     }
 }
 
-/// Run `step` on a task of its own, in the caller's tracing span, and wait for it.
-/// A caller dropped while it waits leaves the task running, so a cancelled request
-/// cannot separate a commit from the cache updates and events that follow it.
-pub(crate) async fn run_to_completion<T: Send + 'static>(
-    step: impl std::future::Future<Output = T> + Send + 'static,
-) -> T {
-    match tokio::spawn(step.in_current_span()).await {
-        Ok(output) => output,
-        Err(error) => match error.try_into_panic() {
-            Ok(panic) => std::panic::resume_unwind(panic),
-            // Only a runtime shutdown cancels the task, and it drops this caller too.
-            Err(error) => panic!("post-commit step did not finish: {error}"),
-        },
-    }
-}
-
 // ============================================================================
 // User assignments cache  (UserId → Arc<ListUserRoleAssignmentsResult>)
 // ============================================================================
@@ -780,7 +763,7 @@ mod tests {
         let invalidations_before = cache.invalidations(key);
         let cache = Arc::clone(cache);
         let key = key.clone();
-        run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = commit.await;
             if committed.is_ok() {
                 cache

@@ -1024,7 +1024,7 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
     // Post-commit, in-memory: the role and its assignments are gone, so the role's
     // own entry and each affected user's effective-roles entry are stale. A failed
     // commit may have landed, so it clears them too.
-    role_assignments_cache::run_to_completion(async move {
+    crate::service::run_to_completion(async move {
         let committed = t.commit().await;
         role_cache::role_cache_invalidate(role_id).await;
         role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
@@ -1107,7 +1107,7 @@ async fn apply_update_role_source_system<C: CatalogStore>(
     let role = C::set_role_source_system(project_id, role_id, &request, t.transaction()).await?;
     // The role's own entry carries the old ident too. A failed commit may have
     // landed, so it clears the entries as well.
-    role_assignments_cache::run_to_completion(async move {
+    crate::service::run_to_completion(async move {
         let committed = t.commit().await;
         role_cache::role_cache_invalidate(role_id).await;
         role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;

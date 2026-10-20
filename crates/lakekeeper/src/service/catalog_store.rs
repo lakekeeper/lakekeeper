@@ -9,6 +9,7 @@ use moka::{
     future::Cache,
     ops::compute::{CompResult, Op},
 };
+use tracing::Instrument;
 
 use super::{
     GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, TagDefinitionId, TagId,
@@ -44,8 +45,8 @@ use crate::{
             SubtreeGrantRoot, UserOrRoleId,
         },
         cache_invalidation::{
-            BoxedCacheChangeLog, ChangeLogSettings, ChangeSet, PruneOutcome, PruneSettings,
-            evict_locally,
+            BoxedCacheChangeLog, CacheDomain, CacheKey, ChangeLogSettings, ChangeSet, PruneOutcome,
+            PruneSettings, evict_locally,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -265,6 +266,22 @@ impl<S, T: Send> StateOrTransaction<S, T> for CommittedReads<T> {
     }
 }
 
+/// Run `step` on a task of its own, in the caller's tracing span, and wait for it.
+/// A caller dropped while it waits leaves the task running, so a cancelled request
+/// cannot separate a commit from the cache updates and events that follow it.
+pub(crate) async fn run_to_completion<T: Send + 'static>(
+    step: impl std::future::Future<Output = T> + Send + 'static,
+) -> T {
+    match tokio::spawn(step.in_current_span()).await {
+        Ok(output) => output,
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            // Only a runtime shutdown cancels the task, and it drops this caller too.
+            Err(error) => panic!("post-commit step did not finish: {error}"),
+        },
+    }
+}
+
 /// A transaction started with [`Transaction::begin_read`]. It cannot write, so at the default
 /// isolation level each of its statements sees only committed data.
 pub struct ReadTransaction<C: CatalogStore>(C::Transaction);
@@ -332,9 +349,16 @@ impl<C: CatalogStore> WriteTransaction<C> {
         self.transaction.transaction()
     }
 
-    /// The cache keys the writes of this transaction changed.
-    pub fn changes(&mut self) -> &mut ChangeSet {
-        &mut self.changes
+    /// Record that this transaction changes the cache entry `key`.
+    pub fn record(&mut self, key: CacheKey) -> &mut Self {
+        self.changes.insert(key);
+        self
+    }
+
+    /// Record that this transaction changes every entry of `domain`.
+    pub fn record_whole_domain(&mut self, domain: CacheDomain) -> &mut Self {
+        self.changes.insert_whole_domain(domain);
+        self
     }
 
     /// Record the changed keys, commit, and evict the keys from this instance's caches,
@@ -347,7 +371,7 @@ impl<C: CatalogStore> WriteTransaction<C> {
             mut transaction,
             changes,
         } = self;
-        role_assignments_cache::run_to_completion(async move {
+        run_to_completion(async move {
             let committed = async {
                 C::record_cache_changes_impl(&changes, transaction.transaction())
                     .await
@@ -359,6 +383,19 @@ impl<C: CatalogStore> WriteTransaction<C> {
             committed
         })
         .await
+    }
+
+    /// Record the changed keys and commit, as another instance does: this instance keeps
+    /// its cached entries until its poller reads the change log.
+    ///
+    /// # Errors
+    /// Returns an error if recording the keys or the commit fails.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn commit_as_another_instance(mut self) -> Result<()> {
+        C::record_cache_changes_impl(&self.changes, self.transaction.transaction())
+            .await
+            .map_err(ErrorModel::from)?;
+        self.transaction.commit().await
     }
 
     /// Roll back. Nothing changed, so nothing is recorded or evicted.
@@ -627,7 +664,7 @@ where
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<UpdatedStorageProfile, UpdateWarehouseStorageProfileError>;
+    ) -> std::result::Result<UpdatedWarehouseStorage, UpdateWarehouseStorageProfileError>;
 
     async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,

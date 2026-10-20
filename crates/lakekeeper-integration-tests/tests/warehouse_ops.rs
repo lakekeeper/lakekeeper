@@ -14,14 +14,12 @@ use lakekeeper::{
     },
     service::{
         CachePolicy, CatalogCreateWarehouseRequest, CatalogStore, CatalogWarehouseOps, ManagedBy,
-        Transaction, UserId, WarehouseStatus, WriteTransaction,
-        authz::AllowAllAuthorizer,
-        cache_invalidation::{CacheKey, ChangeSet},
+        Transaction, UserId, WarehouseStatus, WriteTransaction, authz::AllowAllAuthorizer,
         warehouse_cache::WAREHOUSE_CACHE,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
-use lakekeeper_storage_postgres::{CatalogState, PostgresBackend, PostgresTransaction};
+use lakekeeper_storage_postgres::{CatalogState, PostgresBackend};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -934,20 +932,13 @@ async fn set_delete_profile_on_another_instance(
     warehouse_id: WarehouseId,
     profile: &TabularDeleteProfile,
 ) {
-    let mut transaction = PostgresTransaction::begin_write(catalog).await.unwrap();
-    PostgresBackend::set_warehouse_deletion_profile_impl(
-        warehouse_id,
-        profile,
-        transaction.transaction(),
-    )
-    .await
-    .unwrap();
-    let mut changes = ChangeSet::new();
-    changes.insert(CacheKey::Warehouse(warehouse_id));
-    PostgresBackend::record_cache_changes_impl(&changes, transaction.transaction())
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(catalog)
         .await
         .unwrap();
-    transaction.commit().await.unwrap();
+    PostgresBackend::set_warehouse_deletion_profile(warehouse_id, profile, &mut transaction)
+        .await
+        .unwrap();
+    transaction.commit_as_another_instance().await.unwrap();
 }
 
 #[sqlx::test]

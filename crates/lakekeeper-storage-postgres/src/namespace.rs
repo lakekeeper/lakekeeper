@@ -3843,7 +3843,7 @@ pub mod tests {
     async fn namespace_writes_record_their_cache_keys(pool: sqlx::PgPool) {
         use lakekeeper::service::cache_invalidation::CacheKey;
 
-        use crate::warehouse::test::{change, committed_changes};
+        use crate::test_utils::{change, committed_changes};
 
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;

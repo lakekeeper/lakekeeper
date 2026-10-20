@@ -12,15 +12,15 @@ use lakekeeper::{
         },
     },
     service::{
-        AllowedFormatVersions, CatalogBackendError, CatalogCreateWarehouseError,
-        CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError,
-        CatalogGetWarehouseByNameError, CatalogListWarehousesError, CatalogRenameWarehouseError,
-        CatalogRoleOps, DatabaseIntegrityError, DeletedWarehouse, EnsureWarehouseSpecMutableError,
+        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogCreateWarehouseRequest,
+        CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
+        CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogRoleOps,
+        DatabaseIntegrityError, DeletedWarehouse, EnsureWarehouseSpecMutableError,
         GetProjectResponse, ManagedBy, ProjectIdNotFoundError, RenamedWarehouse, ResolvedWarehouse,
         SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
         SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
         StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
-        UpdatedStorageProfile, WarehouseAlreadyExists, WarehouseFormatVersionPolicy,
+        UpdatedWarehouseStorage, WarehouseAlreadyExists, WarehouseFormatVersionPolicy,
         WarehouseHasUnfinishedTasks, WarehouseIdAlreadyExists, WarehouseIdNotFound,
         WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
         WarehouseVersion, registered_system_roles, storage::StorageProfile,
@@ -563,54 +563,37 @@ pub(crate) async fn delete_warehouse(
         .into());
     }
 
-    // The removed row's project, name and secret come back from the DELETE itself, so
-    // they describe exactly the row that was removed: a read before the transaction
-    // could name a credential a concurrent rotation already replaced.
+    // The row stays locked until the transaction ends, so the protection checked here and
+    // the project, name and secret the DELETE returns all describe the row it removes.
+    let protected = sqlx::query_scalar!(
+        "SELECT protected FROM warehouse WHERE warehouse_id = $1 FOR UPDATE",
+        *warehouse_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
+    .ok_or_else(|| WarehouseIdNotFound::new(warehouse_id))?;
+    if protected && !force {
+        return Err(WarehouseProtected::new().into());
+    }
+
     let deleted = sqlx::query!(
-        r#"WITH delete_info as (
-               SELECT protected FROM warehouse w WHERE w.warehouse_id = $1
-           ),
-           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND (not protected OR $2)
-                       RETURNING project_id, warehouse_name, storage_secret_id)
-           SELECT protected as "protected!",
-                  (SELECT project_id FROM deleted) as "project_id",
-                  (SELECT warehouse_name FROM deleted) as "warehouse_name",
-                  (SELECT storage_secret_id FROM deleted) as "storage_secret_id"
-           FROM delete_info"#,
-        *warehouse_id,
-        force
+        r#"DELETE FROM warehouse WHERE warehouse_id = $1
+           RETURNING project_id, warehouse_name, storage_secret_id"#,
+        *warehouse_id
     )
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| match &e {
-        sqlx::Error::RowNotFound => {
-            CatalogDeleteWarehouseError::from(WarehouseIdNotFound::new(warehouse_id))
-        }
-        sqlx::Error::Database(db_error) => {
-            if db_error.is_foreign_key_violation() {
-                WarehouseNotEmpty::new().into()
-            } else {
-                e.into_catalog_backend_error().into()
-            }
+        sqlx::Error::Database(db_error) if db_error.is_foreign_key_violation() => {
+            CatalogDeleteWarehouseError::from(WarehouseNotEmpty::new())
         }
         _ => e.into_catalog_backend_error().into(),
     })?;
 
-    if deleted.protected && !force {
-        return Err(WarehouseProtected::new().into());
-    }
-    let (Some(project_id), Some(name)) = (deleted.project_id, deleted.warehouse_name) else {
-        return Err(
-            CatalogBackendError::new_unexpected(DatabaseIntegrityError::new(
-                "The warehouse delete removed no row.",
-            ))
-            .into(),
-        );
-    };
-
     Ok(DeletedWarehouse {
-        project_id: ProjectId::from_db_unchecked(project_id),
-        name,
+        project_id: ProjectId::from_db_unchecked(deleted.project_id),
+        name: deleted.warehouse_name,
         storage_secret_id: deleted.storage_secret_id.map(Into::into),
     })
 }
@@ -872,7 +855,7 @@ pub(crate) async fn update_storage_profile(
     storage_profile: StorageProfile,
     storage_secret_id: Option<SecretId>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<UpdatedStorageProfile, UpdateWarehouseStorageProfileError> {
+) -> Result<UpdatedWarehouseStorage, UpdateWarehouseStorageProfileError> {
     let storage_profile_ser =
         serde_json::to_value(storage_profile).map_err(StorageProfileSerializationError::from)?;
 
@@ -920,8 +903,8 @@ pub(crate) async fn update_storage_profile(
         return Err(WarehouseIdNotFound::new(warehouse_id).into());
     };
 
-    Ok(UpdatedStorageProfile {
-        warehouse: Arc::new(warehouse.try_into()?),
+    Ok(UpdatedWarehouseStorage {
+        warehouse: warehouse.try_into()?,
         previous_secret_id: previous_secret_id.map(Into::into),
     })
 }
@@ -1095,7 +1078,10 @@ pub mod test {
     };
 
     use super::*;
-    use crate::{PostgresBackend, PostgresTransaction};
+    use crate::{
+        PostgresBackend, PostgresTransaction,
+        test_utils::{change, change_log_head, committed_changes},
+    };
 
     /// Simulate the post-migration steady state (Release N+1): unfreeze schema writes and make the
     /// legacy `table_schema.schema` column nullable, so the normalized-schema write path is
@@ -1730,37 +1716,6 @@ pub mod test {
         trx.commit().await.unwrap();
     }
 
-    /// The change-log rows `transaction` adds when it commits, as `(domain, sorted keys)`.
-    pub async fn committed_changes(
-        transaction: WriteTransaction<PostgresBackend>,
-        pool: &sqlx::PgPool,
-    ) -> Vec<(String, Vec<String>)> {
-        let (before,): (i64,) = sqlx::query_as("SELECT coalesce(max(id), 0) FROM cache_change_log")
-            .fetch_one(pool)
-            .await
-            .unwrap();
-        transaction.commit().await.unwrap();
-        let rows: Vec<(String, Vec<String>)> =
-            sqlx::query_as("SELECT domain, keys FROM cache_change_log WHERE id > $1 ORDER BY id")
-                .bind(before)
-                .fetch_all(pool)
-                .await
-                .unwrap();
-        rows.into_iter()
-            .map(|(domain, mut keys)| {
-                keys.sort();
-                (domain, keys)
-            })
-            .collect()
-    }
-
-    /// A change-log row as [`committed_changes`] returns it.
-    pub fn change(domain: &str, keys: &[&str]) -> (String, Vec<String>) {
-        let mut keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
-        keys.sort();
-        (domain.to_string(), keys)
-    }
-
     /// Every warehouse write records the cache keys it changes: the warehouse, the name it
     /// had, and the storage secret it replaced or removed.
     #[sqlx::test]
@@ -1936,15 +1891,9 @@ pub mod test {
         PostgresBackend::rename_warehouse(warehouse_id, "rolled-back", &mut t)
             .await
             .unwrap();
-        let (before,): (i64,) = sqlx::query_as("SELECT coalesce(max(id), 0) FROM cache_change_log")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let before = change_log_head(&pool).await;
         t.rollback().await.unwrap();
-        let (after,): (i64,) = sqlx::query_as("SELECT coalesce(max(id), 0) FROM cache_change_log")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let after = change_log_head(&pool).await;
         let cached_after_rollback = WAREHOUSE_CACHE.get(&warehouse_id).await.is_some();
 
         let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
@@ -1962,6 +1911,58 @@ pub mod test {
                 WAREHOUSE_CACHE.get(&warehouse_id).await.is_some()
             ),
             (0, true, false)
+        );
+    }
+
+    /// A commit that fails also evicts the written warehouse locally: whether the change
+    /// landed is unknown, and an eviction only costs a reload.
+    #[sqlx::test]
+    async fn a_failed_commit_still_evicts_locally(pool: sqlx::PgPool) {
+        use lakekeeper::service::warehouse_cache::WAREHOUSE_CACHE;
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
+        let (_, warehouse_id) =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+        sqlx::raw_sql(
+            r"
+            CREATE FUNCTION test_refuse_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                RAISE EXCEPTION 'commit refused';
+            END $$;
+            CREATE CONSTRAINT TRIGGER refuse_commit AFTER UPDATE ON warehouse
+                DEFERRABLE INITIALLY DEFERRED
+                FOR EACH ROW EXECUTE FUNCTION test_refuse_commit();
+            ",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        PostgresBackend::get_warehouse_by_id(
+            warehouse_id,
+            WarehouseStatus::active(),
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let cached_before = WAREHOUSE_CACHE.get(&warehouse_id).await.is_some();
+
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::rename_warehouse(warehouse_id, "refused", &mut t)
+            .await
+            .unwrap();
+        let committed = t.commit().await;
+
+        assert_eq!(
+            (
+                cached_before,
+                committed.is_err(),
+                WAREHOUSE_CACHE.get(&warehouse_id).await.is_some()
+            ),
+            (true, true, false)
         );
     }
 

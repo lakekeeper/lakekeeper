@@ -15,17 +15,14 @@ use lakekeeper::{
     server::CatalogServer,
     service::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CreateNamespaceRequest, NamespaceId,
-        NamespaceVersion, Transaction, WriteTransaction,
-        authz::AllowAllAuthorizer,
-        cache_invalidation::{CacheKey, ChangeSet},
+        NamespaceVersion, Transaction, WriteTransaction, authz::AllowAllAuthorizer,
         namespace_cache::NAMESPACE_CACHE,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
-use lakekeeper_storage_postgres::{CatalogState, PostgresBackend, PostgresTransaction};
+use lakekeeper_storage_postgres::{CatalogState, PostgresBackend};
 use sqlx::PgPool;
 
-/// Test basic namespace creation
 /// Update the properties as another instance does: the change is recorded, and this
 /// instance keeps its cached entry until its poller evicts it.
 async fn update_properties_on_another_instance(
@@ -34,23 +31,21 @@ async fn update_properties_on_another_instance(
     namespace_id: NamespaceId,
     properties: std::collections::HashMap<String, String>,
 ) {
-    let mut transaction = PostgresTransaction::begin_write(catalog).await.unwrap();
-    PostgresBackend::update_namespace_properties_impl(
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(catalog)
+        .await
+        .unwrap();
+    PostgresBackend::update_namespace_properties(
         warehouse_id,
         namespace_id,
         properties,
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
-    let mut changes = ChangeSet::new();
-    changes.insert(CacheKey::Namespace(namespace_id));
-    PostgresBackend::record_cache_changes_impl(&changes, transaction.transaction())
-        .await
-        .unwrap();
-    transaction.commit().await.unwrap();
+    transaction.commit_as_another_instance().await.unwrap();
 }
 
+/// Test basic namespace creation
 #[sqlx::test]
 async fn test_create_namespace(pool: PgPool) {
     let storage_profile = memory_io_profile();
@@ -1504,11 +1499,9 @@ async fn test_move_namespace_to_warehouse_root(pool: PgPool) {
 
 /// End-to-end: after a move, this replica resolves the new path and no longer the old one.
 ///
-/// Covers the common case, where a primary `NAMESPACE_CACHE` entry exists and moka's
-/// `Replaced` eviction cascade retires the stale ident on its own. It therefore does *not*
-/// pin `namespace_cache_invalidate_ident` — the case that needs it is a secondary-index
-/// entry outliving its primary entry, which the two caches' independent jittered TTLs allow
-/// and which `test_namespace_moved_retires_old_ident_without_primary_entry` covers directly.
+/// Covers the common case, where a primary `NAMESPACE_CACHE` entry exists. A secondary-index
+/// entry outliving its primary entry, which the two caches' independent jittered TTLs allow,
+/// is covered by `test_committed_move_retires_old_ident_without_primary_entry`.
 #[sqlx::test]
 async fn test_move_namespace_invalidates_cached_old_path(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;

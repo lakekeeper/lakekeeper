@@ -517,7 +517,7 @@ where
                 .ok();
         }
 
-        // Invalidates the pre-move path in this replica's namespace cache, among others.
+        // The commit evicted the pre-move path; listeners cache the moved namespace.
         event_ctx.emit_namespace_moved_async(moved);
 
         Ok(response)

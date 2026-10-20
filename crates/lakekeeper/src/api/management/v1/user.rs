@@ -583,7 +583,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // have landed, so it clears the entry too; only a commit announces.
         let deleted_user_id = user_id.clone();
         let request_metadata = event_ctx.request_metadata_arc();
-        crate::service::role_assignments_cache::run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = t.commit().await;
             crate::service::role_assignments_cache::user_assignments_cache_invalidate(
                 &deleted_user_id,

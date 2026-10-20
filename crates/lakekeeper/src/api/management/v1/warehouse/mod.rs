@@ -39,9 +39,9 @@ use crate::{
     service::{
         AllowedFormatVersions, ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId,
-        ResolvedWarehouse, State, TabularId, TabularListFlags, Transaction, UpdatedStorageProfile,
-        ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy, WarehouseSpecLocked,
-        WriteTransaction,
+        ResolvedWarehouse, State, TabularId, TabularListFlags, Transaction,
+        UpdatedWarehouseStorage, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy,
+        WarehouseSpecLocked, WriteTransaction,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
@@ -1770,11 +1770,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let UpdatedStorageProfile {
+        let UpdatedWarehouseStorage {
             warehouse: updated_warehouse,
             previous_secret_id: old_secret_id,
         } = C::update_storage_profile(warehouse_id, storage_profile, secret_id, &mut transaction)
             .await?;
+        let updated_warehouse = Arc::new(updated_warehouse);
 
         transaction.commit().await?;
 
@@ -1875,7 +1876,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let UpdatedStorageProfile {
+        let UpdatedWarehouseStorage {
             warehouse: updated_warehouse,
             previous_secret_id: old_secret_id,
         } = C::update_storage_profile(
@@ -1885,6 +1886,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &mut transaction,
         )
         .await?;
+        let updated_warehouse = Arc::new(updated_warehouse);
 
         transaction.commit().await?;
 
