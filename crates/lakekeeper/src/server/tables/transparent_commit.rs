@@ -67,6 +67,9 @@ pub(crate) enum ReapRejection {
     NoConflict,
     /// The writer's updates are not a single clean snapshot append to the asserted branch.
     UnexpectedUpdateShape,
+    /// The writer's snapshot is an `append` or `replace`. Neither depends on the files a
+    /// compaction rewrote, so the writer succeeds by retrying on top of the compaction.
+    WriterOperationRetriesCleanly,
     /// A snapshot in the gap is not a rollbackable compaction snapshot (stop at first real commit).
     NonRollbackableInGap,
     /// The gap is empty, broken, or the expected base is not an ancestor of the tip.
@@ -170,6 +173,14 @@ fn plan_compaction_reap_inner(
     // clean append to `expected_base`.
     if added_snapshot.parent_snapshot_id() != Some(expected_base) {
         return Err(ReapRejection::UnexpectedUpdateShape);
+    }
+    // Only an `overwrite` or `delete` can reference files the compaction rewrote (row-level
+    // deletes, merge-on-read updates) and so fail validation on every retry.
+    match added_snapshot.summary().operation {
+        Operation::Overwrite | Operation::Delete => {}
+        Operation::Append | Operation::Replace => {
+            return Err(ReapRejection::WriterOperationRetriesCleanly);
+        }
     }
 
     // 3. Walk the gap from the tip back to the expected base. Every snapshot in between must be
@@ -370,7 +381,7 @@ mod tests {
         commit(after_a, snapshot(2, Some(1), 2, 2000, c_op, markers))
     }
 
-    /// A clean single-snapshot writer append asserting base snapshot `expected` on `main`.
+    /// A clean single-snapshot row-level delete asserting base snapshot `expected` on `main`.
     fn writer(expected: i64, new_id: i64, seq: i64) -> (Vec<TableRequirement>, Vec<TableUpdate>) {
         let reqs = vec![TableRequirement::RefSnapshotIdMatch {
             r#ref: MAIN.to_string(),
@@ -538,5 +549,31 @@ mod tests {
         // Writer's snapshot reuses seq 1, which is not greater than the rewound base's seq.
         let (reqs, updates) = writer(1, 3, 1);
         assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+    }
+
+    #[test]
+    fn declines_writer_append_or_replace() {
+        let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
+        for op in [Operation::Append, Operation::Replace] {
+            let (reqs, mut updates) = writer(1, 3, 2);
+            updates[0] = TableUpdate::AddSnapshot {
+                snapshot: snapshot(3, Some(1), 2, 3000, op.clone(), &[]),
+            };
+            assert_eq!(
+                plan_compaction_reap_inner(&md, &reqs, &updates),
+                Err(ReapRejection::WriterOperationRetriesCleanly),
+                "{op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reaps_for_writer_overwrite() {
+        let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
+        let (reqs, mut updates) = writer(1, 3, 2);
+        updates[0] = TableUpdate::AddSnapshot {
+            snapshot: snapshot(3, Some(1), 2, 3000, Operation::Overwrite, &[]),
+        };
+        assert!(plan_compaction_reap(&md, &reqs, &updates).is_some());
     }
 }
