@@ -21,9 +21,11 @@ use crate::{
         impl_error_stack_methods, impl_from_with_detail,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, ResolvedTaskEntity, Task, TaskAttemptId, TaskCheckState,
-            TaskDetailsScope, TaskFilter, TaskId, TaskInfo, TaskInput, TaskQueueName,
-            TaskResolveScope,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, ResolvedTaskEntity, RetryPolicy,
+            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInfo,
+            TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule, TaskScheduleFilter,
+            TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
+            UpsertTaskScheduleError, task_schedule::validate_task_schedule_interval,
         },
     },
 };
@@ -149,20 +151,26 @@ where
 {
     /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
     /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
+    ///
+    /// An attempt whose heartbeat timed out counts as failed: it is retried after `retry_policy`'s
+    /// backoff while retries remain, and otherwise moves to the log as failed. This includes an
+    /// attempt that was asked to stop.
     #[tracing::instrument(
         name = "catalog_pick_new_task",
-        skip(state, default_max_time_since_last_heartbeat)
+        skip(state, default_max_time_since_last_heartbeat, retry_policy)
     )]
     async fn pick_new_task(
         queue_name: &TaskQueueName,
         legacy_queue_names: &[&TaskQueueName],
         default_max_time_since_last_heartbeat: chrono::Duration,
+        retry_policy: RetryPolicy,
         state: Self::State,
     ) -> Result<Option<Task>> {
         Self::pick_new_task_impl(
             queue_name,
             legacy_queue_names,
             default_max_time_since_last_heartbeat,
+            retry_policy,
             state,
         )
         .await
@@ -176,13 +184,17 @@ where
         Self::record_task_success_impl(id, message, transaction).await
     }
 
+    /// Record a failed attempt. If `id.attempt` is below `max_retries`, the task is retried no
+    /// earlier than `retry_backoff` from now; otherwise it moves to the log as failed.
     async fn record_task_failure(
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
+        retry_backoff: chrono::Duration,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        Self::record_task_failure_impl(id, error_details, max_retries, transaction).await
+        Self::record_task_failure_impl(id, error_details, max_retries, retry_backoff, transaction)
+            .await
     }
 
     /// Cancel scheduled tasks matching the filter.
@@ -252,15 +264,14 @@ where
     /// Enqueue a single task to a task queue.
     ///
     /// There can only be a single active task for a (`entity_id`, `queue_name`) tuple.
-    /// Resubmitting a pending/running task will return a `None` instead of a new `TaskId`
+    /// Resubmitting while one is pending or running returns [`EnqueueOutcome::Existing`]
+    /// with that task's id and status.
     async fn enqueue_task(
         queue_name: &'static TaskQueueName,
         task: TaskInput,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskId>> {
-        Ok(Self::enqueue_tasks(queue_name, vec![task], transaction)
-            .await
-            .map(|v| v.into_iter().next())?)
+    ) -> Result<EnqueueOutcome> {
+        Self::enqueue_task_impl(queue_name, task, transaction).await
     }
 
     /// Enqueue a batch of tasks to a task queue.
@@ -341,6 +352,68 @@ where
         }
 
         Ok(tasks)
+    }
+
+    /// Move a pending task to `new_parent` and replace its `task_data`, in one write.
+    /// Returns `false` and changes nothing if the task is not pending.
+    async fn reparent_pending_task(
+        task_id: TaskId,
+        new_parent: TaskId,
+        task_data: serde_json::Value,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool> {
+        Self::reparent_pending_task_impl(task_id, new_parent, task_data, transaction).await
+    }
+
+    /// Create or update a task schedule. A changed interval or anchor, or enabling a disabled
+    /// schedule, moves `next_run_at` to the first tick at or after now; ticks passed over this
+    /// way are not counted in `missed_runs`, which is always kept. Fails for a schedule written
+    /// by a newer server version.
+    async fn upsert_task_schedule(
+        schedule: TaskScheduleUpsert,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<TaskSchedule, UpsertTaskScheduleError> {
+        validate_task_schedule_interval(schedule.interval)?;
+        Self::upsert_task_schedule_impl(schedule, transaction).await
+    }
+
+    /// List task schedules, ordered by `schedule_id`.
+    async fn list_task_schedules(
+        filter: &TaskScheduleFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskSchedule>, TaskScheduleStoreError> {
+        Self::list_task_schedules_impl(filter, transaction).await
+    }
+
+    /// Delete a task schedule. Tasks it already produced are left alone.
+    /// Returns whether it existed.
+    async fn delete_task_schedule(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool, TaskScheduleStoreError> {
+        Self::delete_task_schedule_impl(schedule_id, transaction).await
+    }
+
+    /// Start an extra run of a schedule now. `next_run_at` is not changed. If an instance is
+    /// already active, returns [`EnqueueOutcome::Existing`] with it. A disabled schedule can be
+    /// triggered.
+    async fn trigger_task_schedule(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome, TriggerTaskScheduleError> {
+        Self::trigger_task_schedule_impl(schedule_id, transaction).await
+    }
+
+    /// Insert one task for each of at most `limit` enabled, due schedules whose previous instance
+    /// has finished, and move each one's `next_run_at` to its first tick after now. Earlier due
+    /// ticks the task covers are added to `missed_runs`. A schedule whose previous instance is
+    /// still active stays due. Schedules locked by another transaction are left for the next
+    /// pass.
+    async fn materialize_due_task_schedules(
+        limit: i64,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<MaterializedTick>, TaskScheduleStoreError> {
+        Self::materialize_due_task_schedules_impl(limit, transaction).await
     }
 
     async fn set_task_queue_config(

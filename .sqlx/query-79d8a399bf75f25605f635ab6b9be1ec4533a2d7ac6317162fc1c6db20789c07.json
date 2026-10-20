@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.schedule_id, s.anchor, s.interval_seconds, s.next_run_at, now() AS \"now!\"\n        FROM task_schedule s\n        WHERE s.enabled\n            AND s.next_run_at <= now()\n            AND s.spec_version <= $2\n            AND NOT EXISTS (\n                SELECT 1\n                FROM task t\n                WHERE t.project_id = s.project_id\n                    AND t.warehouse_id IS NOT DISTINCT FROM s.warehouse_id\n                    AND t.entity_type = CASE WHEN s.warehouse_id IS NULL\n                        THEN 'project'::entity_type ELSE 'warehouse'::entity_type END\n                    AND t.entity_id = s.schedule_id\n                    AND t.queue_name = s.queue_name\n            )\n        ORDER BY s.next_run_at, s.schedule_id\n        LIMIT $1\n        FOR UPDATE OF s SKIP LOCKED\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schedule_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "schedule_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "anchor",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "anchor"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "interval_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "interval_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "next_run_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "next_run_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "now!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "79d8a399bf75f25605f635ab6b9be1ec4533a2d7ac6317162fc1c6db20789c07"
+}

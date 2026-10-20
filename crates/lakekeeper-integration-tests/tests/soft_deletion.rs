@@ -724,6 +724,7 @@ async fn scheduled_purge_task(table: &SoftDeletedTable, name: &str) -> TaskId {
     )
     .await
     .unwrap()
+    .inserted()
     .expect("a purge task is scheduled");
     t.commit().await.unwrap();
     task_id

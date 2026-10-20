@@ -29,7 +29,7 @@ use lakekeeper::{
             CancelTasksFilter, OnWarehouseDelete, QueueRegistration, QueueScope,
             ScheduleTaskMetadata, SpecializedTask, TaskCheckState, TaskConfig, TaskData,
             TaskEntity, TaskExecutionDetails, TaskId, TaskInput, TaskQueueName, TaskQueueRegistry,
-            UserScheduling, WarehouseTaskEntityId,
+            TaskScheduleUpsert, UserScheduling, WarehouseTaskEntityId,
         },
     },
 };
@@ -277,6 +277,7 @@ async fn enqueue_entity(
     )
     .await
     .unwrap()
+    .inserted()
     .unwrap();
     transaction.commit().await.unwrap();
     task_id
@@ -502,6 +503,7 @@ async fn test_delete_warehouse_cancels_before_locking_the_warehouse(pool: PgPool
     .await
     .expect("enqueueing does not wait for the delete")
     .unwrap()
+    .inserted()
     .unwrap();
     worker.commit().await.unwrap();
 
@@ -514,6 +516,72 @@ async fn test_delete_warehouse_cancels_before_locking_the_warehouse(pool: PgPool
         .await
         .unwrap();
     assert_eq!(task_rows(&pool, warehouse.warehouse_id).await, vec![]);
+}
+
+/// Schedules are deleted before the warehouse row is locked, so a materializer that holds a
+/// schedule row and then inserts its task finishes without deadlocking.
+#[sqlx::test]
+async fn test_delete_warehouse_deletes_schedules_before_locking_the_warehouse(pool: PgPool) {
+    let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 1).await;
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let schedule = PostgresBackend::upsert_task_schedule(
+        TaskScheduleUpsert::builder()
+            .project_id(warehouse.project_id.clone())
+            .warehouse_id(Some(warehouse.warehouse_id))
+            .queue_name(CANCEL_QUEUE.clone())
+            .schedule_key("nightly")
+            .interval(chrono::Duration::hours(1))
+            .build(),
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+
+    // The materializer locks the schedule row until it commits.
+    let mut materializer =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    sqlx::query("SELECT 1 FROM task_schedule WHERE schedule_id = $1 FOR UPDATE")
+        .bind(*schedule.schedule_id)
+        .execute(&mut **materializer.transaction())
+        .await
+        .unwrap();
+
+    let delete = tokio::spawn({
+        let ctx = ctx.clone();
+        let warehouse_id = warehouse.warehouse_id;
+        let query = DeleteWarehouseQuery::builder().build();
+        async move { delete_warehouse(&ctx, warehouse_id, query).await }
+    });
+    wait_for_a_lock_wait(&pool).await;
+
+    // The task's foreign-key check needs the warehouse row.
+    let tick = task_input(&warehouse.project_id, table_entity(warehouse.warehouse_id));
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        PostgresBackend::enqueue_task(&CANCEL_QUEUE, tick, materializer.transaction()),
+    )
+    .await
+    .expect("enqueueing does not wait for the delete")
+    .unwrap()
+    .inserted()
+    .unwrap();
+    materializer.commit().await.unwrap();
+
+    delete.await.unwrap().unwrap();
+    assert_eq!(task_rows(&pool, warehouse.warehouse_id).await, vec![]);
+    let schedules: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM task_schedule WHERE warehouse_id = $1")
+            .bind(*warehouse.warehouse_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schedules, 0);
 }
 
 #[sqlx::test]

@@ -150,6 +150,7 @@ mod test {
         )
         .await
         .unwrap()
+        .inserted()
         .unwrap();
         transaction.commit().await.unwrap();
         tx.send(task_id).await.unwrap();

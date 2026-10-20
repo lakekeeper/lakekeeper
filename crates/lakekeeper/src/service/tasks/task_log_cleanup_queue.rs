@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 
-use chrono::{DateTime, Duration, Timelike as _, Utc};
+use chrono::Duration;
+use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 #[cfg(feature = "open-api")]
@@ -13,11 +14,11 @@ use crate::{
     CancellationToken,
     api::Result,
     service::{
-        CatalogStore,
+        ArcProjectId, CatalogStore, CatalogTaskOps,
         catalog_store::Transaction,
         tasks::{
-            ScheduleTaskMetadata, SpecializedTask, TaskConfig, TaskData, TaskEntity,
-            TaskExecutionDetails,
+            SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails, TaskScheduleFilter,
+            TaskScheduleUpsert, UpsertTaskScheduleError,
         },
     },
 };
@@ -36,6 +37,7 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
 
 const DEFAULT_CLEANUP_PERIOD_DAYS: Duration = Duration::days(1);
 const DEFAULT_RETENTION_PERIOD_DAYS: Duration = Duration::days(90);
+const MAX_CLEANUP_PERIOD: Duration = super::MAX_TASK_SCHEDULE_INTERVAL;
 
 pub type TaskLogCleanupTask =
     SpecializedTask<TaskLogCleanupConfig, TaskLogCleanupPayload, TaskLogCleanupExecutionDetails>;
@@ -78,7 +80,7 @@ impl TaskLogCleanupPayload {
 #[serde(rename_all = "kebab-case")]
 pub struct TaskLogCleanupConfig {
     /// How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
-    /// If a value below 1 day is provided, it will be set to the default of 1 day.
+    /// Values below 1 day are raised to 1 day; values above 100 years are lowered to 100 years.
     #[cfg_attr(feature = "open-api", schema(example = "PT1H30M45.5S"))]
     #[serde(with = "crate::utils::time_conversion::iso8601_option_duration_serde")]
     cleanup_period: Option<Duration>,
@@ -96,6 +98,12 @@ impl TaskLogCleanupConfig {
                     "Specified cleanup_period {period} is below minimum of {DEFAULT_CLEANUP_PERIOD_DAYS}, using the minimum instead",
                 );
                 DEFAULT_CLEANUP_PERIOD_DAYS
+            }
+            Some(period) if period > MAX_CLEANUP_PERIOD => {
+                tracing::warn!(
+                    "Specified cleanup_period {period} is above maximum of {MAX_CLEANUP_PERIOD}, using the maximum instead",
+                );
+                MAX_CLEANUP_PERIOD
             }
             Some(period) => period,
             None => DEFAULT_CLEANUP_PERIOD_DAYS,
@@ -164,14 +172,128 @@ async fn instrumented_cleanup<C: CatalogStore>(catalog_state: C::State, task: &T
     }
 }
 
+/// Key of the schedule that runs task log cleanup for a project.
+pub const SCHEDULE_KEY: &str = "default";
+
+/// Create the task log cleanup schedule of a new project, with the default period and a
+/// [`spread_anchor`].
+///
+/// # Errors
+/// If the store fails.
+pub async fn create_project_schedule<C: CatalogStore>(
+    project_id: ArcProjectId,
+    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+) -> Result<()> {
+    upsert_project_schedule::<C>(
+        project_id,
+        DEFAULT_CLEANUP_PERIOD_DAYS,
+        Some(spread_anchor()),
+        transaction,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Up to one default period before now, so the cleanups of projects whose schedules are created
+/// together fall at different times. The first run is due within one default period.
+fn spread_anchor() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now()
+        - Duration::seconds(fastrand::i64(0..DEFAULT_CLEANUP_PERIOD_DAYS.num_seconds()))
+}
+
+/// Set the interval of the project's cleanup schedule from a new queue config.
+///
+/// # Errors
+/// If the config cannot be read or the store fails.
+pub(crate) async fn apply_queue_config<C: CatalogStore>(
+    project_id: ArcProjectId,
+    config: &serde_json::Value,
+    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+) -> Result<()> {
+    let config: TaskLogCleanupConfig = serde_json::from_value(config.clone()).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Invalid `{QN_STR}` queue config: {e}"),
+            "InvalidQueueConfig",
+            Some(Box::new(e)),
+        )
+    })?;
+    upsert_project_schedule::<C>(project_id, config.cleanup_period(), None, transaction).await?;
+    Ok(())
+}
+
+/// Give every project without a cleanup schedule one with the default period and a
+/// [`spread_anchor`].
+///
+/// # Errors
+/// If the store fails.
+pub(crate) async fn create_missing_project_schedules<C: CatalogStore>(
+    catalog_state: C::State,
+) -> Result<()> {
+    let mut t = C::Transaction::begin_write(catalog_state).await?;
+    let projects = C::list_projects(None, t.transaction()).await?;
+    let mut created = 0_usize;
+    for project in projects {
+        let existing = C::list_task_schedules(
+            &TaskScheduleFilter::builder()
+                .project_id(project.project_id.clone())
+                .queue_name(Some(QUEUE_NAME.clone()))
+                .schedule_key(SCHEDULE_KEY)
+                .build(),
+            t.transaction(),
+        )
+        .await?;
+        if existing.is_empty()
+            && upsert_project_schedule::<C>(
+                project.project_id,
+                DEFAULT_CLEANUP_PERIOD_DAYS,
+                Some(spread_anchor()),
+                t.transaction(),
+            )
+            .await?
+        {
+            created += 1;
+        }
+    }
+    t.commit().await?;
+    if created > 0 {
+        tracing::info!("Created `{QN_STR}` schedules for {created} projects");
+    }
+    Ok(())
+}
+
+/// Upsert the project's cleanup schedule; `None` keeps a stored anchor. A schedule written by a
+/// newer server version is left alone; returns whether the schedule was written.
+async fn upsert_project_schedule<C: CatalogStore>(
+    project_id: ArcProjectId,
+    interval: Duration,
+    anchor: Option<chrono::DateTime<chrono::Utc>>,
+    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+) -> Result<bool> {
+    let schedule = TaskScheduleUpsert::builder()
+        .project_id(project_id.clone())
+        .queue_name(QUEUE_NAME.clone())
+        .schedule_key(SCHEDULE_KEY)
+        .interval(interval)
+        .anchor(anchor)
+        .build();
+    match C::upsert_task_schedule(schedule, transaction).await {
+        Ok(_) => Ok(true),
+        Err(UpsertTaskScheduleError::TaskScheduleSpecVersionUnsupportedError(e)) => {
+            tracing::debug!("Leaving `{QN_STR}` schedule of project `{project_id}` alone: {e}");
+            Ok(false)
+        }
+        Err(e) => Err(e
+            .append_detail(format!(
+                "Failed to upsert `{QN_STR}` schedule for project `{project_id}`."
+            ))
+            .into()),
+    }
+}
+
 async fn cleanup_tasks<C: CatalogStore>(
     catalog_state: C::State,
     task: &TaskLogCleanupTask,
 ) -> Result<()> {
-    let cleanup_period = task.cleanup_period();
-    let schedule_date = calculate_next_schedule_date(cleanup_period);
-    let retention_period = task.retention_period();
-
     let project_id = task.task_metadata.project_id();
 
     let mut trx = C::Transaction::begin_write(catalog_state)
@@ -180,7 +302,7 @@ async fn cleanup_tasks<C: CatalogStore>(
             e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue."))
         })?;
 
-    C::cleanup_task_logs_older_than(trx.transaction(), retention_period, project_id)
+    C::cleanup_task_logs_older_than(trx.transaction(), task.retention_period(), project_id)
         .await
         .map_err(|e| {
             e.append_detail(format!(
@@ -189,45 +311,31 @@ async fn cleanup_tasks<C: CatalogStore>(
             ))
         })?;
 
-    let next_entity = match task.task_metadata.entity {
-        TaskEntity::Project => TaskEntity::Project,
-        TaskEntity::Warehouse { warehouse_id }
-        | TaskEntity::EntityInWarehouse { warehouse_id, .. } => {
-            TaskEntity::Warehouse { warehouse_id }
-        }
-    };
+    // A task without a schedule was enqueued by an older server: clean up, enqueue no successor.
+    // The upsert below creates the schedule if it is missing.
+    let message = task
+        .task_metadata
+        .schedule_id()
+        .is_none()
+        .then_some("Superseded by the project's task log cleanup schedule.");
 
-    task.record_success_in_transaction::<C>(trx.transaction(), None)
-        .await;
-
-    let scheduled_task = TaskLogCleanupTask::schedule_task::<C>(
-        ScheduleTaskMetadata {
-            project_id: task.task_metadata.project_id.clone(),
-            parent_task_id: Some(task.task_id()),
-            scheduled_for: Some(schedule_date),
-            entity: next_entity,
-        },
-        TaskLogCleanupPayload::new(),
+    // Keeps the schedule's interval in line with the queue config.
+    upsert_project_schedule::<C>(
+        project_id.clone(),
+        task.cleanup_period(),
+        None,
         trx.transaction(),
     )
     .await
     .map_err(|e| {
         e.append_detail(format!(
-            "Failed to queue next `{QN_STR}` task. Original Task id was `{}`.",
+            "Failed to update `{QN_STR}` schedule. Original Task id was `{}`.",
             task.task_id()
         ))
     })?;
-    if let Some(new_task_id) = scheduled_task {
-        tracing::debug!(
-            "Scheduled next `{QN_STR}` task with id `{new_task_id}` for project `{}` at `{schedule_date}`",
-            task.task_metadata.project_id(),
-        );
-    } else {
-        tracing::warn!(
-            "No next `{QN_STR}` task was scheduled for project `{}`. A scheduled cleanup task already exists.",
-            task.task_metadata.project_id()
-        );
-    }
+
+    task.record_success_in_transaction::<C>(trx.transaction(), message)
+        .await;
 
     trx.commit().await.map_err(|e| {
         tracing::error!("Failed to commit transaction for `{QN_STR}` task. {e}");
@@ -235,16 +343,6 @@ async fn cleanup_tasks<C: CatalogStore>(
     })?;
 
     Ok(())
-}
-
-fn calculate_next_schedule_date(cleanup_period: Duration) -> DateTime<Utc> {
-    let next_schedule = Utc::now() + cleanup_period;
-    // Round to full minute
-    next_schedule
-        .with_second(0)
-        .unwrap_or(next_schedule)
-        .with_nanosecond(0)
-        .unwrap_or(next_schedule)
 }
 
 #[cfg(test)]
@@ -270,5 +368,14 @@ mod test {
         "#;
         let config: TaskLogCleanupConfig = from_str(config_json).unwrap();
         assert_eq!(config.cleanup_period(), Duration::days(1));
+    }
+
+    #[test]
+    fn test_parsing_task_cleanup_config_caps_period_at_100_years() {
+        let config_json = r#"
+        {"cleanup-period":"P1000000D","retention-period":"P90D"}
+        "#;
+        let config: TaskLogCleanupConfig = from_str(config_json).unwrap();
+        assert_eq!(config.cleanup_period(), Duration::seconds(3_153_600_000));
     }
 }

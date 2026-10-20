@@ -309,6 +309,15 @@ pub(crate) async fn delete_project(
     project_id: &ProjectId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> lakekeeper::service::Result<()> {
+    // Delete schedules before the project row is locked: the materializer holds a schedule row
+    // while its task insert waits for the project row.
+    sqlx::query!(
+        "DELETE FROM task_schedule WHERE project_id = $1",
+        project_id
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| e.into_error_model("Error deleting project task schedules"))?;
     let row_count = sqlx::query_scalar!(r#"DELETE FROM project WHERE project_id = $1"#, project_id)
         .execute(&mut **transaction)
         .await
@@ -1820,7 +1829,7 @@ pub mod test {
 
     /// Returns once a session of this test's database waits for a lock.
     #[cfg(test)]
-    async fn wait_for_a_lock_wait(pool: &sqlx::PgPool) {
+    pub(crate) async fn wait_for_a_lock_wait(pool: &sqlx::PgPool) {
         let waiting = async {
             loop {
                 let waiting: i64 = sqlx::query_scalar(
@@ -1839,6 +1848,87 @@ pub mod test {
         tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
             .await
             .expect("a session waits for a lock");
+    }
+
+    /// Schedules are deleted before the project row is locked, so a materializer that holds a
+    /// schedule row and then inserts its task finishes without deadlocking.
+    #[sqlx::test]
+    async fn test_delete_project_deletes_schedules_before_locking_the_project(pool: sqlx::PgPool) {
+        use lakekeeper::service::{
+            CatalogTaskOps as _,
+            tasks::{
+                ScheduleTaskMetadata, TaskEntity, TaskInput, TaskQueueName, TaskScheduleUpsert,
+            },
+        };
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = Arc::new(ProjectId::new_random());
+        let queue_name = TaskQueueName::from("scheduled-queue");
+        let mut trx = PostgresTransaction::begin_write(state).await.unwrap();
+        PostgresBackend::create_project(&project_id, "project".to_string(), trx.transaction())
+            .await
+            .unwrap();
+        let schedule = PostgresBackend::upsert_task_schedule(
+            TaskScheduleUpsert::builder()
+                .project_id(project_id.clone())
+                .queue_name(queue_name.clone())
+                .schedule_key("nightly")
+                .interval(chrono::Duration::hours(1))
+                .build(),
+            trx.transaction(),
+        )
+        .await
+        .unwrap();
+        trx.commit().await.unwrap();
+
+        // The materializer locks the schedule row until it commits.
+        let mut materializer = pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM task_schedule WHERE schedule_id = $1 FOR UPDATE")
+            .bind(*schedule.schedule_id)
+            .execute(&mut *materializer)
+            .await
+            .unwrap();
+
+        let delete = tokio::spawn({
+            let pool = pool.clone();
+            let project_id = project_id.clone();
+            async move {
+                let mut trx = pool.begin().await.unwrap();
+                delete_project(&project_id, &mut trx).await.unwrap();
+                trx.commit().await.unwrap();
+            }
+        });
+        wait_for_a_lock_wait(&pool).await;
+
+        // The task's foreign-key check needs the project row.
+        let tick = TaskInput {
+            task_metadata: ScheduleTaskMetadata {
+                project_id: project_id.clone(),
+                parent_task_id: None,
+                scheduled_for: None,
+                entity: TaskEntity::Project,
+            },
+            payload: serde_json::json!({}),
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::tasks::queue_task_batch(&mut materializer, &queue_name, vec![tick]),
+        )
+        .await
+        .expect("inserting does not wait for the delete")
+        .unwrap();
+        materializer.commit().await.unwrap();
+
+        delete.await.unwrap();
+        let left: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM task WHERE project_id = $1), \
+                    (SELECT count(*) FROM task_schedule WHERE project_id = $1)",
+        )
+        .bind(project_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(left, (0, 0));
     }
 
     #[sqlx::test]

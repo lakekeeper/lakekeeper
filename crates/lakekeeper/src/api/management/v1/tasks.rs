@@ -147,6 +147,7 @@ impl TryFrom<TaskInfo> for WarehouseTaskInfo {
             parent_task_id,
             scheduled_for,
             entity: scope,
+            schedule_id: _,
         } = task_metadata;
 
         let (warehouse_id, sub_entity) = match scope {
@@ -544,6 +545,11 @@ pub struct ListTasksRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Only list the tasks whose parent is this task.
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
+    pub parent_task_id: Option<TaskId>,
     /// Next page token, re-use the same request as for the original request,
     /// but set this to the `next_page_token` from the previous response.
     /// Stop iterating when no more items are returned in a page.
@@ -564,6 +570,7 @@ impl From<ListProjectTasksRequest> for ListTasksRequest {
             entities: None,
             created_after: value.created_after,
             created_before: value.created_before,
+            parent_task_id: value.parent_task_id,
             page_token: value.page_token,
             page_size: value.page_size,
         }
@@ -593,6 +600,11 @@ pub struct ListProjectTasksRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Only list the tasks whose parent is this task.
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
+    pub parent_task_id: Option<TaskId>,
     /// Next page token, re-use the same request as for the original request,
     /// but set this to the `next_page_token` from the previous response.
     /// Stop iterating when no more items are returned in a page.

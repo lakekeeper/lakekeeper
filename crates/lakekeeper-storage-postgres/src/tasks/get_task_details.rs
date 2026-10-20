@@ -20,7 +20,7 @@ use uuid::Uuid;
 use super::TaskEntityTypeDB;
 use crate::{
     dbutils::DBErrorHandler,
-    tasks::{task_entity_from_db, task_status_from_db},
+    tasks::{task_entity_from_db, task_schedule_id_from_db, task_status_from_db},
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -108,6 +108,7 @@ fn parse_task_details(
             parent_task_id: most_recent.parent_task_id.map(TaskId::from),
             scheduled_for: most_recent.attempt_scheduled_for,
             entity: scope,
+            schedule_id: task_schedule_id_from_db(most_recent.entity_type, most_recent.entity_id),
         },
         status,
         picked_up_at: most_recent.started_at,
@@ -293,8 +294,8 @@ mod tests {
 
     use super::*;
     use crate::tasks::{
-        check_and_heartbeat_task, pick_task, queue_task_batch, record_failure, record_success,
-        test::setup_warehouse,
+        check_and_heartbeat_task, pick_task, queue_task_batch, record_failure_without_backoff,
+        record_success, test::setup_warehouse,
     };
 
     #[allow(clippy::too_many_arguments)]
@@ -846,7 +847,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task, 1, "only attempt failed", &mut conn)
+        record_failure_without_backoff(&task, 1, "only attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -905,7 +906,7 @@ mod tests {
             .unwrap();
         assert_eq!(task1.attempt(), 1);
 
-        record_failure(&task1, 5, "First attempt failed", &mut conn)
+        record_failure_without_backoff(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -916,7 +917,7 @@ mod tests {
             .unwrap();
         assert_eq!(task2.attempt(), 2);
 
-        record_failure(&task2, 5, "Second attempt failed", &mut conn)
+        record_failure_without_backoff(&task2, 5, "Second attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -1000,7 +1001,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        record_failure(&task1, 5, "First attempt failed", &mut conn)
+        record_failure_without_backoff(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -1079,7 +1080,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-            record_failure(&task, 10, &format!("Attempt {i} failed"), &mut conn)
+            record_failure_without_backoff(&task, 10, &format!("Attempt {i} failed"), &mut conn)
                 .await
                 .unwrap();
         }

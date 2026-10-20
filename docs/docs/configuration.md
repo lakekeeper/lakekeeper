@@ -134,6 +134,10 @@ Every Lakekeeper process runs the built-in task-queue workers by default, includ
 
 To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They share the same catalog and database and process tasks without serving the API.
 
+A task that fails is tried up to five times in total; a try whose worker stops responding counts as failed. Each new try waits longer than the one before: about 30 seconds after the first failure, then about 1, 2 and 4 minutes.
+
+Some jobs run on a fixed cadence, such as the cleanup of old task logs. Every instance that runs task-queue workers also queues these jobs when they are due. A job never runs twice at the same time: if its previous run has not finished when the next one is due, the next one starts once the previous run has finished. Runs that fall due in the meantime are combined into that one run.
+
 To stop an instance from running a queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. To dedicate task processing entirely to headless workers, set all built-in worker counts to `0` on your API pods: `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`, `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`, and `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS`.
 
 The following global configuration options are available:

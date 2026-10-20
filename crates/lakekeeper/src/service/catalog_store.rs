@@ -46,8 +46,11 @@ use crate::{
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
-            TaskId, TaskInput, TaskQueueName, TaskResolveScope,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, RetryPolicy, Task, TaskAttemptId,
+            TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName,
+            TaskResolveScope, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
+            TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
+            UpsertTaskScheduleError,
         },
     },
 };
@@ -1394,6 +1397,7 @@ where
         queue_name: &TaskQueueName,
         legacy_queue_names: &[&TaskQueueName],
         default_max_time_since_last_heartbeat: chrono::Duration,
+        retry_policy: RetryPolicy,
         state: Self::State,
     ) -> Result<Option<Task>>;
 
@@ -1413,6 +1417,7 @@ where
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32, // Max retries from task config, used to determine if we should mark the task as failed or retry
+        retry_backoff: chrono::Duration, // Delay before the next attempt if one remains
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
@@ -1443,6 +1448,47 @@ where
         tasks: Vec<TaskInput>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<TaskId>>;
+
+    /// Enqueue a single task. Reports the active task with the same key if there is one.
+    async fn enqueue_task_impl(
+        queue_name: &'static TaskQueueName,
+        task: TaskInput,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome>;
+
+    async fn reparent_pending_task_impl(
+        task_id: TaskId,
+        new_parent: TaskId,
+        task_data: serde_json::Value,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool>;
+
+    // ------------- Task schedules -------------
+    /// The interval is already validated.
+    async fn upsert_task_schedule_impl(
+        schedule: TaskScheduleUpsert,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<TaskSchedule, UpsertTaskScheduleError>;
+
+    async fn list_task_schedules_impl(
+        filter: &TaskScheduleFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskSchedule>, TaskScheduleStoreError>;
+
+    async fn delete_task_schedule_impl(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool, TaskScheduleStoreError>;
+
+    async fn trigger_task_schedule_impl(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome, TriggerTaskScheduleError>;
+
+    async fn materialize_due_task_schedules_impl(
+        limit: i64,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<MaterializedTick>, TaskScheduleStoreError>;
 
     /// Cancel scheduled tasks matching the filter.
     ///

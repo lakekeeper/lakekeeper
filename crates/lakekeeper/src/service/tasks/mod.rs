@@ -28,10 +28,95 @@ pub use task_registry::{
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
+pub mod task_schedule;
+pub use task_schedule::{
+    DueTick, MAX_TASK_SCHEDULE_INTERVAL, MIN_TASK_SCHEDULE_INTERVAL, MaterializedTick,
+    TaskSchedule, TaskScheduleFilter, TaskScheduleId, TaskScheduleIntervalOutOfRangeError,
+    TaskScheduleNotFoundError, TaskScheduleSpecVersionUnsupportedError, TaskScheduleStoreError,
+    TaskScheduleTickOutOfRangeError, TaskScheduleUpsert, TriggerTaskScheduleError,
+    UpsertTaskScheduleError, due_tick, first_tick_at_or_after,
+};
 
 #[cfg(any(test, feature = "test-utils"))]
 pub const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration = chrono::Duration::seconds(300);
 const DEFAULT_MAX_RETRIES: i32 = 5;
+const DEFAULT_RETRY_BACKOFF_BASE: chrono::Duration = chrono::Duration::seconds(30);
+const DEFAULT_RETRY_BACKOFF_MAX: chrono::Duration = chrono::Duration::hours(1);
+
+/// Why an attempt failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FailureKind {
+    /// The task reported an error.
+    Error,
+    /// The attempt's heartbeat timed out.
+    TimedOut,
+}
+
+/// A failed attempt, as a queue's retry policy sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailedAttempt<'a> {
+    pub task_id: TaskId,
+    /// 1-based.
+    pub attempt: i32,
+    /// The schedule that produced the task, if any.
+    pub schedule_id: Option<TaskScheduleId>,
+    pub kind: FailureKind,
+    /// The details the failure was recorded with, as free text. Use [`Self::kind`] to tell
+    /// failures apart.
+    pub error: &'a str,
+}
+
+/// How a queue retries failed attempts, including attempts whose heartbeat timed out.
+#[derive(Debug, Clone, Copy)]
+pub struct RetryPolicy {
+    /// Attempts after which a failed task is not retried.
+    pub max_retries: i32,
+    /// Delay before retrying a failed attempt when retries remain.
+    pub retry_backoff: fn(&FailedAttempt<'_>) -> chrono::Duration,
+}
+
+/// Delay before a failed attempt is retried: 30 seconds after the first failed attempt,
+/// doubling with each further one, at most one hour. Shortened by up to 10%, depending on the
+/// task id and attempt, so that tasks failing together do not retry together.
+#[must_use]
+pub fn default_retry_backoff(failed: &FailedAttempt<'_>) -> chrono::Duration {
+    let doublings = u32::try_from(failed.attempt.saturating_sub(1))
+        .unwrap_or(0)
+        .min(16);
+    let backoff = DEFAULT_RETRY_BACKOFF_BASE
+        .checked_mul(1 << doublings)
+        .map_or(DEFAULT_RETRY_BACKOFF_MAX, |d| {
+            d.min(DEFAULT_RETRY_BACKOFF_MAX)
+        });
+    let seed = failed.task_id.as_u64_pair().1
+        ^ u64::from(failed.attempt.unsigned_abs()).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let permille = i32::try_from(seed % 101).unwrap_or(0);
+    backoff - backoff * permille / 1000
+}
+
+/// Result of enqueueing a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueOutcome {
+    /// A new task was inserted.
+    Inserted(TaskId),
+    /// A task with the same key was already active, so nothing was inserted.
+    Existing {
+        task_id: TaskId,
+        status: TaskIntermediateStatus,
+    },
+}
+
+impl EnqueueOutcome {
+    /// The id of the inserted task, `None` if a task was already active.
+    #[must_use]
+    pub fn inserted(&self) -> Option<TaskId> {
+        match self {
+            EnqueueOutcome::Inserted(task_id) => Some(*task_id),
+            EnqueueOutcome::Existing { .. } => None,
+        }
+    }
+}
 
 #[cfg(feature = "open-api")]
 #[allow(clippy::declare_interior_mutable_const)]
@@ -219,6 +304,13 @@ pub trait TaskConfig:
         DEFAULT_MAX_RETRIES
     }
 
+    /// Delay before retrying a failed attempt when retries remain.
+    /// Zero retries at once and keeps the task's place in the queue.
+    #[must_use]
+    fn retry_backoff(failed: &FailedAttempt<'_>) -> chrono::Duration {
+        default_retry_backoff(failed)
+    }
+
     fn queue_name() -> &'static TaskQueueName;
 
     /// Names this queue was known by in earlier releases. The worker
@@ -278,6 +370,13 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
     #[must_use]
     fn max_retries() -> i32 {
         DEFAULT_MAX_RETRIES
+    }
+
+    /// Delay before retrying a failed attempt when retries remain.
+    /// Zero retries at once and keeps the task's place in the queue.
+    #[must_use]
+    fn retry_backoff(failed: &FailedAttempt<'_>) -> chrono::Duration {
+        default_retry_backoff(failed)
     }
 
     fn queue_name() -> &'static TaskQueueName;
@@ -469,6 +568,8 @@ pub struct TaskMetadata {
     pub parent_task_id: Option<TaskId>,
     pub scheduled_for: chrono::DateTime<Utc>,
     pub entity: TaskEntity,
+    /// The schedule that produced this task, if any.
+    pub schedule_id: Option<TaskScheduleId>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScheduleTaskMetadata {
@@ -501,6 +602,11 @@ impl TaskMetadata {
     #[must_use]
     pub fn schedule_for(&self) -> chrono::DateTime<Utc> {
         self.scheduled_for
+    }
+
+    #[must_use]
+    pub fn schedule_id(&self) -> Option<TaskScheduleId> {
+        self.schedule_id
     }
 
     #[must_use]
@@ -830,7 +936,8 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// Schedule a single task.
     ///
     /// There can only be a single active task for a (`entity_id`, `queue_name`) tuple.
-    /// Resubmitting a pending/running task returns a `None` instead of a new `TaskId`.
+    /// Resubmitting while one is pending or running returns [`EnqueueOutcome::Existing`]
+    /// with that task's id and status.
     ///
     /// # Errors
     /// Returns an error if the task cannot be enqueued / scheduled.
@@ -838,7 +945,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         task_metadata: ScheduleTaskMetadata,
         payload: D,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskId>, ErrorModel> {
+    ) -> Result<EnqueueOutcome, ErrorModel> {
         C::enqueue_task(
             Self::queue_name(),
             TaskInput {
@@ -937,6 +1044,10 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             Q::queue_name(),
             &Q::legacy_queue_names(),
             Q::max_time_since_last_heartbeat(),
+            RetryPolicy {
+                max_retries: Q::max_retries(),
+                retry_backoff: Q::retry_backoff,
+            },
             catalog_state.clone(),
         )
         .await
@@ -949,6 +1060,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     Self::report_deserialization_failure::<C>(
                         catalog_state,
                         task.id,
+                        task.task_metadata.schedule_id(),
                         &err.to_string(),
                     )
                     .await;
@@ -961,6 +1073,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     Self::report_deserialization_failure::<C>(
                         catalog_state,
                         task.id,
+                        task.task_metadata.schedule_id(),
                         &err.to_string(),
                     )
                     .await;
@@ -989,44 +1102,46 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         cancellation_token: tokio_util::sync::CancellationToken,
     ) -> Option<Self> {
         loop {
-            tokio::select! {
-                () = cancellation_token.cancelled() => {
-                    tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
-                    return None;
-                }
-                task_result = Self::pick_new_task::<C>(catalog_state.clone()) => {
-                    let task = match task_result {
-                        Ok(task) => task,
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to pick new task from queue `{}`. Retrying in 5s. Error: {e}",
-                                Q::queue_name()
-                            );
-                            tokio::select! {
-                                () = cancellation_token.cancelled() => {
-                                    tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
-                                    return None;
-                                }
-                                () = tokio::time::sleep(Duration::from_secs(5)) => continue,
-                            }
-                        }
-                    };
-
-                    let Some(task) = task else {
-                        let jitter = { fastrand::u64(0..500) };
-                        tokio::select! {
-                            () = cancellation_token.cancelled() => {
-                                tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
-                                return None;
-                            }
-                            () = tokio::time::sleep(*poll_interval + Duration::from_millis(jitter)) => continue,
-                        }
-                    };
-
-                    tracing::debug!("Picked up `{}` task {}.", task.id, Q::queue_name());
-                    return Some(task);
-                }
+            if cancellation_token.is_cancelled() {
+                tracing::info!(
+                    "Graceful shutdown requested for queue `{}`",
+                    Q::queue_name()
+                );
+                return None;
             }
+            // Not raced against cancellation: a pick dropped mid-flight can leave a task it claimed
+            // running until its heartbeat times out, or, while its `BEGIN` is in flight, return its
+            // connection to the pool inside an open transaction.
+            let task = match Self::pick_new_task::<C>(catalog_state.clone()).await {
+                Ok(task) => task,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to pick new task from queue `{}`. Retrying in 5s. Error: {e}",
+                        Q::queue_name()
+                    );
+                    tokio::select! {
+                        () = cancellation_token.cancelled() => {
+                            tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                            return None;
+                        }
+                        () = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                    }
+                }
+            };
+
+            let Some(task) = task else {
+                let jitter = { fastrand::u64(0..500) };
+                tokio::select! {
+                    () = cancellation_token.cancelled() => {
+                        tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                        return None;
+                    }
+                    () = tokio::time::sleep(*poll_interval + Duration::from_millis(jitter)) => continue,
+                }
+            };
+
+            tracing::debug!("Picked up `{}` task {}.", task.id, Q::queue_name());
+            return Some(task);
         }
     }
 
@@ -1102,12 +1217,21 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 
     /// Records an failure for a task in the catalog, updating its status and retry count.
+    /// If retries remain, the next attempt is due after [`TaskConfig::retry_backoff`].
     ///
     /// Does not return an error, but logs it.
     pub async fn record_failure<C: CatalogStore>(&self, catalog_state: C::State, error: &str) {
-        let max_retries = Q::max_retries();
-
-        let status = Status::Failure(error, max_retries);
+        let status = Status::Failure {
+            details: error,
+            max_retries: Q::max_retries(),
+            retry_backoff: Q::retry_backoff(&FailedAttempt {
+                task_id: self.task_id(),
+                attempt: self.attempt(),
+                schedule_id: self.task_metadata.schedule_id(),
+                kind: FailureKind::Error,
+                error,
+            }),
+        };
 
         for attempt in 1..=5 {
             match self
@@ -1205,6 +1329,34 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         }
     }
 
+    /// Move a pending task to `new_parent` and replace its payload, in one write.
+    ///
+    /// Returns `false` and changes nothing if the task is not pending (running, finished or
+    /// unknown).
+    ///
+    /// # Errors
+    /// Returns an error if the payload cannot be serialized or the store fails.
+    pub async fn reparent_pending_task<C: CatalogStore>(
+        task_id: TaskId,
+        new_parent: TaskId,
+        payload: &D,
+        transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+    ) -> Result<bool, ErrorModel> {
+        let payload = serde_json::to_value(payload).map_err(|e| {
+            ErrorModel::internal(
+                format!(
+                    "Failed to serialize payload for `{}` task: {e}",
+                    Self::queue_name()
+                ),
+                "TaskPayloadSerializationError",
+                Some(Box::new(e)),
+            )
+        })?;
+        C::reparent_pending_task(task_id, new_parent, payload, transaction)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Record success in an existing transaction.
     ///
     /// Records the success of a task in the catalog, updating its status.
@@ -1248,6 +1400,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     async fn report_deserialization_failure<C: CatalogStore>(
         catalog_state: C::State,
         id: TaskAttemptId,
+        schedule_id: Option<TaskScheduleId>,
         error: &str,
     ) {
         tracing::error!("{error}. TaskID: {id}");
@@ -1263,10 +1416,18 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             }
         };
 
+        let details = format!("Failed to deserialize task data: {error}");
         let r = C::record_task_failure(
             id,
-            format!("Failed to deserialize task data: {error}").as_str(),
+            &details,
             Q::max_retries(),
+            Q::retry_backoff(&FailedAttempt {
+                task_id: id.task_id,
+                attempt: id.attempt,
+                schedule_id,
+                kind: FailureKind::Error,
+                error: &details,
+            }),
             &mut trx.transaction(),
         )
         .await
@@ -1355,18 +1516,26 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                         details.unwrap_or("No details provided")
                     ))
                 }),
-            Status::Failure(details, max_retries) => {
-                C::record_task_failure(self.id, details, max_retries, &mut transaction)
-                    .await
-                    .map_err(|e| {
-                        e.append_detail(format!(
-                            "Failed to record failure for `{}` task {}.",
-                            Self::queue_name(),
-                            self.id
-                        ))
-                        .append_detail(format!("Original Error Details: `{details}`"))
-                    })
-            }
+            Status::Failure {
+                details,
+                max_retries,
+                retry_backoff,
+            } => C::record_task_failure(
+                self.id,
+                details,
+                max_retries,
+                retry_backoff,
+                &mut transaction,
+            )
+            .await
+            .map_err(|e| {
+                e.append_detail(format!(
+                    "Failed to record failure for `{}` task {}.",
+                    Self::queue_name(),
+                    self.id
+                ))
+                .append_detail(format!("Original Error Details: `{details}`"))
+            }),
         }
     }
 }
@@ -1418,14 +1587,18 @@ pub enum TaskOutcome {
 #[derive(Debug, Clone)]
 pub enum Status<'a> {
     Success(Option<&'a str>),
-    Failure(&'a str, i32),
+    Failure {
+        details: &'a str,
+        max_retries: i32,
+        retry_backoff: chrono::Duration,
+    },
 }
 
 impl std::fmt::Display for Status<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Status::Success(details) => write!(f, "success ({})", details.unwrap_or("")),
-            Status::Failure(details, _) => write!(f, "failure ({details})"),
+            Status::Failure { details, .. } => write!(f, "failure ({details})"),
         }
     }
 }
@@ -1464,6 +1637,31 @@ mod test {
             let r#type = error.r#type.clone();
             assert_eq!(is_task_attempt_closed(&error.into()), closed, "{type}");
         }
+    }
+
+    #[test]
+    fn default_retry_backoff_doubles_from_thirty_seconds_up_to_one_hour_less_jitter() {
+        let task_id =
+            TaskId::from(Uuid::parse_str("01890a5d-ac96-774b-bcce-b302099a8057").unwrap());
+        let delays = [1, 2, 3, 4, 5, 8, 9, 100, 0, -1].map(|attempt| {
+            default_retry_backoff(&FailedAttempt {
+                task_id,
+                attempt,
+                schedule_id: None,
+                kind: FailureKind::Error,
+                error: "",
+            })
+        });
+        // Before shortening: 30, 60, 120, 240, 480 s, then 1 h; shortened by 4.5%, 5.4%, 5.6%, 2.8%,
+        // 7.2%, 4.2%, 6.2%, 5.3%, 9.4% and 4.5%.
+        assert_eq!(
+            delays,
+            [
+                28_650, 56_760, 113_280, 233_280, 445_440, 3_448_800, 3_376_800, 3_409_200, 27_180,
+                28_650
+            ]
+            .map(chrono::Duration::milliseconds)
+        );
     }
 
     #[test]

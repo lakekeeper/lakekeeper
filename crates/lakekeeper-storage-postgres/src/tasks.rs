@@ -9,13 +9,15 @@ use lakekeeper::{
         tasks::TaskStatus,
     },
     service::{
-        ArcProjectId, DatabaseIntegrityError, TableId, ViewId,
+        ArcProjectId, CatalogBackendError, CatalogBackendErrorType, DatabaseIntegrityError,
+        TableId, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, ScheduleTaskMetadata, TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
+            CancelTasksFilter, EnqueueOutcome, FailedAttempt, FailureKind, RetryPolicy,
+            ScheduleTaskMetadata, TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
             TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE, Task, TaskAttemptId, TaskCheckState,
             TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
-            TaskQueueName, WarehouseTaskEntityId,
+            TaskQueueName, TaskScheduleId, WarehouseTaskEntityId,
         },
     },
 };
@@ -28,10 +30,36 @@ mod cleanup_task_logs_older_than;
 mod get_task_details;
 mod list_tasks;
 mod resolve_tasks;
+mod task_schedule;
 pub(crate) use cleanup_task_logs_older_than::cleanup_task_logs_older_than;
 pub(crate) use get_task_details::get_task_details;
 pub(crate) use list_tasks::list_tasks;
 pub(crate) use resolve_tasks::resolve_tasks;
+pub(crate) use task_schedule::{
+    delete_task_schedule, list_task_schedules, materialize_due_task_schedules,
+    trigger_task_schedule, upsert_task_schedule,
+};
+
+/// Attempts of a write whose conflicting row is gone before it can be read back.
+pub(crate) const MAX_WRITE_ATTEMPTS: usize = 3;
+
+/// A write lost to a concurrent change in each of its attempts.
+#[derive(thiserror::Error, Debug)]
+#[error("Gave up after {attempts} attempts, each lost to a concurrent change")]
+pub(crate) struct RetriesExhaustedError {
+    attempts: usize,
+}
+
+impl RetriesExhaustedError {
+    pub(crate) fn backend_error() -> CatalogBackendError {
+        CatalogBackendError::new(
+            Self {
+                attempts: MAX_WRITE_ATTEMPTS,
+            },
+            CatalogBackendErrorType::ConcurrentModification,
+        )
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct InsertResult {
@@ -74,6 +102,148 @@ fn task_status_from_db(
                 None,
             )
         })
+}
+
+/// A project- or warehouse-scoped task carries the id of the schedule that produced it.
+fn task_schedule_id_from_db(
+    entity_type: TaskEntityTypeDB,
+    entity_id: Option<Uuid>,
+) -> Option<TaskScheduleId> {
+    match entity_type {
+        TaskEntityTypeDB::Project | TaskEntityTypeDB::Warehouse => {
+            entity_id.map(TaskScheduleId::from)
+        }
+        TaskEntityTypeDB::Table | TaskEntityTypeDB::View | TaskEntityTypeDB::GenericTable => None,
+    }
+}
+
+/// The longest retry backoff, which every timestamp in range can be moved by. A longer one is
+/// shortened to it; a negative one counts as zero.
+const MAX_RETRY_BACKOFF: chrono::Duration = chrono::Duration::days(36_500);
+
+fn pg_interval(duration: chrono::Duration) -> Result<PgInterval, ErrorModel> {
+    Ok(PgInterval {
+        months: 0,
+        days: 0,
+        microseconds: duration.num_microseconds().ok_or_else(|| {
+            ErrorModel::internal(
+                "Could not convert duration into microseconds. Integer overflow, this is a bug.",
+                "InternalError",
+                None,
+            )
+        })?,
+    })
+}
+
+/// The active task holding the unique key (project, warehouse, entity type, entity id, queue).
+async fn lookup_active_task(
+    conn: &mut PgConnection,
+    project_id: &str,
+    warehouse_id: Option<Uuid>,
+    entity_type: TaskEntityTypeDB,
+    entity_id: Option<Uuid>,
+    queue_name: &str,
+) -> Result<Option<(TaskId, TaskIntermediateStatus)>, CatalogBackendError> {
+    let row = sqlx::query!(
+        r#"
+        SELECT task_id, status as "status: TaskIntermediateStatus"
+        FROM task
+        WHERE project_id = $1
+            AND warehouse_id IS NOT DISTINCT FROM $2
+            AND entity_type = $3
+            AND entity_id IS NOT DISTINCT FROM $4
+            AND queue_name = $5
+        "#,
+        project_id,
+        warehouse_id,
+        entity_type as _,
+        entity_id,
+        queue_name,
+    )
+    .fetch_optional(conn)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    Ok(row.map(|r| (TaskId::from(r.task_id), r.status)))
+}
+
+/// The warehouse, entity type and entity id a task's entity is stored as.
+fn task_entity_columns(entity: &TaskEntity) -> (Option<Uuid>, TaskEntityTypeDB, Option<Uuid>) {
+    match entity {
+        TaskEntity::Project => (None, TaskEntityTypeDB::Project, None),
+        TaskEntity::Warehouse { warehouse_id } => {
+            (Some(**warehouse_id), TaskEntityTypeDB::Warehouse, None)
+        }
+        TaskEntity::EntityInWarehouse {
+            warehouse_id,
+            entity_id,
+            ..
+        } => (
+            Some(**warehouse_id),
+            (*entity_id).into(),
+            Some(entity_id.as_uuid()),
+        ),
+    }
+}
+
+/// Enqueue one task and report whether it was inserted or which active task holds its key.
+pub(crate) async fn enqueue_task(
+    conn: &mut PgConnection,
+    queue_name: &TaskQueueName,
+    task: TaskInput,
+) -> Result<EnqueueOutcome, IcebergErrorResponse> {
+    let project_id = task.task_metadata.project_id.to_string();
+    let (warehouse_id, entity_type, entity_id) = task_entity_columns(&task.task_metadata.entity);
+    for _ in 0..MAX_WRITE_ATTEMPTS {
+        if let Some(inserted) = queue_task_batch(&mut *conn, queue_name, vec![task.clone()])
+            .await?
+            .pop()
+        {
+            return Ok(EnqueueOutcome::Inserted(inserted.task_id));
+        }
+        if let Some((task_id, status)) = lookup_active_task(
+            &mut *conn,
+            &project_id,
+            warehouse_id,
+            entity_type,
+            entity_id,
+            queue_name.as_str(),
+        )
+        .await
+        .map_err(ErrorModel::from)?
+        {
+            return Ok(EnqueueOutcome::Existing { task_id, status });
+        }
+        // The active task finished between the insert and the lookup. Try again.
+    }
+    // Only reached if the active task keeps finishing between the insert and the lookup.
+    Err(ErrorModel::from(
+        RetriesExhaustedError::backend_error().append_detail(format!("Queue `{queue_name}`")),
+    )
+    .into())
+}
+
+/// Move a pending task to a new parent and replace its payload.
+pub(crate) async fn reparent_pending_task(
+    conn: &mut PgConnection,
+    task_id: TaskId,
+    new_parent: TaskId,
+    task_data: serde_json::Value,
+) -> Result<bool, IcebergErrorResponse> {
+    let row = sqlx::query!(
+        r#"
+        UPDATE task
+        SET parent_task_id = $2, task_data = $3
+        WHERE task_id = $1 AND status = 'scheduled'
+        RETURNING task_id
+        "#,
+        *task_id,
+        *new_parent,
+        task_data,
+    )
+    .fetch_optional(conn)
+    .await
+    .map_err(|e| e.into_error_model("Failed to re-parent task"))?;
+    Ok(row.is_some())
 }
 
 fn task_entity_from_db(
@@ -156,27 +326,16 @@ pub(crate) async fn queue_task_batch(
         payload,
     } in tasks
     {
-        let (warehouse_id, entity_type, entity_id, entity_name) = match scope {
-            TaskEntity::Warehouse { warehouse_id } => {
-                (Some(warehouse_id), TaskEntityTypeDB::Warehouse, None, None)
-            }
-            TaskEntity::Project => (None, TaskEntityTypeDB::Project, None, None),
-            TaskEntity::EntityInWarehouse {
-                warehouse_id,
-                entity_id,
-                entity_name,
-            } => (
-                Some(warehouse_id),
-                entity_id.into(),
-                Some(entity_id.as_uuid()),
-                Some(entity_name),
-            ),
+        let (warehouse_id, entity_type, entity_id) = task_entity_columns(&scope);
+        let entity_name = match scope {
+            TaskEntity::EntityInWarehouse { entity_name, .. } => Some(entity_name),
+            TaskEntity::Project | TaskEntity::Warehouse { .. } => None,
         };
 
         task_ids.push(Uuid::now_v7());
         parent_task_ids.push(parent_task_id.as_deref().copied());
         project_ids.push(project_id.to_string());
-        warehouse_ids.push(warehouse_id.as_deref().copied());
+        warehouse_ids.push(warehouse_id);
         scheduled_fors.push(scheduled_for);
         payloads.push(payload);
         entity_types.push(entity_type);
@@ -304,14 +463,55 @@ pub(crate) async fn queue_task_batch(
     .map_err(|e| e.into_error_model("failed queueing tasks"))?)
 }
 
-/// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
-/// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
-#[allow(clippy::too_many_lines)]
+/// Five attempts, each retried at once.
+#[cfg(test)]
+const TEST_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    max_retries: 5,
+    retry_backoff: |_| chrono::Duration::zero(),
+};
+
+/// [`record_failure`] that schedules a retry at once.
+#[cfg(test)]
+pub(crate) async fn record_failure_without_backoff(
+    id: impl AsRef<TaskAttemptId>,
+    max_retries: i32,
+    details: &str,
+    conn: &mut PgConnection,
+) -> Result<(), IcebergErrorResponse> {
+    record_failure(id, max_retries, chrono::Duration::zero(), details, conn).await
+}
+
+/// [`pick_task_with_retry_policy`] with [`TEST_RETRY_POLICY`].
+#[cfg(test)]
 pub(crate) async fn pick_task(
     pool: &PgPool,
     queue_name: &TaskQueueName,
     legacy_queue_names: &[&TaskQueueName],
     default_max_time_since_last_heartbeat: chrono::Duration,
+) -> Result<Option<Task>, IcebergErrorResponse> {
+    pick_task_with_retry_policy(
+        pool,
+        queue_name,
+        legacy_queue_names,
+        default_max_time_since_last_heartbeat,
+        TEST_RETRY_POLICY,
+    )
+    .await
+}
+
+/// Pick the oldest due task of the queue.
+///
+/// First records at most one attempt whose heartbeat timed out as failed, so it is retried or
+/// finished by the same rules as any failed attempt.
+///
+/// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
+/// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
+pub(crate) async fn pick_task_with_retry_policy(
+    pool: &PgPool,
+    queue_name: &TaskQueueName,
+    legacy_queue_names: &[&TaskQueueName],
+    default_max_time_since_last_heartbeat: chrono::Duration,
+    retry_policy: RetryPolicy,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
     let queue_name = queue_name.as_str();
     // All names this queue answers to: the current name plus any pre-rename
@@ -320,42 +520,36 @@ pub(crate) async fn pick_task(
     let queue_names: Vec<String> = std::iter::once(queue_name.to_string())
         .chain(legacy_queue_names.iter().map(|n| n.as_str().to_string()))
         .collect();
-    let max_time_since_last_heartbeat = PgInterval {
-        months: 0,
-        days: 0,
-        microseconds: default_max_time_since_last_heartbeat
-            .num_microseconds()
-            .ok_or_else(|| {
-                ErrorModel::internal(
-                    "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
-                    "InternalError",
-                    None,
-                )
-            })?,
-    };
+    if let Err(e) = fail_timed_out_attempt(
+        pool,
+        &queue_names,
+        queue_name,
+        default_max_time_since_last_heartbeat,
+        retry_policy,
+    )
+    .await
+    {
+        tracing::error!(?e, "Failed to record a timed-out attempt of '{queue_name}'");
+    }
     let x = sqlx::query!(
         r#"
         WITH picked_task AS (
             SELECT t.*, tc.config
             FROM task t
             -- Config belongs to the queue, not to a row's (possibly legacy)
-            -- name. Prefer the canonical queue's config ($3) and fall back to a
+            -- name. Prefer the canonical queue's config ($2) and fall back to a
             -- legacy-named config row only when the canonical one is unset, so a
             -- row enqueued under an old name still loads the right config.
             LEFT JOIN LATERAL (
-                SELECT cfg.config, cfg.max_time_since_last_heartbeat
+                SELECT cfg.config
                 FROM task_config cfg
                 WHERE cfg.queue_name = ANY($1)
                     AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))
                     AND cfg.project_id = t.project_id
-                ORDER BY (cfg.queue_name = $3) DESC
+                ORDER BY (cfg.queue_name = $2) DESC
                 LIMIT 1
             ) tc ON true
-            WHERE (t.queue_name = ANY($1) AND scheduled_for <= now())
-                AND (
-                    (status = 'scheduled') OR
-                    (status != 'scheduled' AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
-                )
+            WHERE t.queue_name = ANY($1) AND scheduled_for <= now() AND status = 'scheduled'
             -- Oldest-due first, then task_id as a unique tiebreaker so pickup
             -- order is fully deterministic when scheduled_for ties (the queue
             -- match is a set via `= ANY`, so row order is otherwise at the
@@ -365,51 +559,6 @@ pub(crate) async fn pick_task(
             -- transactions locked
             FOR UPDATE OF t SKIP LOCKED
             LIMIT 1
-        ),
-        inserted AS (
-            INSERT INTO task_log(
-                task_id,
-                warehouse_id,
-                queue_name,
-                task_data,
-                status,
-                entity_id,
-                entity_type,
-                entity_name,
-                message,
-                attempt,
-                started_at,
-                duration,
-                progress,
-                execution_details,
-                attempt_scheduled_for,
-                last_heartbeat_at,
-                parent_task_id,
-                task_created_at,
-                project_id
-            )
-            SELECT task_id,
-                    warehouse_id,
-                    queue_name,
-                    task_data,
-                    'failed',
-                    entity_id,
-                    entity_type,
-                    entity_name,
-                    'Attempt timed out.',
-                    attempt,
-                    picked_up_at,
-                    now() - picked_up_at,
-                    progress,
-                    execution_details,
-                    scheduled_for,
-                    last_heartbeat_at,
-                    parent_task_id,
-                    created_at,
-                    project_id
-            FROM picked_task p
-            WHERE p.status != 'scheduled'
-            ON CONFLICT (task_id, attempt) DO NOTHING
         )
         UPDATE task
         SET status = 'running',
@@ -437,7 +586,6 @@ pub(crate) async fn pick_task(
             task.project_id
             "#,
         &queue_names,
-        max_time_since_last_heartbeat,
         queue_name
     )
     .fetch_optional(pool)
@@ -463,6 +611,7 @@ pub(crate) async fn pick_task(
                 parent_task_id: task.parent_task_id.map(TaskId::from),
                 scheduled_for: task.scheduled_for,
                 entity: scope,
+                schedule_id: task_schedule_id_from_db(task.entity_type, task.entity_id),
             },
             config: task.config,
             id: TaskAttemptId {
@@ -477,6 +626,82 @@ pub(crate) async fn pick_task(
     }
 
     Ok(None)
+}
+
+/// Record one attempt of the queue whose heartbeat timed out as failed, including one that was
+/// asked to stop.
+async fn fail_timed_out_attempt(
+    pool: &PgPool,
+    queue_names: &[String],
+    queue_name: &str,
+    default_max_time_since_last_heartbeat: chrono::Duration,
+    retry_policy: RetryPolicy,
+) -> Result<(), IcebergErrorResponse> {
+    let max_time_since_last_heartbeat = pg_interval(default_max_time_since_last_heartbeat)?;
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|e| e.into_error_model("Failed to start transaction for timed-out attempts"))?;
+    let timed_out = sqlx::query!(
+        r#"
+        SELECT
+            t.task_id,
+            t.attempt,
+            t.entity_type as "entity_type: TaskEntityTypeDB",
+            t.entity_id
+        FROM task t
+        LEFT JOIN LATERAL (
+            SELECT cfg.max_time_since_last_heartbeat
+            FROM task_config cfg
+            WHERE cfg.queue_name = ANY($1)
+                AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))
+                AND cfg.project_id = t.project_id
+            ORDER BY (cfg.queue_name = $3) DESC
+            LIMIT 1
+        ) tc ON true
+        WHERE t.queue_name = ANY($1)
+            AND t.status != 'scheduled'
+            AND (now() - t.last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2)
+        ORDER BY t.scheduled_for, t.task_id
+        FOR UPDATE OF t SKIP LOCKED
+        LIMIT 1
+        "#,
+        queue_names,
+        max_time_since_last_heartbeat,
+        queue_name
+    )
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|e| e.into_error_model("Failed to find timed-out task attempts"))?;
+
+    let Some(timed_out) = timed_out else {
+        return Ok(());
+    };
+    let id = TaskAttemptId {
+        task_id: timed_out.task_id.into(),
+        attempt: timed_out.attempt,
+    };
+    let details = "Attempt timed out.";
+    let retry_backoff = (retry_policy.retry_backoff)(&FailedAttempt {
+        task_id: id.task_id,
+        attempt: id.attempt,
+        schedule_id: task_schedule_id_from_db(timed_out.entity_type, timed_out.entity_id),
+        kind: FailureKind::TimedOut,
+        error: details,
+    });
+    record_failure(
+        id,
+        retry_policy.max_retries,
+        retry_backoff,
+        details,
+        &mut transaction,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|e| e.into_error_model("Failed to commit timed-out task attempt"))?;
+    Ok(())
 }
 
 /// Leaves a `scheduled` row alone: it waits for its next pick, so this attempt is closed.
@@ -588,171 +813,34 @@ pub(crate) async fn record_success(
     Ok(())
 }
 
+/// What recording a failed attempt found: whether the attempt is logged, whether this call logged
+/// it, and the message and time of an attempt logged before.
+struct FailureRecord {
+    task_log_exists: bool,
+    log_inserted: bool,
+    conflicting_message: Option<String>,
+    conflicting_created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Leaves a `scheduled` row alone: it waits for its next pick, so this attempt is closed.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn record_failure(
     id: impl AsRef<TaskAttemptId>,
     max_retries: i32,
+    retry_backoff: chrono::Duration,
     details: &str,
     conn: &mut PgConnection,
 ) -> Result<(), IcebergErrorResponse> {
     let TaskAttemptId { task_id, attempt } = *id.as_ref();
-    let max_retries_exceeded = attempt >= max_retries;
-    let (task_log_exists, log_inserted, conflicting_message, conflicting_created_at) = if max_retries_exceeded {
-        sqlx::query!(
-            r#"
-            WITH moved AS (
-                DELETE FROM task WHERE task_id = $1 AND attempt = $2 AND status != 'scheduled' RETURNING *
-            ),
-            task_log_attempt AS (
-                SELECT message, task_created_at FROM task_log WHERE task_id = $1 AND attempt = $2
-            ),
-            log_insert AS (
-                INSERT INTO task_log(
-                    task_id,
-                    warehouse_id,
-                    queue_name,
-                    task_data,
-                    status,
-                    entity_id,
-                    entity_type,
-                    entity_name,
-                    message,
-                    attempt,
-                    started_at,
-                    duration,
-                    progress,
-                    execution_details,
-                    attempt_scheduled_for,
-                    last_heartbeat_at,
-                    parent_task_id,
-                    task_created_at,
-                    project_id
-                )
-                SELECT
-                    task_id,
-                    warehouse_id,
-                    queue_name,
-                    task_data,
-                    'failed',
-                    entity_id,
-                    entity_type,
-                    entity_name,
-                    $3,
-                    attempt,
-                    picked_up_at,
-                    now() - picked_up_at,
-                    progress,
-                    execution_details,
-                    scheduled_for,
-                    last_heartbeat_at,
-                    parent_task_id,
-                    created_at,
-                    project_id
-                FROM moved
-                ON CONFLICT (task_id, attempt) DO NOTHING
-                RETURNING task_id as log_task_id
-            )
-            SELECT 
-                (EXISTS(SELECT 1 FROM task_log_attempt) OR EXISTS(SELECT 1 FROM moved)) as "task_log_exists!",
-                EXISTS(SELECT 1 FROM log_insert) as "log_inserted!",
-                (SELECT message FROM task_log_attempt) as "conflicting_message",
-                (SELECT task_created_at FROM task_log_attempt) as "conflicting_created_at"
-            "#,
-            *task_id,
-            attempt,
-            details
-        )
-        .fetch_one(conn)
-        .await
-        .map_err(|e| e.into_error_model("Error recording task attempt failure."))
-        .map(|r| (r.task_log_exists, r.log_inserted, r.conflicting_message, r.conflicting_created_at))
+    let retry_backoff =
+        pg_interval(retry_backoff.clamp(chrono::Duration::zero(), MAX_RETRY_BACKOFF))?;
+    let record = if attempt >= max_retries {
+        fail_task(conn, task_id, attempt, details).await
     } else {
-        sqlx::query!(
-            r#"
-            WITH locked AS (
-                SELECT * FROM task WHERE task_id = $1 AND attempt = $3 AND status != 'scheduled' FOR UPDATE
-            ),
-            task_log_attempt AS (
-                SELECT message, task_created_at FROM task_log WHERE task_id = $1 AND attempt = $3
-            ),
-            log_insert AS (
-                INSERT INTO task_log(
-                    task_id,
-                    warehouse_id,
-                    queue_name,
-                    task_data,
-                    status,
-                    entity_id,
-                    entity_type,
-                    entity_name,
-                    message,
-                    attempt,
-                    started_at,
-                    duration,
-                    progress,
-                    execution_details,
-                    attempt_scheduled_for,
-                    last_heartbeat_at,
-                    parent_task_id,
-                    task_created_at,
-                    project_id
-                )
-                SELECT 
-                    task_id,
-                    warehouse_id,
-                    queue_name,
-                    task_data,
-                    'failed',
-                    entity_id,
-                    entity_type,
-                    entity_name,
-                    $2,
-                    attempt,
-                    picked_up_at,
-                    now() - picked_up_at,
-                    progress,
-                    execution_details,
-                    scheduled_for,
-                    last_heartbeat_at,
-                    parent_task_id,
-                    created_at,
-                    project_id
-                FROM locked
-                ON CONFLICT (task_id, attempt) DO NOTHING
-                RETURNING task_id as log_task_id
-            ),
-            task_update AS (
-                UPDATE task t
-                SET 
-                    status = 'scheduled',
-                    progress = 0.0,
-                    picked_up_at = NULL,
-                    execution_details = NULL,
-                    last_heartbeat_at = NULL
-                FROM locked
-                WHERE t.task_id = locked.task_id AND t.attempt = locked.attempt
-                RETURNING t.task_id as updated_task_id
-            )
-            SELECT 
-                (EXISTS(SELECT 1 FROM task_log_attempt) OR EXISTS(SELECT 1 FROM log_insert)) as "task_log_exists!",
-                EXISTS(SELECT 1 FROM log_insert) as "log_inserted!",
-                (SELECT message FROM task_log_attempt) as "conflicting_message",
-                (SELECT task_created_at FROM task_log_attempt) as "conflicting_created_at",
-                EXISTS(SELECT 1 FROM task_update) as "task_updated!"
-            "#,
-            *task_id,
-            details,
-            attempt
-        )
-        .fetch_one(conn)
-        .await
-        .map_err(|e| e.into_error_model("Error marking task as failed."))
-        .map(|r| (r.task_log_exists, r.log_inserted, r.conflicting_message, r.conflicting_created_at))
+        reschedule_failed_task(conn, task_id, attempt, details, retry_backoff).await
     }
     .map_err(|e| e.append_detail(format!("Task ID: {task_id}, Attempt: {attempt}")))?;
 
-    if task_log_exists && !log_inserted {
+    if record.task_log_exists && !record.log_inserted {
         let err = ErrorModel::conflict(
             format!("Task {task_id} with attempt {attempt} has already been recorded as failed."),
             TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE,
@@ -761,17 +849,18 @@ pub(crate) async fn record_failure(
         .append_detail("Error recording task attempt failure.");
 
         // Task existed but log insert failed due to conflict
-        let err =
-            if let (Some(msg), Some(created_at)) = (conflicting_message, conflicting_created_at) {
-                err.append_detail(format!(
-                    "Original attempt recorded at {created_at} with message: '{msg}'"
-                ))
-            } else {
-                err
-            };
+        let err = if let (Some(msg), Some(created_at)) =
+            (record.conflicting_message, record.conflicting_created_at)
+        {
+            err.append_detail(format!(
+                "Original attempt recorded at {created_at} with message: '{msg}'"
+            ))
+        } else {
+            err
+        };
 
         return Err(err.into());
-    } else if !task_log_exists {
+    } else if !record.task_log_exists {
         // Task didn't exist
         return Err(ErrorModel::not_found(
             format!("Task {task_id} with attempt {attempt} not found in active tasks."),
@@ -783,6 +872,190 @@ pub(crate) async fn record_failure(
     }
 
     Ok(())
+}
+
+/// Move the attempt to the log as failed and end the task.
+async fn fail_task(
+    conn: &mut PgConnection,
+    task_id: TaskId,
+    attempt: i32,
+    details: &str,
+) -> Result<FailureRecord, ErrorModel> {
+    sqlx::query!(
+        r#"
+        WITH moved AS (
+            DELETE FROM task WHERE task_id = $1 AND attempt = $2 AND status != 'scheduled'
+            RETURNING *
+        ),
+        task_log_attempt AS (
+            SELECT message, task_created_at FROM task_log WHERE task_id = $1 AND attempt = $2
+        ),
+        log_insert AS (
+            INSERT INTO task_log(
+                task_id,
+                warehouse_id,
+                queue_name,
+                task_data,
+                status,
+                entity_id,
+                entity_type,
+                entity_name,
+                message,
+                attempt,
+                started_at,
+                duration,
+                progress,
+                execution_details,
+                attempt_scheduled_for,
+                last_heartbeat_at,
+                parent_task_id,
+                task_created_at,
+                project_id
+            )
+            SELECT
+                task_id,
+                warehouse_id,
+                queue_name,
+                task_data,
+                'failed',
+                entity_id,
+                entity_type,
+                entity_name,
+                $3,
+                attempt,
+                picked_up_at,
+                now() - picked_up_at,
+                progress,
+                execution_details,
+                scheduled_for,
+                last_heartbeat_at,
+                parent_task_id,
+                created_at,
+                project_id
+            FROM moved
+            ON CONFLICT (task_id, attempt) DO NOTHING
+            RETURNING task_id as log_task_id
+        )
+        SELECT 
+            (EXISTS(SELECT 1 FROM task_log_attempt) OR EXISTS(SELECT 1 FROM moved)) as "task_log_exists!",
+            EXISTS(SELECT 1 FROM log_insert) as "log_inserted!",
+            (SELECT message FROM task_log_attempt) as "conflicting_message",
+            (SELECT task_created_at FROM task_log_attempt) as "conflicting_created_at"
+        "#,
+        *task_id,
+        attempt,
+        details
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(|e| e.into_error_model("Error recording task attempt failure."))
+    .map(|r| FailureRecord {
+        task_log_exists: r.task_log_exists,
+        log_inserted: r.log_inserted,
+        conflicting_message: r.conflicting_message,
+        conflicting_created_at: r.conflicting_created_at,
+    })
+}
+
+/// Log the attempt as failed and schedule the task again after `retry_backoff`.
+async fn reschedule_failed_task(
+    conn: &mut PgConnection,
+    task_id: TaskId,
+    attempt: i32,
+    details: &str,
+    retry_backoff: PgInterval,
+) -> Result<FailureRecord, ErrorModel> {
+    sqlx::query!(
+        r#"
+        WITH locked AS (
+            SELECT * FROM task
+            WHERE task_id = $1 AND attempt = $3 AND status != 'scheduled'
+            FOR UPDATE
+        ),
+        task_log_attempt AS (
+            SELECT message, task_created_at FROM task_log WHERE task_id = $1 AND attempt = $3
+        ),
+        log_insert AS (
+            INSERT INTO task_log(
+                task_id,
+                warehouse_id,
+                queue_name,
+                task_data,
+                status,
+                entity_id,
+                entity_type,
+                entity_name,
+                message,
+                attempt,
+                started_at,
+                duration,
+                progress,
+                execution_details,
+                attempt_scheduled_for,
+                last_heartbeat_at,
+                parent_task_id,
+                task_created_at,
+                project_id
+            )
+            SELECT 
+                task_id,
+                warehouse_id,
+                queue_name,
+                task_data,
+                'failed',
+                entity_id,
+                entity_type,
+                entity_name,
+                $2,
+                attempt,
+                picked_up_at,
+                now() - picked_up_at,
+                progress,
+                execution_details,
+                scheduled_for,
+                last_heartbeat_at,
+                parent_task_id,
+                created_at,
+                project_id
+            FROM locked
+            ON CONFLICT (task_id, attempt) DO NOTHING
+            RETURNING task_id as log_task_id
+        ),
+        task_update AS (
+            UPDATE task t
+            SET 
+                status = 'scheduled',
+                -- A zero backoff keeps the task's place in the queue.
+                scheduled_for = CASE WHEN $4 > interval '0' THEN now() + $4 ELSE t.scheduled_for END,
+                progress = 0.0,
+                picked_up_at = NULL,
+                execution_details = NULL,
+                last_heartbeat_at = NULL
+            FROM locked
+            WHERE t.task_id = locked.task_id AND t.attempt = locked.attempt
+            RETURNING t.task_id as updated_task_id
+        )
+        SELECT 
+            (EXISTS(SELECT 1 FROM task_log_attempt) OR EXISTS(SELECT 1 FROM log_insert)) as "task_log_exists!",
+            EXISTS(SELECT 1 FROM log_insert) as "log_inserted!",
+            (SELECT message FROM task_log_attempt) as "conflicting_message",
+            (SELECT task_created_at FROM task_log_attempt) as "conflicting_created_at",
+            EXISTS(SELECT 1 FROM task_update) as "task_updated!"
+        "#,
+        *task_id,
+        details,
+        attempt,
+        retry_backoff
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(|e| e.into_error_model("Error marking task as failed."))
+    .map(|r| FailureRecord {
+        task_log_exists: r.task_log_exists,
+        log_inserted: r.log_inserted,
+        conflicting_message: r.conflicting_message,
+        conflicting_created_at: r.conflicting_created_at,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -857,22 +1130,10 @@ pub(crate) async fn set_task_queue_config(
     config: &SetTaskQueueConfigRequest,
 ) -> lakekeeper::api::Result<()> {
     let serialized = config.queue_config.as_json();
-    let max_time_since_last_heartbeat =
-        if let Some(max_seconds_since_last_heartbeat) = config.max_seconds_since_last_heartbeat {
-            Some(PgInterval {
-                months: 0,
-                days: 0,
-                microseconds: chrono::Duration::seconds(max_seconds_since_last_heartbeat)
-                    .num_microseconds()
-                    .ok_or_else(|| ErrorModel::internal(
-                    "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
-                    "InternalError",
-                    None,
-                ))?,
-            })
-        } else {
-            None
-        };
+    let max_time_since_last_heartbeat = config
+        .max_seconds_since_last_heartbeat
+        .map(|seconds| pg_interval(chrono::Duration::seconds(seconds)))
+        .transpose()?;
     sqlx::query!(
         r#"
         INSERT INTO task_config (queue_name, project_id, warehouse_id, config, max_time_since_last_heartbeat)
@@ -1111,7 +1372,10 @@ pub(crate) async fn cancel_scheduled_tasks(
                         entity_type,
                         entity_name,
                         $4,
-                        attempt,
+                        -- A scheduled task that has run waits for its next attempt, which
+                        -- logs the cancellation. Decided on the deleted row, which a
+                        -- concurrent failure report updates before this delete reads it.
+                        attempt + (deleted.status = 'scheduled' AND deleted.attempt > 0)::int,
                         picked_up_at,
                         case when picked_up_at is not null
                             then now() - picked_up_at
@@ -1181,7 +1445,10 @@ pub(crate) async fn cancel_scheduled_tasks(
                         entity_id,
                         entity_type,
                         entity_name,
-                        attempt,
+                        -- A scheduled task that has run waits for its next attempt, which
+                        -- logs the cancellation. Decided on the deleted row, which a
+                        -- concurrent failure report updates before this delete reads it.
+                        attempt + (deleted.status = 'scheduled' AND deleted.attempt > 0)::int,
                         picked_up_at,
                         case when picked_up_at is not null
                             then now() - picked_up_at
@@ -1248,7 +1515,10 @@ pub(crate) async fn cancel_scheduled_tasks(
                         entity_id,
                         entity_type,
                         entity_name,
-                        attempt,
+                        -- A scheduled task that has run waits for its next attempt, which
+                        -- logs the cancellation. Decided on the deleted row, which a
+                        -- concurrent failure report updates before this delete reads it.
+                        attempt + (deleted.status = 'scheduled' AND deleted.attempt > 0)::int,
                         picked_up_at,
                         case when picked_up_at is not null
                             then now() - picked_up_at
@@ -1595,9 +1865,14 @@ mod test {
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        record_failure(&task, 5, "test details", &mut pool.acquire().await.unwrap())
-            .await
-            .unwrap();
+        record_failure_without_backoff(
+            &task,
+            5,
+            "test details",
+            &mut pool.acquire().await.unwrap(),
+        )
+        .await
+        .unwrap();
 
         let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
@@ -1610,7 +1885,7 @@ mod test {
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        record_failure(&task, 2, "test", &mut pool.acquire().await.unwrap())
+        record_failure_without_backoff(&task, 2, "test", &mut pool.acquire().await.unwrap())
             .await
             .unwrap();
 
@@ -1855,7 +2130,7 @@ mod test {
         assert_eq!(&task.queue_name, &tq_name);
         assert_eq!(task.data, serde_json::json!({"a": "a"}));
 
-        record_failure(&task, 1, "failed", &mut pool.acquire().await.unwrap())
+        record_failure_without_backoff(&task, 1, "failed", &mut pool.acquire().await.unwrap())
             .await
             .unwrap();
 
@@ -1988,6 +2263,319 @@ mod test {
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
+        assert_eq!(
+            attempt_log(&pool, id).await,
+            vec![(
+                1,
+                TaskOutcome::Failed,
+                Some("Attempt timed out.".to_string())
+            )]
+        );
+    }
+
+    /// Queue one table task and pick it with a heartbeat timeout of 500 ms.
+    async fn queue_and_pick_timing_out_task(
+        pool: &PgPool,
+        retry_policy: RetryPolicy,
+    ) -> (TaskQueueName, Task) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            project_id,
+            None,
+            None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let task = pick_task_with_retry_policy(
+            pool,
+            &tq_name,
+            &[],
+            chrono::Duration::milliseconds(500),
+            retry_policy,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(task.attempt(), 1);
+        (tq_name, task)
+    }
+
+    async fn attempt_log(
+        pool: &PgPool,
+        task_id: TaskId,
+    ) -> Vec<(i32, TaskOutcome, Option<String>)> {
+        sqlx::query_as(
+            "SELECT attempt, status, message FROM task_log WHERE task_id = $1 ORDER BY attempt",
+        )
+        .bind(*task_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// Moves the task's last heartbeat an hour back, past any heartbeat timeout.
+    async fn expire_heartbeat(pool: &PgPool, task_id: TaskId) {
+        sqlx::query(
+            "UPDATE task SET last_heartbeat_at = now() - interval '1 hour' WHERE task_id = $1",
+        )
+        .bind(*task_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// How long after failed `attempt` was logged the task is due again.
+    pub(crate) async fn retry_delay(pool: &PgPool, task_id: TaskId, attempt: i32) -> PgInterval {
+        sqlx::query_scalar(
+            "SELECT t.scheduled_for - l.created_at FROM task t \
+             JOIN task_log l ON l.task_id = t.task_id AND l.attempt = $2 WHERE t.task_id = $1",
+        )
+        .bind(*task_id)
+        .bind(attempt)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn test_timed_out_attempt_is_retried_after_its_backoff(pool: PgPool) {
+        let policy = RetryPolicy {
+            max_retries: 5,
+            retry_backoff: |failed| chrono::Duration::minutes(i64::from(failed.attempt) * 10),
+        };
+        let (tq_name, task) = queue_and_pick_timing_out_task(&pool, policy).await;
+        expire_heartbeat(&pool, task.task_id()).await;
+
+        assert!(
+            pick_task_with_retry_policy(
+                &pool,
+                &tq_name,
+                &[],
+                chrono::Duration::milliseconds(500),
+                policy
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(
+            retry_delay(&pool, task.task_id(), 1).await.microseconds,
+            600_000_000
+        );
+
+        // The worker of attempt 1 reports after its attempt was recorded as timed out.
+        let mut conn = pool.acquire().await.unwrap();
+        let err = record_success(&task, &mut conn, None).await.unwrap_err();
+        assert_eq!(
+            (err.error.code, err.error.r#type.as_str()),
+            (409, "TaskAttemptAlreadyCompleted")
+        );
+        let err = record_failure_without_backoff(&task, 5, "late", &mut conn)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (err.error.code, err.error.r#type.as_str()),
+            (409, "TaskAttemptAlreadyFailed")
+        );
+
+        let (status, attempt): (TaskIntermediateStatus, i32) =
+            sqlx::query_as("SELECT status, attempt FROM task WHERE task_id = $1")
+                .bind(*task.task_id())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((status, attempt), (TaskIntermediateStatus::Scheduled, 1));
+        assert_eq!(
+            attempt_log(&pool, task.task_id()).await,
+            vec![(
+                1,
+                TaskOutcome::Failed,
+                Some("Attempt timed out.".to_string())
+            )]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_timed_out_last_attempt_fails_the_task(pool: PgPool) {
+        let policy = RetryPolicy {
+            max_retries: 1,
+            retry_backoff: |_| chrono::Duration::zero(),
+        };
+        let (tq_name, task) = queue_and_pick_timing_out_task(&pool, policy).await;
+        expire_heartbeat(&pool, task.task_id()).await;
+
+        assert!(
+            pick_task_with_retry_policy(
+                &pool,
+                &tq_name,
+                &[],
+                chrono::Duration::milliseconds(500),
+                policy
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        let active: i64 = sqlx::query_scalar("SELECT count(*) FROM task WHERE task_id = $1")
+            .bind(*task.task_id())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(active, 0);
+        assert_eq!(
+            attempt_log(&pool, task.task_id()).await,
+            vec![(
+                1,
+                TaskOutcome::Failed,
+                Some("Attempt timed out.".to_string())
+            )]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_timed_out_attempt_asked_to_stop_is_retried(pool: PgPool) {
+        let (tq_name, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
+        sqlx::query("UPDATE task SET status = 'should-stop' WHERE task_id = $1")
+            .bind(*task.task_id())
+            .execute(&pool)
+            .await
+            .unwrap();
+        expire_heartbeat(&pool, task.task_id()).await;
+
+        let retried = pick_task(&pool, &tq_name, &[], chrono::Duration::milliseconds(500))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((retried.task_id(), retried.attempt()), (task.task_id(), 2));
+        assert_eq!(
+            attempt_log(&pool, task.task_id()).await,
+            vec![(
+                1,
+                TaskOutcome::Failed,
+                Some("Attempt timed out.".to_string())
+            )]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_cancelling_a_task_waiting_for_its_retry_logs_the_cancellation(pool: PgPool) {
+        let (_, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
+        let mut conn = pool.acquire().await.unwrap();
+        record_failure(&task, 5, chrono::Duration::hours(1), "boom", &mut conn)
+            .await
+            .unwrap();
+
+        cancel_scheduled_tasks(
+            &mut conn,
+            CancelTasksFilter::TaskIds(vec![task.task_id()]),
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+        let active: i64 = sqlx::query_scalar("SELECT count(*) FROM task WHERE task_id = $1")
+            .bind(*task.task_id())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(active, 0);
+        assert_eq!(
+            attempt_log(&pool, task.task_id()).await,
+            vec![
+                (1, TaskOutcome::Failed, Some("boom".to_string())),
+                (2, TaskOutcome::Cancelled, None),
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_cancelling_a_running_task_while_its_failure_commits_logs_the_cancellation(
+        pool: PgPool,
+    ) {
+        let (_, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
+        let mut failure = pool.begin().await.unwrap();
+        record_failure(&task, 5, chrono::Duration::hours(1), "boom", &mut failure)
+            .await
+            .unwrap();
+
+        let cancel = tokio::spawn({
+            let pool = pool.clone();
+            let task_id = task.task_id();
+            async move {
+                let mut conn = pool.acquire().await.unwrap();
+                cancel_scheduled_tasks(
+                    &mut conn,
+                    CancelTasksFilter::TaskIds(vec![task_id]),
+                    None,
+                    &[],
+                    true,
+                )
+                .await
+            }
+        });
+        // The cancel waits for the failure's row lock.
+        crate::warehouse::test::wait_for_a_lock_wait(&pool).await;
+        failure.commit().await.unwrap();
+        cancel.await.unwrap().unwrap();
+
+        assert_eq!(
+            attempt_log(&pool, task.task_id()).await,
+            vec![
+                (1, TaskOutcome::Failed, Some("boom".to_string())),
+                (2, TaskOutcome::Cancelled, None),
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_a_retry_backoff_is_kept_between_zero_and_100_years(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (tq_name, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
+
+        // A negative backoff keeps the task's place in the queue.
+        let scheduled_for = "SELECT scheduled_for FROM task WHERE task_id = $1";
+        let before: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(scheduled_for)
+            .bind(*task.task_id())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        record_failure(&task, 5, chrono::Duration::days(-1), "negative", &mut conn)
+            .await
+            .unwrap();
+        let after: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(scheduled_for)
+            .bind(*task.task_id())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(after, before);
+
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_failure(&task, 5, chrono::Duration::MAX, "huge", &mut conn)
+            .await
+            .unwrap();
+        let delay = retry_delay(&pool, task.task_id(), 2).await;
+        assert_eq!(
+            (delay.months, delay.days, delay.microseconds),
+            (0, 36_500, 0)
+        );
     }
 
     #[sqlx::test]
@@ -2787,12 +3375,12 @@ mod test {
         // Record failure for non-existant attempt
         let mut id = picked_task.id();
         id.attempt += 1;
-        record_failure(id, 2, "First failure", &mut conn)
+        record_failure_without_backoff(id, 2, "First failure", &mut conn)
             .await
             .unwrap_err();
 
         // Record failure with max_retries=1 (should fail permanently)
-        record_failure(&picked_task, 1, "First failure", &mut conn)
+        record_failure_without_backoff(&picked_task, 1, "First failure", &mut conn)
             .await
             .unwrap();
 
@@ -2803,7 +3391,7 @@ mod test {
         assert!(active_task.is_none());
 
         // Record failure second time
-        record_failure(&picked_task, 1, "Second failure", &mut conn)
+        record_failure_without_backoff(&picked_task, 1, "Second failure", &mut conn)
             .await
             .unwrap_err();
 
@@ -2864,7 +3452,7 @@ mod test {
         assert_eq!(picked_task.task_id(), task_id);
 
         // Record failure first time (should succeed)
-        record_failure(&picked_task, 2, "First failure", &mut conn)
+        record_failure_without_backoff(&picked_task, 2, "First failure", &mut conn)
             .await
             .unwrap();
         // Get original task details, assert last_heartbeat is reset
@@ -2893,7 +3481,7 @@ mod test {
 
         // Try to record failure again with the original attempt ID
         // This should return a 409 Conflict since the log entry already exists
-        let error = record_failure(&picked_task, 2, "Duplicate failure", &mut conn)
+        let error = record_failure_without_backoff(&picked_task, 2, "Duplicate failure", &mut conn)
             .await
             .unwrap_err();
 
@@ -2913,7 +3501,7 @@ mod test {
         assert!(still_active.is_none()); // Already picked up above
 
         // Test with max_retries_exceeded scenario
-        record_failure(&rescheduled_task, 2, "Second failure", &mut conn)
+        record_failure_without_backoff(&rescheduled_task, 2, "Second failure", &mut conn)
             .await
             .unwrap();
 
@@ -2925,9 +3513,10 @@ mod test {
 
         // Try to record failure on the permanently failed task (second attempt)
         // This should also return a 409 Conflict
-        let error2 = record_failure(&rescheduled_task, 2, "Another duplicate", &mut conn)
-            .await
-            .unwrap_err();
+        let error2 =
+            record_failure_without_backoff(&rescheduled_task, 2, "Another duplicate", &mut conn)
+                .await
+                .unwrap_err();
 
         let iceberg_error2 = error2.error;
         assert_eq!(iceberg_error2.r#type, "TaskAttemptAlreadyFailed");
@@ -2948,9 +3537,10 @@ mod test {
         };
 
         // Try to record failure for a non-existent task
-        let error = record_failure(&non_existent_task_id, 2, "Should not work", &mut conn)
-            .await
-            .unwrap_err();
+        let error =
+            record_failure_without_backoff(&non_existent_task_id, 2, "Should not work", &mut conn)
+                .await
+                .unwrap_err();
 
         // Verify it's a not found error, not a conflict error
         let iceberg_error = error.error;
@@ -2984,23 +3574,6 @@ mod test {
         )
         .await
         .unwrap()
-        .unwrap();
-
-        // Verify task is available
-        let scheduled_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(scheduled_task.task_id(), task_id);
-
-        // Put the task back to scheduled state for cancellation test
-        sqlx::query!(
-            "UPDATE task SET status = $1, picked_up_at = NULL WHERE task_id = $2",
-            TaskIntermediateStatus::Scheduled as _,
-            *task_id
-        )
-        .execute(&mut conn as &mut PgConnection)
-        .await
         .unwrap();
 
         // Cancel the task first time
@@ -3060,7 +3633,7 @@ mod test {
         assert!(matches!(task_details.task.status, TaskStatus::Cancelled));
         // Should have no historical attempts since it was cancelled while scheduled
         assert!(task_details.attempts.is_empty());
-        assert_eq!(task_details.task.attempt(), 1);
+        assert_eq!(task_details.task.attempt(), 0);
     }
 
     #[sqlx::test]
@@ -3199,7 +3772,7 @@ mod test {
             .unwrap();
 
         // Now try to record failure - success was already recorded, so this should error
-        record_failure(
+        record_failure_without_backoff(
             &picked_task,
             5,
             "Attempting to fail completed task",

@@ -181,6 +181,7 @@ mod test {
             *DummyTask::schedule_task::<PostgresBackend>(task_metadata, DummyPayload {}, &mut tx)
                 .await
                 .unwrap()
+                .inserted()
                 .unwrap();
         tx.commit().await.unwrap();
 
