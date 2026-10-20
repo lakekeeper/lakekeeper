@@ -1663,11 +1663,14 @@ mod tests {
                 schedule_id: Some(schedule.schedule_id),
                 kind: FailureKind::Error,
                 error: "boom",
+                resource_demand: None,
+                execution_details: None,
             });
             record_failure(
                 &task,
                 max_retries,
                 backoff,
+                None,
                 "boom",
                 &mut pool.acquire().await.unwrap(),
             )
@@ -1723,6 +1726,7 @@ mod tests {
         };
         let input = TaskInput {
             task_metadata: ScheduleTaskMetadata {
+                resource_demand: None,
                 project_id: project_id.clone(),
                 parent_task_id: None,
                 scheduled_for: None,
@@ -1759,6 +1763,7 @@ mod tests {
         // A project-scoped task without an entity id has the same semantics.
         let project_input = TaskInput {
             task_metadata: ScheduleTaskMetadata {
+                resource_demand: None,
                 project_id: project_id.clone(),
                 parent_task_id: None,
                 scheduled_for: None,
@@ -1789,6 +1794,7 @@ mod tests {
         // So does a warehouse-scoped task without an entity id.
         let warehouse_input = TaskInput {
             task_metadata: ScheduleTaskMetadata {
+                resource_demand: None,
                 project_id,
                 parent_task_id: None,
                 scheduled_for: None,
@@ -1824,6 +1830,7 @@ mod tests {
         let new_parent = TaskId::from(Uuid::now_v7());
         let enqueue_child = |payload: serde_json::Value| TaskInput {
             task_metadata: ScheduleTaskMetadata {
+                resource_demand: None,
                 project_id: project_id.clone(),
                 parent_task_id: Some(old_parent),
                 scheduled_for: None,
@@ -1932,6 +1939,7 @@ mod tests {
     ) -> TaskInput {
         TaskInput {
             task_metadata: ScheduleTaskMetadata {
+                resource_demand: None,
                 project_id: project_id.clone(),
                 parent_task_id: parent,
                 scheduled_for: None,

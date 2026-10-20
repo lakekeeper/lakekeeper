@@ -370,6 +370,7 @@ fn build_task_input(
 ) -> crate::service::tasks::TaskInput {
     crate::service::tasks::TaskInput {
         task_metadata: crate::service::tasks::ScheduleTaskMetadata {
+            resource_demand: None,
             project_id,
             parent_task_id: None,
             scheduled_for,

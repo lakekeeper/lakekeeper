@@ -46,11 +46,11 @@ use crate::{
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, EnqueueOutcome, MaterializedTick, ProjectTaskScheduleState,
-            RetryPolicy, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId,
-            TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule, TaskScheduleFilter,
-            TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
-            UpsertTaskScheduleError,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
+            ProjectTaskScheduleState, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope,
+            TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule,
+            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
+            TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -1394,10 +1394,7 @@ where
 
     // ------------- Tasks -------------
     async fn pick_new_task_impl(
-        queue_name: &TaskQueueName,
-        legacy_queue_names: &[&TaskQueueName],
-        default_max_time_since_last_heartbeat: chrono::Duration,
-        retry_policy: RetryPolicy,
+        request: PickTaskRequest<'_>,
         state: Self::State,
     ) -> Result<Option<Task>>;
 
@@ -1418,6 +1415,7 @@ where
         error_details: &str,
         max_retries: i32, // Max retries from task config, used to determine if we should mark the task as failed or retry
         retry_backoff: chrono::Duration, // Delay before the next attempt if one remains
+        retry_resource_demand: Option<i64>, // Resource demand of the next attempt if one remains
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 

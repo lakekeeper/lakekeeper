@@ -161,6 +161,7 @@ async fn enqueue_legacy_cleanup(state: CatalogState, project_id: &ArcProjectId) 
         .unwrap();
     let task_id = TaskLogCleanupTask::schedule_task::<PostgresBackend>(
         ScheduleTaskMetadata {
+            resource_demand: None,
             project_id: project_id.clone(),
             parent_task_id: None,
             scheduled_for: None,

@@ -72,11 +72,11 @@ use lakekeeper::{
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, EnqueueOutcome, MaterializedTick, ProjectTaskScheduleState,
-            RetryPolicy, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId,
-            TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule, TaskScheduleFilter,
-            TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
-            UpsertTaskScheduleError,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
+            ProjectTaskScheduleState, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope,
+            TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule,
+            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
+            TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -1315,18 +1315,16 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn pick_new_task_impl(
-        queue_name: &TaskQueueName,
-        legacy_queue_names: &[&TaskQueueName],
-        default_max_time_since_last_heartbeat: Duration,
-        retry_policy: RetryPolicy,
+        request: PickTaskRequest<'_>,
         state: Self::State,
     ) -> Result<Option<Task>> {
         pick_task_with_retry_policy(
             &state.write_pool(),
-            queue_name,
-            legacy_queue_names,
-            default_max_time_since_last_heartbeat,
-            retry_policy,
+            request.queue_name,
+            request.legacy_queue_names,
+            request.default_max_time_since_last_heartbeat,
+            request.retry_policy,
+            request.resource_demand,
         )
         .await
     }
@@ -1352,9 +1350,18 @@ impl CatalogStore for super::PostgresBackend {
         error_details: &str,
         max_retries: i32,
         retry_backoff: chrono::Duration,
+        retry_resource_demand: Option<i64>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        record_failure(&id, max_retries, retry_backoff, error_details, transaction).await
+        record_failure(
+            &id,
+            max_retries,
+            retry_backoff,
+            retry_resource_demand,
+            error_details,
+            transaction,
+        )
+        .await
     }
 
     async fn get_task_details_impl(

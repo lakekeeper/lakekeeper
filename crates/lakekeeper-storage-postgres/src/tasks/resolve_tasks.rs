@@ -214,6 +214,7 @@ mod tests {
             queue_name,
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id,
                     parent_task_id,
                     entity: TaskEntity::EntityInWarehouse {
@@ -988,6 +989,7 @@ mod tests {
             vec![
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::EntityInWarehouse {
@@ -1002,6 +1004,7 @@ mod tests {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::Project,
@@ -1012,6 +1015,7 @@ mod tests {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::EntityInWarehouse {

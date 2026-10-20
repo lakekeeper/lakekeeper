@@ -90,6 +90,7 @@ async fn test_queue_expiration_queue_task(pool: PgPool) {
             .unwrap();
     TabularExpirationTask::schedule_task::<PostgresBackend>(
         ScheduleTaskMetadata {
+            resource_demand: None,
             project_id,
             parent_task_id: None,
             scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
@@ -259,6 +260,7 @@ async fn test_expiration_queue_drops_generic_table(pool: PgPool) {
 
     TabularExpirationTask::schedule_task::<PostgresBackend>(
         ScheduleTaskMetadata {
+            resource_demand: None,
             project_id,
             parent_task_id: None,
             scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),

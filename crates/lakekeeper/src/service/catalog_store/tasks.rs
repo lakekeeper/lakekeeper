@@ -21,12 +21,12 @@ use crate::{
         impl_error_stack_methods, impl_from_with_detail,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, EnqueueOutcome, MaterializedTick, ProjectTaskScheduleState,
-            ResolvedTaskEntity, RetryPolicy, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope,
-            TaskFilter, TaskId, TaskInfo, TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule,
-            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
-            TriggerTaskScheduleError, UpsertTaskScheduleError,
-            task_schedule::validate_task_schedule_interval,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
+            ProjectTaskScheduleState, ResolvedTaskEntity, Task, TaskAttemptId, TaskCheckState,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInfo, TaskInput, TaskQueueName,
+            TaskResolveScope, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
+            TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
+            UpsertTaskScheduleError, task_schedule::validate_task_schedule_interval,
         },
     },
 };
@@ -150,31 +150,23 @@ pub trait CatalogTaskOps
 where
     Self: CatalogStore,
 {
-    /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
-    /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
+    /// Pick the oldest due task of the request's queue whose resource demand lies in the
+    /// request's range.
     ///
-    /// An attempt whose heartbeat timed out counts as failed: it is retried after `retry_policy`'s
-    /// backoff while retries remain, and otherwise moves to the log as failed. This includes an
-    /// attempt that was asked to stop.
+    /// An attempt of the queue whose heartbeat timed out counts as failed, whatever its resource
+    /// demand: it is retried after the retry policy's backoff, with the policy's resource demand,
+    /// while retries remain, and otherwise moves to the log as failed. This includes an attempt
+    /// that was asked to stop.
     #[tracing::instrument(
         name = "catalog_pick_new_task",
-        skip(state, default_max_time_since_last_heartbeat, retry_policy)
+        skip(request, state),
+        fields(queue_name = %request.queue_name, resource_demand = ?request.resource_demand)
     )]
     async fn pick_new_task(
-        queue_name: &TaskQueueName,
-        legacy_queue_names: &[&TaskQueueName],
-        default_max_time_since_last_heartbeat: chrono::Duration,
-        retry_policy: RetryPolicy,
+        request: PickTaskRequest<'_>,
         state: Self::State,
     ) -> Result<Option<Task>> {
-        Self::pick_new_task_impl(
-            queue_name,
-            legacy_queue_names,
-            default_max_time_since_last_heartbeat,
-            retry_policy,
-            state,
-        )
-        .await
+        Self::pick_new_task_impl(request, state).await
     }
 
     async fn record_task_success(
@@ -186,16 +178,25 @@ where
     }
 
     /// Record a failed attempt. If `id.attempt` is below `max_retries`, the task is retried no
-    /// earlier than `retry_backoff` from now; otherwise it moves to the log as failed.
+    /// earlier than `retry_backoff` from now, with `retry_resource_demand` (`None` keeps the
+    /// attempt's, a negative one counts as 0); otherwise it moves to the log as failed.
     async fn record_task_failure(
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
         retry_backoff: chrono::Duration,
+        retry_resource_demand: Option<i64>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        Self::record_task_failure_impl(id, error_details, max_retries, retry_backoff, transaction)
-            .await
+        Self::record_task_failure_impl(
+            id,
+            error_details,
+            max_retries,
+            retry_backoff,
+            retry_resource_demand,
+            transaction,
+        )
+        .await
     }
 
     /// Cancel scheduled tasks matching the filter.

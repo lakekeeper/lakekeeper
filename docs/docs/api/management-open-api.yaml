@@ -14323,6 +14323,14 @@ components:
         queue-name:
           type: string
           description: Name of the queue processing this task
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+            has none.
         scheduled-for:
           type: string
           format: date-time
@@ -17889,6 +17897,14 @@ components:
         queue-name:
           type: string
           description: Name of the queue processing this task
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+            has none.
         scheduled-for:
           type: string
           format: date-time

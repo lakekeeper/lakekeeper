@@ -251,6 +251,7 @@ fn table_entity(warehouse_id: WarehouseId) -> TaskEntity {
 fn task_input(project_id: &ArcProjectId, entity: TaskEntity) -> TaskInput {
     TaskInput {
         task_metadata: ScheduleTaskMetadata {
+            resource_demand: None,
             project_id: project_id.clone(),
             parent_task_id: None,
             entity,

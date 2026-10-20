@@ -17,7 +17,7 @@ use lakekeeper::{
             ScheduleTaskMetadata, TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
             TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE, Task, TaskAttemptId, TaskCheckState,
             TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
-            TaskQueueName, TaskScheduleId, WarehouseTaskEntityId,
+            TaskQueueName, TaskResourceDemandRange, TaskScheduleId, WarehouseTaskEntityId,
         },
     },
 };
@@ -346,62 +346,94 @@ fn task_entity_from_db(
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// The columns of tasks to insert, one entry per task.
+struct TaskInsertColumns {
+    task_ids: Vec<Uuid>,
+    parent_task_ids: Vec<Option<Uuid>>,
+    project_ids: Vec<String>,
+    warehouse_ids: Vec<Option<Uuid>>,
+    scheduled_fors: Vec<Option<chrono::DateTime<chrono::Utc>>>,
+    entity_ids: Vec<Option<Uuid>>,
+    entity_types: Vec<TaskEntityTypeDB>,
+    payloads: Vec<serde_json::Value>,
+    entity_names: Vec<Option<serde_json::Value>>,
+    resource_demands: Vec<Option<i64>>,
+}
+
+impl TaskInsertColumns {
+    fn new(tasks: Vec<TaskInput>) -> Result<Self, ErrorModel> {
+        let mut columns = Self {
+            task_ids: Vec::with_capacity(tasks.len()),
+            parent_task_ids: Vec::with_capacity(tasks.len()),
+            project_ids: Vec::with_capacity(tasks.len()),
+            warehouse_ids: Vec::with_capacity(tasks.len()),
+            scheduled_fors: Vec::with_capacity(tasks.len()),
+            entity_ids: Vec::with_capacity(tasks.len()),
+            entity_types: Vec::with_capacity(tasks.len()),
+            payloads: Vec::with_capacity(tasks.len()),
+            entity_names: Vec::with_capacity(tasks.len()),
+            resource_demands: Vec::with_capacity(tasks.len()),
+        };
+        for TaskInput {
+            task_metadata:
+                ScheduleTaskMetadata {
+                    resource_demand,
+                    project_id,
+                    parent_task_id,
+                    scheduled_for,
+                    entity: scope,
+                },
+            payload,
+        } in tasks
+        {
+            let (warehouse_id, entity_type, entity_id) = task_entity_columns(&scope);
+            let entity_name = match scope {
+                TaskEntity::EntityInWarehouse { entity_name, .. } => Some(
+                    serde_json::to_value(&entity_name).map_err(|e| {
+                        ErrorModel::internal(
+                            format!("Failed to serialize entity name when queuing task: {entity_name:?}, error: {e}"),
+                            "InternalError",
+                            None,
+                        )
+                    })?,
+                ),
+                TaskEntity::Project | TaskEntity::Warehouse { .. } => None,
+            };
+            columns.task_ids.push(Uuid::now_v7());
+            columns
+                .parent_task_ids
+                .push(parent_task_id.as_deref().copied());
+            columns.project_ids.push(project_id.to_string());
+            columns.warehouse_ids.push(warehouse_id);
+            columns.scheduled_fors.push(scheduled_for);
+            columns.payloads.push(payload);
+            columns.entity_types.push(entity_type);
+            columns.entity_ids.push(entity_id);
+            columns.entity_names.push(entity_name);
+            columns.resource_demands.push(resource_demand);
+        }
+        Ok(columns)
+    }
+}
+
 pub(crate) async fn queue_task_batch(
     conn: &mut PgConnection,
     queue_name: &TaskQueueName,
     tasks: Vec<TaskInput>,
 ) -> Result<Vec<InsertResult>, IcebergErrorResponse> {
     let queue_name = queue_name.as_str();
-    let mut task_ids = Vec::with_capacity(tasks.len());
-    let mut parent_task_ids = Vec::with_capacity(tasks.len());
-    let mut project_ids = Vec::with_capacity(tasks.len());
-    let mut warehouse_ids = Vec::with_capacity(tasks.len());
-    let mut scheduled_fors = Vec::with_capacity(tasks.len());
-    let mut entity_ids = Vec::with_capacity(tasks.len());
-    let mut entity_types = Vec::with_capacity(tasks.len());
-    let mut payloads = Vec::with_capacity(tasks.len());
-    let mut entity_names = Vec::with_capacity(tasks.len());
-    for TaskInput {
-        task_metadata:
-            ScheduleTaskMetadata {
-                project_id,
-                parent_task_id,
-                scheduled_for,
-                entity: scope,
-            },
-        payload,
-    } in tasks
-    {
-        let (warehouse_id, entity_type, entity_id) = task_entity_columns(&scope);
-        let entity_name = match scope {
-            TaskEntity::EntityInWarehouse { entity_name, .. } => Some(entity_name),
-            TaskEntity::Project | TaskEntity::Warehouse { .. } => None,
-        };
-
-        task_ids.push(Uuid::now_v7());
-        parent_task_ids.push(parent_task_id.as_deref().copied());
-        project_ids.push(project_id.to_string());
-        warehouse_ids.push(warehouse_id);
-        scheduled_fors.push(scheduled_for);
-        payloads.push(payload);
-        entity_types.push(entity_type);
-        entity_ids.push(entity_id);
-        match entity_name {
-            None => {
-                entity_names.push(None);
-            }
-            Some(name) => {
-                entity_names.push(Some(serde_json::to_value(&name).map_err(|e| {
-                    ErrorModel::internal(
-                        format!("Failed to serialize entity name when queuing task: {name:?}, error: {e}"),
-                        "InternalError",
-                        None,
-                    )
-                })?));
-            }
-        }
-    }
+    let TaskInsertColumns {
+        task_ids,
+        parent_task_ids,
+        project_ids,
+        warehouse_ids,
+        scheduled_fors,
+        entity_ids,
+        entity_types,
+        payloads,
+        entity_names,
+        resource_demands,
+    } = TaskInsertColumns::new(tasks)?;
 
     Ok(sqlx::query!(
         r#"WITH input_rows AS (
@@ -415,6 +447,7 @@ pub(crate) async fn queue_task_batch(
                 entity_types,
                 entity_name,
                 project_id,
+                resource_demand,
                 $2 as queue_name
             FROM unnest(
                 $1::uuid[],
@@ -425,7 +458,8 @@ pub(crate) async fn queue_task_batch(
                 $7::uuid[],
                 $8::entity_type[],
                 $10::jsonb[],
-                $11::text[]
+                $11::text[],
+                $12::bigint[]
             ) AS t(
                 task_id,
                 parent_task_id,
@@ -435,7 +469,8 @@ pub(crate) async fn queue_task_batch(
                 entity_ids,
                 entity_types,
                 entity_name,
-                project_id
+                project_id,
+                resource_demand
             )
         )
         INSERT INTO task(
@@ -449,7 +484,8 @@ pub(crate) async fn queue_task_batch(
                 entity_id,
                 entity_type,
                 entity_name,
-                project_id
+                project_id,
+                resource_demand
         )
         SELECT
             i.task_id,
@@ -465,7 +501,8 @@ pub(crate) async fn queue_task_batch(
             WHEN entity_name IS NULL THEN NULL::text[]
                 ELSE ARRAY(SELECT jsonb_array_elements_text(entity_name))
             END,
-            i.project_id
+            i.project_id,
+            i.resource_demand
         FROM input_rows i
         ON CONFLICT (project_id, warehouse_id, entity_type, entity_id, queue_name) DO NOTHING
         RETURNING task_id, queue_name, entity_id, entity_type as "entity_type: TaskEntityTypeDB""#,
@@ -482,7 +519,8 @@ pub(crate) async fn queue_task_batch(
         &entity_types as _,
         TaskIntermediateStatus::Scheduled as _,
         &entity_names as _,
-        &project_ids
+        &project_ids,
+        &resource_demands as _,
     )
     .fetch_all(conn)
     .await
@@ -515,6 +553,7 @@ pub(crate) async fn queue_task_batch(
 const TEST_RETRY_POLICY: RetryPolicy = RetryPolicy {
     max_retries: 5,
     retry_backoff: |_| chrono::Duration::zero(),
+    retry_resource_demand: |_| None,
 };
 
 /// [`record_failure`] that schedules a retry at once.
@@ -525,7 +564,15 @@ pub(crate) async fn record_failure_without_backoff(
     details: &str,
     conn: &mut PgConnection,
 ) -> Result<(), IcebergErrorResponse> {
-    record_failure(id, max_retries, chrono::Duration::zero(), details, conn).await
+    record_failure(
+        id,
+        max_retries,
+        chrono::Duration::zero(),
+        None,
+        details,
+        conn,
+    )
+    .await
 }
 
 /// [`pick_task_with_retry_policy`] with [`TEST_RETRY_POLICY`].
@@ -542,14 +589,15 @@ pub(crate) async fn pick_task(
         legacy_queue_names,
         default_max_time_since_last_heartbeat,
         TEST_RETRY_POLICY,
+        TaskResourceDemandRange::default(),
     )
     .await
 }
 
-/// Pick the oldest due task of the queue.
+/// Pick the oldest due task of the queue whose resource demand lies in `resource_demand`.
 ///
-/// First records at most one attempt whose heartbeat timed out as failed, so it is retried or
-/// finished by the same rules as any failed attempt.
+/// First records at most one attempt of the queue whose heartbeat timed out as failed, whatever
+/// its resource demand, so it is retried or finished by the same rules as any failed attempt.
 ///
 /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
 /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
@@ -559,7 +607,9 @@ pub(crate) async fn pick_task_with_retry_policy(
     legacy_queue_names: &[&TaskQueueName],
     default_max_time_since_last_heartbeat: chrono::Duration,
     retry_policy: RetryPolicy,
+    resource_demand: TaskResourceDemandRange,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
+    let TaskResourceDemandRange { above, at_most, .. } = resource_demand;
     let queue_name = queue_name.as_str();
     // All names this queue answers to: the current name plus any pre-rename
     // aliases. Rows enqueued before a rename still carry the old name, so the
@@ -597,6 +647,9 @@ pub(crate) async fn pick_task_with_retry_policy(
                 LIMIT 1
             ) tc ON true
             WHERE t.queue_name = ANY($1) AND scheduled_for <= now() AND status = 'scheduled'
+                -- A task without a resource demand counts as 0.
+                AND ($3::bigint IS NULL OR COALESCE(t.resource_demand, 0) > $3)
+                AND ($4::bigint IS NULL OR COALESCE(t.resource_demand, 0) <= $4)
             -- Oldest-due first, then task_id as a unique tiebreaker so pickup
             -- order is fully deterministic when scheduled_for ties (the queue
             -- match is a set via `= ANY`, so row order is otherwise at the
@@ -630,10 +683,13 @@ pub(crate) async fn pick_task_with_retry_policy(
             task.parent_task_id,
             task.queue_name,
             (select config from picked_task),
-            task.project_id
+            task.project_id,
+            task.resource_demand
             "#,
         &queue_names,
-        queue_name
+        queue_name,
+        above,
+        at_most,
     )
     .fetch_optional(pool)
     .await
@@ -654,6 +710,7 @@ pub(crate) async fn pick_task_with_retry_policy(
         .map_err(ErrorModel::from)?;
         return Ok(Some(Task {
             task_metadata: TaskMetadata {
+                resource_demand: task.resource_demand,
                 project_id,
                 parent_task_id: task.parent_task_id.map(TaskId::from),
                 scheduled_for: task.scheduled_for,
@@ -695,7 +752,9 @@ async fn fail_timed_out_attempt(
             t.task_id,
             t.attempt,
             t.entity_type as "entity_type: TaskEntityTypeDB",
-            t.entity_id
+            t.entity_id,
+            t.resource_demand,
+            t.execution_details
         FROM task t
         LEFT JOIN LATERAL (
             SELECT cfg.max_time_since_last_heartbeat
@@ -729,17 +788,20 @@ async fn fail_timed_out_attempt(
         attempt: timed_out.attempt,
     };
     let details = "Attempt timed out.";
-    let retry_backoff = (retry_policy.retry_backoff)(&FailedAttempt {
+    let failed = FailedAttempt {
         task_id: id.task_id,
         attempt: id.attempt,
         schedule_id: task_schedule_id_from_db(timed_out.entity_type, timed_out.entity_id),
         kind: FailureKind::TimedOut,
         error: details,
-    });
+        resource_demand: timed_out.resource_demand,
+        execution_details: timed_out.execution_details.as_ref(),
+    };
     record_failure(
         id,
         retry_policy.max_retries,
-        retry_backoff,
+        (retry_policy.retry_backoff)(&failed),
+        (retry_policy.retry_resource_demand)(&failed),
         details,
         &mut transaction,
     )
@@ -786,7 +848,8 @@ pub(crate) async fn record_success(
                 last_heartbeat_at,
                 parent_task_id,
                 task_created_at,
-                project_id
+                project_id,
+                resource_demand
             )
             SELECT task_id,
                     warehouse_id,
@@ -806,7 +869,8 @@ pub(crate) async fn record_success(
                     last_heartbeat_at,
                     parent_task_id,
                     created_at,
-                    project_id
+                    project_id,
+                    resource_demand
             FROM moved
             ON CONFLICT (task_id, attempt) DO NOTHING
             RETURNING task_id as log_task_id
@@ -874,16 +938,26 @@ pub(crate) async fn record_failure(
     id: impl AsRef<TaskAttemptId>,
     max_retries: i32,
     retry_backoff: chrono::Duration,
+    retry_resource_demand: Option<i64>,
     details: &str,
     conn: &mut PgConnection,
 ) -> Result<(), IcebergErrorResponse> {
     let TaskAttemptId { task_id, attempt } = *id.as_ref();
     let retry_backoff =
         pg_interval(retry_backoff.clamp(chrono::Duration::zero(), MAX_RETRY_BACKOFF))?;
+    let retry_resource_demand = retry_resource_demand.map(|demand| demand.max(0));
     let record = if attempt >= max_retries {
         fail_task(conn, task_id, attempt, details).await
     } else {
-        reschedule_failed_task(conn, task_id, attempt, details, retry_backoff).await
+        reschedule_failed_task(
+            conn,
+            task_id,
+            attempt,
+            details,
+            retry_backoff,
+            retry_resource_demand,
+        )
+        .await
     }
     .map_err(|e| e.append_detail(format!("Task ID: {task_id}, Attempt: {attempt}")))?;
 
@@ -957,7 +1031,8 @@ async fn fail_task(
                 last_heartbeat_at,
                 parent_task_id,
                 task_created_at,
-                project_id
+                project_id,
+                resource_demand
             )
             SELECT
                 task_id,
@@ -978,7 +1053,8 @@ async fn fail_task(
                 last_heartbeat_at,
                 parent_task_id,
                 created_at,
-                project_id
+                project_id,
+                resource_demand
             FROM moved
             ON CONFLICT (task_id, attempt) DO NOTHING
             RETURNING task_id as log_task_id
@@ -1011,6 +1087,7 @@ async fn reschedule_failed_task(
     attempt: i32,
     details: &str,
     retry_backoff: PgInterval,
+    retry_resource_demand: Option<i64>,
 ) -> Result<FailureRecord, ErrorModel> {
     sqlx::query!(
         r#"
@@ -1042,7 +1119,8 @@ async fn reschedule_failed_task(
                 last_heartbeat_at,
                 parent_task_id,
                 task_created_at,
-                project_id
+                project_id,
+                resource_demand
             )
             SELECT 
                 task_id,
@@ -1063,7 +1141,8 @@ async fn reschedule_failed_task(
                 last_heartbeat_at,
                 parent_task_id,
                 created_at,
-                project_id
+                project_id,
+                resource_demand
             FROM locked
             ON CONFLICT (task_id, attempt) DO NOTHING
             RETURNING task_id as log_task_id
@@ -1074,6 +1153,7 @@ async fn reschedule_failed_task(
                 status = 'scheduled',
                 -- A zero backoff keeps the task's place in the queue.
                 scheduled_for = CASE WHEN $4 > interval '0' THEN now() + $4 ELSE t.scheduled_for END,
+                resource_demand = COALESCE($5, t.resource_demand),
                 progress = 0.0,
                 picked_up_at = NULL,
                 execution_details = NULL,
@@ -1092,7 +1172,8 @@ async fn reschedule_failed_task(
         *task_id,
         details,
         attempt,
-        retry_backoff
+        retry_backoff,
+        retry_resource_demand,
     )
     .fetch_one(conn)
     .await
@@ -1263,7 +1344,8 @@ pub(crate) async fn reschedule_tasks_for(
                 last_heartbeat_at,
                 parent_task_id,
                 task_created_at,
-                project_id
+                project_id,
+                resource_demand
             )
             SELECT
                 task_id,
@@ -1284,7 +1366,8 @@ pub(crate) async fn reschedule_tasks_for(
                 last_heartbeat_at,
                 parent_task_id,
                 created_at,
-                project_id
+                project_id,
+                resource_demand
             FROM reschedule_tasks
             WHERE status != 'scheduled'
             ON CONFLICT (task_id, attempt) DO NOTHING
@@ -1409,7 +1492,8 @@ pub(crate) async fn cancel_scheduled_tasks(
                                         last_heartbeat_at,
                                         parent_task_id,
                                         task_created_at,
-                                        project_id
+                                        project_id,
+                                        resource_demand
                                     )
                 SELECT task_id,
                         warehouse_id,
@@ -1434,7 +1518,8 @@ pub(crate) async fn cancel_scheduled_tasks(
                         last_heartbeat_at,
                         parent_task_id,
                         created_at,
-                        project_id
+                        project_id,
+                        resource_demand
                 FROM deleted
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
@@ -1482,7 +1567,8 @@ pub(crate) async fn cancel_scheduled_tasks(
                                         last_heartbeat_at,
                                         parent_task_id,
                                         task_created_at,
-                                        project_id
+                                        project_id,
+                                        resource_demand
                                     )
                 SELECT task_id,
                         warehouse_id,
@@ -1507,7 +1593,8 @@ pub(crate) async fn cancel_scheduled_tasks(
                         last_heartbeat_at,
                         parent_task_id,
                         created_at,
-                        project_id
+                        project_id,
+                        resource_demand
                 FROM deleted
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
@@ -1553,7 +1640,8 @@ pub(crate) async fn cancel_scheduled_tasks(
                                         last_heartbeat_at,
                                         parent_task_id,
                                         task_created_at,
-                                        project_id)
+                                        project_id,
+                                        resource_demand)
                 SELECT task_id,
                         warehouse_id,
                         queue_name,
@@ -1577,7 +1665,8 @@ pub(crate) async fn cancel_scheduled_tasks(
                         last_heartbeat_at,
                         parent_task_id,
                         created_at,
-                        project_id
+                        project_id,
+                        resource_demand
                 FROM deleted
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
@@ -1652,6 +1741,7 @@ mod test {
             queue_name,
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id,
                     parent_task_id,
                     scheduled_for,
@@ -1754,6 +1844,7 @@ mod test {
             &tq_name,
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id: project_id.clone(),
                     parent_task_id: None,
                     scheduled_for: None,
@@ -2353,6 +2444,7 @@ mod test {
             &[],
             chrono::Duration::milliseconds(500),
             retry_policy,
+            TaskResourceDemandRange::default(),
         )
         .await
         .unwrap()
@@ -2403,6 +2495,7 @@ mod test {
         let policy = RetryPolicy {
             max_retries: 5,
             retry_backoff: |failed| chrono::Duration::minutes(i64::from(failed.attempt) * 10),
+            retry_resource_demand: |_| None,
         };
         let (tq_name, task) = queue_and_pick_timing_out_task(&pool, policy).await;
         expire_heartbeat(&pool, task.task_id()).await;
@@ -2413,7 +2506,8 @@ mod test {
                 &tq_name,
                 &[],
                 chrono::Duration::milliseconds(500),
-                policy
+                policy,
+                TaskResourceDemandRange::default(),
             )
             .await
             .unwrap()
@@ -2461,6 +2555,7 @@ mod test {
         let policy = RetryPolicy {
             max_retries: 1,
             retry_backoff: |_| chrono::Duration::zero(),
+            retry_resource_demand: |_| None,
         };
         let (tq_name, task) = queue_and_pick_timing_out_task(&pool, policy).await;
         expire_heartbeat(&pool, task.task_id()).await;
@@ -2471,7 +2566,8 @@ mod test {
                 &tq_name,
                 &[],
                 chrono::Duration::milliseconds(500),
-                policy
+                policy,
+                TaskResourceDemandRange::default(),
             )
             .await
             .unwrap()
@@ -2522,9 +2618,16 @@ mod test {
     async fn test_cancelling_a_task_waiting_for_its_retry_logs_the_cancellation(pool: PgPool) {
         let (_, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
         let mut conn = pool.acquire().await.unwrap();
-        record_failure(&task, 5, chrono::Duration::hours(1), "boom", &mut conn)
-            .await
-            .unwrap();
+        record_failure(
+            &task,
+            5,
+            chrono::Duration::hours(1),
+            None,
+            "boom",
+            &mut conn,
+        )
+        .await
+        .unwrap();
 
         cancel_scheduled_tasks(
             &mut conn,
@@ -2556,9 +2659,16 @@ mod test {
     ) {
         let (_, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
         let mut failure = pool.begin().await.unwrap();
-        record_failure(&task, 5, chrono::Duration::hours(1), "boom", &mut failure)
-            .await
-            .unwrap();
+        record_failure(
+            &task,
+            5,
+            chrono::Duration::hours(1),
+            None,
+            "boom",
+            &mut failure,
+        )
+        .await
+        .unwrap();
 
         let cancel = tokio::spawn({
             let pool = pool.clone();
@@ -2589,6 +2699,450 @@ mod test {
         );
     }
 
+    /// Queue a table task with `resource_demand`, due `minutes_ago` minutes ago.
+    async fn queue_with_demand(
+        pool: &PgPool,
+        queue_name: &TaskQueueName,
+        warehouse_id: WarehouseId,
+        project_id: &ArcProjectId,
+        resource_demand: Option<i64>,
+        minutes_ago: i64,
+    ) -> TaskId {
+        let mut conn = pool.acquire().await.unwrap();
+        queue_task_batch(
+            &mut conn,
+            queue_name,
+            vec![TaskInput {
+                task_metadata: ScheduleTaskMetadata {
+                    resource_demand,
+                    project_id: project_id.clone(),
+                    parent_task_id: None,
+                    scheduled_for: Some(Utc::now() - chrono::Duration::minutes(minutes_ago)),
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id,
+                        entity_id: WarehouseTaskEntityId::Table {
+                            table_id: Uuid::now_v7().into(),
+                        },
+                        entity_name: vec!["t".to_string()],
+                    },
+                },
+                payload: serde_json::json!({}),
+            }],
+        )
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .task_id
+    }
+
+    async fn pick_in(
+        pool: &PgPool,
+        queue_name: &TaskQueueName,
+        retry_policy: RetryPolicy,
+        range: TaskResourceDemandRange,
+    ) -> Option<Task> {
+        pick_task_with_retry_policy(
+            pool,
+            queue_name,
+            &[],
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+            retry_policy,
+            range,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// `resource_demand` of the task row and of each log entry, by attempt.
+    async fn demands(
+        pool: &PgPool,
+        task_id: TaskId,
+    ) -> (Vec<Option<i64>>, Vec<(i32, Option<i64>)>) {
+        let task = sqlx::query_scalar("SELECT resource_demand FROM task WHERE task_id = $1")
+            .bind(*task_id)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        let log = sqlx::query_as(
+            "SELECT attempt, resource_demand FROM task_log WHERE task_id = $1 ORDER BY attempt",
+        )
+        .bind(*task_id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        (task, log)
+    }
+
+    #[sqlx::test]
+    async fn test_resource_demand_travels_with_the_task(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = generate_tq_name();
+        let task_id = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(7), 3).await;
+        let cancelled = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(8), 2).await;
+        let failed = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(9), 1).await;
+        let mut conn = pool.acquire().await.unwrap();
+        let listed = || {
+            let (pool, project_id, q) = (pool.clone(), project_id.clone(), q.clone());
+            async move {
+                list_tasks(
+                    &lakekeeper::service::tasks::TaskFilter::WarehouseId {
+                        warehouse_id,
+                        project_id,
+                    },
+                    &lakekeeper::api::management::v1::tasks::ListTasksRequest::builder()
+                        .queue_name(Some(vec![q]))
+                        .build(),
+                    &mut pool.acquire().await.unwrap(),
+                )
+                .await
+                .unwrap()
+                .tasks
+                .into_iter()
+                .map(|t| (t.task_id(), t.task_metadata.resource_demand()))
+                .collect::<HashMap<_, _>>()
+            }
+        };
+        let all = HashMap::from([(task_id, Some(7)), (cancelled, Some(8)), (failed, Some(9))]);
+        assert_eq!(listed().await, all);
+        let task = pick_task(&pool, &q, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (task.task_id(), task.task_metadata.resource_demand()),
+            (task_id, Some(7))
+        );
+        let details = || {
+            let (pool, project_id) = (pool.clone(), project_id.clone());
+            async move {
+                get_task_details(
+                    task_id,
+                    TaskDetailsScope::Warehouse {
+                        project_id,
+                        warehouse_id,
+                    },
+                    10,
+                    &pool,
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .task
+                .task_metadata
+                .resource_demand()
+            }
+        };
+        assert_eq!(details().await, Some(7));
+
+        // Every outcome logs the attempt's resource demand.
+        record_success(&task, &mut conn, None).await.unwrap();
+        assert_eq!(details().await, Some(7));
+        cancel_scheduled_tasks(
+            &mut conn,
+            CancelTasksFilter::TaskIds(vec![cancelled]),
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+        let task = pick_task(&pool, &q, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.task_id(), failed);
+        record_failure(&task, 1, chrono::Duration::zero(), None, "boom", &mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            [
+                demands(&pool, task_id).await,
+                demands(&pool, cancelled).await,
+                demands(&pool, failed).await
+            ],
+            [
+                (vec![], vec![(1, Some(7))]),
+                (vec![], vec![(0, Some(8))]),
+                (vec![], vec![(1, Some(9))])
+            ]
+        );
+        assert_eq!(listed().await, all);
+    }
+
+    #[sqlx::test]
+    async fn test_pick_takes_only_tasks_in_its_resource_demand_range(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let pick_all = |q: TaskQueueName, range: TaskResourceDemandRange| {
+            let pool = pool.clone();
+            async move {
+                let mut picked = Vec::new();
+                while let Some(task) = pick_in(&pool, &q, TEST_RETRY_POLICY, range).await {
+                    picked.push(task.task_id());
+                }
+                picked
+            }
+        };
+
+        // Up to 10, inclusive; a task without a resource demand counts as 0.
+        let q = generate_tq_name();
+        queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(11), 5).await;
+        let unset = queue_with_demand(&pool, &q, warehouse_id, &project_id, None, 4).await;
+        let ten = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(10), 3).await;
+        let zero = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(0), 2).await;
+        let five = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(5), 1).await;
+        let up_to_ten = TaskResourceDemandRange::builder().at_most(10).build();
+        assert_eq!(pick_all(q, up_to_ten).await, vec![unset, ten, zero, five]);
+
+        // Above 10, exclusive; above 0 leaves out 0 and tasks without one.
+        let q = generate_tq_name();
+        let eleven = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(11), 5).await;
+        queue_with_demand(&pool, &q, warehouse_id, &project_id, None, 4).await;
+        let ten = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(10), 3).await;
+        queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(0), 2).await;
+        let above_ten = TaskResourceDemandRange::builder().above(10).build();
+        assert_eq!(pick_all(q.clone(), above_ten).await, vec![eleven]);
+        let above_zero = TaskResourceDemandRange::builder().above(0).build();
+        assert_eq!(pick_all(q, above_zero).await, vec![ten]);
+
+        // Both bounds.
+        let q = generate_tq_name();
+        queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(11), 4).await;
+        let ten = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(10), 3).await;
+        let six = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(6), 2).await;
+        queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(5), 1).await;
+        let six_to_ten = TaskResourceDemandRange::builder()
+            .above(5)
+            .at_most(10)
+            .build();
+        assert_eq!(pick_all(q, six_to_ten).await, vec![ten, six]);
+    }
+
+    #[sqlx::test]
+    async fn test_filtered_pick_closes_a_timed_out_attempt_outside_its_range(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = generate_tq_name();
+        let task_id = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(20), 1).await;
+        pick_task(&pool, &q, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        expire_heartbeat(&pool, task_id).await;
+
+        let up_to_ten = TaskResourceDemandRange::builder().at_most(10).build();
+        assert!(
+            pick_in(&pool, &q, TEST_RETRY_POLICY, up_to_ten)
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            attempt_log(&pool, task_id).await,
+            vec![(
+                1,
+                TaskOutcome::Failed,
+                Some("Attempt timed out.".to_string())
+            )]
+        );
+        assert_eq!(
+            demands(&pool, task_id).await,
+            (vec![Some(20)], vec![(1, Some(20))])
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_retry_policy_sets_the_resource_demand_of_a_timed_out_attempts_retry(
+        pool: PgPool,
+    ) {
+        // Double the demand of an attempt that timed out without saying it was terminating.
+        let policy = RetryPolicy {
+            max_retries: 5,
+            retry_backoff: |_| chrono::Duration::zero(),
+            retry_resource_demand: |failed| {
+                let terminating = failed
+                    .execution_details
+                    .is_some_and(|d| d.get("terminating").is_some());
+                (failed.kind == FailureKind::TimedOut && !terminating)
+                    .then(|| failed.resource_demand.unwrap_or(1) * 2)
+            },
+        };
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = generate_tq_name();
+        let task_id = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(8), 1).await;
+        let everything = TaskResourceDemandRange::default();
+        let mut conn = pool.acquire().await.unwrap();
+        let heartbeat = |task: Task, details: serde_json::Value| {
+            let pool = pool.clone();
+            async move {
+                let mut conn = pool.acquire().await.unwrap();
+                let state = check_and_heartbeat_task(&mut conn, &task, 0.5, Some(details))
+                    .await
+                    .unwrap();
+                assert_eq!(state, TaskCheckState::Continue);
+            }
+        };
+
+        let task = pick_in(&pool, &q, policy, everything).await.unwrap();
+        heartbeat(task, serde_json::json!({"rss": 1})).await;
+        expire_heartbeat(&pool, task_id).await;
+        let task = pick_in(&pool, &q, policy, everything).await.unwrap();
+        assert_eq!(
+            (task.attempt(), task.task_metadata.resource_demand()),
+            (2, Some(16))
+        );
+        assert_eq!(
+            demands(&pool, task_id).await,
+            (vec![Some(16)], vec![(1, Some(8))])
+        );
+
+        // A terminating attempt keeps its demand.
+        heartbeat(task, serde_json::json!({"terminating": true})).await;
+        expire_heartbeat(&pool, task_id).await;
+        let task = pick_in(&pool, &q, policy, everything).await.unwrap();
+        assert_eq!(
+            (task.attempt(), task.task_metadata.resource_demand()),
+            (3, Some(16))
+        );
+
+        // A reported failure sets the demand it is recorded with; a negative one counts as 0.
+        record_failure(
+            &task,
+            5,
+            chrono::Duration::zero(),
+            Some(32),
+            "boom",
+            &mut conn,
+        )
+        .await
+        .unwrap();
+        let task = pick_in(&pool, &q, policy, everything).await.unwrap();
+        assert_eq!(task.task_metadata.resource_demand(), Some(32));
+        record_failure(
+            &task,
+            5,
+            chrono::Duration::zero(),
+            Some(-5),
+            "boom",
+            &mut conn,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            demands(&pool, task_id).await,
+            (
+                vec![Some(0)],
+                vec![(1, Some(8)), (2, Some(16)), (3, Some(16)), (4, Some(32))]
+            )
+        );
+    }
+
+    /// A queue's [`TaskConfig::retry_resource_demand`] applies to the failures its tasks report.
+    #[sqlx::test]
+    async fn test_task_config_sets_the_resource_demand_of_a_reported_failures_retry(pool: PgPool) {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct Config {}
+        impl TaskConfig for Config {
+            fn queue_name() -> &'static TaskQueueName {
+                &QUEUE_NAME
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(3600)
+            }
+            fn retry_backoff(_: &FailedAttempt<'_>) -> chrono::Duration {
+                chrono::Duration::zero()
+            }
+            fn retry_resource_demand(failed: &FailedAttempt<'_>) -> Option<i64> {
+                failed.resource_demand.map(|demand| demand + 1)
+            }
+        }
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct Empty {}
+        impl TaskData for Empty {}
+        impl TaskExecutionDetails for Empty {}
+        static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| "test-retry-demand".into());
+        type Specialized = SpecializedTask<Config, Empty, Empty>;
+
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let task_id =
+            queue_with_demand(&pool, &QUEUE_NAME, warehouse_id, &project_id, Some(7), 1).await;
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let in_range = TaskResourceDemandRange::builder().at_most(7).build();
+
+        let task = Specialized::pick_new_task_with_resource_demand::<PostgresBackend>(
+            state.clone(),
+            in_range,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(task.task_metadata.resource_demand(), Some(7));
+        task.record_failure::<PostgresBackend>(state.clone(), "boom")
+            .await;
+        assert_eq!(
+            demands(&pool, task_id).await,
+            (vec![Some(8)], vec![(1, Some(7))])
+        );
+        // The retry is out of the range now.
+        assert!(
+            Specialized::pick_new_task_with_resource_demand::<PostgresBackend>(
+                state.clone(),
+                in_range
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+
+        // Polling asks for the range before each pick.
+        let mut ranges = vec![
+            TaskResourceDemandRange::builder().at_most(8).build(),
+            in_range,
+        ];
+        let task = Specialized::poll_for_new_task_with_resource_demand::<PostgresBackend>(
+            state,
+            || ranges.pop().unwrap(),
+            &std::time::Duration::from_millis(1),
+            lakekeeper::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (task.attempt(), task.task_metadata.resource_demand()),
+            (2, Some(8))
+        );
+        assert_eq!(ranges, vec![]);
+    }
+
+    #[sqlx::test]
+    async fn test_a_negative_resource_demand_is_refused(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = generate_tq_name();
+        let mut conn = pool.acquire().await.unwrap();
+        let err = queue_task_batch(
+            &mut conn,
+            &q,
+            vec![TaskInput {
+                task_metadata: ScheduleTaskMetadata {
+                    resource_demand: Some(-1),
+                    project_id,
+                    parent_task_id: None,
+                    scheduled_for: None,
+                    entity: TaskEntity::Warehouse { warehouse_id },
+                },
+                payload: serde_json::json!({}),
+            }],
+        )
+        .await
+        .unwrap_err();
+        let source = err.error.source.unwrap();
+        let db_err = source
+            .downcast_ref::<sqlx::Error>()
+            .and_then(sqlx::Error::as_database_error)
+            .unwrap();
+        assert_eq!(db_err.code().as_deref(), Some("23514"));
+        assert_eq!(db_err.constraint(), Some("task_resource_demand_check"));
+    }
+
     #[sqlx::test]
     async fn test_a_retry_backoff_is_kept_between_zero_and_100_years(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
@@ -2601,9 +3155,16 @@ mod test {
             .fetch_one(&pool)
             .await
             .unwrap();
-        record_failure(&task, 5, chrono::Duration::days(-1), "negative", &mut conn)
-            .await
-            .unwrap();
+        record_failure(
+            &task,
+            5,
+            chrono::Duration::days(-1),
+            None,
+            "negative",
+            &mut conn,
+        )
+        .await
+        .unwrap();
         let after: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(scheduled_for)
             .bind(*task.task_id())
             .fetch_one(&pool)
@@ -2615,7 +3176,7 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task, 5, chrono::Duration::MAX, "huge", &mut conn)
+        record_failure(&task, 5, chrono::Duration::MAX, None, "huge", &mut conn)
             .await
             .unwrap();
         let delay = retry_delay(&pool, task.task_id(), 2).await;
@@ -2722,6 +3283,7 @@ mod test {
             vec![
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         scheduled_for: None,
@@ -2738,6 +3300,7 @@ mod test {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id,
                         parent_task_id: None,
                         scheduled_for: None,
@@ -2804,6 +3367,7 @@ mod test {
         entity_id: WarehouseTaskEntityId,
     ) -> ScheduleTaskMetadata {
         ScheduleTaskMetadata {
+            resource_demand: None,
             project_id,
             parent_task_id: None,
             scheduled_for: None,

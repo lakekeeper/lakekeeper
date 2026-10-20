@@ -43,6 +43,7 @@ struct TaskRow {
     parent_task_id: Option<Uuid>,
     task_created_at: DateTime<chrono::Utc>,
     updated_at: Option<DateTime<chrono::Utc>>,
+    resource_demand: Option<i64>,
 }
 
 fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
@@ -63,6 +64,7 @@ fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
         },
         queue_name: row.queue_name.into(),
         task_metadata: TaskMetadata {
+            resource_demand: row.resource_demand,
             project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
             entity: scope,
             parent_task_id: row.parent_task_id.map(TaskId::from),
@@ -193,7 +195,8 @@ pub(crate) async fn list_tasks(
                 progress,
                 parent_task_id,
                 created_at as task_created_at,
-                updated_at
+                updated_at,
+                t.resource_demand
             FROM task t
             LEFT JOIN selected_entities se ON (
                 NOT $12 AND -- only join if filtering
@@ -234,7 +237,8 @@ pub(crate) async fn list_tasks(
                 progress,
                 parent_task_id,
                 task_created_at,
-                null::timestamptz as updated_at
+                null::timestamptz as updated_at,
+                tl.resource_demand
             FROM task_log tl
             LEFT JOIN selected_entities se ON (
                 NOT $12 AND -- only join if filtering
@@ -274,7 +278,8 @@ pub(crate) async fn list_tasks(
             progress as "progress!",
             parent_task_id,
             task_created_at as "task_created_at!",
-            updated_at
+            updated_at,
+            resource_demand
          FROM (
             SELECT * FROM active_tasks
             UNION ALL
@@ -431,6 +436,7 @@ mod tests {
             queue_name,
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id,
                     parent_task_id: None,
                     entity: TaskEntity::EntityInWarehouse {
@@ -1956,6 +1962,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "project_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::Project,
@@ -1965,6 +1972,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "warehouse_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::EntityInWarehouse {
@@ -2024,6 +2032,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "warehouse_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::EntityInWarehouse {
@@ -2037,6 +2046,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "project_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::Project,
@@ -2046,6 +2056,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "warehouse_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::EntityInWarehouse {
@@ -2118,6 +2129,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "other_project_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: other_project.project_id,
                         parent_task_id: None,
                         entity: TaskEntity::Project,
@@ -2127,6 +2139,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "warehouse_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::EntityInWarehouse {
@@ -2140,6 +2153,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "project_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::Project,

@@ -121,6 +121,9 @@ pub struct WarehouseTaskInfo {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// When the task was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+    /// has none.
+    pub resource_demand: Option<i64>,
 }
 
 impl TryFrom<TaskInfo> for WarehouseTaskInfo {
@@ -143,6 +146,7 @@ impl TryFrom<TaskInfo> for WarehouseTaskInfo {
         let attempt = id.attempt;
 
         let TaskMetadata {
+            resource_demand,
             project_id,
             parent_task_id,
             scheduled_for,
@@ -187,6 +191,7 @@ impl TryFrom<TaskInfo> for WarehouseTaskInfo {
             entity_name,
             queue_name,
             project_id,
+            resource_demand,
         })
     }
 }
@@ -223,6 +228,9 @@ pub struct ProjectTaskInfo {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// When the task was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+    /// has none.
+    pub resource_demand: Option<i64>,
 }
 
 impl TryFrom<TaskInfo> for ProjectTaskInfo {
@@ -250,6 +258,7 @@ impl TryFrom<TaskInfo> for ProjectTaskInfo {
             created_at: value.created_at(),
             updated_at: value.updated_at(),
             project_id: value.task_metadata.project_id().clone(),
+            resource_demand: value.task_metadata.resource_demand(),
             queue_name: value.queue_name,
         })
     }

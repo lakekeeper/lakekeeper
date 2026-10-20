@@ -172,6 +172,7 @@ mod test {
         let mut tx = pool.begin().await.unwrap();
 
         let task_metadata = ScheduleTaskMetadata {
+            resource_demand: None,
             project_id: project_id.clone(),
             parent_task_id: None,
             scheduled_for: Some(created_at),

@@ -46,6 +46,7 @@ struct TaskDetailsRow {
     pub message: Option<String>,
     pub project_id: String,
     pub warehouse_id: Option<uuid::Uuid>,
+    pub resource_demand: Option<i64>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -104,6 +105,7 @@ fn parse_task_details(
             attempt: most_recent.attempt,
         },
         task_metadata: TaskMetadata {
+            resource_demand: most_recent.resource_demand,
             project_id: Arc::new(ProjectId::from_db_unchecked(most_recent.project_id)),
             parent_task_id: most_recent.parent_task_id.map(TaskId::from),
             scheduled_for: most_recent.attempt_scheduled_for,
@@ -184,7 +186,8 @@ where
             task_data as "task_data!",
             execution_details,
             duration,
-            message
+            message,
+            resource_demand
          FROM (
         SELECT
             project_id,
@@ -210,7 +213,8 @@ where
                 then now() - picked_up_at
                 else null
             end as duration,
-            null as message
+            null as message,
+            resource_demand
         FROM task
         WHERE task_id = $1
             AND project_id = $2
@@ -240,7 +244,8 @@ where
             task_data,
             execution_details,
             duration,
-            message
+            message,
+            resource_demand
         FROM task_log        
         WHERE task_id = $1
             AND project_id = $2
@@ -338,6 +343,7 @@ mod tests {
             message: Some("Test message".to_string()),
             project_id: project_id.to_string(),
             warehouse_id,
+            resource_demand: None,
         }
     }
 
@@ -609,6 +615,7 @@ mod tests {
             queue_name,
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id,
                     parent_task_id,
                     entity: TaskEntity::EntityInWarehouse {
@@ -1265,6 +1272,7 @@ mod tests {
             vec![
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::EntityInWarehouse {
@@ -1279,6 +1287,7 @@ mod tests {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::Project,
@@ -1289,6 +1298,7 @@ mod tests {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::EntityInWarehouse {

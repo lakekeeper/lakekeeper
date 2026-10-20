@@ -1739,6 +1739,7 @@ pub mod test {
             &TaskQueueName::from("concurrent-queue"),
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id,
                     parent_task_id: None,
                     scheduled_for: None,
@@ -1903,6 +1904,7 @@ pub mod test {
         // The task's foreign-key check needs the project row.
         let tick = TaskInput {
             task_metadata: ScheduleTaskMetadata {
+                resource_demand: None,
                 project_id: project_id.clone(),
                 parent_task_id: None,
                 scheduled_for: None,

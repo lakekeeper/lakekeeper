@@ -2,11 +2,14 @@
 -- so the unique key of `task` (unchanged, still matched by older servers) allows one active
 -- instance per schedule.
 
--- Every lock this file needs, strongest per table, so this transaction never upgrades a lock it
--- holds. The foreign keys to `project` and `warehouse` are locked first: creating a project
--- writes `project` and then `task`, as do the cascades of deleting one. A transaction that holds
--- `task` and then writes `warehouse`, such as deleting a warehouse, can still deadlock with it;
--- Postgres then aborts one of the two.
+-- Every lock this file needs, strongest per table, so this file never upgrades a lock it holds.
+-- The foreign keys to `project` and `warehouse` are locked first: creating a project writes
+-- `project` and then `task`, as do the cascades of deleting one. A transaction that holds `task`
+-- and then writes `warehouse`, such as deleting a warehouse, can still deadlock with it; Postgres
+-- then aborts one of the two.
+-- Sorts before `20261015120000_endpoint_names_as_text`, which locks `project` and
+-- `idempotency_record` exclusively: older servers lock `task` before both, so a batch with both
+-- files has to lock `task` first.
 LOCK TABLE project, warehouse IN SHARE ROW EXCLUSIVE MODE;
 LOCK TABLE task, task_log IN ACCESS EXCLUSIVE MODE;
 
@@ -106,3 +109,15 @@ ALTER TABLE task_log
         (entity_type IN ('project', 'warehouse') AND entity_name IS NULL)
         OR (entity_type IN ('table', 'view', 'generic-table') AND entity_id IS NOT NULL AND entity_name IS NOT NULL)
     ) NOT VALID;
+
+-- How much worker capacity a task needs, in a unit its queue chooses; NULL counts as 0. A worker
+-- can pick only tasks in a range of it. New columns are NULL, so NOT VALID skips the scan.
+ALTER TABLE task
+    ADD COLUMN IF NOT EXISTS resource_demand bigint,
+    DROP CONSTRAINT IF EXISTS task_resource_demand_check,
+    ADD CONSTRAINT task_resource_demand_check CHECK (resource_demand >= 0) NOT VALID;
+
+ALTER TABLE task_log
+    ADD COLUMN IF NOT EXISTS resource_demand bigint,
+    DROP CONSTRAINT IF EXISTS task_log_resource_demand_check,
+    ADD CONSTRAINT task_log_resource_demand_check CHECK (resource_demand >= 0) NOT VALID;
