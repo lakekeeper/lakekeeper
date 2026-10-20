@@ -70,7 +70,7 @@ pub(crate) struct InsertResult {
     pub entity_id: Option<WarehouseTaskEntityId>,
 }
 
-#[derive(Debug, sqlx::Type, Clone, Copy)]
+#[derive(Debug, sqlx::Type, Clone, Copy, PartialEq, Eq, Hash)]
 #[sqlx(type_name = "entity_type", rename_all = "kebab-case")]
 enum TaskEntityTypeDB {
     Table,

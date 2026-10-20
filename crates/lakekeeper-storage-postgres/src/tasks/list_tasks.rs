@@ -167,6 +167,8 @@ pub(crate) async fn list_tasks(
             }
             WarehouseTaskEntityFilter::Warehouse => (None, TaskEntityTypeDB::Warehouse),
         })
+        // A task matching two entries would be listed twice.
+        .unique()
         .unzip::<_, _, Vec<_>, Vec<_>>();
 
     let tasks = sqlx::query_as!(
@@ -792,6 +794,77 @@ mod tests {
                 panic!("Expected TaskEntity::Table")
             }
         }
+    }
+
+    #[sqlx::test]
+    async fn test_list_tasks_with_repeated_entity_filters_lists_each_task_once(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let tq_name = generate_tq_name();
+        let table_task = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let warehouse_task = super::super::queue_task_batch(
+            &mut conn,
+            &tq_name,
+            vec![TaskInput {
+                task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
+                    project_id: project_id.clone(),
+                    parent_task_id: None,
+                    entity: TaskEntity::Warehouse { warehouse_id },
+                    scheduled_for: None,
+                },
+                payload: serde_json::json!({}),
+            }],
+        )
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .task_id;
+
+        let table = WarehouseTaskEntityFilter::Table {
+            table_id: entity_id.as_uuid().into(),
+        };
+        let request = ListTasksRequest {
+            entities: Some(vec![
+                table.clone(),
+                WarehouseTaskEntityFilter::Warehouse,
+                table,
+                WarehouseTaskEntityFilter::Warehouse,
+            ]),
+            ..Default::default()
+        };
+        let result = list_tasks(
+            &TaskFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
+            &request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result
+                .tasks
+                .iter()
+                .map(lakekeeper::service::tasks::TaskInfo::task_id)
+                .collect_vec(),
+            vec![warehouse_task, table_task]
+        );
     }
 
     #[sqlx::test]
