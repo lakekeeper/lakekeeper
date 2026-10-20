@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use axum_prometheus::metrics;
 use futures::FutureExt;
 use http::StatusCode;
 use iceberg::{
