@@ -7,9 +7,9 @@ use crate::{
         management::v1::{
             task_queue::SetTaskQueueConfigRequest,
             warehouse::{
-                RenameWarehouseRequest, UpdateWarehouseCredentialRequest,
-                UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
-                UpdateWarehouseStorageRequest,
+                RenameWarehouseRequest, SetWarehouseRollbackCompactionPolicyRequest,
+                UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
+                UpdateWarehouseFormatVersionPolicyRequest, UpdateWarehouseStorageRequest,
             },
         },
     },
@@ -76,7 +76,7 @@ pub struct UpdateWarehouseFormatVersionPolicyEvent {
 /// Event emitted when the warehouse rollback-compaction-on-conflict policy changes
 #[derive(Clone, Debug)]
 pub struct SetWarehouseRollbackCompactionPolicyEvent {
-    pub requested_enabled: bool,
+    pub request: Arc<SetWarehouseRollbackCompactionPolicyRequest>,
     pub updated_warehouse: ArcResolvedWarehouse,
     pub request_metadata: ArcRequestMetadata,
 }
@@ -200,11 +200,11 @@ impl
     /// Emit warehouse rollback-compaction policy set event
     pub(crate) fn emit_warehouse_rollback_compaction_policy_set(
         self,
-        requested_enabled: bool,
+        request: Arc<SetWarehouseRollbackCompactionPolicyRequest>,
         updated_warehouse: ArcResolvedWarehouse,
     ) {
         let event = SetWarehouseRollbackCompactionPolicyEvent {
-            requested_enabled,
+            request,
             updated_warehouse,
             request_metadata: self.request_metadata,
         };

@@ -50,8 +50,8 @@ use lakekeeper::{
         RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
         ResolvedWarehouse, Result, RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent,
         RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
-        SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
-        SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        RollbackCompactionPolicy, SearchRoleResponse, SearchRolesError, SearchTabularError,
+        ServerId, ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
         SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
         SetWarehouseProtectedError, SetWarehouseRollbackCompactionPolicyError,
         SetWarehouseStatusError, StagedTableId, SyncFor, SyncRoleMembersError,
@@ -134,7 +134,7 @@ use crate::{
     warehouse::{
         ensure_warehouse_spec_mutable, get_warehouse_stats, set_warehouse_format_version_policy,
         set_warehouse_managed_by, set_warehouse_protection,
-        set_warehouse_rollback_compaction_on_conflict,
+        set_warehouse_rollback_compaction_policy,
     },
 };
 
@@ -1304,10 +1304,10 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn set_warehouse_rollback_compaction_policy_impl(
         warehouse_id: WarehouseId,
-        enabled: bool,
+        policy: RollbackCompactionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseRollbackCompactionPolicyError> {
-        set_warehouse_rollback_compaction_on_conflict(warehouse_id, enabled, transaction).await
+        set_warehouse_rollback_compaction_policy(warehouse_id, policy, transaction).await
     }
 
     async fn ensure_warehouse_spec_mutable_impl<'a>(

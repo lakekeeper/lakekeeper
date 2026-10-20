@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE warehouse\n            SET storage_profile = $1, storage_secret_id = $2\n            WHERE warehouse_id = $3\n            AND status = 'active'\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                rollback_compaction_on_conflict,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n        ",
+  "query": "UPDATE warehouse\n            SET allowed_format_versions = $1, default_format_version = $2\n            WHERE warehouse_id = $3\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                rollback_compaction_on_conflict,\n                rollback_compaction_max_age_seconds,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n            ",
   "describe": {
     "columns": [
       {
@@ -157,6 +157,17 @@
       },
       {
         "ordinal": 12,
+        "name": "rollback_compaction_max_age_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_max_age_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -177,7 +188,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -188,7 +199,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -201,8 +212,8 @@
     ],
     "parameters": {
       "Left": [
-        "Jsonb",
-        "Uuid",
+        "Int2Array",
+        "Int2",
         "Uuid"
       ]
     },
@@ -220,9 +231,10 @@
       true,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "fd1a8a637f46fd11882849691a516e63c9e3e5add6023a693edba39927d94b20"
+  "hash": "f3cd50118239533d51c61826f3b3b518c39b2f55aa92800828468b75621c8ad4"
 }
