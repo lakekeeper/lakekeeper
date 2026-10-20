@@ -245,8 +245,8 @@ pub async fn setup_with_registry<T: Authorizer>(
     )
 }
 
-/// Make a transaction that updates or deletes a warehouse or namespace fail to commit unless
-/// it recorded a cache change of that domain. A transaction that sets
+/// Make a transaction that updates or deletes a warehouse, namespace or role fail to commit
+/// unless it recorded a cache change of that domain. A transaction that sets
 /// `lakekeeper_test.unrecorded_write` to `on` is exempt.
 pub async fn require_cache_changes(pool: &PgPool) {
     sqlx::raw_sql(
@@ -272,6 +272,10 @@ pub async fn require_cache_changes(pool: &PgPool) {
         CREATE CONSTRAINT TRIGGER namespace_requires_cache_change
             AFTER UPDATE OR DELETE ON namespace DEFERRABLE INITIALLY DEFERRED
             FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('namespace');
+        DROP TRIGGER IF EXISTS role_requires_cache_change ON role;
+        CREATE CONSTRAINT TRIGGER role_requires_cache_change
+            AFTER UPDATE OR DELETE ON role DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('role');
         ",
     )
     .execute(pool)
@@ -287,16 +291,11 @@ pub async fn change_log_head(pool: &PgPool) -> i64 {
         .unwrap()
 }
 
-/// The change-log rows `transaction` adds when it commits, as `(domain, sorted keys)`.
-pub async fn committed_changes(
-    transaction: WriteTransaction<PostgresBackend>,
-    pool: &PgPool,
-) -> Vec<(String, Vec<String>)> {
-    let before = change_log_head(pool).await;
-    transaction.commit().await.unwrap();
+/// The change-log rows added after row `head`, as `(domain, sorted keys)`.
+pub async fn changes_since(pool: &PgPool, head: i64) -> Vec<(String, Vec<String>)> {
     let rows: Vec<(String, Vec<String>)> =
         sqlx::query_as("SELECT domain, keys FROM cache_change_log WHERE id > $1 ORDER BY id")
-            .bind(before)
+            .bind(head)
             .fetch_all(pool)
             .await
             .unwrap();
@@ -306,6 +305,16 @@ pub async fn committed_changes(
             (domain, keys)
         })
         .collect()
+}
+
+/// The change-log rows `transaction` adds when it commits, as `(domain, sorted keys)`.
+pub async fn committed_changes(
+    transaction: WriteTransaction<PostgresBackend>,
+    pool: &PgPool,
+) -> Vec<(String, Vec<String>)> {
+    let head = change_log_head(pool).await;
+    transaction.commit().await.unwrap();
+    changes_since(pool, head).await
 }
 
 /// A change-log row as [`committed_changes`] returns it.

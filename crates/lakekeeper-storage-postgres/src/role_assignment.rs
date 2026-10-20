@@ -2666,9 +2666,10 @@ mod tests {
         // Delete the role in an open transaction; the sync below starts while the
         // row is locked and only proceeds once the delete commits.
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             deleted_role_id,
@@ -2676,7 +2677,7 @@ mod tests {
         )
         .await
         .unwrap();
-        PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+        PostgresBackend::delete_role(&arc_project, deleted_role_id, &mut delete_tx)
             .await
             .unwrap();
 
@@ -2813,7 +2814,7 @@ mod tests {
         assert_eq!(first.role_id, role_id);
         assert_eq!(first.members.len(), 1);
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         PostgresBackend::set_role_source_system(
@@ -2823,7 +2824,7 @@ mod tests {
                 source_id: new_ident.source_id().clone(),
                 provider_id: new_ident.provider_id().clone(),
             },
-            t.transaction(),
+            &mut t,
         )
         .await
         .unwrap();
@@ -2957,9 +2958,10 @@ mod tests {
         let deleted_role_id = first.assignments.roles[0].role_id;
 
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             deleted_role_id,
@@ -2981,7 +2983,7 @@ mod tests {
         // Only then do the delete and the expiry of her sync record run.
         let delete = async {
             wait_for_lock_waiter(&pool).await;
-            PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+            PostgresBackend::delete_role(&arc_project, deleted_role_id, &mut delete_tx)
                 .await
                 .unwrap();
             PostgresBackend::expire_role_assignment_syncs_impl(
@@ -3027,13 +3029,14 @@ mod tests {
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
 
         for commit in [false, true] {
-            let mut t = PostgresTransaction::begin_write(state.clone())
-                .await
-                .unwrap();
+            let mut t =
+                lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                    .await
+                    .unwrap();
             PostgresBackend::lock_role_and_count_grants_impl(&project_id, role_id, t.transaction())
                 .await
                 .unwrap();
-            PostgresBackend::delete_role(&arc_project, role_id, t.transaction())
+            PostgresBackend::delete_role(&arc_project, role_id, &mut t)
                 .await
                 .unwrap();
             PostgresBackend::expire_role_assignment_syncs_impl(
@@ -7257,13 +7260,13 @@ mod tests {
         members: &[UserId],
     ) {
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(project_id, role_id, t.transaction())
             .await
             .unwrap();
-        PostgresBackend::delete_role(&arc_project, role_id, t.transaction())
+        PostgresBackend::delete_role(&arc_project, role_id, &mut t)
             .await
             .unwrap();
         PostgresBackend::expire_role_assignment_syncs_impl(
@@ -7790,9 +7793,10 @@ mod tests {
         // uncommitted: the sync below still reads the record, then waits on the
         // assignment row it removes.
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             group_1_id,
@@ -7800,7 +7804,7 @@ mod tests {
         )
         .await
         .unwrap();
-        PostgresBackend::delete_role(&arc_project, group_1_id, delete_tx.transaction())
+        PostgresBackend::delete_role(&arc_project, group_1_id, &mut delete_tx)
             .await
             .unwrap();
         PostgresBackend::expire_role_assignment_syncs_impl(
@@ -7883,9 +7887,10 @@ mod tests {
         // uncommitted: the sync below still reads the record, then waits on the
         // assignment row it removes.
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             group_1_id,
@@ -7893,7 +7898,7 @@ mod tests {
         )
         .await
         .unwrap();
-        PostgresBackend::delete_role(&arc_project, group_1_id, delete_tx.transaction())
+        PostgresBackend::delete_role(&arc_project, group_1_id, &mut delete_tx)
             .await
             .unwrap();
         PostgresBackend::expire_role_assignment_syncs_impl(
@@ -7970,9 +7975,10 @@ mod tests {
         let before = sync_rows(&pool, &alice_id, &project_id).await;
 
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             deleted_role_id,
@@ -7993,7 +7999,7 @@ mod tests {
         );
         let delete = async {
             wait_for_lock_waiter(&pool).await;
-            PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+            PostgresBackend::delete_role(&arc_project, deleted_role_id, &mut delete_tx)
                 .await
                 .unwrap();
             PostgresBackend::expire_role_assignment_syncs_impl(

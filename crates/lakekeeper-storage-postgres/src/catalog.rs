@@ -46,7 +46,7 @@ use lakekeeper::{
         ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
         LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
         MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
+        ReboundRole, RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
         RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
         RenamedWarehouse, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result,
         RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent, RoleMemberKind,
@@ -438,7 +438,7 @@ impl CatalogStore for super::PostgresBackend {
         role_id: RoleId,
         request: &UpdateRoleSourceSystemRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Role, UpdateRoleError> {
+    ) -> Result<ReboundRole, UpdateRoleError> {
         update_role_source_system(project_id, role_id, request, &mut **transaction).await
     }
 

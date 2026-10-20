@@ -15,7 +15,9 @@ use lakekeeper::{
         ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogGrantOps as _,
         CatalogListRolesByIdFilter, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
         RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction,
+        WriteTransaction,
         authz::{AllowAllAuthorizer, GrantResource, GrantSpec, UserOrRoleId},
+        cache_invalidation::CacheKey,
         events::EventListener,
         role_cache::ROLE_CACHE,
     },
@@ -23,7 +25,10 @@ use lakekeeper::{
 use lakekeeper_integration_tests::{
     CapturingAuthzListener, SetupTestCatalog, memory_io_profile, random_request_metadata,
 };
-use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    test_utils::{change, committed_changes},
+};
 use sqlx::PgPool;
 
 fn request_metadata_with_project(project_id: &ProjectId) -> RequestMetadata {
@@ -140,11 +145,10 @@ async fn test_delete_role(pool: PgPool) {
     let role = db_create_role(&ctx, &warehouse_resp.project_id, "del-role", "src-del").await;
     let role_id = role.id();
 
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    PostgresBackend::delete_role(&warehouse_resp.project_id, role_id, tx.transaction())
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+    PostgresBackend::delete_role(&warehouse_resp.project_id, role_id, &mut tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -178,16 +182,15 @@ async fn test_update_role(pool: PgPool) {
     let role = db_create_role(&ctx, &warehouse_resp.project_id, "upd-role", "src-upd").await;
     let original_version = *role.version;
 
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let updated = PostgresBackend::update_role(
         &warehouse_resp.project_id,
         role.id(),
         "upd-role-v2",
         Some("new desc"),
-        tx.transaction(),
+        &mut tx,
     )
     .await
     .unwrap();
@@ -326,21 +329,20 @@ async fn test_get_role_by_ident_uses_cache(pool: PgPool) {
     .unwrap();
     assert_eq!(v1.name(), "ident-cache");
 
-    // Update name in DB directly (bypasses cache)
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    // Another instance renames the role; this instance keeps its cached entry.
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::update_role(
         &warehouse_resp.project_id,
         role.id(),
         "ident-cache-v2",
         None,
-        tx.transaction(),
+        &mut tx,
     )
     .await
     .unwrap();
-    tx.commit().await.unwrap();
+    tx.commit_as_another_instance().await.unwrap();
 
     // get_role_by_ident should still return stale cached data
     let v2 = PostgresBackend::get_role_by_ident(
@@ -381,21 +383,20 @@ async fn test_cache_respects_min_version(pool: PgPool) {
     .unwrap();
     let original_version = *v0.version;
 
-    // Update in DB only (no cache event)
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    // Another instance updates the role; this instance keeps its cached entry.
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::update_role(
         &warehouse_resp.project_id,
         role.id(),
         "ver-role-updated",
         None,
-        tx.transaction(),
+        &mut tx,
     )
     .await
     .unwrap();
-    tx.commit().await.unwrap();
+    tx.commit_as_another_instance().await.unwrap();
 
     // CachePolicy::Use — should return stale cached data
     let stale = PostgresBackend::get_role_by_id_cache_aware(
@@ -445,21 +446,20 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     .await
     .unwrap();
 
-    // Update in DB only (no cache event)
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    // Another instance updates the role; this instance keeps its cached entry.
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::update_role(
         &warehouse_resp.project_id,
         role.id(),
         "skip-role-v2",
         None,
-        tx.transaction(),
+        &mut tx,
     )
     .await
     .unwrap();
-    tx.commit().await.unwrap();
+    tx.commit_as_another_instance().await.unwrap();
 
     // CachePolicy::Use returns stale
     let cached = PostgresBackend::get_role_by_id_cache_aware(
@@ -539,20 +539,19 @@ async fn test_list_roles_with_role_ids_served_from_cache(pool: PgPool) {
     assert!(ROLE_CACHE.get(&role2.id()).await.is_some());
 
     // Update one role in DB without updating cache
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::update_role(
         &warehouse_resp.project_id,
         role1.id(),
         "list-cache-1-updated",
         None,
-        tx.transaction(),
+        &mut tx,
     )
     .await
     .unwrap();
-    tx.commit().await.unwrap();
+    tx.commit_as_another_instance().await.unwrap();
 
     // Second call — should be served from cache (stale data)
     let result2 = PostgresBackend::list_roles(
@@ -763,16 +762,15 @@ async fn test_cache_eviction_invalidates_ident_lookup(pool: PgPool) {
     assert_eq!(*v1.version, 0);
 
     // Update name in DB (version bumped to 1)
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::update_role(
         &warehouse_resp.project_id,
         role.id(),
         "evict-role-v2",
         None,
-        tx.transaction(),
+        &mut tx,
     )
     .await
     .unwrap();
@@ -1196,7 +1194,8 @@ fn system_role_spec(source_id: &'static str, name: &'static str) -> SystemRoleSp
 }
 
 /// `upsert_system_roles` inserts new specs and refreshes only the rows that
-/// actually changed. The same call twice in a row returns an empty Vec.
+/// actually changed, and records those roles as changed. The same call twice in a
+/// row returns an empty Vec and records nothing.
 #[sqlx::test]
 async fn test_upsert_system_roles_via_trait(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1208,60 +1207,65 @@ async fn test_upsert_system_roles_via_trait(pool: PgPool) {
         .setup()
         .await;
     let project_id = &warehouse_resp.project_id;
+    let cap = SystemRoleSeederCap::for_storage_backend_seeding();
+    let upsert = |specs: Vec<SystemRoleSpec>| {
+        let catalog = ctx.v1_state.catalog.clone();
+        let pool = pool.clone();
+        async move {
+            let mut tx = WriteTransaction::<PostgresBackend>::begin(catalog)
+                .await
+                .unwrap();
+            let roles = PostgresBackend::upsert_system_roles(project_id, &specs, cap, &mut tx)
+                .await
+                .unwrap();
+            (roles, committed_changes(tx, &pool).await)
+        }
+    };
 
     // First call: inserts both rows.
-    let specs = vec![
+    let (inserted, inserted_changes) = upsert(vec![
         system_role_spec("svc_admin", "Service Admin"),
         system_role_spec("svc_user", "Service User"),
-    ];
-    let cap = SystemRoleSeederCap::for_storage_backend_seeding();
-
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    let inserted = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(inserted.len(), 2);
-
+    ])
+    .await;
     // Second call with identical specs: no-op upsert, empty Vec.
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    let nochange = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(nochange.len(), 0, "idempotent re-seed must be a no-op");
-
+    let (nochange, nochange_changes) = upsert(vec![
+        system_role_spec("svc_admin", "Service Admin"),
+        system_role_spec("svc_user", "Service User"),
+    ])
+    .await;
     // Third call with one changed name: only the changed row is returned.
-    let refreshed = vec![
+    let (changed, changed_changes) = upsert(vec![
         SystemRoleSpec {
             source_id: RoleSourceId::try_new("svc_admin").unwrap(),
             name: "Renamed Admin",
             description: "test system role",
         },
         system_role_spec("svc_user", "Service User"),
-    ];
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    let changed =
-        PostgresBackend::upsert_system_roles(project_id, &refreshed, cap, tx.transaction())
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
+    ])
+    .await;
+
+    assert_eq!(inserted.len(), 2);
+    assert_eq!(
+        inserted_changes,
+        vec![change(
+            "role",
+            &[&inserted[0].id.to_string(), &inserted[1].id.to_string()]
+        )]
+    );
+    assert_eq!(nochange.len(), 0, "idempotent re-seed must be a no-op");
+    assert_eq!(nochange_changes, Vec::new());
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].name, "Renamed Admin");
     assert_eq!(changed[0].ident.source_id().as_str(), "svc_admin");
+    assert_eq!(
+        changed_changes,
+        vec![change("role", &[&changed[0].id.to_string()])]
+    );
 }
 
-/// `delete_system_roles` removes rows by `source_id` and is idempotent: a
-/// second call returns an empty Vec.
+/// `delete_system_roles` removes rows by `source_id`, records them as changed, and
+/// is idempotent: a second call returns an empty Vec and records nothing.
 #[sqlx::test]
 async fn test_delete_system_roles_via_trait(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1274,42 +1278,115 @@ async fn test_delete_system_roles_via_trait(pool: PgPool) {
         .await;
     let project_id = &warehouse_resp.project_id;
     let cap = SystemRoleSeederCap::for_storage_backend_seeding();
+    let begin = || WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone());
 
     // Seed one row.
-    let specs = vec![system_role_spec("retired_role", "Retired")];
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+    let mut tx = begin().await.unwrap();
+    let seeded = PostgresBackend::upsert_system_roles(
+        project_id,
+        &[system_role_spec("retired_role", "Retired")],
+        cap,
+        &mut tx,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let source_id = RoleSourceId::try_new("retired_role").unwrap();
+    let mut tx = begin().await.unwrap();
+    let deleted = PostgresBackend::delete_system_roles(project_id, &[&source_id], cap, &mut tx)
         .await
         .unwrap();
-    tx.commit().await.unwrap();
+    let deleted_changes = committed_changes(tx, &pool).await;
+    let mut tx = begin().await.unwrap();
+    let again = PostgresBackend::delete_system_roles(project_id, &[&source_id], cap, &mut tx)
+        .await
+        .unwrap();
+    let again_changes = committed_changes(tx, &pool).await;
 
-    // First delete: returns one row.
-    let source_id = RoleSourceId::try_new("retired_role").unwrap();
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    let deleted =
-        PostgresBackend::delete_system_roles(project_id, &[&source_id], cap, tx.transaction())
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(deleted.len(), 1);
-
-    // Second delete: idempotent, no error.
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    let again =
-        PostgresBackend::delete_system_roles(project_id, &[&source_id], cap, tx.transaction())
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
+    assert_eq!(deleted, vec![seeded[0].id]);
+    assert_eq!(
+        deleted_changes,
+        vec![change("role", &[&seeded[0].id.to_string()])]
+    );
     assert_eq!(again.len(), 0);
+    assert_eq!(again_changes, Vec::new());
+}
+
+/// Updating, rebinding and deleting a role record the role, and a rebind also the
+/// ident it had.
+#[sqlx::test]
+async fn role_writes_record_their_cache_keys(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let begin = || WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone());
+    let source_id = RoleSourceId::try_new("recorded").unwrap();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let role = PostgresBackend::create_role(
+        project_id,
+        CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("recorded")
+            .source_id(&source_id)
+            .provider_id(&make_provider())
+            .build(),
+        tx.transaction(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let id = role.id.to_string();
+    let mut logged = Vec::new();
+
+    let mut tx = begin().await.unwrap();
+    PostgresBackend::update_role(project_id, role.id, "renamed", None, &mut tx)
+        .await
+        .unwrap();
+    logged.push(committed_changes(tx, &pool).await);
+
+    let mut tx = begin().await.unwrap();
+    PostgresBackend::set_role_source_system(
+        project_id,
+        role.id,
+        &UpdateRoleSourceSystemRequest {
+            provider_id: make_provider(),
+            source_id: RoleSourceId::try_new("rebound").unwrap(),
+        },
+        &mut tx,
+    )
+    .await
+    .unwrap();
+    logged.push(committed_changes(tx, &pool).await);
+
+    let mut tx = begin().await.unwrap();
+    PostgresBackend::delete_role(project_id, role.id, &mut tx)
+        .await
+        .unwrap();
+    logged.push(committed_changes(tx, &pool).await);
+
+    let previous_ident = CacheKey::RoleIdent {
+        project_id: (**project_id).clone(),
+        ident: (*role.ident).clone(),
+    }
+    .encode();
+    assert_eq!(
+        logged,
+        vec![
+            vec![change("role", &[&id])],
+            vec![change("role", &[&id, &previous_ident])],
+            vec![change("role", &[&id])],
+        ]
+    );
 }
 
 /// `upsert_system_roles` rejects duplicate `source_ids` in a single batch
@@ -1333,11 +1410,10 @@ async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
         system_role_spec("dup", "First"),
         system_role_spec("dup", "Second"),
     ];
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    let err = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+    let err = PostgresBackend::upsert_system_roles(project_id, &specs, cap, &mut tx)
         .await
         .unwrap_err();
     assert!(

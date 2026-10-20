@@ -7,8 +7,9 @@ use lakekeeper::{
     service::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CreateRoleError,
         DeleteRoleError, ListRolesError, ListRolesResponse, OnRoleConflict, ProjectIdNotFoundError,
-        Result, Role, RoleId, RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists,
-        RoleSourceIdConflict, RoleVersion, SearchRoleResponse, SearchRolesError, UpdateRoleError,
+        ReboundRole, Result, Role, RoleId, RoleIdNotFoundInProject, RoleIdent,
+        RoleNameAlreadyExists, RoleSourceIdConflict, RoleVersion, SearchRoleResponse,
+        SearchRolesError, UpdateRoleError,
     },
 };
 use uuid::Uuid;
@@ -217,19 +218,28 @@ pub(crate) async fn update_role_source_system<
     role_id: RoleId,
     request: &UpdateRoleSourceSystemRequest,
     connection: E,
-) -> Result<Role, UpdateRoleError> {
+) -> Result<ReboundRole, UpdateRoleError> {
     let UpdateRoleSourceSystemRequest {
         source_id,
         provider_id,
     } = request;
 
-    let role = sqlx::query_as!(
-        RoleRow,
+    // `previous` locks the row, so the ident it reads is the one the UPDATE replaces.
+    let role = sqlx::query!(
         r#"
+        WITH previous AS (
+            SELECT provider_id, source_id FROM role
+            WHERE id = $1 AND project_id = $2
+            FOR UPDATE
+        )
         UPDATE role
         SET source_id = $3, provider_id = $4
+        FROM previous
         WHERE id = $1 AND project_id = $2
-        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at, version
+        RETURNING role.id, role.name, role.description, role.project_id, role.provider_id,
+            role.source_id, role.created_at, role.updated_at, role.version,
+            previous.provider_id AS previous_provider_id,
+            previous.source_id AS previous_source_id
         "#,
         uuid::Uuid::from(role_id),
         project_id,
@@ -237,7 +247,24 @@ pub(crate) async fn update_role_source_system<
         provider_id.as_str()
     )
     .fetch_one(connection)
-    .await;
+    .await
+    .map(|row| ReboundRole {
+        previous_ident: RoleIdent::from_db_unchecked(
+            row.previous_provider_id,
+            row.previous_source_id,
+        ),
+        role: Role::from(RoleRow {
+            id: row.id,
+            name: row.name,
+            description: row.description,
+            project_id: row.project_id,
+            provider_id: row.provider_id,
+            source_id: row.source_id,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            version: row.version,
+        }),
+    });
 
     match role {
         Err(sqlx::Error::RowNotFound) => Err(UpdateRoleError::from(RoleIdNotFoundInProject::new(
@@ -259,7 +286,7 @@ pub(crate) async fn update_role_source_system<
             }
             _ => Err(e.into_catalog_backend_error().into()),
         },
-        Ok(role) => Ok(Role::from(role)),
+        Ok(rebound) => Ok(rebound),
     }
 }
 
@@ -818,6 +845,7 @@ mod test {
         )
         .await
         .unwrap();
+        let updated_role = updated_role.role;
         assert_eq!(updated_role.name, "Role 1");
         assert_eq!(
             updated_role.description,

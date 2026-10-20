@@ -349,15 +349,6 @@ impl EventListener for RoleCacheEventListener {
         Ok(())
     }
 
-    async fn role_deleted(&self, event: events::DeleteRoleEvent) -> anyhow::Result<()> {
-        let events::DeleteRoleEvent {
-            role,
-            request_metadata: _,
-        } = event;
-        role_cache_invalidate(role.id()).await;
-        Ok(())
-    }
-
     /// Warm the `IDENT_TO_ID_CACHE` secondary index after a role's members
     /// have been synced.
     ///

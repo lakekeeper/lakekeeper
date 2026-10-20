@@ -14,23 +14,22 @@ use lakekeeper::{
     service::{
         AllowedFormatVersions, CatalogCreateWarehouseError, CatalogCreateWarehouseRequest,
         CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
-        CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogRoleOps,
-        DatabaseIntegrityError, DeletedWarehouse, EnsureWarehouseSpecMutableError,
-        GetProjectResponse, ManagedBy, ProjectIdNotFoundError, RenamedWarehouse, ResolvedWarehouse,
+        CatalogListWarehousesError, CatalogRenameWarehouseError, DatabaseIntegrityError,
+        DeletedWarehouse, EnsureWarehouseSpecMutableError, GetProjectResponse, ManagedBy,
+        OnRoleConflict, ProjectIdNotFoundError, RenamedWarehouse, ResolvedWarehouse,
         SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
         SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
+        StorageProfileSerializationError, UpdateWarehouseStorageProfileError,
         UpdatedWarehouseStorage, WarehouseAlreadyExists, WarehouseFormatVersionPolicy,
         WarehouseHasUnfinishedTasks, WarehouseIdAlreadyExists, WarehouseIdNotFound,
         WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
-        WarehouseVersion, registered_system_roles, storage::StorageProfile,
+        WarehouseVersion, registered_system_roles, storage::StorageProfile, system_role_requests,
     },
 };
 use sqlx::{PgPool, types::Json};
 
 use super::CatalogState;
 use crate::{
-    PostgresBackend,
     dbutils::DBErrorHandler,
     pagination::{PaginateToken, V1PaginateToken},
 };
@@ -252,20 +251,27 @@ pub async fn create_project(
 
     // Seed system roles from the process-wide registry, if any. Empty in
     // default OSS (no extension registered). Atomic with the project
-    // insert; the seeder path goes through the cap-gated trait method so
-    // `create_project` and the post-migration backfill share one code path.
+    // insert, and built from the same requests as the post-migration backfill.
+    // The project is new, so no instance caches its roles.
     let specs = registered_system_roles();
     if !specs.is_empty() {
-        let cap = SystemRoleSeederCap::for_storage_backend_seeding();
-        PostgresBackend::upsert_system_roles(project_id, specs, cap, transaction)
+        let seeded = async {
+            crate::role::create_roles(
+                project_id,
+                system_role_requests(specs)?,
+                OnRoleConflict::UpdateMetadata,
+                &mut **transaction,
+            )
             .await
-            .map_err(|e| {
-                ErrorModel::internal(
-                    "Failed to seed registered system roles",
-                    "SystemRoleSeedFailed",
-                    Some(Box::new(e)),
-                )
-            })?;
+        }
+        .await;
+        seeded.map_err(|e| {
+            ErrorModel::internal(
+                "Failed to seed registered system roles",
+                "SystemRoleSeedFailed",
+                Some(Box::new(e)),
+            )
+        })?;
     }
 
     Ok(())

@@ -15,13 +15,17 @@ use lakekeeper::{
         },
     },
     service::{
-        ArcProjectId, CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId,
+        ArcProjectId, CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId, RoleIdent,
         RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, Transaction, UserId,
-        UserUpsertMode, authz::AllowAllAuthorizer, events::EventListener,
+        UserUpsertMode, authz::AllowAllAuthorizer, cache_invalidation::CacheKey,
+        events::EventListener,
     },
 };
 use lakekeeper_integration_tests::{CapturingAuthzListener, SetupTestCatalog, memory_io_profile};
-use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use lakekeeper_storage_postgres::{
+    PostgresBackend, SecretsState,
+    test_utils::{change, change_log_head, changes_since},
+};
 use sqlx::PgPool;
 
 type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
@@ -1050,7 +1054,7 @@ async fn source_system_rebind_evicts_user_assignment_closures(pool: PgPool) {
         service::CatalogRoleAssignmentOps as _,
     };
 
-    let (ctx, project_id) = setup(pool).await;
+    let (ctx, project_id) = setup(pool.clone()).await;
     let role = make_role(&ctx, &project_id, "rebind-role", "old-src").await;
     let alice = UserId::new_unchecked("oidc", "alice");
     provision_user(&ctx, &alice, "Alice").await;
@@ -1093,6 +1097,7 @@ async fn source_system_rebind_evicts_user_assignment_closures(pool: PgPool) {
     );
 
     // Rebind the role's source system (changes its RoleIdent's source_id).
+    let log_head = change_log_head(&pool).await;
     ApiServer::update_role_source_system(
         ctx.clone(),
         metadata(&project_id),
@@ -1137,6 +1142,70 @@ async fn source_system_rebind_evicts_user_assignment_closures(pool: PgPool) {
         after_members.role_ident.source_id(),
         &RoleSourceId::try_new("new-src").unwrap(),
         "the member list carries the stale ident after a source-system rebind",
+    );
+
+    // Other instances evict the same entries, plus the ident the role had.
+    let old_ident = CacheKey::RoleIdent {
+        project_id: (*project_id).clone(),
+        ident: RoleIdent::new(
+            RoleProviderId::try_new("lakekeeper").unwrap(),
+            RoleSourceId::try_new("old-src").unwrap(),
+        ),
+    };
+    assert_eq!(
+        changes_since(&pool, log_head).await,
+        vec![
+            change("role", &[&role.to_string(), &old_ident.encode()]),
+            change(
+                "user_assignments",
+                &[&CacheKey::UserAssignments(alice.clone()).encode()]
+            ),
+            change("role_ancestors", &[]),
+        ]
+    );
+}
+
+/// Deleting a role records the role, the users who held it and the ancestor sets as
+/// changed, so every instance evicts them.
+#[sqlx::test]
+async fn deleting_a_role_records_its_assignees_and_the_ancestor_sets(pool: PgPool) {
+    use lakekeeper::api::management::v1::role::{DeleteRoleQuery, Service as _};
+
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let role = make_role(&ctx, &project_id, "doomed-role", "doomed-src").await;
+    let alice = UserId::new_unchecked("oidc", "alice");
+    provision_user(&ctx, &alice, "Alice").await;
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        AddRoleMembersRequest {
+            members: vec![user_member(&alice)],
+        },
+    )
+    .await
+    .unwrap();
+
+    let log_head = change_log_head(&pool).await;
+    ApiServer::delete_role(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        DeleteRoleQuery::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        changes_since(&pool, log_head).await,
+        vec![
+            change("role", &[&role.to_string()]),
+            change(
+                "user_assignments",
+                &[&CacheKey::UserAssignments(alice.clone()).encode()]
+            ),
+            change("role_ancestors", &[]),
+        ]
     );
 }
 

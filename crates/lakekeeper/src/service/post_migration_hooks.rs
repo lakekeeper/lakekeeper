@@ -220,7 +220,7 @@ pub async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
         roles.len()
     );
 
-    let mut t = C::Transaction::begin_write(state)
+    let mut t = WriteTransaction::<C>::begin(state)
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Failed to begin write transaction"))?;
 
@@ -232,7 +232,7 @@ pub async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
     let mut total_upserted = 0usize;
 
     for project in &projects {
-        let upserted = C::upsert_system_roles(&project.project_id, roles, cap, t.transaction())
+        let upserted = C::upsert_system_roles(&project.project_id, roles, cap, &mut t)
             .await
             .map_err(|e| {
                 anyhow::anyhow!(e).context(format!(

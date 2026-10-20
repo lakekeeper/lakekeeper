@@ -1017,7 +1017,7 @@ where
         role_id: RoleId,
         request: &UpdateRoleSourceSystemRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Role, UpdateRoleError>;
+    ) -> Result<ReboundRole, UpdateRoleError>;
 
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
