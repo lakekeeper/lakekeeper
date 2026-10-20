@@ -47,10 +47,10 @@ use crate::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
-            ProjectTaskScheduleState, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope,
-            TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule,
-            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
-            TriggerTaskScheduleError, UpsertTaskScheduleError,
+            ProjectTaskScheduleState, RetryDecision, Task, TaskAttemptId, TaskCheckState,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope,
+            TaskSchedule, TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError,
+            TaskScheduleUpsert, TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -1414,8 +1414,7 @@ where
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32, // Max retries from task config, used to determine if we should mark the task as failed or retry
-        retry_backoff: chrono::Duration, // Delay before the next attempt if one remains
-        retry_resource_demand: Option<i64>, // Resource demand of the next attempt if one remains
+        retry_decision: &RetryDecision, // What follows the attempt; a retry is ignored after max_retries
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 

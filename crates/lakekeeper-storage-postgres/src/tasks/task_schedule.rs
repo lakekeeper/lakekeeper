@@ -602,10 +602,11 @@ mod tests {
             ArcProjectId, CatalogTaskOps, Transaction,
             tasks::{
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EnqueueOutcome, FailedAttempt, FailureKind,
-                ScheduleTaskMetadata, TaskEntity, TaskId, TaskInput, TaskIntermediateStatus,
-                TaskQueueName, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
-                TaskScheduleIntervalOutOfRangeError, TaskScheduleUpsert, TriggerTaskScheduleError,
-                UpsertTaskScheduleError, WarehouseTaskEntityId, default_retry_backoff,
+                RetryDecision, ScheduleTaskMetadata, TaskEntity, TaskId, TaskInput,
+                TaskIntermediateStatus, TaskQueueName, TaskSchedule, TaskScheduleFilter,
+                TaskScheduleId, TaskScheduleIntervalOutOfRangeError, TaskScheduleUpsert,
+                TriggerTaskScheduleError, UpsertTaskScheduleError, WarehouseTaskEntityId,
+                default_retry_backoff,
             },
         },
     };
@@ -1669,8 +1670,7 @@ mod tests {
             record_failure(
                 &task,
                 max_retries,
-                backoff,
-                None,
+                &RetryDecision::retry(backoff),
                 "boom",
                 &mut pool.acquire().await.unwrap(),
             )

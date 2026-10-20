@@ -23,8 +23,8 @@ pub struct PostMigrationHookOptions {
     /// Set when the migration the repair is pinned to was applied by this run — see
     /// `lakekeeper-storage-postgres`'s `NAMESPACE_PATH_CASING_REPAIR_AFTER`.
     pub repair_namespace_path_casing: bool,
-    /// Treat a failure of any gated hook above, or of creating missing task log cleanup
-    /// schedules, as fatal instead of logging it.
+    /// Treat a failure of any gated hook above, or of syncing the task log cleanup schedules, as
+    /// fatal; otherwise it is logged.
     ///
     /// Off for a normal migration: a transient failure should not block an upgrade, since these
     /// hooks repair or backfill rather than gatekeep. On when an operator asked for the hooks

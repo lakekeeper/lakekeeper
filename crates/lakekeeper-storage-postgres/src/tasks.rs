@@ -13,11 +13,12 @@ use lakekeeper::{
         TableId, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, EnqueueOutcome, FailedAttempt, FailureKind, RetryPolicy,
-            ScheduleTaskMetadata, TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
+            CancelTasksFilter, EnqueueOutcome, FailedAttempt, FailureKind, RetryDecision,
+            RetryPolicy, ScheduleTaskMetadata, TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
             TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE, Task, TaskAttemptId, TaskCheckState,
             TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
             TaskQueueName, TaskResourceDemandRange, TaskScheduleId, WarehouseTaskEntityId,
+            given_up_message,
         },
     },
 };
@@ -552,8 +553,7 @@ pub(crate) async fn queue_task_batch(
 #[cfg(test)]
 const TEST_RETRY_POLICY: RetryPolicy = RetryPolicy {
     max_retries: 5,
-    retry_backoff: |_| chrono::Duration::zero(),
-    retry_resource_demand: |_| None,
+    retry_decision: |_| RetryDecision::retry(chrono::Duration::zero()),
 };
 
 /// [`record_failure`] that schedules a retry at once.
@@ -567,8 +567,7 @@ pub(crate) async fn record_failure_without_backoff(
     record_failure(
         id,
         max_retries,
-        chrono::Duration::zero(),
-        None,
+        &RetryDecision::retry(chrono::Duration::zero()),
         details,
         conn,
     )
@@ -800,8 +799,7 @@ async fn fail_timed_out_attempt(
     record_failure(
         id,
         retry_policy.max_retries,
-        (retry_policy.retry_backoff)(&failed),
-        (retry_policy.retry_resource_demand)(&failed),
+        &(retry_policy.retry_decision)(&failed),
         details,
         &mut transaction,
     )
@@ -937,27 +935,28 @@ struct FailureRecord {
 pub(crate) async fn record_failure(
     id: impl AsRef<TaskAttemptId>,
     max_retries: i32,
-    retry_backoff: chrono::Duration,
-    retry_resource_demand: Option<i64>,
+    retry_decision: &RetryDecision,
     details: &str,
     conn: &mut PgConnection,
 ) -> Result<(), IcebergErrorResponse> {
     let TaskAttemptId { task_id, attempt } = *id.as_ref();
-    let retry_backoff =
-        pg_interval(retry_backoff.clamp(chrono::Duration::zero(), MAX_RETRY_BACKOFF))?;
-    let retry_resource_demand = retry_resource_demand.map(|demand| demand.max(0));
-    let record = if attempt >= max_retries {
-        fail_task(conn, task_id, attempt, details).await
-    } else {
-        reschedule_failed_task(
-            conn,
-            task_id,
-            attempt,
-            details,
-            retry_backoff,
-            retry_resource_demand,
-        )
-        .await
+    let record = match retry_decision {
+        RetryDecision::GiveUp { reason, .. } => {
+            fail_task(conn, task_id, attempt, &given_up_message(details, reason)).await
+        }
+        RetryDecision::Retry { .. } if attempt >= max_retries => {
+            fail_task(conn, task_id, attempt, details).await
+        }
+        RetryDecision::Retry {
+            backoff,
+            resource_demand,
+            ..
+        } => {
+            let backoff =
+                pg_interval((*backoff).clamp(chrono::Duration::zero(), MAX_RETRY_BACKOFF))?;
+            let resource_demand = resource_demand.map(|demand| demand.max(0));
+            reschedule_failed_task(conn, task_id, attempt, details, backoff, resource_demand).await
+        }
     }
     .map_err(|e| e.append_detail(format!("Task ID: {task_id}, Attempt: {attempt}")))?;
 
@@ -1439,10 +1438,21 @@ pub(crate) async fn check_and_heartbeat_task(
     }))
 }
 
+/// Which queues a cancellation covers.
+struct CancelQueues {
+    /// The queue's current name plus any pre-rename aliases. Matched with
+    /// `queue_name = ANY(...)` so tasks enqueued under an old name are cancelled
+    /// too (e.g. undropping a tabular whose expiration was scheduled before the
+    /// rename). Empty when no queue is given; `all` then matches all queues.
+    names: Vec<String>,
+    all: bool,
+    /// For messages.
+    label: String,
+}
+
 /// Cancel scheduled tasks.
 /// If `force_delete_running_tasks` is true, "running" and "should-stop" tasks will also be cancelled.
 /// If `queue_name` is `None`, tasks in all queues will be cancelled.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn cancel_scheduled_tasks(
     connection: &mut PgConnection,
     filter: CancelTasksFilter,
@@ -1450,26 +1460,56 @@ pub(crate) async fn cancel_scheduled_tasks(
     legacy_queue_names: &[&TaskQueueName],
     force_delete_running_tasks: bool,
 ) -> lakekeeper::api::Result<()> {
-    let queue_name_is_none = queue_name.is_none();
-    // The queue's current name plus any pre-rename aliases. Matched with
-    // `queue_name = ANY(...)` so tasks enqueued under an old name are cancelled
-    // too (e.g. undropping a tabular whose expiration was scheduled before the
-    // rename). Empty when `queue_name` is None — the `queue_name_is_none`
-    // escape then matches all queues.
-    let queue_names: Vec<String> = queue_name
+    let all = queue_name.is_none();
+    let names: Vec<String> = queue_name
         .into_iter()
         .chain(legacy_queue_names.iter().copied())
         .map(|n| n.as_str().to_string())
         .collect();
-    let queue_name = if queue_names.is_empty() {
+    let label = if names.is_empty() {
         "<all>".to_string()
     } else {
-        queue_names.join(", ")
+        names.join(", ")
     };
+    let queues = CancelQueues { names, all, label };
     match filter {
         CancelTasksFilter::WarehouseId { warehouse_id } => {
-            sqlx::query!(
-                r#"
+            cancel_warehouse_tasks(
+                connection,
+                warehouse_id,
+                &queues,
+                force_delete_running_tasks,
+            )
+            .await
+        }
+        CancelTasksFilter::TaskIds(task_ids) => {
+            cancel_tasks_by_id(connection, &task_ids, &queues, force_delete_running_tasks).await
+        }
+        CancelTasksFilter::ProjectId {
+            project_id,
+            include_sub_tasks,
+        } => {
+            cancel_project_tasks(
+                connection,
+                &project_id,
+                include_sub_tasks,
+                &queues,
+                force_delete_running_tasks,
+            )
+            .await
+        }
+    }
+}
+
+async fn cancel_warehouse_tasks(
+    connection: &mut PgConnection,
+    warehouse_id: WarehouseId,
+    queues: &CancelQueues,
+    force_delete_running_tasks: bool,
+) -> lakekeeper::api::Result<()> {
+    let (queue_names, queue_name_is_none, queue_name) = (&queues.names, queues.all, &queues.label);
+    sqlx::query!(
+        r#"
                 WITH deleted as (
                     DELETE FROM task
                     WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = ANY($2) OR $6)
@@ -1523,28 +1563,36 @@ pub(crate) async fn cancel_scheduled_tasks(
                 FROM deleted
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
-                *warehouse_id,
-                &queue_names,
-                TaskIntermediateStatus::Scheduled as _,
-                TaskOutcome::Cancelled as _,
-                force_delete_running_tasks,
-                queue_name_is_none
-            )
-            .execute(connection)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    ?e,
-                    "Failed to cancel {queue_name} Tasks for warehouse {warehouse_id}"
-                );
-                e.into_error_model(format!(
-                    "Failed to cancel {queue_name} Tasks for warehouse {warehouse_id}"
-                ))
-            })?;
-        }
-        CancelTasksFilter::TaskIds(task_ids) => {
-            sqlx::query!(
-                r#"
+        *warehouse_id,
+        queue_names,
+        TaskIntermediateStatus::Scheduled as _,
+        TaskOutcome::Cancelled as _,
+        force_delete_running_tasks,
+        queue_name_is_none
+    )
+    .execute(connection)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            ?e,
+            "Failed to cancel {queue_name} Tasks for warehouse {warehouse_id}"
+        );
+        e.into_error_model(format!(
+            "Failed to cancel {queue_name} Tasks for warehouse {warehouse_id}"
+        ))
+    })?;
+    Ok(())
+}
+
+async fn cancel_tasks_by_id(
+    connection: &mut PgConnection,
+    task_ids: &[TaskId],
+    queues: &CancelQueues,
+    force_delete_running_tasks: bool,
+) -> lakekeeper::api::Result<()> {
+    let (queue_names, queue_name_is_none) = (&queues.names, queues.all);
+    sqlx::query!(
+        r#"
                 WITH deleted as (
                     DELETE FROM task
                     WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = ANY($4) OR $5)
@@ -1598,26 +1646,32 @@ pub(crate) async fn cancel_scheduled_tasks(
                 FROM deleted
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
-                &task_ids.iter().map(|s| **s).collect_vec(),
-                TaskOutcome::Cancelled as _,
-                TaskIntermediateStatus::Scheduled as _,
-                &queue_names,
-                queue_name_is_none,
-                force_delete_running_tasks
-            )
-            .execute(connection)
-            .await
-            .map_err(|e| {
-                tracing::error!(?e, "Failed to cancel Tasks for task_ids {task_ids:?}");
-                e.into_error_model("Failed to cancel Tasks for specified ids")
-            })?;
-        }
-        CancelTasksFilter::ProjectId {
-            project_id,
-            include_sub_tasks,
-        } => {
-            sqlx::query!(
-                r#"
+        &task_ids.iter().map(|s| **s).collect_vec(),
+        TaskOutcome::Cancelled as _,
+        TaskIntermediateStatus::Scheduled as _,
+        queue_names,
+        queue_name_is_none,
+        force_delete_running_tasks
+    )
+    .execute(connection)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "Failed to cancel Tasks for task_ids {task_ids:?}");
+        e.into_error_model("Failed to cancel Tasks for specified ids")
+    })?;
+    Ok(())
+}
+
+async fn cancel_project_tasks(
+    connection: &mut PgConnection,
+    project_id: &ProjectId,
+    include_sub_tasks: bool,
+    queues: &CancelQueues,
+    force_delete_running_tasks: bool,
+) -> lakekeeper::api::Result<()> {
+    let (queue_names, queue_name_is_none, queue_name) = (&queues.names, queues.all, &queues.label);
+    sqlx::query!(
+        r#"
                 WITH deleted as (
                     DELETE FROM task
                     WHERE (status = $3 OR $5) AND project_id = $1 AND ($7 OR warehouse_id IS NULL) AND (queue_name = ANY($2) OR $6)
@@ -1670,28 +1724,25 @@ pub(crate) async fn cancel_scheduled_tasks(
                 FROM deleted
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
-                project_id.as_str(),
-                &queue_names,
-                TaskIntermediateStatus::Scheduled as _,
-                TaskOutcome::Cancelled as _,
-                force_delete_running_tasks,
-                queue_name_is_none,
-                include_sub_tasks
-            )
-            .execute(connection)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    ?e,
-                    "Failed to cancel {queue_name} Tasks for project {project_id}"
-                );
-                e.into_error_model(format!(
-                    "Failed to cancel {queue_name} Tasks for project {project_id}"
-                ))
-            })?;
-        }
-    }
-
+        project_id.as_str(),
+        queue_names,
+        TaskIntermediateStatus::Scheduled as _,
+        TaskOutcome::Cancelled as _,
+        force_delete_running_tasks,
+        queue_name_is_none,
+        include_sub_tasks
+    )
+    .execute(connection)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            ?e,
+            "Failed to cancel {queue_name} Tasks for project {project_id}"
+        );
+        e.into_error_model(format!(
+            "Failed to cancel {queue_name} Tasks for project {project_id}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -2494,8 +2545,9 @@ mod test {
     async fn test_timed_out_attempt_is_retried_after_its_backoff(pool: PgPool) {
         let policy = RetryPolicy {
             max_retries: 5,
-            retry_backoff: |failed| chrono::Duration::minutes(i64::from(failed.attempt) * 10),
-            retry_resource_demand: |_| None,
+            retry_decision: |failed| {
+                RetryDecision::retry(chrono::Duration::minutes(i64::from(failed.attempt) * 10))
+            },
         };
         let (tq_name, task) = queue_and_pick_timing_out_task(&pool, policy).await;
         expire_heartbeat(&pool, task.task_id()).await;
@@ -2554,8 +2606,7 @@ mod test {
     async fn test_timed_out_last_attempt_fails_the_task(pool: PgPool) {
         let policy = RetryPolicy {
             max_retries: 1,
-            retry_backoff: |_| chrono::Duration::zero(),
-            retry_resource_demand: |_| None,
+            retry_decision: |_| RetryDecision::retry(chrono::Duration::zero()),
         };
         let (tq_name, task) = queue_and_pick_timing_out_task(&pool, policy).await;
         expire_heartbeat(&pool, task.task_id()).await;
@@ -2621,8 +2672,7 @@ mod test {
         record_failure(
             &task,
             5,
-            chrono::Duration::hours(1),
-            None,
+            &RetryDecision::retry(chrono::Duration::hours(1)),
             "boom",
             &mut conn,
         )
@@ -2662,8 +2712,7 @@ mod test {
         record_failure(
             &task,
             5,
-            chrono::Duration::hours(1),
-            None,
+            &RetryDecision::retry(chrono::Duration::hours(1)),
             "boom",
             &mut failure,
         )
@@ -2852,9 +2901,15 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(task.task_id(), failed);
-        record_failure(&task, 1, chrono::Duration::zero(), None, "boom", &mut conn)
-            .await
-            .unwrap();
+        record_failure(
+            &task,
+            1,
+            &RetryDecision::retry(chrono::Duration::zero()),
+            "boom",
+            &mut conn,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             [
                 demands(&pool, task_id).await,
@@ -2950,19 +3005,87 @@ mod test {
     }
 
     #[sqlx::test]
+    async fn test_a_retry_decision_can_give_up(pool: PgPool) {
+        // Give up on a timed-out attempt above 10; retry anything else.
+        let policy = RetryPolicy {
+            max_retries: 5,
+            retry_decision: |failed| {
+                if failed.resource_demand > Some(10) {
+                    RetryDecision::give_up("above the largest class")
+                } else {
+                    RetryDecision::retry(chrono::Duration::zero())
+                }
+            },
+        };
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = generate_tq_name();
+        let everything = TaskResourceDemandRange::default();
+        let small = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(10), 2).await;
+        let large = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(11), 1).await;
+        for task_id in [small, large] {
+            let task = pick_in(&pool, &q, policy, everything).await.unwrap();
+            assert_eq!(task.task_id(), task_id);
+        }
+        expire_heartbeat(&pool, small).await;
+        expire_heartbeat(&pool, large).await;
+
+        // Each pick first closes one timed-out attempt: `small` is retried, `large` is not.
+        let task = pick_in(&pool, &q, policy, everything).await.unwrap();
+        assert_eq!((task.task_id(), task.attempt()), (small, 2));
+        assert!(pick_in(&pool, &q, policy, everything).await.is_none());
+        assert_eq!(
+            attempt_log(&pool, large).await,
+            vec![(
+                1,
+                TaskOutcome::Failed,
+                Some("Attempt timed out.\nNot retried: above the largest class".to_string())
+            )]
+        );
+        assert_eq!(demands(&pool, large).await, (vec![], vec![(1, Some(11))]));
+
+        // A reported failure gives up with its reason, also on its last attempt.
+        let mut conn = pool.acquire().await.unwrap();
+        record_failure(&task, 2, &RetryDecision::give_up("no"), "boom", &mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            attempt_log(&pool, small).await,
+            vec![
+                (
+                    1,
+                    TaskOutcome::Failed,
+                    Some("Attempt timed out.".to_string())
+                ),
+                (
+                    2,
+                    TaskOutcome::Failed,
+                    Some("boom\nNot retried: no".to_string())
+                )
+            ]
+        );
+        assert_eq!(
+            demands(&pool, small).await,
+            (vec![], vec![(1, Some(10)), (2, Some(10))])
+        );
+    }
+
+    #[sqlx::test]
     async fn test_retry_policy_sets_the_resource_demand_of_a_timed_out_attempts_retry(
         pool: PgPool,
     ) {
         // Double the demand of an attempt that timed out without saying it was terminating.
         let policy = RetryPolicy {
             max_retries: 5,
-            retry_backoff: |_| chrono::Duration::zero(),
-            retry_resource_demand: |failed| {
+            retry_decision: |failed| {
                 let terminating = failed
                     .execution_details
                     .is_some_and(|d| d.get("terminating").is_some());
-                (failed.kind == FailureKind::TimedOut && !terminating)
-                    .then(|| failed.resource_demand.unwrap_or(1) * 2)
+                let retry = RetryDecision::retry(chrono::Duration::zero());
+                if failed.kind == FailureKind::TimedOut && !terminating {
+                    retry.with_resource_demand(failed.resource_demand.unwrap_or(1) * 2)
+                } else {
+                    retry
+                }
             },
         };
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -3007,8 +3130,7 @@ mod test {
         record_failure(
             &task,
             5,
-            chrono::Duration::zero(),
-            Some(32),
+            &RetryDecision::retry(chrono::Duration::zero()).with_resource_demand(32),
             "boom",
             &mut conn,
         )
@@ -3019,8 +3141,7 @@ mod test {
         record_failure(
             &task,
             5,
-            chrono::Duration::zero(),
-            Some(-5),
+            &RetryDecision::retry(chrono::Duration::zero()).with_resource_demand(-5),
             "boom",
             &mut conn,
         )
@@ -3035,7 +3156,7 @@ mod test {
         );
     }
 
-    /// A queue's [`TaskConfig::retry_resource_demand`] applies to the failures its tasks report.
+    /// A queue's [`TaskConfig::retry_decision`] applies to the failures its tasks report.
     #[sqlx::test]
     async fn test_task_config_sets_the_resource_demand_of_a_reported_failures_retry(pool: PgPool) {
         #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3048,11 +3169,9 @@ mod test {
             fn max_time_since_last_heartbeat() -> chrono::Duration {
                 chrono::Duration::seconds(3600)
             }
-            fn retry_backoff(_: &FailedAttempt<'_>) -> chrono::Duration {
-                chrono::Duration::zero()
-            }
-            fn retry_resource_demand(failed: &FailedAttempt<'_>) -> Option<i64> {
-                failed.resource_demand.map(|demand| demand + 1)
+            fn retry_decision(failed: &FailedAttempt<'_>) -> RetryDecision {
+                RetryDecision::retry(chrono::Duration::zero())
+                    .with_resource_demand(failed.resource_demand.map(|demand| demand + 1))
             }
         }
         #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3158,8 +3277,7 @@ mod test {
         record_failure(
             &task,
             5,
-            chrono::Duration::days(-1),
-            None,
+            &RetryDecision::retry(chrono::Duration::days(-1)),
             "negative",
             &mut conn,
         )
@@ -3176,9 +3294,15 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task, 5, chrono::Duration::MAX, None, "huge", &mut conn)
-            .await
-            .unwrap();
+        record_failure(
+            &task,
+            5,
+            &RetryDecision::retry(chrono::Duration::MAX),
+            "huge",
+            &mut conn,
+        )
+        .await
+        .unwrap();
         let delay = retry_delay(&pool, task.task_id(), 2).await;
         assert_eq!(
             (delay.months, delay.days, delay.microseconds),

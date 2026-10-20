@@ -129,7 +129,6 @@ pub(crate) async fn list_tasks(
             "InternalError",
             None,
         ))?,
-        TaskFilter::All => (None, None, true),
     };
 
     let page_size = CONFIG.page_size_or_pagination_default(page_size);

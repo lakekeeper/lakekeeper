@@ -73,10 +73,10 @@ use lakekeeper::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
-            ProjectTaskScheduleState, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope,
-            TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule,
-            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
-            TriggerTaskScheduleError, UpsertTaskScheduleError,
+            ProjectTaskScheduleState, RetryDecision, Task, TaskAttemptId, TaskCheckState,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope,
+            TaskSchedule, TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError,
+            TaskScheduleUpsert, TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -1349,19 +1349,10 @@ impl CatalogStore for super::PostgresBackend {
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
-        retry_backoff: chrono::Duration,
-        retry_resource_demand: Option<i64>,
+        retry_decision: &RetryDecision,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        record_failure(
-            &id,
-            max_retries,
-            retry_backoff,
-            retry_resource_demand,
-            error_details,
-            transaction,
-        )
-        .await
+        record_failure(&id, max_retries, retry_decision, error_details, transaction).await
     }
 
     async fn get_task_details_impl(

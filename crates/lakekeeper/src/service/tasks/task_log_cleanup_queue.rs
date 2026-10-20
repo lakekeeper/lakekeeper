@@ -214,7 +214,7 @@ pub(crate) async fn apply_queue_config<C: CatalogStore>(
 ) -> Result<()> {
     let config: TaskLogCleanupConfig = serde_json::from_value(config.clone()).map_err(|e| {
         ErrorModel::bad_request(
-            format!("Invalid `{QN_STR}` queue config: {e}"),
+            format!("Invalid `{QN_STR}` queue config."),
             "InvalidQueueConfig",
             Some(Box::new(e)),
         )

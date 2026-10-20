@@ -74,16 +74,69 @@ pub struct FailedAttempt<'a> {
     pub execution_details: Option<&'a serde_json::Value>,
 }
 
+/// What follows a failed attempt. Built with [`Self::retry`] and [`Self::give_up`]. After
+/// `max_retries` attempts a [`Self::Retry`] is ignored and the task fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetryDecision {
+    /// Retry no earlier than `backoff` from now, which counts as at least 0 and at most 100 years.
+    /// Zero keeps the task's place in the queue.
+    #[non_exhaustive]
+    Retry {
+        backoff: chrono::Duration,
+        /// Resource demand of the retry; a negative one counts as 0. `None` keeps the attempt's.
+        resource_demand: Option<i64>,
+    },
+    /// End the task as failed; `reason` is appended to the attempt's message, also after the
+    /// last attempt.
+    #[non_exhaustive]
+    GiveUp { reason: String },
+}
+
+impl RetryDecision {
+    /// Retry after `backoff`, keeping the attempt's resource demand.
+    #[must_use]
+    pub fn retry(backoff: chrono::Duration) -> Self {
+        Self::Retry {
+            backoff,
+            resource_demand: None,
+        }
+    }
+
+    /// Set the resource demand of a retry, `None` keeping the attempt's; leaves [`Self::GiveUp`]
+    /// unchanged.
+    #[must_use]
+    pub fn with_resource_demand(self, resource_demand: impl Into<Option<i64>>) -> Self {
+        match self {
+            Self::Retry { backoff, .. } => Self::Retry {
+                backoff,
+                resource_demand: resource_demand.into(),
+            },
+            give_up @ Self::GiveUp { .. } => give_up,
+        }
+    }
+
+    /// End the task as failed.
+    #[must_use]
+    pub fn give_up(reason: impl Into<String>) -> Self {
+        Self::GiveUp {
+            reason: reason.into(),
+        }
+    }
+}
+
+/// The message of an attempt whose [`RetryDecision`] gave up.
+#[must_use]
+pub fn given_up_message(details: &str, reason: &str) -> String {
+    format!("{details}\nNot retried: {reason}")
+}
+
 /// How a queue retries failed attempts, including attempts whose heartbeat timed out.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
-    /// Attempts after which a failed task is not retried.
+    /// Attempts after which a failed task is not retried, whatever `retry_decision` returns.
     pub max_retries: i32,
-    /// Delay before retrying a failed attempt when retries remain.
-    pub retry_backoff: fn(&FailedAttempt<'_>) -> chrono::Duration,
-    /// Resource demand of the retry of a failed attempt when retries remain; a negative one counts
-    /// as 0. `None` keeps the attempt's.
-    pub retry_resource_demand: fn(&FailedAttempt<'_>) -> Option<i64>,
+    /// What follows a failed attempt.
+    pub retry_decision: fn(&FailedAttempt<'_>) -> RetryDecision,
 }
 
 /// Which tasks a worker picks.
@@ -346,19 +399,13 @@ pub trait TaskConfig:
         DEFAULT_MAX_RETRIES
     }
 
-    /// Delay before retrying a failed attempt when retries remain.
-    /// Zero retries at once and keeps the task's place in the queue.
+    /// What follows a failed attempt: a retry after a delay, for example with a larger resource
+    /// demand after the attempt ran out of memory, or giving up. After [`Self::max_retries`]
+    /// attempts a retry is ignored and the task fails. Default: a retry after
+    /// [`default_retry_backoff`] with the attempt's resource demand.
     #[must_use]
-    fn retry_backoff(failed: &FailedAttempt<'_>) -> chrono::Duration {
-        default_retry_backoff(failed)
-    }
-
-    /// Resource demand of the retry of a failed attempt, for example a larger one after the
-    /// attempt ran out of memory; a negative one counts as 0. `None`, the default, keeps the
-    /// attempt's.
-    #[must_use]
-    fn retry_resource_demand(_failed: &FailedAttempt<'_>) -> Option<i64> {
-        None
+    fn retry_decision(failed: &FailedAttempt<'_>) -> RetryDecision {
+        RetryDecision::retry(default_retry_backoff(failed))
     }
 
     fn queue_name() -> &'static TaskQueueName;
@@ -422,19 +469,10 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
         DEFAULT_MAX_RETRIES
     }
 
-    /// Delay before retrying a failed attempt when retries remain.
-    /// Zero retries at once and keeps the task's place in the queue.
+    /// See the `open-api`-enabled trait for full documentation.
     #[must_use]
-    fn retry_backoff(failed: &FailedAttempt<'_>) -> chrono::Duration {
-        default_retry_backoff(failed)
-    }
-
-    /// Resource demand of the retry of a failed attempt, for example a larger one after the
-    /// attempt ran out of memory; a negative one counts as 0. `None`, the default, keeps the
-    /// attempt's.
-    #[must_use]
-    fn retry_resource_demand(_failed: &FailedAttempt<'_>) -> Option<i64> {
-        None
+    fn retry_decision(failed: &FailedAttempt<'_>) -> RetryDecision {
+        RetryDecision::retry(default_retry_backoff(failed))
     }
 
     fn queue_name() -> &'static TaskQueueName;
@@ -533,7 +571,6 @@ pub enum TaskFilter {
         project_id: ArcProjectId,
         include_sub_tasks: bool,
     },
-    All,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1039,7 +1076,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// Schedule multiple tasks in a single transaction.
     ///
     /// There can only be a single active task for a (`entity_id`, `queue_name`) tuple.
-    /// Resubmitting a pending/running task returns a `None` instead of a new `TaskId`.
+    /// Any resubmitted pending/running task is omitted from the returned task ids.
     ///
     /// CAUTION: `tasks` may be longer than the returned `Vec<TaskId>`
     ///
@@ -1132,8 +1169,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             .default_max_time_since_last_heartbeat(Q::max_time_since_last_heartbeat())
             .retry_policy(RetryPolicy {
                 max_retries: Q::max_retries(),
-                retry_backoff: Q::retry_backoff,
-                retry_resource_demand: Q::retry_resource_demand,
+                retry_decision: Q::retry_decision,
             })
             .resource_demand(resource_demand)
             .build();
@@ -1330,8 +1366,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 
     /// Records an failure for a task in the catalog, updating its status and retry count.
-    /// If retries remain, the next attempt is due after [`TaskConfig::retry_backoff`], with the
-    /// resource demand of [`TaskConfig::retry_resource_demand`].
+    /// [`TaskConfig::retry_decision`] decides whether and how it is retried.
     ///
     /// Does not return an error, but logs it.
     pub async fn record_failure<C: CatalogStore>(&self, catalog_state: C::State, error: &str) {
@@ -1347,8 +1382,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         let status = Status::Failure {
             details: error,
             max_retries: Q::max_retries(),
-            retry_backoff: Q::retry_backoff(&failed),
-            retry_resource_demand: Q::retry_resource_demand(&failed),
+            retry_decision: Q::retry_decision(&failed),
         };
 
         for attempt in 1..=5 {
@@ -1555,8 +1589,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             id,
             &details,
             Q::max_retries(),
-            Q::retry_backoff(&failed),
-            Q::retry_resource_demand(&failed),
+            &Q::retry_decision(&failed),
             &mut trx.transaction(),
         )
         .await
@@ -1648,14 +1681,12 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             Status::Failure {
                 details,
                 max_retries,
-                retry_backoff,
-                retry_resource_demand,
+                retry_decision,
             } => C::record_task_failure(
                 self.id,
                 details,
                 max_retries,
-                retry_backoff,
-                retry_resource_demand,
+                &retry_decision,
                 &mut transaction,
             )
             .await
@@ -1721,8 +1752,7 @@ pub enum Status<'a> {
     Failure {
         details: &'a str,
         max_retries: i32,
-        retry_backoff: chrono::Duration,
-        retry_resource_demand: Option<i64>,
+        retry_decision: RetryDecision,
     },
 }
 

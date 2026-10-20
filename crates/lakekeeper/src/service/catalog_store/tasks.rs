@@ -22,9 +22,9 @@ use crate::{
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
-            ProjectTaskScheduleState, ResolvedTaskEntity, Task, TaskAttemptId, TaskCheckState,
-            TaskDetailsScope, TaskFilter, TaskId, TaskInfo, TaskInput, TaskQueueName,
-            TaskResolveScope, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
+            ProjectTaskScheduleState, ResolvedTaskEntity, RetryDecision, Task, TaskAttemptId,
+            TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInfo, TaskInput,
+            TaskQueueName, TaskResolveScope, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
             TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
             UpsertTaskScheduleError, task_schedule::validate_task_schedule_interval,
         },
@@ -154,9 +154,8 @@ where
     /// request's range.
     ///
     /// An attempt of the queue whose heartbeat timed out counts as failed, whatever its resource
-    /// demand: it is retried after the retry policy's backoff, with the policy's resource demand,
-    /// while retries remain, and otherwise moves to the log as failed. This includes an attempt
-    /// that was asked to stop.
+    /// demand, and the retry policy decides whether and how it is retried. This includes an
+    /// attempt that was asked to stop.
     #[tracing::instrument(
         name = "catalog_pick_new_task",
         skip(request, state),
@@ -177,26 +176,17 @@ where
         Self::record_task_success_impl(id, message, transaction).await
     }
 
-    /// Record a failed attempt. If `id.attempt` is below `max_retries`, the task is retried no
-    /// earlier than `retry_backoff` from now, with `retry_resource_demand` (`None` keeps the
-    /// attempt's, a negative one counts as 0); otherwise it moves to the log as failed.
+    /// Record a failed attempt, retried or ended as `retry_decision` says. After `max_retries`
+    /// attempts a retry is ignored and the task moves to the log as failed.
     async fn record_task_failure(
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
-        retry_backoff: chrono::Duration,
-        retry_resource_demand: Option<i64>,
+        retry_decision: &RetryDecision,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        Self::record_task_failure_impl(
-            id,
-            error_details,
-            max_retries,
-            retry_backoff,
-            retry_resource_demand,
-            transaction,
-        )
-        .await
+        Self::record_task_failure_impl(id, error_details, max_retries, retry_decision, transaction)
+            .await
     }
 
     /// Cancel scheduled tasks matching the filter.
