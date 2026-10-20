@@ -16793,6 +16793,12 @@ components:
           type: number
           format: float
           description: Progress achieved in this attempt
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Resource demand this attempt ran with; unset if it had none.
         scheduled-for:
           type: string
           format: date-time

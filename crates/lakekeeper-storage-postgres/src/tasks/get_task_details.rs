@@ -83,6 +83,7 @@ fn parse_task_details(
                     DatabaseIntegrityError::new("Task attempt is missing created_at timestamp.")
                 })?,
                 progress: r.progress,
+                resource_demand: r.resource_demand,
                 execution_details: r.execution_details,
             })
         })

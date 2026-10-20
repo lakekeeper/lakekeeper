@@ -3154,6 +3154,34 @@ mod test {
                 vec![(1, Some(8)), (2, Some(16)), (3, Some(16)), (4, Some(32))]
             )
         );
+
+        // Task details show the demand of each attempt.
+        let details = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (
+                details.task.task_metadata.resource_demand(),
+                details
+                    .attempts
+                    .iter()
+                    .map(|a| (a.attempt, a.resource_demand))
+                    .collect_vec()
+            ),
+            (
+                Some(0),
+                vec![(4, Some(32)), (3, Some(16)), (2, Some(16)), (1, Some(8))]
+            )
+        );
     }
 
     /// A queue's [`TaskConfig::retry_decision`] applies to the failures its tasks report.
