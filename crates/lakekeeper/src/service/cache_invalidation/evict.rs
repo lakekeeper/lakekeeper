@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use strum::IntoEnumIterator;
 
-use super::{CacheDomain, CacheKey, LoggedChange};
+use super::{CacheDomain, CacheKey, ChangeSet, LoggedChange};
 use crate::service::{
     catalog_store::{
         namespace_cache::{
@@ -72,6 +72,20 @@ impl Evictions {
         evictions
             .keys
             .retain(|key| !domains.contains(&key.domain()));
+        evictions
+    }
+
+    /// The entries that `changes` name.
+    pub(super) fn of_set(changes: &ChangeSet) -> Self {
+        let mut evictions = Self::default();
+        for (domain, keys) in changes.keys() {
+            match keys {
+                Some(keys) => evictions.keys.extend(keys.cloned()),
+                None => {
+                    evictions.domains.insert(domain);
+                }
+            }
+        }
         evictions
     }
 

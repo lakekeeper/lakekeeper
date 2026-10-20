@@ -4,13 +4,14 @@ use http::StatusCode;
 use iceberg::spec::FormatVersion;
 use iceberg_ext::catalog::rest::ErrorModel;
 
-use super::{CatalogCreateWarehouseRequest, CatalogStore, Transaction};
+use super::{CatalogCreateWarehouseRequest, CatalogStore, Transaction, WriteTransaction};
 use crate::{
     ProjectId, SecretId, WarehouseId,
     api::management::v1::{DeleteWarehouseQuery, warehouse::TabularDeleteProfile},
     service::{
         ArcProjectId, DatabaseIntegrityError,
         authz::CatalogWarehouseAction,
+        cache_invalidation::CacheKey,
         catalog_store::{
             CatalogBackendError, define_transparent_error, impl_error_stack_methods,
             impl_from_with_detail,
@@ -774,31 +775,66 @@ pub enum CachePolicy {
     Skip,
 }
 
+/// A warehouse as [`CatalogStore::delete_warehouse_impl`] removed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedWarehouse {
+    pub project_id: ProjectId,
+    pub name: String,
+    pub storage_secret_id: Option<SecretId>,
+}
+
+/// A warehouse after [`CatalogStore::rename_warehouse_impl`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenamedWarehouse {
+    pub warehouse: ResolvedWarehouse,
+    /// The name the warehouse had before the rename.
+    pub previous_name: String,
+}
+
+/// A warehouse after its storage profile was replaced.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdatedStorageProfile {
+    pub warehouse: Arc<ResolvedWarehouse>,
+    /// The storage secret the update replaced.
+    pub previous_secret_id: Option<SecretId>,
+}
+
 #[async_trait::async_trait]
 pub trait CatalogWarehouseOps
 where
     Self: CatalogStore,
 {
     /// Create a warehouse.
-    async fn create_warehouse<'a>(
+    async fn create_warehouse(
         project_id: &ProjectId,
         request: CatalogCreateWarehouseRequest,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<Arc<ResolvedWarehouse>, CatalogCreateWarehouseError> {
-        let warehouse = Self::create_warehouse_impl(project_id, request, transaction).await?;
-        let warehouse_ref = Arc::new(warehouse);
-        Ok(warehouse_ref)
+        let warehouse =
+            Self::create_warehouse_impl(project_id, request, transaction.transaction()).await?;
+        // A caller can choose the id, so it may name a warehouse that was deleted.
+        transaction
+            .changes()
+            .insert(CacheKey::Warehouse(warehouse.warehouse_id));
+        Ok(Arc::new(warehouse))
     }
 
     /// Set (or clear) the managed-by marker on a warehouse.
-    async fn set_warehouse_managed_by<'a>(
+    async fn set_warehouse_managed_by(
         warehouse_id: WarehouseId,
         managed_by: ManagedBy,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<Arc<ResolvedWarehouse>, SetWarehouseManagedByError> {
-        Self::set_warehouse_managed_by_impl(warehouse_id, managed_by, transaction)
-            .await
-            .map(Arc::new)
+        let warehouse = Self::set_warehouse_managed_by_impl(
+            warehouse_id,
+            managed_by,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Warehouse(warehouse_id));
+        Ok(Arc::new(warehouse))
     }
 
     /// Verify, within the active write transaction, that `action` may mutate this
@@ -824,23 +860,44 @@ where
     }
 
     /// Delete a warehouse, returning the storage secret it referenced, if any.
-    async fn delete_warehouse<'a>(
+    async fn delete_warehouse(
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<Option<SecretId>, CatalogDeleteWarehouseError> {
-        Self::delete_warehouse_impl(warehouse_id, query, transaction).await
+        let DeletedWarehouse {
+            project_id,
+            name,
+            storage_secret_id,
+        } = Self::delete_warehouse_impl(warehouse_id, query, transaction.transaction()).await?;
+        let changes = transaction.changes();
+        changes
+            .insert(CacheKey::Warehouse(warehouse_id))
+            .insert(CacheKey::WarehouseName { project_id, name });
+        if let Some(secret_id) = storage_secret_id {
+            changes.insert(CacheKey::Secret(secret_id));
+        }
+        Ok(storage_secret_id)
     }
 
     /// Rename a warehouse.
-    async fn rename_warehouse<'a>(
+    async fn rename_warehouse(
         warehouse_id: WarehouseId,
         new_name: &str,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<Arc<ResolvedWarehouse>, CatalogRenameWarehouseError> {
-        Self::rename_warehouse_impl(warehouse_id, new_name, transaction)
-            .await
-            .map(Arc::new)
+        let RenamedWarehouse {
+            warehouse,
+            previous_name,
+        } = Self::rename_warehouse_impl(warehouse_id, new_name, transaction.transaction()).await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Warehouse(warehouse_id))
+            .insert(CacheKey::WarehouseName {
+                project_id: warehouse.project_id.as_ref().clone(),
+                name: previous_name,
+            });
+        Ok(Arc::new(warehouse))
     }
 
     /// Return a list of all warehouse in a project
@@ -1031,61 +1088,89 @@ where
     // }
 
     /// Set warehouse deletion profile
-    async fn set_warehouse_deletion_profile<'a>(
+    async fn set_warehouse_deletion_profile(
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<Arc<ResolvedWarehouse>, SetWarehouseDeletionProfileError> {
-        Self::set_warehouse_deletion_profile_impl(warehouse_id, deletion_profile, transaction)
-            .await
-            .map(Arc::new)
+        let warehouse = Self::set_warehouse_deletion_profile_impl(
+            warehouse_id,
+            deletion_profile,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Warehouse(warehouse_id));
+        Ok(Arc::new(warehouse))
     }
 
-    async fn set_warehouse_status<'a>(
+    async fn set_warehouse_status(
         warehouse_id: WarehouseId,
         status: WarehouseStatus,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<Arc<ResolvedWarehouse>, SetWarehouseStatusError> {
-        Self::set_warehouse_status_impl(warehouse_id, status, transaction)
-            .await
-            .map(Arc::new)
+        let warehouse =
+            Self::set_warehouse_status_impl(warehouse_id, status, transaction.transaction())
+                .await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Warehouse(warehouse_id));
+        Ok(Arc::new(warehouse))
     }
 
-    async fn update_storage_profile<'a>(
+    /// Replace the storage profile and secret of a warehouse.
+    async fn update_storage_profile(
         warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretId>,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Arc<ResolvedWarehouse>, UpdateWarehouseStorageProfileError> {
-        Self::update_storage_profile_impl(
+        transaction: &mut WriteTransaction<Self>,
+    ) -> Result<UpdatedStorageProfile, UpdateWarehouseStorageProfileError> {
+        let updated = Self::update_storage_profile_impl(
             warehouse_id,
             storage_profile,
             storage_secret_id,
-            transaction,
+            transaction.transaction(),
         )
-        .await
-        .map(Arc::new)
+        .await?;
+        let changes = transaction.changes();
+        changes.insert(CacheKey::Warehouse(warehouse_id));
+        if let Some(secret_id) = updated.previous_secret_id {
+            changes.insert(CacheKey::Secret(secret_id));
+        }
+        Ok(updated)
     }
 
     async fn set_warehouse_protected(
         warehouse_id: WarehouseId,
         protect: bool,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> std::result::Result<Arc<ResolvedWarehouse>, SetWarehouseProtectedError> {
-        Self::set_warehouse_protected_impl(warehouse_id, protect, transaction)
-            .await
-            .map(Arc::new)
+        let warehouse =
+            Self::set_warehouse_protected_impl(warehouse_id, protect, transaction.transaction())
+                .await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Warehouse(warehouse_id));
+        Ok(Arc::new(warehouse))
     }
 
     /// Set the per-warehouse Iceberg table format version policy.
     async fn set_warehouse_format_version_policy(
         warehouse_id: WarehouseId,
         policy: &WarehouseFormatVersionPolicy,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> std::result::Result<Arc<ResolvedWarehouse>, SetWarehouseFormatVersionPolicyError> {
-        Self::set_warehouse_format_version_policy_impl(warehouse_id, policy, transaction)
-            .await
-            .map(Arc::new)
+        let warehouse = Self::set_warehouse_format_version_policy_impl(
+            warehouse_id,
+            policy,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction
+            .changes()
+            .insert(CacheKey::Warehouse(warehouse_id));
+        Ok(Arc::new(warehouse))
     }
 }
 

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT storage_secret_id FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_secret_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "storage_secret_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "54670486c61a57f711802910c999b9660a79338a428243c5807f0a98eec2a3b1"
+}

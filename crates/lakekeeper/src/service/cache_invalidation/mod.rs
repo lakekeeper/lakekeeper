@@ -16,6 +16,11 @@ pub use log::{
 };
 pub use poller::background_tasks;
 
+/// Evict the entries `changes` name from this instance's caches.
+pub(crate) async fn evict_locally(changes: &ChangeSet) {
+    evict::Evictions::of_set(changes).apply().await;
+}
+
 /// Whether writes record their changed keys (`cache.invalidation.recording_enabled`).
 #[must_use]
 pub fn recording_enabled() -> bool {

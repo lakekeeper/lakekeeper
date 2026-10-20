@@ -45,6 +45,7 @@ use crate::{
         },
         cache_invalidation::{
             BoxedCacheChangeLog, ChangeLogSettings, ChangeSet, PruneOutcome, PruneSettings,
+            evict_locally,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -300,6 +301,75 @@ impl<C: CatalogStore> ReadTransaction<C> {
     }
 }
 
+/// A transaction started with [`Transaction::begin_write`] that collects the cache keys its
+/// writes change. Committing it records them in the change log, from which every instance
+/// evicts them, and evicts them from this instance's caches.
+pub struct WriteTransaction<C: CatalogStore> {
+    transaction: C::Transaction,
+    changes: ChangeSet,
+}
+
+impl<C: CatalogStore> std::fmt::Debug for WriteTransaction<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteTransaction")
+            .field("changes", &self.changes)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<C: CatalogStore> WriteTransaction<C> {
+    /// # Errors
+    /// Returns an error if the transaction cannot be started.
+    pub async fn begin(db_state: C::State) -> Result<Self> {
+        Ok(Self {
+            transaction: C::Transaction::begin_write(db_state).await?,
+            changes: ChangeSet::new(),
+        })
+    }
+
+    /// The handle for calls that take a transaction.
+    pub fn transaction(&mut self) -> <C::Transaction as Transaction<C::State>>::Transaction<'_> {
+        self.transaction.transaction()
+    }
+
+    /// The cache keys the writes of this transaction changed.
+    pub fn changes(&mut self) -> &mut ChangeSet {
+        &mut self.changes
+    }
+
+    /// Record the changed keys, commit, and evict the keys from this instance's caches,
+    /// also if recording or the commit fails. Runs to completion if the caller is dropped.
+    ///
+    /// # Errors
+    /// Returns an error if recording the keys or the commit fails.
+    pub async fn commit(self) -> Result<()> {
+        let Self {
+            mut transaction,
+            changes,
+        } = self;
+        role_assignments_cache::run_to_completion(async move {
+            let committed = async {
+                C::record_cache_changes_impl(&changes, transaction.transaction())
+                    .await
+                    .map_err(ErrorModel::from)?;
+                transaction.commit().await
+            }
+            .await;
+            evict_locally(&changes).await;
+            committed
+        })
+        .await
+    }
+
+    /// Roll back. Nothing changed, so nothing is recorded or evicted.
+    ///
+    /// # Errors
+    /// Returns an error if the rollback fails.
+    pub async fn rollback(self) -> Result<()> {
+        self.transaction.rollback().await
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Transaction<D>
 where
@@ -497,14 +567,14 @@ where
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError>;
+    ) -> std::result::Result<DeletedWarehouse, CatalogDeleteWarehouseError>;
 
     /// Rename a warehouse.
     async fn rename_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         new_name: &str,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<ResolvedWarehouse, CatalogRenameWarehouseError>;
+    ) -> std::result::Result<RenamedWarehouse, CatalogRenameWarehouseError>;
 
     /// Return a list of all warehouse in a project
     async fn list_warehouses_impl(
@@ -557,7 +627,7 @@ where
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError>;
+    ) -> std::result::Result<UpdatedStorageProfile, UpdateWarehouseStorageProfileError>;
 
     async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,

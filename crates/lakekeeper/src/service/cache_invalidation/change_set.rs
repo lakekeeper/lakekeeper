@@ -264,6 +264,16 @@ impl ChangeSet {
             DomainChange::Whole => (domain, None),
         })
     }
+
+    /// Each changed domain with its keys, or `None` when the whole domain changed.
+    pub(super) fn keys(
+        &self,
+    ) -> impl Iterator<Item = (CacheDomain, Option<impl Iterator<Item = &CacheKey>>)> {
+        self.domains.iter().map(|(&domain, change)| match change {
+            DomainChange::Keys(keys) => (domain, Some(keys.values())),
+            DomainChange::Whole => (domain, None),
+        })
+    }
 }
 
 #[cfg(test)]

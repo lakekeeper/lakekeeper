@@ -45,11 +45,17 @@ async fn a_change_logged_by_another_instance_evicts_the_cached_warehouse(pool: P
 
     // Another instance renames the warehouse. Without a logged change, this instance keeps
     // its cached entry.
-    sqlx::query("UPDATE warehouse SET warehouse_name = 'renamed' WHERE warehouse_id = $1::uuid")
-        .bind(warehouse_id.to_string())
-        .execute(&pool)
+    let mut rename = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL lakekeeper_test.unrecorded_write = on")
+        .execute(&mut *rename)
         .await
         .unwrap();
+    sqlx::query("UPDATE warehouse SET warehouse_name = 'renamed' WHERE warehouse_id = $1::uuid")
+        .bind(warehouse_id.to_string())
+        .execute(&mut *rename)
+        .await
+        .unwrap();
+    rename.commit().await.unwrap();
     assert_eq!(read_name().await, warehouse.warehouse_name);
 
     sqlx::query("SELECT lakekeeper_record_cache_change('warehouse', ARRAY[$1])")
@@ -62,4 +68,31 @@ async fn a_change_logged_by_another_instance_evicts_the_cached_warehouse(pool: P
     })
     .await;
     cancellation_token.cancel();
+}
+
+/// The test setup refuses a warehouse write that recorded no cache change, so a write path
+/// that forgets to record fails its tests.
+#[sqlx::test]
+async fn the_test_setup_refuses_an_unrecorded_warehouse_write(pool: PgPool) {
+    let (_, warehouse) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let error = sqlx::query(
+        "UPDATE warehouse SET warehouse_name = 'renamed' WHERE warehouse_id = $1::uuid",
+    )
+    .bind(warehouse.warehouse_id.to_string())
+    .execute(&pool)
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        error.as_database_error().map(|e| e.message().to_string()),
+        Some("a write to warehouse recorded no warehouse cache change".to_string())
+    );
 }

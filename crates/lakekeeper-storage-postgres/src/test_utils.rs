@@ -168,6 +168,7 @@ pub async fn setup_with_registry<T: Authorizer>(
         "Number of warehouses must be greater than 0",
     );
     migrate_core_only(&pool).await.unwrap();
+    require_cache_changes(&pool).await;
     let (api_context, registry) = get_api_context_with_registry(&pool, authorizer).await;
 
     let metadata = if let Some(user_id) = user_id {
@@ -242,6 +243,36 @@ pub async fn setup_with_registry<T: Authorizer>(
         },
         registry,
     )
+}
+
+/// Make a transaction that updates or deletes a warehouse fail to commit unless it recorded
+/// a warehouse cache change. A transaction that sets `lakekeeper_test.unrecorded_write` to
+/// `on` is exempt.
+pub async fn require_cache_changes(pool: &PgPool) {
+    sqlx::raw_sql(
+        r"
+        CREATE OR REPLACE FUNCTION test_require_cache_change() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+            IF coalesce(current_setting('lakekeeper_test.unrecorded_write', true), '') <> 'on'
+               AND NOT EXISTS (
+                   SELECT 1 FROM cache_change_log
+                   WHERE xid = pg_current_xact_id() AND domain = TG_ARGV[0]
+               ) THEN
+                RAISE EXCEPTION 'a write to % recorded no % cache change',
+                    TG_TABLE_NAME, TG_ARGV[0];
+            END IF;
+            RETURN NULL;
+        END $$;
+        DROP TRIGGER IF EXISTS warehouse_requires_cache_change ON warehouse;
+        CREATE CONSTRAINT TRIGGER warehouse_requires_cache_change
+            AFTER UPDATE OR DELETE ON warehouse DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('warehouse');
+        ",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 pub async fn get_api_context<T: Authorizer>(

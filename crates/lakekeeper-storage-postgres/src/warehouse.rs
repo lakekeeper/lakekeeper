@@ -12,17 +12,18 @@ use lakekeeper::{
         },
     },
     service::{
-        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogCreateWarehouseRequest,
-        CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
-        CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogRoleOps,
-        DatabaseIntegrityError, EnsureWarehouseSpecMutableError, GetProjectResponse, ManagedBy,
-        ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
-        SystemRoleSeederCap, UpdateWarehouseStorageProfileError, WarehouseAlreadyExists,
-        WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdAlreadyExists,
-        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked,
-        WarehouseStatus, WarehouseVersion, registered_system_roles, storage::StorageProfile,
+        AllowedFormatVersions, CatalogBackendError, CatalogCreateWarehouseError,
+        CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError,
+        CatalogGetWarehouseByNameError, CatalogListWarehousesError, CatalogRenameWarehouseError,
+        CatalogRoleOps, DatabaseIntegrityError, DeletedWarehouse, EnsureWarehouseSpecMutableError,
+        GetProjectResponse, ManagedBy, ProjectIdNotFoundError, RenamedWarehouse, ResolvedWarehouse,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
+        UpdatedStorageProfile, WarehouseAlreadyExists, WarehouseFormatVersionPolicy,
+        WarehouseHasUnfinishedTasks, WarehouseIdAlreadyExists, WarehouseIdNotFound,
+        WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
+        WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
 use sqlx::{PgPool, types::Json};
@@ -543,7 +544,7 @@ pub(crate) async fn delete_warehouse(
     warehouse_id: WarehouseId,
     DeleteWarehouseQuery { force }: DeleteWarehouseQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Option<SecretId>, CatalogDeleteWarehouseError> {
+) -> Result<DeletedWarehouse, CatalogDeleteWarehouseError> {
     let unfinished_task_counts_per_queue = sqlx::query!(
         r#"WITH active_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1)
             SELECT COUNT(task_id) as "task_count!", queue_name FROM active_tasks GROUP BY queue_name"#,
@@ -562,17 +563,18 @@ pub(crate) async fn delete_warehouse(
         .into());
     }
 
-    // `storage_secret_id` comes back from the DELETE itself rather than from the
-    // pre-delete SELECT, so the caller cleans up the credential of exactly the row
-    // that was removed. Reading it before the transaction could hand back a
-    // credential a concurrent rotation had already replaced, leaking the new one.
+    // The removed row's project, name and secret come back from the DELETE itself, so
+    // they describe exactly the row that was removed: a read before the transaction
+    // could name a credential a concurrent rotation already replaced.
     let deleted = sqlx::query!(
         r#"WITH delete_info as (
                SELECT protected FROM warehouse w WHERE w.warehouse_id = $1
            ),
            deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND (not protected OR $2)
-                       RETURNING storage_secret_id)
+                       RETURNING project_id, warehouse_name, storage_secret_id)
            SELECT protected as "protected!",
+                  (SELECT project_id FROM deleted) as "project_id",
+                  (SELECT warehouse_name FROM deleted) as "warehouse_name",
                   (SELECT storage_secret_id FROM deleted) as "storage_secret_id"
            FROM delete_info"#,
         *warehouse_id,
@@ -597,15 +599,36 @@ pub(crate) async fn delete_warehouse(
     if deleted.protected && !force {
         return Err(WarehouseProtected::new().into());
     }
+    let (Some(project_id), Some(name)) = (deleted.project_id, deleted.warehouse_name) else {
+        return Err(
+            CatalogBackendError::new_unexpected(DatabaseIntegrityError::new(
+                "The warehouse delete removed no row.",
+            ))
+            .into(),
+        );
+    };
 
-    Ok(deleted.storage_secret_id.map(Into::into))
+    Ok(DeletedWarehouse {
+        project_id: ProjectId::from_db_unchecked(project_id),
+        name,
+        storage_secret_id: deleted.storage_secret_id.map(Into::into),
+    })
 }
 
 pub(crate) async fn rename_warehouse(
     warehouse_id: WarehouseId,
     new_name: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<ResolvedWarehouse, CatalogRenameWarehouseError> {
+) -> Result<RenamedWarehouse, CatalogRenameWarehouseError> {
+    let previous_name = sqlx::query_scalar!(
+        "SELECT warehouse_name FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
+        *warehouse_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
+    .ok_or_else(|| WarehouseIdNotFound::new(warehouse_id))?;
+
     let warehouse = sqlx::query_as!(
         WarehouseRecord,
         r#"UPDATE warehouse
@@ -639,7 +662,10 @@ pub(crate) async fn rename_warehouse(
         return Err(WarehouseIdNotFound::new(warehouse_id).into());
     };
 
-    Ok(warehouse.try_into()?)
+    Ok(RenamedWarehouse {
+        warehouse: warehouse.try_into()?,
+        previous_name,
+    })
 }
 
 pub(crate) async fn set_warehouse_status(
@@ -846,9 +872,18 @@ pub(crate) async fn update_storage_profile(
     storage_profile: StorageProfile,
     storage_secret_id: Option<SecretId>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError> {
+) -> Result<UpdatedStorageProfile, UpdateWarehouseStorageProfileError> {
     let storage_profile_ser =
         serde_json::to_value(storage_profile).map_err(StorageProfileSerializationError::from)?;
+
+    let previous_secret_id = sqlx::query_scalar!(
+        "SELECT storage_secret_id FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
+        *warehouse_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
+    .ok_or_else(|| WarehouseIdNotFound::new(warehouse_id))?;
 
     let warehouse = sqlx::query_as!(
         WarehouseRecord,
@@ -885,7 +920,10 @@ pub(crate) async fn update_storage_profile(
         return Err(WarehouseIdNotFound::new(warehouse_id).into());
     };
 
-    Ok(warehouse.try_into()?)
+    Ok(UpdatedStorageProfile {
+        warehouse: Arc::new(warehouse.try_into()?),
+        previous_secret_id: previous_secret_id.map(Into::into),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
@@ -1049,8 +1087,9 @@ pub mod test {
     use lakekeeper::{
         api::iceberg::types::PageToken,
         service::{
-            CatalogStore as _, CatalogWarehouseOps as _, Transaction,
+            CatalogStore as _, CatalogWarehouseOps as _, Transaction, WriteTransaction,
             authz::CatalogWarehouseAction,
+            cache_invalidation::CacheKey,
             storage::{S3Flavor, S3Profile},
         },
     };
@@ -1091,7 +1130,7 @@ pub mod test {
         let project_id = project_id.map_or(Arc::new(ProjectId::from(uuid::Uuid::nil())), |id| {
             Arc::new(id.clone())
         });
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
 
@@ -1124,7 +1163,7 @@ pub mod test {
                     expiration_seconds: chrono::Duration::seconds(5),
                 })
                 .build(),
-            t.transaction(),
+            &mut t,
         )
         .await
         .unwrap();
@@ -1181,13 +1220,13 @@ pub mod test {
 
         // Mark the warehouse as managed by the instance.
         {
-            let mut t = PostgresTransaction::begin_write(state.clone())
+            let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
                 .await
                 .unwrap();
             let wh = PostgresBackend::set_warehouse_managed_by(
                 warehouse_id,
                 ManagedBy::InstanceAdmin,
-                t.transaction(),
+                &mut t,
             )
             .await
             .unwrap();
@@ -1260,13 +1299,13 @@ pub mod test {
 
         // Clearing the marker restores normal mutability (recovery path).
         {
-            let mut t = PostgresTransaction::begin_write(state.clone())
+            let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
                 .await
                 .unwrap();
             let wh = PostgresBackend::set_warehouse_managed_by(
                 warehouse_id,
                 ManagedBy::SelfManaged,
-                t.transaction(),
+                &mut t,
             )
             .await
             .unwrap();
@@ -1366,16 +1405,16 @@ pub mod test {
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
 
         // Rename warehouse 1
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::rename_warehouse(warehouse_id_1, "new_name", transaction.transaction())
+        PostgresBackend::rename_warehouse(warehouse_id_1, "new_name", &mut transaction)
             .await
             .unwrap();
         PostgresBackend::set_warehouse_status(
             warehouse_id_1,
             WarehouseStatus::Inactive,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await
         .unwrap();
@@ -1413,10 +1452,10 @@ pub mod test {
         let (_, warehouse_id) =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
 
-        let mut transaction = PostgresTransaction::begin_write(state.clone())
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::rename_warehouse(warehouse_id, "new_name", transaction.transaction())
+        PostgresBackend::rename_warehouse(warehouse_id, "new_name", &mut transaction)
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -1672,7 +1711,8 @@ pub mod test {
                 trx.transaction(),
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .storage_secret_id,
             Some(secret_id)
         );
         // A warehouse without a credential reports nothing to clean up.
@@ -1683,10 +1723,245 @@ pub mod test {
                 trx.transaction(),
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .storage_secret_id,
             None
         );
         trx.commit().await.unwrap();
+    }
+
+    /// The change-log rows `transaction` adds when it commits, as `(domain, sorted keys)`.
+    async fn committed_changes(
+        transaction: WriteTransaction<PostgresBackend>,
+        pool: &sqlx::PgPool,
+    ) -> Vec<(String, Vec<String>)> {
+        let (before,): (i64,) = sqlx::query_as("SELECT coalesce(max(id), 0) FROM cache_change_log")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let rows: Vec<(String, Vec<String>)> =
+            sqlx::query_as("SELECT domain, keys FROM cache_change_log WHERE id > $1 ORDER BY id")
+                .bind(before)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        rows.into_iter()
+            .map(|(domain, mut keys)| {
+                keys.sort();
+                (domain, keys)
+            })
+            .collect()
+    }
+
+    fn change(domain: &str, keys: &[&str]) -> (String, Vec<String>) {
+        let mut keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
+        keys.sort();
+        (domain.to_string(), keys)
+    }
+
+    /// Every warehouse write records the cache keys it changes: the warehouse, the name it
+    /// had, and the storage secret it replaced or removed.
+    #[sqlx::test]
+    async fn warehouse_writes_record_their_cache_keys(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
+        let (_, warehouse_id) =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+        let id = warehouse_id.to_string();
+        let name = |name: &str| {
+            CacheKey::WarehouseName {
+                project_id: project_id.clone(),
+                name: name.to_string(),
+            }
+            .encode()
+        };
+        let first_secret = SecretId::from(uuid::Uuid::now_v7());
+        let second_secret = SecretId::from(uuid::Uuid::now_v7());
+        let begin = || WriteTransaction::<PostgresBackend>::begin(state.clone());
+        let mut logged = Vec::new();
+
+        let mut t = begin().await.unwrap();
+        let created = PostgresBackend::create_warehouse(
+            &project_id,
+            CatalogCreateWarehouseRequest::builder()
+                .warehouse_name("second".to_string())
+                .storage_profile(crate::tests::memory_io_profile())
+                .delete_profile(TabularDeleteProfile::Hard {})
+                .build(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::rename_warehouse(warehouse_id, "renamed", &mut t)
+            .await
+            .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::set_warehouse_protected(warehouse_id, true, &mut t)
+            .await
+            .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::set_warehouse_managed_by(warehouse_id, ManagedBy::InstanceAdmin, &mut t)
+            .await
+            .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::set_warehouse_deletion_profile(
+            warehouse_id,
+            &TabularDeleteProfile::Hard {},
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::set_warehouse_format_version_policy(
+            warehouse_id,
+            &WarehouseFormatVersionPolicy::default(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::set_warehouse_status(warehouse_id, WarehouseStatus::Inactive, &mut t)
+            .await
+            .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::set_warehouse_status(warehouse_id, WarehouseStatus::Active, &mut t)
+            .await
+            .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        let first = PostgresBackend::update_storage_profile(
+            warehouse_id,
+            crate::tests::memory_io_profile(),
+            Some(first_secret),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        let second = PostgresBackend::update_storage_profile(
+            warehouse_id,
+            crate::tests::memory_io_profile(),
+            Some(second_secret),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        let mut t = begin().await.unwrap();
+        PostgresBackend::delete_warehouse(
+            warehouse_id,
+            DeleteWarehouseQuery { force: true },
+            &mut t,
+        )
+        .await
+        .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+
+        assert_eq!(
+            (first.previous_secret_id, second.previous_secret_id),
+            (None, Some(first_secret))
+        );
+        let warehouse_only = vec![change("warehouse", &[&id])];
+        assert_eq!(
+            logged,
+            vec![
+                vec![change("warehouse", &[&created.warehouse_id.to_string()])],
+                vec![change("warehouse", &[&id, &name("test_warehouse")])],
+                warehouse_only.clone(),
+                warehouse_only.clone(),
+                warehouse_only.clone(),
+                warehouse_only.clone(),
+                warehouse_only.clone(),
+                warehouse_only.clone(),
+                warehouse_only.clone(),
+                vec![
+                    change("warehouse", &[&id]),
+                    change("secret", &[&first_secret.to_string()]),
+                ],
+                vec![
+                    change("warehouse", &[&id, &name("renamed")]),
+                    change("secret", &[&second_secret.to_string()]),
+                ],
+            ]
+        );
+    }
+
+    /// Committing a write evicts the changed warehouse from this instance's cache; a rollback
+    /// records nothing and keeps the cached entry.
+    #[sqlx::test]
+    async fn committed_writes_evict_locally_and_rolled_back_writes_do_not(pool: sqlx::PgPool) {
+        use lakekeeper::service::warehouse_cache::WAREHOUSE_CACHE;
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
+        let (_, warehouse_id) =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+        let warm = || async {
+            PostgresBackend::get_warehouse_by_id(
+                warehouse_id,
+                WarehouseStatus::active(),
+                state.clone(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            WAREHOUSE_CACHE.get(&warehouse_id).await.is_some()
+        };
+
+        assert!(warm().await);
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::rename_warehouse(warehouse_id, "rolled-back", &mut t)
+            .await
+            .unwrap();
+        let (before,): (i64,) = sqlx::query_as("SELECT coalesce(max(id), 0) FROM cache_change_log")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        t.rollback().await.unwrap();
+        let (after,): (i64,) = sqlx::query_as("SELECT coalesce(max(id), 0) FROM cache_change_log")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let cached_after_rollback = WAREHOUSE_CACHE.get(&warehouse_id).await.is_some();
+
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::rename_warehouse(warehouse_id, "committed", &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        assert_eq!(
+            (
+                after - before,
+                cached_after_rollback,
+                WAREHOUSE_CACHE.get(&warehouse_id).await.is_some()
+            ),
+            (0, true, false)
+        );
     }
 
     #[sqlx::test]

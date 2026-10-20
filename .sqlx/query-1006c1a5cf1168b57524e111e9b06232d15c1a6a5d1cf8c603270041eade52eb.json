@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT warehouse_name FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "warehouse_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "warehouse_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1006c1a5cf1168b57524e111e9b06232d15c1a6a5d1cf8c603270041eade52eb"
+}
