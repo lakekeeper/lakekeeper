@@ -16798,7 +16798,9 @@ components:
             - integer
             - 'null'
           format: int64
-          description: Resource demand this attempt ran with; unset if it had none.
+          description: |-
+            How much worker capacity this attempt needed, in a unit its queue chooses; unset if it
+            had none.
         scheduled-for:
           type: string
           format: date-time

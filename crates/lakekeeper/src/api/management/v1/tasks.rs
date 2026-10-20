@@ -378,7 +378,8 @@ pub struct TaskAttempt {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Progress achieved in this attempt
     pub progress: f32,
-    /// Resource demand this attempt ran with; unset if it had none.
+    /// How much worker capacity this attempt needed, in a unit its queue chooses; unset if it
+    /// had none.
     pub resource_demand: Option<i64>,
     /// Execution details for this attempt
     #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
