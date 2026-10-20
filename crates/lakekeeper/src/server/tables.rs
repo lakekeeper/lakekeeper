@@ -2175,6 +2175,19 @@ pub fn calculate_diffs(
             .saturating_sub(usize::from(head_of_snapshot_log_changed)),
     );
 
+    // The incremental form above expresses "oldest entries removed, one new head appended".
+    // A commit that removes entries elsewhere (a rolled-back compaction drops the newest ones)
+    // needs the stored log replaced with the new one.
+    let retained_snapshot_log = &new_metadata.history()[..new_metadata
+        .history()
+        .len()
+        .saturating_sub(usize::from(head_of_snapshot_log_changed))];
+    let rewrite_snapshot_log = previous_metadata
+        .history()
+        .get(n_removed_snapshot_log..)
+        .unwrap_or_default()
+        != retained_snapshot_log;
+
     let old_stats = previous_metadata
         .statistics_iter()
         .map(|s| s.snapshot_id)
@@ -2240,6 +2253,7 @@ pub fn calculate_diffs(
         default_sort_order_id,
         head_of_snapshot_log_changed,
         n_removed_snapshot_log,
+        rewrite_snapshot_log,
         expired_metadata_logs,
         added_metadata_log,
         added_stats,
@@ -2266,6 +2280,9 @@ pub struct TableMetadataDiffs {
     pub default_sort_order_id: Option<i64>,
     pub head_of_snapshot_log_changed: bool,
     pub n_removed_snapshot_log: usize,
+    /// The stored snapshot log must be replaced with the new metadata's history;
+    /// `head_of_snapshot_log_changed` and `n_removed_snapshot_log` do not apply.
+    pub rewrite_snapshot_log: bool,
     pub expired_metadata_logs: usize,
     pub added_metadata_log: usize,
     pub added_stats: Vec<i64>,

@@ -477,22 +477,32 @@ async fn apply_metadata_changes(
     }
 
     // Must run after insert_snapshots, technically not enforced
-    if diffs.head_of_snapshot_log_changed
-        && let Some(snap) = new_metadata.history().last()
-    {
-        common::insert_snapshot_log([snap].into_iter(), transaction, warehouse_id, table_id)
-            .await?;
-    }
-
-    // no deps technically enforced
-    if diffs.n_removed_snapshot_log > 0 {
-        remove_snapshot_log_entries(
-            diffs.n_removed_snapshot_log,
+    if diffs.rewrite_snapshot_log {
+        common::replace_snapshot_log(
+            new_metadata.history().iter(),
             transaction,
             warehouse_id,
             table_id,
         )
         .await?;
+    } else {
+        if diffs.head_of_snapshot_log_changed
+            && let Some(snap) = new_metadata.history().last()
+        {
+            common::insert_snapshot_log([snap].into_iter(), transaction, warehouse_id, table_id)
+                .await?;
+        }
+
+        // no deps technically enforced
+        if diffs.n_removed_snapshot_log > 0 {
+            remove_snapshot_log_entries(
+                diffs.n_removed_snapshot_log,
+                transaction,
+                warehouse_id,
+                table_id,
+            )
+            .await?;
+        }
     }
 
     // no deps technically enforced
@@ -1030,6 +1040,165 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1]
         );
+    }
+
+    fn main_snapshot(id: i64, parent: Option<i64>, operation: Operation, ts: i64) -> Snapshot {
+        Snapshot::builder()
+            .with_snapshot_id(id)
+            .with_parent_snapshot_id(parent)
+            .with_timestamp_ms(ts)
+            .with_sequence_number(if parent.is_some() { 2 } else { 1 })
+            .with_schema_id(0)
+            .with_manifest_list(format!("/snap-{id}.avro"))
+            .with_summary(Summary {
+                operation,
+                additional_properties: HashMap::new(),
+            })
+            .build()
+    }
+
+    async fn commit_and_reload(
+        pool: &sqlx::PgPool,
+        warehouse_id: WarehouseId,
+        commit: TableCommit,
+    ) -> TableMetadata {
+        let table_id = TableId::from(commit.new_metadata.uuid());
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![commit], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = pool.begin().await.unwrap();
+        let mut loaded = PostgresBackend::load_tables(
+            warehouse_id,
+            [table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        loaded.remove(0).table_metadata
+    }
+
+    /// Rolling back a compaction drops the newest snapshot-log entry and the writer's commit
+    /// appends a new one. The stored log must match the written metadata after reload, also
+    /// when the writer's snapshot is older than the rolled-back one.
+    #[sqlx::test]
+    async fn test_rolled_back_compaction_snapshot_log_persists_after_reload(pool: sqlx::PgPool) {
+        let (table_info, metadata_0) = setup_table(pool.clone()).await;
+        let warehouse_id = table_info.warehouse_id;
+        let now = chrono::Utc::now().timestamp_millis();
+        let minute = 60_000;
+
+        // Append A, then compaction C on top of it.
+        let loc_0 = table_info.metadata_location.clone().unwrap();
+        let build_1 = metadata_0
+            .clone()
+            .into_builder(Some(loc_0.to_string()))
+            .set_branch_snapshot(
+                main_snapshot(1, None, Operation::Append, now + minute),
+                "main",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let loc_1 =
+            Location::from_str(&format!("{TEST_LOCATION}/metadata/metadata2.json")).unwrap();
+        let metadata_1 = commit_and_reload(
+            &pool,
+            warehouse_id,
+            TableCommit {
+                new_metadata: Arc::new(build_1.metadata.clone()),
+                new_metadata_location: loc_1.clone(),
+                previous_metadata_location: Some(loc_0),
+                updates: Arc::new(build_1.changes),
+                diffs: calculate_diffs(&build_1.metadata, &metadata_0, 1, 0),
+            },
+        )
+        .await;
+
+        let build_2 = metadata_1
+            .clone()
+            .into_builder(Some(loc_1.to_string()))
+            .set_branch_snapshot(
+                main_snapshot(2, Some(1), Operation::Replace, now + 10 * minute),
+                "main",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let loc_2 =
+            Location::from_str(&format!("{TEST_LOCATION}/metadata/metadata3.json")).unwrap();
+        let metadata_2 = commit_and_reload(
+            &pool,
+            warehouse_id,
+            TableCommit {
+                new_metadata: Arc::new(build_2.metadata.clone()),
+                new_metadata_location: loc_2.clone(),
+                previous_metadata_location: Some(loc_1),
+                updates: Arc::new(build_2.changes),
+                diffs: calculate_diffs(&build_2.metadata, &metadata_1, 1, 0),
+            },
+        )
+        .await;
+        assert_eq!(
+            metadata_2
+                .history()
+                .iter()
+                .map(|l| l.snapshot_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        // Roll C back and commit the writer's W, which is older than C, on A.
+        let rewound = metadata_2
+            .clone()
+            .into_builder(None)
+            .rollback_branch_to_snapshot("main", 1)
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
+        let build_3 = rewound
+            .into_builder(Some(loc_2.to_string()))
+            .set_branch_snapshot(
+                main_snapshot(3, Some(1), Operation::Append, now + 5 * minute),
+                "main",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let diffs = calculate_diffs(&build_3.metadata, &metadata_2, 1, 0);
+        assert!(diffs.rewrite_snapshot_log);
+        let metadata_3 = commit_and_reload(
+            &pool,
+            warehouse_id,
+            TableCommit {
+                new_metadata: Arc::new(build_3.metadata.clone()),
+                new_metadata_location: Location::from_str(&format!(
+                    "{TEST_LOCATION}/metadata/metadata4.json"
+                ))
+                .unwrap(),
+                previous_metadata_location: Some(loc_2),
+                updates: Arc::new(build_3.changes),
+                diffs,
+            },
+        )
+        .await;
+
+        assert_eq!(metadata_3.history(), build_3.metadata.history());
+        assert_eq!(
+            metadata_3
+                .history()
+                .iter()
+                .map(|l| l.snapshot_id)
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(metadata_3.current_snapshot_id(), Some(3));
     }
 
     /// `xmin` of each `table_refs` row of a table, by ref name. Every `UPDATE` writes a new
