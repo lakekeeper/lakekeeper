@@ -12784,6 +12784,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionControlAllTasks'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionSetRollbackCompactionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetEndpointStatistics'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
@@ -12817,6 +12818,7 @@ components:
           revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
+          set_rollback_compaction_policy: '#/components/schemas/LakekeeperWarehouseActionSetRollbackCompactionPolicy'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
           use: '#/components/schemas/LakekeeperWarehouseActionUse'
     LakekeeperWarehouseActionAcceptMovedNamespace:
@@ -12977,6 +12979,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindControlAllTasks'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetRollbackCompactionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetEndpointStatistics'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
@@ -13010,6 +13013,7 @@ components:
           revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionKindRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
+          set_rollback_compaction_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetRollbackCompactionPolicy'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
           use: '#/components/schemas/LakekeeperWarehouseActionKindUse'
     LakekeeperWarehouseActionKindAcceptMovedNamespace:
@@ -13228,6 +13232,15 @@ components:
           type: string
           enum:
             - set_protection
+    LakekeeperWarehouseActionKindSetRollbackCompactionPolicy:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - set_rollback_compaction_policy
     LakekeeperWarehouseActionKindUpdateStorage:
       type: object
       required:
@@ -13384,6 +13397,15 @@ components:
           type: string
           enum:
             - set_protection
+    LakekeeperWarehouseActionSetRollbackCompactionPolicy:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - set_rollback_compaction_policy
     LakekeeperWarehouseActionUpdateStorage:
       type: object
       required:
@@ -17741,6 +17763,7 @@ components:
         - control_all_tasks
         - set_protection
         - set_format_version_policy
+        - set_rollback_compaction_policy
         - get_endpoint_statistics
     WarehouseAssignment:
       oneOf:

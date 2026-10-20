@@ -1121,6 +1121,7 @@ pub enum CatalogWarehouseAction {
     ControlAllTasks,
     SetProtection,
     SetFormatVersionPolicy,
+    SetRollbackCompactionPolicy,
     GetEndpointStatistics,
     /// Attach/detach governance tags on this warehouse.
     ManageTags,
@@ -1171,7 +1172,7 @@ pub enum CatalogWarehouseAction {
 /// The warehouse actions enumerated for permission introspection (`GET
 /// /warehouse/{id}/actions`). The subtree grant actions are enumerated with the
 /// absent scope (the base-capability form).
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 27]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -1196,6 +1197,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
         CatalogWarehouseAction::ControlAllTasks,
         CatalogWarehouseAction::SetProtection,
         CatalogWarehouseAction::SetFormatVersionPolicy,
+        CatalogWarehouseAction::SetRollbackCompactionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
         CatalogWarehouseAction::ManageTags,
         CatalogWarehouseAction::AcceptMovedNamespace {
@@ -1209,7 +1211,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
 impl CatalogWarehouseAction {
     /// Introspectable warehouse actions — see [`WAREHOUSE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 26] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 27] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -1231,7 +1233,8 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::Rename
             | CatalogWarehouseAction::ModifySoftDeletion
             | CatalogWarehouseAction::SetProtection
-            | CatalogWarehouseAction::SetFormatVersionPolicy => true,
+            | CatalogWarehouseAction::SetFormatVersionPolicy
+            | CatalogWarehouseAction::SetRollbackCompactionPolicy => true,
             // `ModifyTaskQueueConfig` is intentionally NOT locked in v1: it is an
             // operational knob (retention/expiry tuning) rather than part of the
             // storage/identity spec an operator reconciles, and its write goes
@@ -1304,6 +1307,7 @@ impl EventAction for CatalogWarehouseAction {
             | Self::ControlAllTasks { .. }
             | Self::SetProtection { .. }
             | Self::SetFormatVersionPolicy { .. }
+            | Self::SetRollbackCompactionPolicy { .. }
             | Self::GetEndpointStatistics { .. }
             | Self::ManageTags { .. }
             | Self::ReadGrants { .. } => {}
@@ -2248,6 +2252,7 @@ pub enum CatalogWarehouseActionKind {
     ControlAllTasks,
     SetProtection,
     SetFormatVersionPolicy,
+    SetRollbackCompactionPolicy,
     GetEndpointStatistics,
     ManageTags,
     AcceptMovedNamespace,
@@ -2279,6 +2284,9 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::ControlAllTasks => Self::ControlAllTasks,
             CatalogWarehouseAction::SetProtection => Self::SetProtection,
             CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
+            CatalogWarehouseAction::SetRollbackCompactionPolicy => {
+                Self::SetRollbackCompactionPolicy
+            }
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
             CatalogWarehouseAction::ManageTags => Self::ManageTags,
             CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
@@ -3237,6 +3245,7 @@ pub mod tests {
             A::ModifySoftDeletion,
             A::SetProtection,
             A::SetFormatVersionPolicy,
+            A::SetRollbackCompactionPolicy,
         ] {
             assert!(a.is_spec_mutation(), "{a:?} should be a spec mutation");
         }

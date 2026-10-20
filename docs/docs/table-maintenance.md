@@ -140,6 +140,8 @@ Transparent commit is disabled by default and requires two independent opt-ins:
       -d '{"enabled": true}'
     ```
 
+    Changing the flag needs the `set_rollback_compaction_policy` permission on the warehouse. With OpenFGA, `modify` on the warehouse grants it.
+
 2. **Per-snapshot marker.** The compaction engine must stamp its `REPLACE` snapshot summary with either `lakekeeper.rollbackable=true` (native) or Apache Polaris's `polaris.internal.conflict-resolution.by-operation-type.replace=rollback` (honoured for compatibility with engines already integrated against Polaris). Because the opt-in is a snapshot-summary marker, external compaction engines participate without any Lakekeeper-specific integration beyond stamping the marker.
 
 ### Notes and limitations

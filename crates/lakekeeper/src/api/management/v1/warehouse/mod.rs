@@ -1655,7 +1655,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             warehouse_id,
-            CatalogWarehouseAction::SetFormatVersionPolicy,
+            CatalogWarehouseAction::SetRollbackCompactionPolicy,
         );
 
         let warehouse = C::get_warehouse_by_id_cache_aware(
