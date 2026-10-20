@@ -4001,7 +4001,6 @@ dependencies = [
  "lazy-regex",
  "limes",
  "maplit",
- "metrics",
  "mockall",
  "moka",
  "pastey",
