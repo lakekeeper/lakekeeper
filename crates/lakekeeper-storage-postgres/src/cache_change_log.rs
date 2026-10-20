@@ -13,9 +13,9 @@ use sqlx::{Connection, PgConnection};
 /// The most keys one change-log row carries. A larger key set is split into several rows.
 const KEYS_PER_ROW: usize = 1000;
 
-/// Record `change_set` in the transaction open on `conn`, in rows of at most 1000 keys. An
-/// empty set inserts nothing, and then no xid is assigned for it. Nothing is recorded while
-/// [`cache_invalidation::recording_enabled`] is off.
+/// Record `change_set` in the transaction open on `conn`, in one statement, in rows of at
+/// most 1000 keys. An empty set inserts nothing, and then no xid is assigned for it. Nothing
+/// is recorded while [`cache_invalidation::recording_enabled`] is off.
 ///
 /// # Errors
 /// Returns an error if the insert fails.
@@ -23,27 +23,41 @@ pub(crate) async fn record_cache_changes(
     change_set: &ChangeSet,
     conn: &mut PgConnection,
 ) -> sqlx::Result<()> {
-    if !cache_invalidation::recording_enabled() {
+    if !cache_invalidation::recording_enabled() || change_set.is_empty() {
         return Ok(());
     }
+    // One entry per row in `row_domains`; each key carries the 1-based number of its row.
+    let mut row_domains = Vec::new();
+    let mut key_rows = Vec::new();
+    let mut keys = Vec::new();
+    let mut row = 0_i64;
     for (domain, domain_keys) in change_set.encoded() {
         let Some(domain_keys) = domain_keys else {
-            insert_row(conn, domain.as_str(), &[]).await?;
+            row_domains.push(domain.as_str());
+            row += 1;
             continue;
         };
         let domain_keys: Vec<&str> = domain_keys.collect();
         for chunk in domain_keys.chunks(KEYS_PER_ROW) {
-            insert_row(conn, domain.as_str(), chunk).await?;
+            row_domains.push(domain.as_str());
+            row += 1;
+            key_rows.extend(std::iter::repeat_n(row, chunk.len()));
+            keys.extend_from_slice(chunk);
         }
     }
-    Ok(())
-}
-
-async fn insert_row(conn: &mut PgConnection, domain: &str, keys: &[&str]) -> sqlx::Result<()> {
     sqlx::query!(
-        "INSERT INTO cache_change_log (domain, keys) VALUES ($1, $2)",
-        domain,
-        keys as &[&str],
+        r#"INSERT INTO cache_change_log (domain, keys)
+        SELECT r.domain, COALESCE(k.keys, '{}')
+        FROM unnest($1::text[]) WITH ORDINALITY AS r(domain, row_no)
+        LEFT JOIN (
+            SELECT row_no, array_agg(key ORDER BY position) AS keys
+            FROM unnest($2::bigint[], $3::text[]) WITH ORDINALITY AS k(row_no, key, position)
+            GROUP BY row_no
+        ) k USING (row_no)
+        ORDER BY r.row_no"#,
+        &row_domains as &[&str],
+        &key_rows,
+        &keys as &[&str],
     )
     .execute(conn)
     .await?;
@@ -143,6 +157,33 @@ mod tests {
                     current.clone(),
                 ),
                 ("role_ancestors".to_string(), vec![], None, current),
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn whole_domains_and_keyed_domains_keep_their_own_rows(pool: PgPool) {
+        let role = CacheKey::Role(RoleId::from(uuid::Uuid::from_u128(1)));
+        let mut set = ChangeSet::new();
+        set.insert_whole_domain(CacheDomain::Warehouse)
+            .insert(role.clone())
+            .insert_whole_domain(CacheDomain::RoleAncestors);
+
+        let mut tx = pool.begin().await.unwrap();
+        record_cache_changes(&set, &mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<_> = log_rows(&pool)
+            .await
+            .into_iter()
+            .map(|(domain, keys, _, _)| (domain, keys))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("warehouse".to_string(), vec![]),
+                ("role".to_string(), vec![role.encode()]),
+                ("role_ancestors".to_string(), vec![]),
             ]
         );
     }

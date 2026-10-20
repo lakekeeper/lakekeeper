@@ -115,8 +115,49 @@ async fn the_test_setup_refuses_unrecorded_writes(pool: PgPool) {
             .await,
         ),
         (
-            Some("a write to warehouse recorded no warehouse cache change".to_string()),
+            Some(format!(
+                "a write to warehouse recorded no warehouse cache change for {}",
+                warehouse.warehouse_id
+            )),
             Some("a write to namespace recorded no namespace cache change".to_string()),
         )
+    );
+
+    let new_warehouse_id = uuid::Uuid::now_v7();
+    assert_eq!(
+        refused(
+            "INSERT INTO warehouse (warehouse_id, project_id, warehouse_name, status, tabular_delete_mode) \
+             SELECT $1::uuid, project_id, 'inserted', 'active', 'hard' FROM warehouse LIMIT 1",
+            new_warehouse_id.to_string(),
+        )
+        .await,
+        Some(format!(
+            "a write to warehouse recorded no warehouse cache change for {new_warehouse_id}"
+        ))
+    );
+
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query("SELECT lakekeeper_record_cache_change('warehouse', ARRAY[$1])")
+        .bind(uuid::Uuid::now_v7().to_string())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE warehouse SET warehouse_name = 'renamed' WHERE warehouse_id = $1")
+        .bind(*warehouse.warehouse_id)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    let other_id_recorded = transaction
+        .commit()
+        .await
+        .unwrap_err()
+        .as_database_error()
+        .map(|e| e.message().to_string());
+    assert_eq!(
+        other_id_recorded,
+        Some(format!(
+            "a write to warehouse recorded no warehouse cache change for {}",
+            warehouse.warehouse_id
+        ))
     );
 }

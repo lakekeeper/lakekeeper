@@ -245,29 +245,40 @@ pub async fn setup_with_registry<T: Authorizer>(
     )
 }
 
-/// Make a transaction that updates or deletes a warehouse, namespace or role fail to commit
-/// unless it recorded a cache change of that domain. A transaction that sets
+/// Make a transaction that writes a warehouse, namespace or role fail to commit unless it
+/// recorded a cache change of that domain. For warehouses (also inserts) and roles, the change
+/// must name the row's id or the whole domain. A transaction that sets
 /// `lakekeeper_test.unrecorded_write` to `on` is exempt.
 pub async fn require_cache_changes(pool: &PgPool) {
     sqlx::raw_sql(
         r"
         CREATE OR REPLACE FUNCTION test_require_cache_change() RETURNS trigger
         LANGUAGE plpgsql AS $$
+        DECLARE
+            domain_name text := TG_ARGV[0];
+            -- The column holding the id the change must name, if any.
+            id_column text := TG_ARGV[1];
+            row_id text := to_jsonb(CASE WHEN TG_OP = 'INSERT' THEN NEW ELSE OLD END) ->> id_column;
         BEGIN
-            IF coalesce(current_setting('lakekeeper_test.unrecorded_write', true), '') <> 'on'
-               AND NOT EXISTS (
+            IF coalesce(current_setting('lakekeeper_test.unrecorded_write', true), '') = 'on'
+               OR EXISTS (
                    SELECT 1 FROM cache_change_log
-                   WHERE xid = pg_current_xact_id() AND domain = TG_ARGV[0]
+                   WHERE xid = pg_current_xact_id() AND domain = domain_name
+                     AND (id_column IS NULL OR keys = '{}' OR row_id = ANY(keys))
                ) THEN
-                RAISE EXCEPTION 'a write to % recorded no % cache change',
-                    TG_TABLE_NAME, TG_ARGV[0];
+                RETURN NULL;
             END IF;
-            RETURN NULL;
+            IF id_column IS NULL THEN
+                RAISE EXCEPTION 'a write to % recorded no % cache change',
+                    TG_TABLE_NAME, domain_name;
+            END IF;
+            RAISE EXCEPTION 'a write to % recorded no % cache change for %',
+                TG_TABLE_NAME, domain_name, row_id;
         END $$;
         DROP TRIGGER IF EXISTS warehouse_requires_cache_change ON warehouse;
         CREATE CONSTRAINT TRIGGER warehouse_requires_cache_change
-            AFTER UPDATE OR DELETE ON warehouse DEFERRABLE INITIALLY DEFERRED
-            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('warehouse');
+            AFTER INSERT OR UPDATE OR DELETE ON warehouse DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('warehouse', 'warehouse_id');
         DROP TRIGGER IF EXISTS namespace_requires_cache_change ON namespace;
         CREATE CONSTRAINT TRIGGER namespace_requires_cache_change
             AFTER UPDATE OR DELETE ON namespace DEFERRABLE INITIALLY DEFERRED
@@ -275,7 +286,7 @@ pub async fn require_cache_changes(pool: &PgPool) {
         DROP TRIGGER IF EXISTS role_requires_cache_change ON role;
         CREATE CONSTRAINT TRIGGER role_requires_cache_change
             AFTER UPDATE OR DELETE ON role DEFERRABLE INITIALLY DEFERRED
-            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('role');
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('role', 'id');
         ",
     )
     .execute(pool)

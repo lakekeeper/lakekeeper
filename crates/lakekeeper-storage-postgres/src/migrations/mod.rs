@@ -5,7 +5,10 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use futures::future::BoxFuture;
-use lakekeeper::service::{ServerId, Transaction};
+use lakekeeper::service::{
+    ServerId, Transaction,
+    cache_invalidation::{CacheDomain, ChangeSet},
+};
 /// Re-exported for convenience so the `ExtensionMigrations::migrator` field
 /// type is reachable without naming `sqlx` in the caller's import list.
 ///
@@ -19,11 +22,13 @@ use sqlx::{
     AssertSqlSafe, Error, Executor, Postgres,
     migrate::{AppliedMigration, Migrate, MigrateError, Migration as SqlxMigration, Migrator},
 };
+use strum::IntoEnumIterator;
 use typed_builder::TypedBuilder;
 
 use crate::{
     CatalogState, PostgresTransaction,
     bootstrap::get_or_set_server_id,
+    cache_change_log::record_cache_changes,
     config::{CONFIG, PgSchema},
     migrations::split_table_metadata::SplitTableMetadataHook,
 };
@@ -456,10 +461,11 @@ async fn migrate_in_schema(
     // 3. Apply in merged order, dispatching each migration to its source's
     //    tracker table. Each source's checksum / sha-patch / hook state lives
     //    on its `SourceState`.
+    let mut applied_any = false;
     for (version, src_idx, mut migration) in timeline {
         migration.no_tx = true;
         let source = &mut sources[src_idx];
-        apply_migration(transaction, source, migration)
+        applied_any |= apply_migration(transaction, source, migration)
             .await
             .with_context(|| {
                 format!(
@@ -467,6 +473,16 @@ async fn migrate_in_schema(
                     source.table_name,
                 )
             })?;
+    }
+
+    // Migrations and their data hooks can change any cached row, and instances of the
+    // previous release keep serving during a rolling upgrade.
+    if applied_any {
+        let mut every_domain = ChangeSet::new();
+        for domain in CacheDomain::iter() {
+            every_domain.insert_whole_domain(domain);
+        }
+        record_cache_changes(&every_domain, transaction).await?;
     }
 
     let server_id = get_or_set_server_id(&mut **transaction).await?;
@@ -493,12 +509,13 @@ struct SourceState {
     sha_patches: HashSet<i64>,
 }
 
-/// Apply (or skip, or sha-patch) one migration against its source's tracker.
+/// Apply (or skip, or sha-patch) one migration against its source's tracker. Returns
+/// whether it applied the migration.
 async fn apply_migration(
     transaction: &mut sqlx::Transaction<'_, Postgres>,
     source: &mut SourceState,
     migration: SqlxMigration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     tracing::info!(%migration.version, %migration.description, "Current migration");
 
     // Clone the applied checksum so we don't hold a borrow into `source.applied`
@@ -519,11 +536,12 @@ async fn apply_migration(
                     migration.version,
                 )
                 .await?;
-                return Ok(());
+                return Ok(false);
             }
             Err(MigrateError::VersionMismatch(migration.version))?;
         }
         tracing::info!(%migration.version, "Migration already applied");
+        Ok(false)
     } else {
         transaction.apply(&source.table_name, &migration).await?;
         tracing::info!(%migration.version, "Applying migration");
@@ -534,8 +552,8 @@ async fn apply_migration(
         } else {
             tracing::debug!(%migration.version, "No hook for migration");
         }
+        Ok(true)
     }
-    Ok(())
 }
 
 async fn run_checks(
@@ -1040,16 +1058,17 @@ mod tests {
     /// Call `lakekeeper_record_cache_change` through a Lakekeeper pool, as the code and
     /// extension triggers in its sessions do.
     async fn record_cache_change(pool: &PgPool, key: &str) {
-        sqlx::query("SELECT lakekeeper_record_cache_change('secret', ARRAY[$1])")
+        sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', ARRAY[$1])")
             .bind(key)
             .execute(pool)
             .await
             .unwrap();
     }
 
+    /// The keys `record_cache_change` recorded in `schema`.
     async fn cache_change_keys_in_schema(admin_pool: &PgPool, schema: &str) -> Vec<Vec<String>> {
         sqlx::query_scalar(AssertSqlSafe(format!(
-            r#"SELECT keys FROM "{schema}".cache_change_log ORDER BY id"#
+            r#"SELECT keys FROM "{schema}".cache_change_log WHERE domain = 'extension_domain' ORDER BY id"#
         )))
         .fetch_all(admin_pool)
         .await
@@ -1351,6 +1370,48 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// Applied migrations and data hooks can change any cached row, so a run that applies
+    /// one names every domain. A run that applies nothing records nothing.
+    #[sqlx::test(migrations = false)]
+    async fn test_migrate_records_every_domain_when_it_applies_a_migration(pool: PgPool) {
+        async fn changes_since(pool: &PgPool, head: i64) -> Vec<(String, Vec<String>)> {
+            sqlx::query_as("SELECT domain, keys FROM cache_change_log WHERE id > $1 ORDER BY id")
+                .bind(head)
+                .fetch_all(pool)
+                .await
+                .unwrap()
+        }
+        async fn head(pool: &PgPool) -> i64 {
+            sqlx::query_scalar("SELECT COALESCE(max(id), 0) FROM cache_change_log")
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        }
+
+        migrate_core_only(&pool).await.unwrap();
+        let before_rerun = head(&pool).await;
+        migrate_core_only(&pool).await.unwrap();
+        assert_eq!(changes_since(&pool, before_rerun).await, vec![]);
+
+        let ext = ExtensionMigrations::builder()
+            .name("demo")
+            .migrator(sqlx::migrate!("./tests/extension_migrations_fixture"))
+            .build();
+        migrate(&pool, vec![ext]).await.unwrap();
+        let whole = |domain: &str| (domain.to_string(), Vec::<String>::new());
+        assert_eq!(
+            changes_since(&pool, before_rerun).await,
+            vec![
+                whole("warehouse"),
+                whole("namespace"),
+                whole("role"),
+                whole("user_assignments"),
+                whole("role_ancestors"),
+                whole("secret"),
+            ]
+        );
     }
 
     /// An extension shipped a migration, it landed in operators' databases,
