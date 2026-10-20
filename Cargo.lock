@@ -3345,7 +3345,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=8c80deda1222791301c6ed9c8102f2b725a56b62#8c80deda1222791301c6ed9c8102f2b725a56b62"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=261266c87b3990a6e9101fbcf5c75da18603ff0f#261266c87b3990a6e9101fbcf5c75da18603ff0f"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3431,7 +3431,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=8c80deda1222791301c6ed9c8102f2b725a56b62#8c80deda1222791301c6ed9c8102f2b725a56b62"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=261266c87b3990a6e9101fbcf5c75da18603ff0f#261266c87b3990a6e9101fbcf5c75da18603ff0f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7360,7 +7360,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.4.1",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
