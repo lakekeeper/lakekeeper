@@ -324,12 +324,14 @@ impl<C: CatalogStore> ReadTransaction<C> {
 pub struct WriteTransaction<C: CatalogStore> {
     transaction: C::Transaction,
     changes: ChangeSet,
+    kept_locally: Vec<CacheKey>,
 }
 
 impl<C: CatalogStore> std::fmt::Debug for WriteTransaction<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WriteTransaction")
             .field("changes", &self.changes)
+            .field("kept_locally", &self.kept_locally)
             .finish_non_exhaustive()
     }
 }
@@ -341,6 +343,7 @@ impl<C: CatalogStore> WriteTransaction<C> {
         Ok(Self {
             transaction: C::Transaction::begin_write(db_state).await?,
             changes: ChangeSet::new(),
+            kept_locally: Vec::new(),
         })
     }
 
@@ -361,8 +364,17 @@ impl<C: CatalogStore> WriteTransaction<C> {
         self
     }
 
+    /// Leave the recorded entry `key` in this instance's caches when the commit succeeds,
+    /// until this instance reads the change from the log: the caller refreshes it from the
+    /// state it wrote.
+    pub(crate) fn skip_local_eviction(&mut self, key: CacheKey) -> &mut Self {
+        self.kept_locally.push(key);
+        self
+    }
+
     /// Record the changed keys, commit, and evict the keys from this instance's caches,
-    /// also if recording or the commit fails. Runs to completion if the caller is dropped.
+    /// also if recording or the commit fails. A successful commit keeps the keys passed to
+    /// `skip_local_eviction`. Runs to completion if the caller is dropped.
     ///
     /// # Errors
     /// Returns an error if recording the keys or the commit fails.
@@ -370,6 +382,7 @@ impl<C: CatalogStore> WriteTransaction<C> {
         let Self {
             mut transaction,
             changes,
+            kept_locally,
         } = self;
         run_to_completion(async move {
             let committed = async {
@@ -379,7 +392,12 @@ impl<C: CatalogStore> WriteTransaction<C> {
                 transaction.commit().await
             }
             .await;
-            evict_locally(&changes).await;
+            let kept: &[CacheKey] = if committed.is_ok() {
+                &kept_locally
+            } else {
+                &[]
+            };
+            evict_locally(&changes, kept).await;
             committed
         })
         .await
@@ -1418,20 +1436,10 @@ where
     /// endpoints `member_role_ids` are added or removed: every user assigned to any
     /// of those members or to any role in their combined descendant closure. The
     /// whole set is walked in a single query (no per-member fan-out). Runs on the
-    /// caller's transaction; see `membership_edge_affected_users` for what a read
-    /// before the commit misses.
+    /// caller's transaction.
     async fn affected_users_for_membership_edges_impl<'a>(
         member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Vec<UserId>, CatalogBackendError>;
-
-    /// [`Self::affected_users_for_membership_edges_impl`], read after the edge change
-    /// committed, in a read-only transaction of its own on the write pool. A lock wait
-    /// of more than a few seconds fails the read, so a pending `ALTER TABLE` on a role
-    /// table cannot hold its connection.
-    async fn affected_users_for_membership_edges_after_commit_impl(
-        member_role_ids: &[RoleId],
-        catalog_state: Self::State,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
 
     /// Delete the role-provider sync records of `user_ids` for `provider_id` in

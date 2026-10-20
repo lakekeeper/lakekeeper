@@ -16,9 +16,12 @@ pub use log::{
 };
 pub use poller::background_tasks;
 
-/// Evict the entries `changes` name from this instance's caches.
-pub(crate) async fn evict_locally(changes: &ChangeSet) {
-    evict::Evictions::of_set(changes).apply().await;
+/// Evict the entries `changes` name from this instance's caches, except the keys in `kept`.
+pub(crate) async fn evict_locally(changes: &ChangeSet, kept: &[CacheKey]) {
+    evict::Evictions::of_set(changes)
+        .without(kept)
+        .apply()
+        .await;
 }
 
 /// Whether writes record their changed keys (`cache.invalidation.recording_enabled`).

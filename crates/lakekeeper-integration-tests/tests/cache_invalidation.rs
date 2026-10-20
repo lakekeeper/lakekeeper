@@ -70,7 +70,8 @@ async fn a_change_logged_by_another_instance_evicts_the_cached_warehouse(pool: P
     cancellation_token.cancel();
 }
 
-/// The test setup refuses a warehouse or namespace write that recorded no cache change, so a
+/// The test setup refuses a warehouse, namespace or role membership write that recorded no
+/// cache change of its domain, and a warehouse write that recorded another warehouse, so a
 /// write path that forgets to record fails its tests.
 #[sqlx::test]
 async fn the_test_setup_refuses_unrecorded_writes(pool: PgPool) {
@@ -134,6 +135,27 @@ async fn the_test_setup_refuses_unrecorded_writes(pool: PgPool) {
         Some(format!(
             "a write to warehouse recorded no warehouse cache change for {new_warehouse_id}"
         ))
+    );
+
+    sqlx::query(
+        "INSERT INTO role (id, name, source_id, provider_id, project_id) \
+         SELECT gen_random_uuid(), source, source, 'lakekeeper', $1 \
+         FROM unnest(ARRAY['parent', 'member']) AS source",
+    )
+    .bind(&**warehouse.project_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        refused(
+            "INSERT INTO role_membership (parent_role_id, member_role_id) \
+             SELECT parent.id, member.id FROM role parent, role member \
+             WHERE parent.source_id = 'parent' AND member.source_id = 'member' \
+               AND parent.project_id = $1 AND member.project_id = $1",
+            warehouse.project_id.to_string(),
+        )
+        .await,
+        Some("a write to role_membership recorded no role_ancestors cache change".to_string())
     );
 
     let mut transaction = pool.begin().await.unwrap();

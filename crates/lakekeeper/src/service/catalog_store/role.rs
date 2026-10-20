@@ -13,10 +13,11 @@ use crate::{
         ArcProjectId, CachePolicy, CatalogBackendError, CatalogCreateRoleRequest, CatalogStore,
         InvalidPaginationToken, ProjectIdNotFoundError, ResultCountMismatch, RoleId, RoleIdent,
         RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec,
-        Transaction, WriteTransaction,
-        cache_invalidation::CacheKey,
+        Transaction, UserId, WriteTransaction,
+        cache_invalidation::{CacheDomain, CacheKey},
         catalog_store::{
             define_version_newtype,
+            role_assignment::record_role_graph_change,
             role_cache::{
                 role_cache_get_by_id, role_cache_get_by_ident, role_cache_get_or_load,
                 role_cache_insert, role_ident_to_id_get_or_load,
@@ -855,12 +856,19 @@ where
     /// **Customer-facing — system role rejection lives at the API layer.**
     /// See [`Self::create_role`] for the rationale. To delete catalog-managed
     /// system roles, use the capability-gated [`Self::delete_system_roles`].
+    ///
+    /// Records the role, the users holding it and the ancestor sets. Returns the users who
+    /// held the role, directly or through a role nested in it. Lock the role row first
+    /// ([`CatalogStore::lock_role_and_count_grants_impl`]): an assignment to the role that
+    /// commits after this reads the holders is otherwise missing from the recorded users.
     async fn delete_role(
         project_id: &ArcProjectId,
         role_id: RoleId,
         transaction: &mut WriteTransaction<Self>,
-    ) -> Result<(), DeleteRoleError> {
+    ) -> Result<Vec<UserId>, DeleteRoleError> {
         let role_ids = [role_id];
+        // Before the delete, which cascades to the assignments and edges this reads.
+        let holders = record_role_graph_change(&role_ids, transaction).await?;
         let filter = CatalogListRolesByIdFilter::builder()
             .role_ids(Some(&role_ids))
             .build();
@@ -870,7 +878,7 @@ where
             return Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into());
         }
         transaction.record(CacheKey::Role(role_id));
-        Ok(())
+        Ok(holders)
     }
 
     /// Delete catalog-managed system roles for `project_id` matching
@@ -881,6 +889,9 @@ where
     ///
     /// Hard-codes `provider_id = "system"`. The
     /// [`SystemRoleSeederCap`] token gates this — see its docs.
+    ///
+    /// Records the deleted roles, every user's assignments and every ancestor set: the
+    /// delete reports only the deleted roles.
     async fn delete_system_roles(
         project_id: &ProjectId,
         source_ids: &[&RoleSourceId],
@@ -899,6 +910,11 @@ where
             Self::delete_roles_impl(Some(project_id), filter, transaction.transaction()).await?;
         for role_id in &deleted {
             transaction.record(CacheKey::Role(*role_id));
+        }
+        if !deleted.is_empty() {
+            transaction
+                .record_whole_domain(CacheDomain::UserAssignments)
+                .record_whole_domain(CacheDomain::RoleAncestors);
         }
         Ok(deleted)
     }
@@ -928,7 +944,8 @@ where
         Ok(Arc::new(role))
     }
 
-    /// Update the external ID of the role.
+    /// Update the external ID of the role. Records the role, the ident it had, the users
+    /// holding it and the ancestor sets, which carry its ident.
     ///
     /// **Customer-facing — system role rejection lives at the API layer.**
     /// See [`Self::create_role`] for the rationale.
@@ -948,6 +965,8 @@ where
             transaction.transaction(),
         )
         .await?;
+        // After the rebind's row lock, which waits for in-flight assignments to the role.
+        record_role_graph_change(&[role_id], transaction).await?;
         transaction
             .record(CacheKey::Role(role_id))
             .record(CacheKey::RoleIdent {

@@ -89,6 +89,12 @@ impl Evictions {
         evictions
     }
 
+    /// These evictions without the keys in `kept`. A whole domain stays evicted.
+    pub(super) fn without(mut self, kept: &[CacheKey]) -> Self {
+        self.keys.retain(|key| !kept.contains(key));
+        self
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         !self.all && self.domains.is_empty() && self.keys.is_empty()
     }

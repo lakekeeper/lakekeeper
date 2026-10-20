@@ -13,8 +13,10 @@ use crate::{
     api::management::v1::user::{UserLastUpdatedWith, UserType},
     service::{
         ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId,
-        RoleIdNotFoundInProject, RoleNameAlreadyExists, RoleProviderId, Transaction, UserWrite,
+        RoleIdNotFoundInProject, RoleNameAlreadyExists, RoleProviderId, UserWrite,
+        WriteTransaction,
         authn::{ArcUserId, UserId},
+        cache_invalidation::{CacheDomain, CacheKey},
         cache_metrics, define_transparent_error,
         events::{EventDispatcher, RoleMembersSyncedEvent, UserRoleAssignmentsSyncedEvent},
         identifier::role::ArcRoleIdent,
@@ -172,6 +174,8 @@ pub struct SyncRoleMembersResult {
     pub synced_at: chrono::DateTime<chrono::Utc>,
     /// The member users this sync created or changed.
     pub user_writes: Vec<UserWrite>,
+    /// Whether the sync changed the name or description of the existing role.
+    pub role_updated: bool,
 }
 
 /// Outcome of a [`CatalogRoleAssignmentOps::sync_user_role_assignments_by_provider`] call.
@@ -202,6 +206,8 @@ pub struct SyncUserRoleAssignmentsResult {
     pub provider_sync_times: Vec<UserProviderSyncInfo>,
     /// The user, if this sync created or changed it.
     pub user_write: Option<UserWrite>,
+    /// The existing roles whose name or description the sync changed.
+    pub updated_roles: Vec<RoleId>,
 }
 
 /// Outcome of a [`CatalogRoleAssignmentOps::sync_user_role_assignments`] call.
@@ -1006,22 +1012,38 @@ where
     /// Designed for external role providers (LDAP, SCIM) that supply the
     /// authoritative member list and need Lakekeeper to converge to it:
     ///
-    /// 1. Upsert the role for `project_id`:
-    ///    create with a fresh [`RoleId`] if absent, leave unchanged if present.
+    /// 1. Upsert the role for `project_id`: create it with a fresh [`RoleId`] if
+    ///    absent, otherwise update its name and description where they differ.
     /// 2. Upsert every user in `members`. A deleted user stays deleted and gets
     ///    no assignment; [`SyncRoleMembersResult::skipped_deleted`] lists them.
     /// 3. Add assignment rows for newly assigned users.
     /// 4. Delete assignment rows for users absent from `members`.
     /// 5. Record the sync timestamp in the role member sync log.
-    async fn sync_role_members_by_ident<'a>(
+    ///
+    /// Records the added and removed members, and the role if the sync changed its name or
+    /// description.
+    async fn sync_role_members_by_ident(
         project_id: &ProjectId,
         role: &CatalogRoleForAssignment<'_>,
         members: &[CatalogUserRoleAssignmentUser<'_>],
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<SyncRoleMembersResult, SyncRoleMembersError> {
         UniqueMembers::try_from_slice(members)?;
         reject_reserved_sync_provider(role.ident.provider_id())?;
-        Self::sync_role_members_by_ident_impl(project_id, role, members, transaction).await
+        let result = Self::sync_role_members_by_ident_impl(
+            project_id,
+            role,
+            members,
+            transaction.transaction(),
+        )
+        .await?;
+        if result.role_updated {
+            transaction.record(CacheKey::Role(result.role_id));
+        }
+        for member in result.added.iter().chain(&result.removed) {
+            transaction.record(CacheKey::UserAssignments((*member.user_id).clone()));
+        }
+        Ok(result)
     }
 
     /// Atomically converge a user's role assignments from one provider to an
@@ -1035,8 +1057,9 @@ where
     ///
     /// Steps performed in a single transaction:
     /// 1. Upsert the user.
-    /// 2. Upsert each role in `roles` for `project_id`:
-    ///    create with a fresh [`RoleId`] if absent, leave unchanged if present.
+    /// 2. Upsert each role in `roles` for `project_id`: create it with a fresh
+    ///    [`RoleId`] if absent, otherwise update its name and description where they
+    ///    differ.
     /// 3. Add assignment rows for roles not yet assigned.
     /// 4. Remove assignment rows for roles (from `provider_id`) that are no
     ///    longer in `roles`.
@@ -1056,15 +1079,19 @@ where
     /// surface as [`RoleDeletedDuringSync`] instead; on it, as on every other error,
     /// the caller rolls `transaction` back.
     ///
+    /// Records the user if its assignments changed, and the roles whose name or
+    /// description the sync changed. A sync that only moves the sync timestamp records
+    /// nothing, so other instances may keep the older timestamp until their entry expires.
+    ///
     /// Returns [`RoleProviderMismatchError`] if any role's `ident.provider_id()`
     /// differs from `provider_id`.
-    async fn sync_user_role_assignments_by_provider<'a>(
+    async fn sync_user_role_assignments_by_provider(
         user: CatalogUserRoleAssignmentUser<'_>,
         sync_for: SyncFor,
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
         roles: &[CatalogRoleForAssignment<'_>],
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError> {
         UniqueRoles::try_from_slice(roles)?;
         reject_reserved_sync_provider(provider_id)?;
@@ -1076,23 +1103,29 @@ where
             )
             .into());
         }
-        Self::sync_user_role_assignments_by_provider_impl(
+        let result = Self::sync_user_role_assignments_by_provider_impl(
             &user,
             sync_for,
             project_id,
             provider_id,
             roles,
-            transaction,
+            transaction.transaction(),
         )
-        .await
+        .await?;
+        for role_id in &result.updated_roles {
+            transaction.record(CacheKey::Role(*role_id));
+        }
+        if !result.added.is_empty() || !result.removed.is_empty() {
+            transaction.record(CacheKey::UserAssignments((**user.user_id).clone()));
+        }
+        Ok(result)
     }
 
     // -----------------------------------------------------------------------
     // WRITE: standalone sync (owns its own transaction)
     // -----------------------------------------------------------------------
 
-    /// Sync a role's complete member list, commit, invalidate the cached role
-    /// assignments of the members it added or removed, and dispatch a
+    /// Sync a role's complete member list, commit, and dispatch a
     /// [`RoleMembersSyncedEvent`].
     ///
     /// This is the preferred entry point for external role providers (LDAP,
@@ -1103,9 +1136,7 @@ where
     /// 2. Builds [`ListRoleMembersResult`] directly from the inputs — the
     ///    `members` slice without the deleted users the sync skipped is the
     ///    complete new member list, so no extra DB round-trip is needed.
-    /// 3. Invalidates the `USER_ASSIGNMENTS_CACHE` entries of the added and removed
-    ///    members after the commit.
-    /// 4. Emits [`RoleMembersSyncedEvent`] via `dispatcher`
+    /// 3. Emits [`RoleMembersSyncedEvent`] via `dispatcher`
     async fn sync_role_members(
         project_id: &ArcProjectId,
         role: &CatalogRoleForAssignment<'_>,
@@ -1113,13 +1144,9 @@ where
         catalog_state: Self::State,
         dispatcher: &EventDispatcher,
     ) -> crate::api::Result<Arc<ListRoleMembersResult>> {
-        UniqueMembers::try_from_slice(members).map_err(SyncRoleMembersError::from)?;
-        reject_reserved_sync_provider(role.ident.provider_id())
-            .map_err(SyncRoleMembersError::from)?;
-        let mut t = Self::Transaction::begin_write(catalog_state).await?;
+        let mut t = WriteTransaction::<Self>::begin(catalog_state).await?;
         let sync_result =
-            Self::sync_role_members_by_ident_impl(project_id, role, members, t.transaction())
-                .await?;
+            Self::sync_role_members_by_ident(project_id, role, members, &mut t).await?;
 
         // Build the authoritative member list directly from the sync inputs.
         // `members` minus the skipped deleted users is exactly the complete new
@@ -1142,21 +1169,7 @@ where
                 .collect(),
             last_synced_at: Some(sync_result.synced_at),
         });
-
-        // The members whose assignment changed have stale user-assignments entries.
-        let changed_users: Vec<UserId> = sync_result
-            .added
-            .iter()
-            .chain(sync_result.removed.iter())
-            .map(|u| (*u.user_id).clone())
-            .collect();
-        // Also after a failed commit, which may have landed.
-        crate::service::run_to_completion(async move {
-            let committed = t.commit().await;
-            role_assignments_cache::user_assignments_cache_invalidate_many(&changed_users).await;
-            committed
-        })
-        .await?;
+        t.commit().await?;
 
         dispatcher.users_written_async(sync_result.user_writes, None);
         let event = RoleMembersSyncedEvent {
@@ -1206,44 +1219,32 @@ where
         catalog_state: Self::State,
         dispatcher: &EventDispatcher,
     ) -> crate::api::Result<SyncedUserRoleAssignments> {
-        UniqueRoles::try_from_slice(roles).map_err(SyncUserRoleAssignmentsError::from)?;
-        reject_reserved_sync_provider(provider_id).map_err(SyncUserRoleAssignmentsError::from)?;
-        if let Some(r) = roles.iter().find(|r| r.ident.provider_id() != provider_id) {
-            return Err(
-                SyncUserRoleAssignmentsError::from(RoleProviderMismatchError::new(
-                    provider_id,
-                    r.ident.provider_id(),
-                    r.ident.source_id().to_string(),
-                ))
-                .into(),
-            );
-        }
         // Read before the first transaction, so it also covers the retry.
         let invalidations_before =
             role_assignments_cache::USER_ASSIGNMENTS_CACHE.invalidations(user.user_id);
         // One retry: a role deleted while the first attempt ran is recreated by the
         // second, which reads the committed delete.
-        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
-        let first = Self::sync_user_role_assignments_by_provider_impl(
-            &user,
+        let mut t = WriteTransaction::<Self>::begin(catalog_state.clone()).await?;
+        let first = Self::sync_user_role_assignments_by_provider(
+            user.clone(),
             sync_for,
             project_id,
             provider_id,
             roles,
-            t.transaction(),
+            &mut t,
         )
         .await;
         let attempt = match first {
             Err(SyncUserRoleAssignmentsError::RoleDeletedDuringSync(_)) => {
                 t.rollback().await?;
-                t = Self::Transaction::begin_write(catalog_state.clone()).await?;
-                Self::sync_user_role_assignments_by_provider_impl(
-                    &user,
+                t = WriteTransaction::<Self>::begin(catalog_state).await?;
+                Self::sync_user_role_assignments_by_provider(
+                    user.clone(),
                     sync_for,
                     project_id,
                     provider_id,
                     roles,
-                    t.transaction(),
+                    &mut t,
                 )
                 .await
             }
@@ -1268,18 +1269,14 @@ where
 
         // Commit, then cache; see `CountedCache::cache_after_commit`.
         let user_id = Arc::clone(user.user_id);
+        t.skip_local_eviction(CacheKey::UserAssignments((*user_id).clone()));
         let cached = Arc::clone(&list_result);
-        // A failed commit may have landed, so it removes the user's entry.
         crate::service::run_to_completion(async move {
-            let committed = t.commit().await;
-            if committed.is_ok() {
-                role_assignments_cache::USER_ASSIGNMENTS_CACHE
-                    .cache_after_commit(&user_id, cached, invalidations_before)
-                    .await;
-            } else {
-                role_assignments_cache::user_assignments_cache_invalidate(&user_id).await;
-            }
-            committed
+            t.commit().await?;
+            role_assignments_cache::USER_ASSIGNMENTS_CACHE
+                .cache_after_commit(&user_id, cached, invalidations_before)
+                .await;
+            crate::api::Result::<()>::Ok(())
         })
         .await?;
 
@@ -1308,9 +1305,7 @@ where
     // -----------------------------------------------------------------------
     //
     // Same split as the sync APIs above: `add_role_members`/`remove_role_members`
-    // compose into a caller's transaction; `*_and_invalidate` own their transaction
-    // and reconcile caches. The composing wrappers are thin because membership
-    // validation is DB-bound and lives in `_impl`.
+    // compose into a caller's transaction; `*_and_invalidate` own their transaction.
 
     /// Add role->role edges: `parent_role_id` gains every role in
     /// `member_role_ids` as a direct member. Duplicate entries in
@@ -1326,217 +1321,157 @@ where
     /// Cycles are rejected: if `member` is already a transitive ancestor of
     /// `parent` (or `member == parent`), the call returns
     /// [`RoleMembershipCycle`] and no edges are written.
-    /// Caches are not touched. Use [`add_role_members_and_invalidate`] unless the caller
-    /// owns a transaction and no request is being served: an authorizer that reads nesting
-    /// from this store keeps a cache no code outside this crate can clear.
     ///
-    /// [`add_role_members_and_invalidate`]: Self::add_role_members_and_invalidate
-    async fn add_role_members<'a>(
+    /// An added edge changes the effective roles of every user holding an added member,
+    /// directly or through a role nested in it, and the ancestor sets: all are recorded.
+    async fn add_role_members(
         project_id: &ArcProjectId,
         parent_role_id: RoleId,
         member_role_ids: &[RoleId],
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<AddRoleMembersResult, AddRoleMembersError> {
-        Self::add_role_members_impl(project_id, parent_role_id, member_role_ids, transaction).await
+        let result = Self::add_role_members_impl(
+            project_id,
+            parent_role_id,
+            member_role_ids,
+            transaction.transaction(),
+        )
+        .await?;
+        let affected = record_role_graph_change(&result.added, transaction).await?;
+        record_membership_edge_fanout("add", parent_role_id, &affected);
+        Ok(result)
     }
 
     /// Remove role->role edges: drop every `(parent_role_id, member)` edge for
     /// `member` in `member_role_ids`. Idempotent — absent edges are a no-op.
     ///
-    /// Caches are not touched; see [`add_role_members`](Self::add_role_members).
-    async fn remove_role_members<'a>(
+    /// Records what [`add_role_members`](Self::add_role_members) records.
+    async fn remove_role_members(
         parent_role_id: RoleId,
         member_role_ids: &[RoleId],
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<RemoveRoleMembersResult, RemoveRoleMembersError> {
-        Self::remove_role_members_impl(parent_role_id, member_role_ids, transaction).await
+        let result = Self::remove_role_members_impl(
+            parent_role_id,
+            member_role_ids,
+            transaction.transaction(),
+        )
+        .await?;
+        let affected = record_role_graph_change(&result.removed, transaction).await?;
+        record_membership_edge_fanout("remove", parent_role_id, &affected);
+        Ok(result)
     }
 
-    /// Standalone counterpart to [`add_role_members`] that owns its transaction and
-    /// invalidates the `USER_ASSIGNMENTS_CACHE` for affected users.
+    /// Standalone counterpart to [`add_role_members`] that owns its transaction.
     ///
-    /// An edge change only alters *transitive* effective roles, never direct
-    /// assignments, so only `USER_ASSIGNMENTS_CACHE` is invalidated (for users
-    /// assigned to `member` or its descendants).
+    /// [`add_role_members`]: Self::add_role_members
     async fn add_role_members_and_invalidate(
         project_id: &ArcProjectId,
         parent_role_id: RoleId,
         member_role_ids: &[RoleId],
         catalog_state: Self::State,
     ) -> crate::api::Result<AddRoleMembersResult> {
-        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
-        let result = Self::add_role_members_impl(
-            project_id,
-            parent_role_id,
-            member_role_ids,
-            t.transaction(),
-        )
-        .await?;
-
-        // Compute affected users on the same transaction, before commit: a read
-        // failure then rolls the edge change back rather than leaving it committed
-        // with stale caches that an (idempotent, empty-delta) retry won't refresh.
-        let affected = membership_edge_affected_users::<Self>(&result.added, &mut t)
-            .await
-            .map_err(ErrorModel::from)?;
-
-        // Post-commit eviction is in-memory, after one more read of the affected
-        // users (see `membership_edge_affected_users_after_commit`). A crash in the
-        // commit→evict window leaves affected entries stale until the
-        // `USER_ASSIGNMENTS_CACHE` TTL — stale-permissive for removes, but bounded
-        // and acceptable for this cache.
-        let added = result.added.clone();
-        // A failed commit may have landed, so it still invalidates the users read
-        // before it.
-        crate::service::run_to_completion(async move {
-            let committed = t.commit().await;
-            let affected = if committed.is_ok() {
-                membership_edge_affected_users_after_commit::<Self>(affected, &added, catalog_state)
-                    .await
-            } else {
-                affected
-            };
-            record_membership_edge_fanout("add", parent_role_id, &affected);
-            role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
-            // The edge also changes the ancestor set of the member and of every role
-            // nested beneath it, which is cached per role, not per user.
-            role_assignments_cache::role_ancestors_cache_invalidate_all();
-            committed
-        })
-        .await?;
+        let mut t = WriteTransaction::<Self>::begin(catalog_state).await?;
+        let result =
+            Self::add_role_members(project_id, parent_role_id, member_role_ids, &mut t).await?;
+        t.commit().await?;
         Ok(result)
     }
 
-    /// Standalone counterpart to [`remove_role_members`] that owns its transaction
-    /// and invalidates the `USER_ASSIGNMENTS_CACHE`. See
-    /// [`add_role_members_and_invalidate`] for the cache rationale.
+    /// Standalone counterpart to [`remove_role_members`] that owns its transaction.
+    ///
+    /// [`remove_role_members`]: Self::remove_role_members
     async fn remove_role_members_and_invalidate(
         parent_role_id: RoleId,
         member_role_ids: &[RoleId],
         catalog_state: Self::State,
     ) -> crate::api::Result<RemoveRoleMembersResult> {
-        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
-        let result =
-            Self::remove_role_members_impl(parent_role_id, member_role_ids, t.transaction())
-                .await?;
-
-        // Computed before commit and again after it; see
-        // `add_role_members_and_invalidate`.
-        let affected = membership_edge_affected_users::<Self>(&result.removed, &mut t)
-            .await
-            .map_err(ErrorModel::from)?;
-
-        let removed = result.removed.clone();
-        crate::service::run_to_completion(async move {
-            let committed = t.commit().await;
-            let affected = if committed.is_ok() {
-                membership_edge_affected_users_after_commit::<Self>(
-                    affected,
-                    &removed,
-                    catalog_state,
-                )
-                .await
-            } else {
-                affected
-            };
-            record_membership_edge_fanout("remove", parent_role_id, &affected);
-            role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
-            // See `add_role_members_and_invalidate`. A removal is the permissive
-            // direction, so this clear is what keeps the window down to the
-            // commit→evict gap on this replica.
-            role_assignments_cache::role_ancestors_cache_invalidate_all();
-            committed
-        })
-        .await?;
+        let mut t = WriteTransaction::<Self>::begin(catalog_state).await?;
+        let result = Self::remove_role_members(parent_role_id, member_role_ids, &mut t).await?;
+        t.commit().await?;
         Ok(result)
     }
 
     /// Additively assign `user_ids` to `role_id` (catalog persistence for
-    /// `POST /role/{id}/members` user members). Idempotent. See
-    /// [`add_user_role_assignments_and_invalidate`] for the standalone variant.
-    async fn add_user_role_assignments<'a>(
+    /// `POST /role/{id}/members` user members). Idempotent. Records the users it
+    /// assigned. See [`add_user_role_assignments_and_invalidate`] for the standalone
+    /// variant.
+    ///
+    /// [`add_user_role_assignments_and_invalidate`]: Self::add_user_role_assignments_and_invalidate
+    async fn add_user_role_assignments(
         project_id: &ArcProjectId,
         role_id: RoleId,
         user_ids: &[UserId],
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<AddUserRoleAssignmentsResult, AddUserRoleAssignmentsError> {
         let user_ids = dedup_user_ids(user_ids);
-        Self::add_user_role_assignments_impl(project_id, role_id, &user_ids, transaction).await
+        let result = Self::add_user_role_assignments_impl(
+            project_id,
+            role_id,
+            &user_ids,
+            transaction.transaction(),
+        )
+        .await?;
+        for user_id in &result.added {
+            transaction.record(CacheKey::UserAssignments(user_id.clone()));
+        }
+        Ok(result)
     }
 
     /// Remove `user_ids` from `role_id`. Idempotent — absent assignments are a no-op.
-    async fn remove_user_role_assignments<'a>(
+    /// Records the users it removed.
+    async fn remove_user_role_assignments(
         role_id: RoleId,
         user_ids: &[UserId],
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<RemoveUserRoleAssignmentsResult, RemoveUserRoleAssignmentsError> {
         let user_ids = dedup_user_ids(user_ids);
-        Self::remove_user_role_assignments_impl(role_id, &user_ids, transaction).await
+        let result =
+            Self::remove_user_role_assignments_impl(role_id, &user_ids, transaction.transaction())
+                .await?;
+        for user_id in &result.removed {
+            transaction.record(CacheKey::UserAssignments(user_id.clone()));
+        }
+        Ok(result)
     }
 
     /// Standalone counterpart to [`add_user_role_assignments`] that owns its
-    /// transaction and invalidates caches.
+    /// transaction.
     ///
-    /// A *direct* user→role assignment changes only the assigned user's effective
-    /// roles (no transitive fan-out to other users — unlike a role→role edge), so
-    /// only those users' `USER_ASSIGNMENTS_CACHE` entries need eviction.
+    /// [`add_user_role_assignments`]: Self::add_user_role_assignments
     async fn add_user_role_assignments_and_invalidate(
         project_id: &ArcProjectId,
         role_id: RoleId,
         user_ids: &[UserId],
         catalog_state: Self::State,
     ) -> crate::api::Result<AddUserRoleAssignmentsResult> {
-        let user_ids = dedup_user_ids(user_ids);
-        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
-        let result =
-            Self::add_user_role_assignments_impl(project_id, role_id, &user_ids, t.transaction())
-                .await?;
-
-        // Post-commit, in-memory. Only the newly-assigned users are affected.
-        let added = result.added.clone();
-        // Also after a failed commit, which may have landed.
-        crate::service::run_to_completion(async move {
-            let committed = t.commit().await;
-            role_assignments_cache::user_assignments_cache_invalidate_many(&added).await;
-            committed
-        })
-        .await?;
+        let mut t = WriteTransaction::<Self>::begin(catalog_state).await?;
+        let result = Self::add_user_role_assignments(project_id, role_id, user_ids, &mut t).await?;
+        t.commit().await?;
         Ok(result)
     }
 
-    /// Standalone counterpart to [`remove_user_role_assignments`]. See
-    /// [`add_user_role_assignments_and_invalidate`] for the cache rationale.
+    /// Standalone counterpart to [`remove_user_role_assignments`] that owns its
+    /// transaction.
+    ///
+    /// [`remove_user_role_assignments`]: Self::remove_user_role_assignments
     async fn remove_user_role_assignments_and_invalidate(
         role_id: RoleId,
         user_ids: &[UserId],
         catalog_state: Self::State,
     ) -> crate::api::Result<RemoveUserRoleAssignmentsResult> {
-        let user_ids = dedup_user_ids(user_ids);
-        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
-        let result =
-            Self::remove_user_role_assignments_impl(role_id, &user_ids, t.transaction()).await?;
-
-        let removed = result.removed.clone();
-        // Also after a failed commit, which may have landed.
-        crate::service::run_to_completion(async move {
-            let committed = t.commit().await;
-            role_assignments_cache::user_assignments_cache_invalidate_many(&removed).await;
-            committed
-        })
-        .await?;
+        let mut t = WriteTransaction::<Self>::begin(catalog_state).await?;
+        let result = Self::remove_user_role_assignments(role_id, user_ids, &mut t).await?;
+        t.commit().await?;
         Ok(result)
     }
 
     /// Atomic mixed batch for `POST /role/{id}/members`: in ONE transaction,
     /// assign `user_ids` (direct user→role) AND add `member_role_ids` (role→role
-    /// edges) to `role_id`, then invalidate caches. All-or-nothing — any failure
-    /// rolls the whole batch back. The two single-kind `*_and_invalidate` wrappers
-    /// each own a separate transaction, so calling both would not be atomic across
-    /// kinds; this wrapper exists precisely to span both writes on one transaction.
-    ///
-    /// Combines their cache rationale: each newly-assigned user evicts its
-    /// `USER_ASSIGNMENTS_CACHE`, and edge additions evict the transitively-
-    /// affected users' `USER_ASSIGNMENTS_CACHE`.
+    /// edges) to `role_id`. All-or-nothing — any failure rolls the whole batch back.
+    /// The two single-kind `*_and_invalidate` wrappers each own a separate
+    /// transaction, so calling both would not be atomic across kinds; this wrapper
+    /// exists precisely to span both writes on one transaction.
     async fn add_role_members_mixed_and_invalidate(
         project_id: &ArcProjectId,
         role_id: RoleId,
@@ -1544,8 +1479,7 @@ where
         member_role_ids: &[RoleId],
         catalog_state: Self::State,
     ) -> crate::api::Result<(AddUserRoleAssignmentsResult, AddRoleMembersResult)> {
-        let user_ids = dedup_user_ids(user_ids);
-        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+        let mut t = WriteTransaction::<Self>::begin(catalog_state).await?;
 
         // Lock ordering matters here. `add_role_members_impl` takes the per-project
         // membership advisory lock as its FIRST action; `add_user_role_assignments_impl`
@@ -1557,50 +1491,14 @@ where
         let role_result = if member_role_ids.is_empty() {
             AddRoleMembersResult::default()
         } else {
-            Self::add_role_members_impl(project_id, role_id, member_role_ids, t.transaction())
-                .await?
+            Self::add_role_members(project_id, role_id, member_role_ids, &mut t).await?
         };
         let user_result = if user_ids.is_empty() {
             AddUserRoleAssignmentsResult::default()
         } else {
-            Self::add_user_role_assignments_impl(project_id, role_id, &user_ids, t.transaction())
-                .await?
+            Self::add_user_role_assignments(project_id, role_id, user_ids, &mut t).await?
         };
-
-        // Transitively-affected users from the edge additions, computed on the same
-        // transaction before commit and again after it (see
-        // `add_role_members_and_invalidate`).
-        let edge_affected = membership_edge_affected_users::<Self>(&role_result.added, &mut t)
-            .await
-            .map_err(ErrorModel::from)?;
-
-        // Post-commit, in-memory eviction.
-        let added_users = user_result.added.clone();
-        let added_roles = role_result.added.clone();
-        // Also after a failed commit, which may have landed.
-        crate::service::run_to_completion(async move {
-            let committed = t.commit().await;
-            let edge_affected = if committed.is_ok() {
-                membership_edge_affected_users_after_commit::<Self>(
-                    edge_affected,
-                    &added_roles,
-                    catalog_state,
-                )
-                .await
-            } else {
-                edge_affected
-            };
-            role_assignments_cache::user_assignments_cache_invalidate_many(&added_users).await;
-            role_assignments_cache::user_assignments_cache_invalidate_many(&edge_affected).await;
-            if !added_roles.is_empty() {
-                // Role→role edges landed; see `add_role_members_and_invalidate`. Skipped
-                // when this batch added only user members, which leave the graph
-                // untouched.
-                role_assignments_cache::role_ancestors_cache_invalidate_all();
-            }
-            committed
-        })
-        .await?;
+        t.commit().await?;
         Ok((user_result, role_result))
     }
 
@@ -1669,18 +1567,16 @@ where
     /// own membership graph resolves nesting there instead — the OpenFGA backend never calls
     /// this, so its cache stays empty in such a deployment.
     ///
-    /// Read through a short-lived cache. Its staleness is not symmetric: a membership
-    /// *removal* stays visible for up to one TTL, so a policy written against the parent
-    /// keeps applying to the former member for that long, while an *addition* is not visible
-    /// until then. The permissive direction is why the TTL is short and why every write that
-    /// touches the membership graph clears the cache in-process
-    /// ([`role_ancestors_cache_invalidate_all`]); other replicas converge by TTL.
+    /// Read through a short-lived cache. Every write that touches the membership graph
+    /// records the whole ancestor domain as changed, and every instance clears its cache
+    /// when it reads that change. Until then the staleness is not symmetric: a membership
+    /// *removal* stays visible, so a policy written against the parent keeps applying to
+    /// the former member, while an *addition* is not visible yet. A missed clear lasts up
+    /// to one TTL; the permissive direction is why the TTL is short.
     ///
     /// Precondition: every id is a role the caller has already resolved. A role that does
     /// not exist yields an empty set, indistinguishable from one nested in nothing — safe
     /// where the caller holds a resolved role, and a silent widening where it does not.
-    ///
-    /// [`role_ancestors_cache_invalidate_all`]: role_assignments_cache::role_ancestors_cache_invalidate_all
     async fn list_role_ancestors(
         role_ids: &[RoleId],
         catalog_state: Self::State,
@@ -1770,10 +1666,8 @@ impl<T> CatalogRoleAssignmentOps for T where T: CatalogStore {}
 const ROLE_MEMBERSHIP_FANOUT_WARN_THRESHOLD: usize = 1000;
 
 /// Record the role-membership edge fan-out histogram for one edge mutation and
-/// `warn` when the fan-out is large. Called at the edge-mutation sites (where the
-/// `add`/`remove` op label is known), never inside the shared
-/// `user_assignments_cache_invalidate_many` — that helper is also used by direct
-/// user deletion, which is not an edge fan-out and would conflate the two events.
+/// `warn` when the fan-out is large. Called at the edge-mutation sites, where the
+/// `add`/`remove` op label is known.
 #[allow(clippy::cast_precision_loss)]
 fn record_membership_edge_fanout(
     operation: &'static str,
@@ -1792,62 +1686,39 @@ fn record_membership_edge_fanout(
             count,
             %parent_role_id,
             operation,
-            "large role-membership edge fan-out invalidated many user-assignment caches"
+            "large role-membership edge fan-out changed the cached assignments of many users"
         );
     }
 }
 
-/// Users whose effective roles a `role_membership` edge change on `member_role_ids`
-/// makes stale: those assigned to a member or any role in its descendant closure.
+/// Record the users who hold any of `role_ids`, directly or through a role nested in
+/// one, and every ancestor set: a change to these roles' edges or idents makes all of
+/// them stale. Records nothing for no roles. Returns the users.
 ///
-/// Runs on the caller's write transaction. The changed edge is never on the
-/// descendant walk (`member` only appears as `member_role_id`), so the edge change
-/// itself leaves the result unchanged. A read failure rolls the edge change back.
-/// An assignment to one of these roles that commits after this read and before the
-/// edge change commits is missing from it; see
-/// [`membership_edge_affected_users_after_commit`].
-async fn membership_edge_affected_users<S: CatalogStore>(
-    member_role_ids: &[RoleId],
-    t: &mut S::Transaction,
+/// Reads on `transaction`, so a failed read rolls the change back. This read is the
+/// same before and after an edge change: the walk goes down from the members, and the
+/// changed edge leads up from them.
+///
+/// An assignment to one of these roles, or to a role nested in one, that commits after
+/// this read is missing from it, and a load of that user before this change commits
+/// caches the old state. The assignment records the user itself, so every instance
+/// evicts the user when it reads that change, at once and again after the grace period;
+/// a load after both and before the read pool sees this change stays until TTL. With
+/// the change log off, a load at any point before this change commits stays until TTL.
+pub(crate) async fn record_role_graph_change<S: CatalogStore>(
+    role_ids: &[RoleId],
+    transaction: &mut WriteTransaction<S>,
 ) -> Result<Vec<UserId>, CatalogBackendError> {
-    if member_role_ids.is_empty() {
+    if role_ids.is_empty() {
         return Ok(Vec::new());
     }
-    // One query seeded from the whole member set computes the union descendant
-    // closure and de-duplicates affected users in SQL (`SELECT DISTINCT`) — no
-    // per-member round-trip inside the held write transaction / advisory lock.
-    S::affected_users_for_membership_edges_impl(member_role_ids, t.transaction()).await
-}
-
-/// `affected` together with the users [`membership_edge_affected_users`] finds after
-/// the edge change committed, read on the write pool with a bounded lock wait.
-///
-/// A user assigned to a member role (or one of its descendants) by a transaction that
-/// commits after the pre-commit read is missing from `affected`, and a load of that
-/// user before the edge change commits caches the old edge. The read after the
-/// commit includes that user. If it fails, the pre-commit set is all that is
-/// invalidated.
-async fn membership_edge_affected_users_after_commit<S: CatalogStore>(
-    mut affected: Vec<UserId>,
-    member_role_ids: &[RoleId],
-    catalog_state: S::State,
-) -> Vec<UserId> {
-    if member_role_ids.is_empty() {
-        return affected;
+    let holders =
+        S::affected_users_for_membership_edges_impl(role_ids, transaction.transaction()).await?;
+    for user_id in &holders {
+        transaction.record(CacheKey::UserAssignments(user_id.clone()));
     }
-    match S::affected_users_for_membership_edges_after_commit_impl(member_role_ids, catalog_state)
-        .await
-    {
-        Ok(users) => {
-            let mut seen: HashSet<UserId> = affected.iter().cloned().collect();
-            affected.extend(users.into_iter().filter(|user| seen.insert(user.clone())));
-        }
-        Err(error) => tracing::warn!(
-            %error,
-            "Failed to read the users affected by a committed role-membership change; invalidating the users read before the commit"
-        ),
-    }
-    affected
+    transaction.record_whole_domain(CacheDomain::RoleAncestors);
+    Ok(holders)
 }
 
 #[cfg(test)]
@@ -1872,7 +1743,7 @@ mod fanout_metric_tests {
         let many = users(ROLE_MEMBERSHIP_FANOUT_WARN_THRESHOLD + 1);
         record_membership_edge_fanout("add", RoleId::new_random(), &many);
         assert!(logs_contain(
-            "large role-membership edge fan-out invalidated many user-assignment caches"
+            "large role-membership edge fan-out changed the cached assignments of many users"
         ));
     }
 

@@ -914,7 +914,7 @@ mod tests {
                 warehouse_id,
                 ident: previous_ident.clone(),
             });
-        evict_locally(&changes).await;
+        evict_locally(&changes, &[]).await;
         NamespaceCacheEventListener
             .namespace_moved(events::MoveNamespaceEvent {
                 warehouse_id,

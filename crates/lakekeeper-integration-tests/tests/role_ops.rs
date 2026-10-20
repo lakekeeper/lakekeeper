@@ -9,13 +9,14 @@ use lakekeeper::{
                 CreateRoleRequest, DeleteRoleQuery, Service as _, UpdateRoleRequest,
                 UpdateRoleSourceSystemRequest,
             },
+            user::{UserLastUpdatedWith, UserType},
         },
     },
     service::{
         ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogGrantOps as _,
-        CatalogListRolesByIdFilter, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
-        RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction,
-        WriteTransaction,
+        CatalogListRolesByIdFilter, CatalogRoleAssignmentOps, CatalogRoleOps, CatalogStore, RoleId,
+        RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec,
+        Transaction, UserId, UserUpsertMode, WriteTransaction,
         authz::{AllowAllAuthorizer, GrantResource, GrantSpec, UserOrRoleId},
         cache_invalidation::CacheKey,
         events::EventListener,
@@ -665,7 +666,7 @@ async fn test_cache_updated_on_api_update(pool: PgPool) {
     assert_eq!(*after_role.version, before_version + 1);
 }
 
-/// Test that `ApiServer::delete_role` fires an event that invalidates the cache
+/// `ApiServer::delete_role` evicts the deleted role from the cache
 #[sqlx::test]
 async fn test_cache_invalidated_on_api_delete(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -711,7 +712,7 @@ async fn test_cache_invalidated_on_api_delete(pool: PgPool) {
     .await
     .unwrap();
 
-    // Delete via ApiServer (fires delete event → cache invalidated)
+    // Delete via ApiServer; the commit evicts the role
     ApiServer::delete_role(
         ctx.clone(),
         request_metadata_with_project(&warehouse_resp.project_id),
@@ -1264,8 +1265,9 @@ async fn test_upsert_system_roles_via_trait(pool: PgPool) {
     );
 }
 
-/// `delete_system_roles` removes rows by `source_id`, records them as changed, and
-/// is idempotent: a second call returns an empty Vec and records nothing.
+/// `delete_system_roles` removes rows by `source_id`, records them, every user's
+/// assignments and the ancestor sets as changed, and is idempotent: a second call
+/// returns an empty Vec and records nothing.
 #[sqlx::test]
 async fn test_delete_system_roles_via_trait(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1307,14 +1309,19 @@ async fn test_delete_system_roles_via_trait(pool: PgPool) {
     assert_eq!(deleted, vec![seeded[0].id]);
     assert_eq!(
         deleted_changes,
-        vec![change("role", &[&seeded[0].id.to_string()])]
+        vec![
+            change("role", &[&seeded[0].id.to_string()]),
+            change("user_assignments", &[]),
+            change("role_ancestors", &[]),
+        ]
     );
     assert_eq!(again.len(), 0);
     assert_eq!(again_changes, Vec::new());
 }
 
 /// Updating, rebinding and deleting a role record the role, and a rebind also the
-/// ident it had.
+/// ident it had. A rebind and a delete also record the users holding the role and the
+/// ancestor sets.
 #[sqlx::test]
 async fn role_writes_record_their_cache_keys(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1345,7 +1352,33 @@ async fn role_writes_record_their_cache_keys(pool: PgPool) {
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    let alice = UserId::new_unchecked("oidc", "alice");
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::create_or_update_user(
+        &alice,
+        "Alice",
+        None,
+        UserLastUpdatedWith::RoleProvider,
+        UserType::Human,
+        UserUpsertMode::Overwrite,
+        tx.transaction(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    PostgresBackend::add_user_role_assignments_and_invalidate(
+        project_id,
+        role.id,
+        std::slice::from_ref(&alice),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
     let id = role.id.to_string();
+    let holder = CacheKey::UserAssignments(alice.clone()).encode();
     let mut logged = Vec::new();
 
     let mut tx = begin().await.unwrap();
@@ -1369,7 +1402,7 @@ async fn role_writes_record_their_cache_keys(pool: PgPool) {
     logged.push(committed_changes(tx, &pool).await);
 
     let mut tx = begin().await.unwrap();
-    PostgresBackend::delete_role(project_id, role.id, &mut tx)
+    let holding = PostgresBackend::delete_role(project_id, role.id, &mut tx)
         .await
         .unwrap();
     logged.push(committed_changes(tx, &pool).await);
@@ -1379,12 +1412,21 @@ async fn role_writes_record_their_cache_keys(pool: PgPool) {
         ident: (*role.ident).clone(),
     }
     .encode();
+    assert_eq!(holding, vec![alice]);
     assert_eq!(
         logged,
         vec![
             vec![change("role", &[&id])],
-            vec![change("role", &[&id, &previous_ident])],
-            vec![change("role", &[&id])],
+            vec![
+                change("role", &[&id, &previous_ident]),
+                change("user_assignments", &[&holder]),
+                change("role_ancestors", &[]),
+            ],
+            vec![
+                change("role", &[&id]),
+                change("user_assignments", &[&holder]),
+                change("role_ancestors", &[]),
+            ],
         ]
     );
 }

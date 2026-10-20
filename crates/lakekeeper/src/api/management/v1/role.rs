@@ -22,7 +22,6 @@ use crate::{
             ApiRoleProviders, AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer,
             CatalogProjectAction, CatalogRoleAction, RoleSourceSystem, SourceSystemTarget,
         },
-        cache_invalidation::{CacheDomain, CacheKey},
         events::{
             APIEventContext,
             context::{Unresolved, authz_to_error_no_audit},
@@ -994,15 +993,9 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
     if !force && authorizer.grants().is_none() && grant_count > 0 {
         return Err(DeleteRoleError::from(RoleHasGrants::new(grant_count)).into());
     }
-    // Read the affected-user closure PRE-commit: the `ON DELETE CASCADE` on
-    // `delete_role` erases the `role_assignment`/`role_membership` rows, so after
-    // the delete this walk would return nothing. These are exactly the users whose
-    // effective-role set loses `role_id` (direct assignees ∪ descendant-closure
-    // assignees). Mirrors `delete_user`'s pre-commit/post-commit eviction.
-    let affected_users = C::affected_users_for_membership_edges_impl(&[role_id], t.transaction())
-        .await
-        .map_err::<DeleteRoleError, _>(Into::into)?;
-    C::delete_role(project_id, role_id, &mut t).await?;
+    // The users whose effective roles lose `role_id`: its direct assignees and the
+    // assignees of the roles nested in it.
+    let affected_users = C::delete_role(project_id, role_id, &mut t).await?;
     // Expire the members' sync records for the role's provider with the delete, so
     // the provider re-syncs them on their next request. A fresh record would keep
     // serving their stored roles, now missing this one, until it ages out. It runs
@@ -1021,14 +1014,6 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
         .await
         .map_err::<DeleteRoleError, _>(Into::into)?;
     }
-    // The role and its assignments are gone, so each affected user's effective-roles
-    // entry is stale. The cascade also erased this role's `role_membership` edges, so
-    // it is no longer an ancestor of anything nested beneath it — a set cached per
-    // role, not per user.
-    for user_id in affected_users {
-        t.record(CacheKey::UserAssignments(user_id));
-    }
-    t.record_whole_domain(CacheDomain::RoleAncestors);
     t.commit()
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
@@ -1088,26 +1073,9 @@ async fn apply_update_role_source_system<C: CatalogStore>(
     let mut t = WriteTransaction::<C>::begin(catalog_state)
         .await
         .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
-    // A source-system rebind changes the role's `RoleIdent` (provider_id/source_id),
-    // which is cached per row in every assignee's USER_ASSIGNMENTS closure
-    // (`AssignedRole.role_ident`). External authorizers key on the ident, so without
-    // eviction those closures evaluate the stale binding until TTL. Mirror
-    // `apply_delete_role`: read the affected-user closure in the transaction (so a
-    // failed read rolls the rebind back) and record those users as changed. The
-    // assignment and membership rows are updated in place, so the set is identical
-    // before and after the commit. The `role_updated` event the handler emits after
-    // the commit caches the rebound role.
-    let affected_users = C::affected_users_for_membership_edges_impl(&[role_id], t.transaction())
-        .await
-        .map_err::<UpdateRoleError, _>(Into::into)?;
+    // The `role_updated` event the handler emits after the commit caches the rebound
+    // role.
     let role = C::set_role_source_system(project_id, role_id, &request, &mut t).await?;
-    for user_id in affected_users {
-        t.record(CacheKey::UserAssignments(user_id));
-    }
-    // A rebind changes this role's ident, which is what an external authorizer names
-    // it by. Cached ancestor sets carry that ident per row, so they would keep
-    // publishing the old one — and a policy naming the new ident would match nothing.
-    t.record_whole_domain(CacheDomain::RoleAncestors);
     t.commit()
         .await
         .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;

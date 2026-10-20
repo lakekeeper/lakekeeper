@@ -245,9 +245,10 @@ pub async fn setup_with_registry<T: Authorizer>(
     )
 }
 
-/// Make a transaction that writes a warehouse, namespace or role fail to commit unless it
-/// recorded a cache change of that domain. For warehouses (also inserts) and roles, the change
-/// must name the row's id or the whole domain. A transaction that sets
+/// Make a transaction that writes a warehouse, namespace, role or role membership fail to
+/// commit unless it recorded a cache change of that domain. For warehouses (also inserts)
+/// and roles, the change must name the row's id or the whole domain; a role membership
+/// change must name the role ancestor sets. A transaction that sets
 /// `lakekeeper_test.unrecorded_write` to `on` is exempt.
 pub async fn require_cache_changes(pool: &PgPool) {
     sqlx::raw_sql(
@@ -287,6 +288,10 @@ pub async fn require_cache_changes(pool: &PgPool) {
         CREATE CONSTRAINT TRIGGER role_requires_cache_change
             AFTER UPDATE OR DELETE ON role DEFERRABLE INITIALLY DEFERRED
             FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('role', 'id');
+        DROP TRIGGER IF EXISTS role_membership_requires_cache_change ON role_membership;
+        CREATE CONSTRAINT TRIGGER role_membership_requires_cache_change
+            AFTER INSERT OR UPDATE OR DELETE ON role_membership DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('role_ancestors');
         ",
     )
     .execute(pool)

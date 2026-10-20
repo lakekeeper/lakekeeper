@@ -2,6 +2,8 @@
 //! `/role/{id}/member-of`, `/user/{id}/roles`) on the catalog arm (AllowAll +
 //! Postgres). Exact assertions throughout.
 
+use std::sync::Arc;
+
 use lakekeeper::{
     ProjectId,
     api::{
@@ -15,16 +17,17 @@ use lakekeeper::{
         },
     },
     service::{
-        ArcProjectId, CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId, RoleIdent,
-        RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, Transaction, UserId,
-        UserUpsertMode, authz::AllowAllAuthorizer, cache_invalidation::CacheKey,
-        events::EventListener,
+        ArcProjectId, ArcRoleIdent, CatalogCreateRoleRequest, CatalogRoleAssignmentOps,
+        CatalogRoleForAssignment, CatalogRoleOps, CatalogStore, CatalogUserRoleAssignmentUser,
+        RoleId, RoleIdent, RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, State, SyncFor,
+        Transaction, UserId, UserUpsertMode, WriteTransaction, authn::ArcUserId,
+        authz::AllowAllAuthorizer, cache_invalidation::CacheKey, events::EventListener,
     },
 };
 use lakekeeper_integration_tests::{CapturingAuthzListener, SetupTestCatalog, memory_io_profile};
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState,
-    test_utils::{change, change_log_head, changes_since},
+    test_utils::{change, change_log_head, changes_since, committed_changes},
 };
 use sqlx::PgPool;
 
@@ -1041,12 +1044,8 @@ async fn transitive_role_member_of(pool: PgPool) {
 // ==================== source-system rebind invalidates closures ====================
 
 /// Rebinding a role's source system changes its `RoleIdent`, which is cached per
-/// row in every assignee's USER_ASSIGNMENTS closure. The handler must evict it
-/// (mirroring `delete_role`), or external authorizers evaluate the stale ident
-/// until TTL. Behavioral assertion: after the
-/// rebind, the cached reads reflect the NEW ident (and return a fresh `Arc`),
-/// proving eviction. The eviction is synchronous (post-commit in the handler), so
-/// no sleep is needed.
+/// row in every assignee's USER_ASSIGNMENTS closure. After the rebind, the cached
+/// reads reflect the NEW ident (and return a fresh `Arc`): the commit evicted them.
 #[sqlx::test]
 async fn source_system_rebind_evicts_user_assignment_closures(pool: PgPool) {
     use lakekeeper::{
@@ -1097,7 +1096,6 @@ async fn source_system_rebind_evicts_user_assignment_closures(pool: PgPool) {
     );
 
     // Rebind the role's source system (changes its RoleIdent's source_id).
-    let log_head = change_log_head(&pool).await;
     ApiServer::update_role_source_system(
         ctx.clone(),
         metadata(&project_id),
@@ -1143,69 +1141,239 @@ async fn source_system_rebind_evicts_user_assignment_closures(pool: PgPool) {
         &RoleSourceId::try_new("new-src").unwrap(),
         "the member list carries the stale ident after a source-system rebind",
     );
+}
 
-    // Other instances evict the same entries, plus the ident the role had.
-    let old_ident = CacheKey::RoleIdent {
-        project_id: (*project_id).clone(),
-        ident: RoleIdent::new(
-            RoleProviderId::try_new("lakekeeper").unwrap(),
-            RoleSourceId::try_new("old-src").unwrap(),
-        ),
-    };
+fn assignments(users: &[&UserId]) -> (String, Vec<String>) {
+    let keys: Vec<String> = users
+        .iter()
+        .map(|user| CacheKey::UserAssignments((*user).clone()).encode())
+        .collect();
+    change(
+        "user_assignments",
+        &keys.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+}
+
+/// An edge change records the users holding the member role, directly or through a role
+/// nested in it, and the ancestor sets. An edge that already exists or is already gone
+/// records nothing.
+#[sqlx::test]
+async fn edge_writes_record_the_users_beneath_and_the_ancestor_sets(pool: PgPool) {
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let state = ctx.v1_state.catalog.clone();
+    let parent = make_role(&ctx, &project_id, "parent", "parent").await;
+    let member = make_role(&ctx, &project_id, "member", "member").await;
+    let nested = make_role(&ctx, &project_id, "nested", "nested").await;
+    let [alice, bob, carol] = ["alice", "bob", "carol"].map(|u| UserId::new_unchecked("oidc", u));
+    for user in [&alice, &bob, &carol] {
+        provision_user(&ctx, user, "User").await;
+    }
+    PostgresBackend::add_role_members_and_invalidate(&project_id, member, &[nested], state.clone())
+        .await
+        .unwrap();
+    for (role, user) in [(nested, &alice), (member, &bob), (parent, &carol)] {
+        PostgresBackend::add_user_role_assignments_and_invalidate(
+            &project_id,
+            role,
+            std::slice::from_ref(user),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+    }
+    let begin = || WriteTransaction::<PostgresBackend>::begin(state.clone());
+    let mut logged = Vec::new();
+
+    for _ in 0..2 {
+        let mut t = begin().await.unwrap();
+        PostgresBackend::add_role_members(&project_id, parent, &[member], &mut t)
+            .await
+            .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+    }
+    for _ in 0..2 {
+        let mut t = begin().await.unwrap();
+        PostgresBackend::remove_role_members(parent, &[member], &mut t)
+            .await
+            .unwrap();
+        logged.push(committed_changes(t, &pool).await);
+    }
+
+    let changed = vec![assignments(&[&alice, &bob]), change("role_ancestors", &[])];
+    assert_eq!(logged, vec![changed.clone(), vec![], changed, vec![]]);
+}
+
+/// A direct assignment write records only the users whose assignment it changed.
+#[sqlx::test]
+async fn assignment_writes_record_the_users_they_change(pool: PgPool) {
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let state = ctx.v1_state.catalog.clone();
+    let role = make_role(&ctx, &project_id, "assigned", "assigned").await;
+    let [alice, bob, carol] = ["alice", "bob", "carol"].map(|u| UserId::new_unchecked("oidc", u));
+    for user in [&alice, &bob, &carol] {
+        provision_user(&ctx, user, "User").await;
+    }
+    PostgresBackend::add_user_role_assignments_and_invalidate(
+        &project_id,
+        role,
+        std::slice::from_ref(&alice),
+        state.clone(),
+    )
+    .await
+    .unwrap();
+    let begin = || WriteTransaction::<PostgresBackend>::begin(state.clone());
+
+    let mut t = begin().await.unwrap();
+    PostgresBackend::add_user_role_assignments(
+        &project_id,
+        role,
+        &[alice.clone(), bob.clone()],
+        &mut t,
+    )
+    .await
+    .unwrap();
+    let added = committed_changes(t, &pool).await;
+    let mut t = begin().await.unwrap();
+    PostgresBackend::remove_user_role_assignments(role, &[bob.clone(), carol.clone()], &mut t)
+        .await
+        .unwrap();
+    let removed = committed_changes(t, &pool).await;
+
     assert_eq!(
-        changes_since(&pool, log_head).await,
+        (added, removed),
+        (vec![assignments(&[&bob])], vec![assignments(&[&bob])])
+    );
+}
+
+fn sync_user(user_id: &ArcUserId) -> CatalogUserRoleAssignmentUser<'_> {
+    CatalogUserRoleAssignmentUser {
+        user_id,
+        name: Some("User"),
+        email: None,
+        user_type: None,
+        updated_with: UserLastUpdatedWith::RoleProvider,
+    }
+}
+
+fn sync_role<'a>(ident: &'a ArcRoleIdent, name: &'a str) -> CatalogRoleForAssignment<'a> {
+    CatalogRoleForAssignment {
+        ident,
+        name: Some(name),
+        description: None,
+    }
+}
+
+/// A role-member sync records the members it added or removed, and the role when it
+/// renamed it.
+#[sqlx::test]
+async fn role_member_syncs_record_changed_members_and_a_renamed_role(pool: PgPool) {
+    let (ctx, project_id) = setup(pool.clone()).await;
+    let state = ctx.v1_state.catalog.clone();
+    let events = ctx.v1_state.events.clone();
+    let group: ArcRoleIdent = Arc::new(RoleIdent::new_unchecked("ldap", "group"));
+    let [alice, bob, carol] =
+        ["alice", "bob", "carol"].map(|u| Arc::new(UserId::new_unchecked("oidc", u)));
+    let mut logged = Vec::new();
+
+    for (name, members) in [
+        ("Group", [&alice, &bob]),
+        ("Renamed group", [&bob, &carol]),
+        ("Renamed group", [&bob, &carol]),
+    ] {
+        let members = members.map(|m| sync_user(m));
+        let head = change_log_head(&pool).await;
+        let synced = PostgresBackend::sync_role_members(
+            &project_id,
+            &sync_role(&group, name),
+            &members,
+            state.clone(),
+            &events,
+        )
+        .await
+        .unwrap();
+        logged.push((synced.role_id, changes_since(&pool, head).await));
+    }
+
+    let role_id = logged[0].0;
+    assert_eq!(
+        logged
+            .into_iter()
+            .map(|(_, changes)| changes)
+            .collect::<Vec<_>>(),
         vec![
-            change("role", &[&role.to_string(), &old_ident.encode()]),
-            change(
-                "user_assignments",
-                &[&CacheKey::UserAssignments(alice.clone()).encode()]
-            ),
-            change("role_ancestors", &[]),
+            vec![assignments(&[&alice, &bob])],
+            vec![
+                change("role", &[&role_id.to_string()]),
+                assignments(&[&alice, &carol]),
+            ],
+            vec![],
         ]
     );
 }
 
-/// Deleting a role records the role, the users who held it and the ancestor sets as
-/// changed, so every instance evicts them.
+/// A user sync records the user when its assignments changed and the roles it renamed,
+/// and leaves the user's synced assignments cached on this instance.
 #[sqlx::test]
-async fn deleting_a_role_records_its_assignees_and_the_ancestor_sets(pool: PgPool) {
-    use lakekeeper::api::management::v1::role::{DeleteRoleQuery, Service as _};
-
+async fn user_syncs_record_changed_assignments_and_renamed_roles(pool: PgPool) {
     let (ctx, project_id) = setup(pool.clone()).await;
-    let role = make_role(&ctx, &project_id, "doomed-role", "doomed-src").await;
-    let alice = UserId::new_unchecked("oidc", "alice");
-    provision_user(&ctx, &alice, "Alice").await;
-    ApiServer::add_role_members(
-        ctx.clone(),
-        metadata(&project_id),
-        role,
-        AddRoleMembersRequest {
-            members: vec![user_member(&alice)],
-        },
-    )
-    .await
-    .unwrap();
+    let state = ctx.v1_state.catalog.clone();
+    let events = ctx.v1_state.events.clone();
+    let provider = RoleProviderId::try_new("ldap").unwrap();
+    let group: ArcRoleIdent = Arc::new(RoleIdent::new_unchecked("ldap", "group"));
+    let other: ArcRoleIdent = Arc::new(RoleIdent::new_unchecked("ldap", "other"));
+    // The cache is shared by the tests of this process: only this test uses this user.
+    // Another test's invalidation of a key in the same stripe of 4096 would still remove
+    // the warmed entry.
+    let alice = Arc::new(UserId::new_unchecked("oidc", "user-sync-warming"));
+    let mut logged = Vec::new();
+    let mut kept_cached = Vec::new();
 
-    let log_head = change_log_head(&pool).await;
-    ApiServer::delete_role(
-        ctx.clone(),
-        metadata(&project_id),
-        role,
-        DeleteRoleQuery::default(),
-    )
-    .await
-    .unwrap();
+    for roles in [
+        vec![sync_role(&group, "Group")],
+        vec![
+            sync_role(&group, "Renamed group"),
+            sync_role(&other, "Other"),
+        ],
+        vec![sync_role(&group, "Group again"), sync_role(&other, "Other")],
+    ] {
+        let head = change_log_head(&pool).await;
+        let synced = PostgresBackend::sync_user_role_assignments(
+            sync_user(&alice),
+            SyncFor::Caller,
+            &project_id,
+            &provider,
+            &roles,
+            state.clone(),
+            &events,
+        )
+        .await
+        .unwrap();
+        logged.push(changes_since(&pool, head).await);
+        let served = PostgresBackend::list_role_assignments_for_user(&alice, state.clone())
+            .await
+            .unwrap();
+        kept_cached.push(Arc::ptr_eq(&served, &synced.assignments));
+    }
+    let group_id = PostgresBackend::list_role_assignments_for_user(&alice, state.clone())
+        .await
+        .unwrap()
+        .roles
+        .iter()
+        .find(|role| *role.role_ident == *group)
+        .unwrap()
+        .role_id
+        .to_string();
 
     assert_eq!(
-        changes_since(&pool, log_head).await,
-        vec![
-            change("role", &[&role.to_string()]),
-            change(
-                "user_assignments",
-                &[&CacheKey::UserAssignments(alice.clone()).encode()]
-            ),
-            change("role_ancestors", &[]),
-        ]
+        (logged, kept_cached),
+        (
+            vec![
+                vec![assignments(&[&alice])],
+                vec![change("role", &[&group_id]), assignments(&[&alice])],
+                vec![change("role", &[&group_id])],
+            ],
+            vec![true, true, true]
+        )
     );
 }
 
@@ -1379,11 +1547,10 @@ async fn instance_admin_removes_role_member_from_system_role(pool: PgPool) {
 
     // Seed the edge directly at the store layer, bypassing the API guard, which
     // never lets `add_role_members` create it.
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    PostgresBackend::add_role_members(&project_id, system_role, &[team], tx.transaction())
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+    PostgresBackend::add_role_members(&project_id, system_role, &[team], &mut tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
