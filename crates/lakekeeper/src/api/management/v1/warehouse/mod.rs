@@ -62,7 +62,7 @@ use crate::{
         },
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, RegisteredTaskQueues, TaskQueueName, TaskScheduleFilter,
+            CancelTasksFilter, RegisteredTaskQueues, TaskQueueName,
             tabular_expiration_queue::TabularExpirationTask,
         },
         warehouse_cache::warehouse_cache_invalidate,
@@ -1232,14 +1232,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await;
         let (event_ctx, warehouse) = event_ctx.emit_authz(warehouse)?;
-        let project_id = warehouse.project_id.clone();
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         // Delete schedules before the warehouse row is locked: the materializer holds a schedule
         // row while its task insert waits for the warehouse row.
-        delete_warehouse_task_schedules::<C>(project_id, warehouse_id, &mut transaction).await?;
+        C::delete_warehouse_task_schedules(warehouse_id, transaction.transaction()).await?;
         // Cancel before ensure_warehouse_spec_mutable locks the warehouse row: a worker recording
         // its outcome holds its task row and needs the warehouse row for the task_log foreign key.
         cancel_tasks_on_warehouse_delete::<C>(
@@ -2396,21 +2395,6 @@ where
         }
         other => other.into(),
     }
-}
-
-async fn delete_warehouse_task_schedules<C: CatalogStore>(
-    project_id: ArcProjectId,
-    warehouse_id: WarehouseId,
-    transaction: &mut C::Transaction,
-) -> Result<()> {
-    let filter = TaskScheduleFilter::builder()
-        .project_id(project_id)
-        .warehouse_id(Some(warehouse_id))
-        .build();
-    for schedule in C::list_task_schedules(&filter, transaction.transaction()).await? {
-        C::delete_task_schedule(schedule.schedule_id, transaction.transaction()).await?;
-    }
-    Ok(())
 }
 
 /// Cancels this warehouse's tasks, running ones included, of every registered queue whose

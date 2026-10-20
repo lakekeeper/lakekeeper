@@ -17,8 +17,8 @@ use crate::{
         ArcProjectId, CatalogStore, CatalogTaskOps,
         catalog_store::Transaction,
         tasks::{
-            SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails, TaskScheduleFilter,
-            TaskScheduleUpsert, UpsertTaskScheduleError,
+            ProjectTaskScheduleState, SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails,
+            TaskScheduleCondition, TaskScheduleUpsert, UpsertTaskScheduleError,
         },
     },
 };
@@ -188,6 +188,7 @@ pub async fn create_project_schedule<C: CatalogStore>(
         project_id,
         DEFAULT_CLEANUP_PERIOD_DAYS,
         Some(spread_anchor()),
+        None,
         transaction,
     )
     .await?;
@@ -195,20 +196,21 @@ pub async fn create_project_schedule<C: CatalogStore>(
 }
 
 /// Up to one default period before now, so the cleanups of projects whose schedules are created
-/// together fall at different times. The first run is due within one default period.
+/// together fall at different times. The first run is due within one interval.
 fn spread_anchor() -> chrono::DateTime<chrono::Utc> {
     chrono::Utc::now()
         - Duration::seconds(fastrand::i64(0..DEFAULT_CLEANUP_PERIOD_DAYS.num_seconds()))
 }
 
-/// Set the interval of the project's cleanup schedule from a new queue config.
+/// Set the interval of the project's cleanup schedule from a new queue config, creating the
+/// schedule with a [`spread_anchor`] if it is missing.
 ///
 /// # Errors
 /// If the config cannot be read or the store fails.
 pub(crate) async fn apply_queue_config<C: CatalogStore>(
     project_id: ArcProjectId,
     config: &serde_json::Value,
-    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+    transaction: &mut C::Transaction,
 ) -> Result<()> {
     let config: TaskLogCleanupConfig = serde_json::from_value(config.clone()).map_err(|e| {
         ErrorModel::bad_request(
@@ -217,56 +219,99 @@ pub(crate) async fn apply_queue_config<C: CatalogStore>(
             Some(Box::new(e)),
         )
     })?;
-    upsert_project_schedule::<C>(project_id, config.cleanup_period(), None, transaction).await?;
+    let interval = config.cleanup_period();
+    let written = upsert_project_schedule::<C>(
+        project_id.clone(),
+        interval,
+        Some(spread_anchor()),
+        Some(TaskScheduleCondition::Absent),
+        transaction.transaction(),
+    )
+    .await?;
+    if !written {
+        upsert_project_schedule::<C>(project_id, interval, None, None, transaction.transaction())
+            .await?;
+    }
     Ok(())
 }
 
-/// Give every project without a cleanup schedule one with the default period and a
-/// [`spread_anchor`].
+/// Give every project without a cleanup schedule one with a [`spread_anchor`], and set the
+/// interval of every schedule to its project's configured cleanup period. A schedule changed
+/// concurrently is left alone.
 ///
 /// # Errors
 /// If the store fails.
-pub(crate) async fn create_missing_project_schedules<C: CatalogStore>(
-    catalog_state: C::State,
-) -> Result<()> {
+pub(crate) async fn sync_project_schedules<C: CatalogStore>(catalog_state: C::State) -> Result<()> {
     let mut t = C::Transaction::begin_write(catalog_state).await?;
-    let projects = C::list_projects(None, t.transaction()).await?;
-    let mut created = 0_usize;
-    for project in projects {
-        let existing = C::list_task_schedules(
-            &TaskScheduleFilter::builder()
-                .project_id(project.project_id.clone())
-                .queue_name(Some(QUEUE_NAME.clone()))
-                .schedule_key(SCHEDULE_KEY)
-                .build(),
-            t.transaction(),
-        )
-        .await?;
-        if existing.is_empty()
-            && upsert_project_schedule::<C>(
-                project.project_id,
-                DEFAULT_CLEANUP_PERIOD_DAYS,
-                Some(spread_anchor()),
-                t.transaction(),
-            )
-            .await?
-        {
-            created += 1;
+    let states =
+        C::list_project_task_schedule_states(&QUEUE_NAME, SCHEDULE_KEY, t.transaction()).await?;
+    let (mut created, mut updated) = (0_usize, 0_usize);
+    for state in states {
+        let interval = configured_cleanup_period(&state);
+        match state.interval {
+            None => {
+                if upsert_project_schedule::<C>(
+                    state.project_id,
+                    interval,
+                    Some(spread_anchor()),
+                    Some(TaskScheduleCondition::Absent),
+                    t.transaction(),
+                )
+                .await?
+                {
+                    created += 1;
+                }
+            }
+            Some(stored) if stored.num_seconds() != interval.num_seconds() => {
+                if upsert_project_schedule::<C>(
+                    state.project_id,
+                    interval,
+                    None,
+                    Some(TaskScheduleCondition::Interval(stored)),
+                    t.transaction(),
+                )
+                .await?
+                {
+                    updated += 1;
+                }
+            }
+            Some(_) => {}
         }
     }
     t.commit().await?;
-    if created > 0 {
-        tracing::info!("Created `{QN_STR}` schedules for {created} projects");
+    if created > 0 || updated > 0 {
+        tracing::info!(
+            "Created `{QN_STR}` schedules for {created} projects and set the interval of {updated}"
+        );
     }
     Ok(())
 }
 
+/// The project's configured cleanup period; the default if it has no valid config.
+fn configured_cleanup_period(state: &ProjectTaskScheduleState) -> Duration {
+    let Some(config) = &state.queue_config else {
+        return DEFAULT_CLEANUP_PERIOD_DAYS;
+    };
+    match serde_json::from_value::<TaskLogCleanupConfig>(config.clone()) {
+        Ok(config) => config.cleanup_period(),
+        Err(e) => {
+            tracing::warn!(
+                "Invalid `{QN_STR}` queue config of project `{}`, using the default period: {e}",
+                state.project_id
+            );
+            DEFAULT_CLEANUP_PERIOD_DAYS
+        }
+    }
+}
+
 /// Upsert the project's cleanup schedule; `None` keeps a stored anchor. A schedule written by a
-/// newer server version is left alone; returns whether the schedule was written.
+/// newer server version, or one that does not meet `condition`, is left alone; returns whether
+/// the schedule was written.
 async fn upsert_project_schedule<C: CatalogStore>(
     project_id: ArcProjectId,
     interval: Duration,
     anchor: Option<chrono::DateTime<chrono::Utc>>,
+    condition: Option<TaskScheduleCondition>,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
 ) -> Result<bool> {
     let schedule = TaskScheduleUpsert::builder()
@@ -275,6 +320,7 @@ async fn upsert_project_schedule<C: CatalogStore>(
         .schedule_key(SCHEDULE_KEY)
         .interval(interval)
         .anchor(anchor)
+        .condition(condition)
         .build();
     match C::upsert_task_schedule(schedule, transaction).await {
         Ok(_) => Ok(true),
@@ -282,6 +328,7 @@ async fn upsert_project_schedule<C: CatalogStore>(
             tracing::debug!("Leaving `{QN_STR}` schedule of project `{project_id}` alone: {e}");
             Ok(false)
         }
+        Err(UpsertTaskScheduleError::TaskScheduleConditionFailedError(_)) => Ok(false),
         Err(e) => Err(e
             .append_detail(format!(
                 "Failed to upsert `{QN_STR}` schedule for project `{project_id}`."
@@ -312,18 +359,19 @@ async fn cleanup_tasks<C: CatalogStore>(
         })?;
 
     // A task without a schedule was enqueued by an older server: clean up, enqueue no successor.
-    // The upsert below creates the schedule if it is missing.
     let message = task
         .task_metadata
         .schedule_id()
         .is_none()
         .then_some("Superseded by the project's task log cleanup schedule.");
 
-    // Keeps the schedule's interval in line with the queue config.
+    // A project created by an older server may not have a schedule yet. An existing one is left
+    // alone: config changes set its interval.
     upsert_project_schedule::<C>(
         project_id.clone(),
         task.cleanup_period(),
-        None,
+        Some(spread_anchor()),
+        Some(TaskScheduleCondition::Absent),
         trx.transaction(),
     )
     .await

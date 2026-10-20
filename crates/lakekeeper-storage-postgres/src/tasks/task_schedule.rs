@@ -6,10 +6,11 @@ use lakekeeper::{
     service::{
         CatalogBackendError,
         tasks::{
-            EnqueueOutcome, MaterializedTick, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
-            TaskScheduleNotFoundError, TaskScheduleSpecVersionUnsupportedError,
-            TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
-            UpsertTaskScheduleError, due_tick, first_tick_at_or_after,
+            EnqueueOutcome, MaterializedTick, ProjectTaskScheduleState, TaskQueueName,
+            TaskSchedule, TaskScheduleCondition, TaskScheduleConditionFailedError,
+            TaskScheduleFilter, TaskScheduleId, TaskScheduleNotFoundError,
+            TaskScheduleSpecVersionUnsupportedError, TaskScheduleStoreError, TaskScheduleUpsert,
+            TriggerTaskScheduleError, UpsertTaskScheduleError, due_tick, first_tick_at_or_after,
         },
     },
 };
@@ -81,6 +82,7 @@ pub(crate) async fn upsert_task_schedule(
         anchor,
         payload,
         enabled,
+        condition,
     } = schedule;
     // Stored and compared at microsecond precision.
     let anchor = anchor.map(|anchor| anchor.trunc_subsecs(6));
@@ -120,6 +122,22 @@ pub(crate) async fn upsert_task_schedule(
             && stored.spec_version > SPEC_VERSION
         {
             return Err(TaskScheduleSpecVersionUnsupportedError {
+                queue_name,
+                schedule_key,
+                stack: Vec::new(),
+            }
+            .into());
+        }
+        let condition_holds = match (condition, &stored) {
+            (None, _) => true,
+            (Some(TaskScheduleCondition::Absent), stored) => stored.is_none(),
+            (Some(TaskScheduleCondition::Interval(expected)), Some(stored)) => {
+                stored.interval_seconds == expected.num_seconds()
+            }
+            (Some(TaskScheduleCondition::Interval(_)), None) => false,
+        };
+        if !condition_holds {
+            return Err(TaskScheduleConditionFailedError {
                 queue_name,
                 schedule_key,
                 stack: Vec::new(),
@@ -303,6 +321,69 @@ pub(crate) async fn delete_task_schedule(
     Ok(deleted.rows_affected() == 1)
 }
 
+pub(crate) async fn list_project_task_schedule_states(
+    conn: &mut PgConnection,
+    queue_name: &TaskQueueName,
+    schedule_key: &str,
+) -> Result<Vec<ProjectTaskScheduleState>, TaskScheduleStoreError> {
+    // Locked before the configs are read: a config change locks the schedule to apply itself, so
+    // it either commits before the read below or waits for this transaction.
+    sqlx::query!(
+        r#"
+        SELECT schedule_id FROM task_schedule
+        WHERE queue_name = $1 AND schedule_key = $2 AND warehouse_id IS NULL
+        ORDER BY schedule_id
+        FOR UPDATE
+        "#,
+        queue_name.as_str(),
+        schedule_key,
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    let rows = sqlx::query!(
+        r#"
+        SELECT
+            p.project_id,
+            s.interval_seconds AS "interval_seconds?",
+            c.config AS "queue_config?"
+        FROM project p
+        LEFT JOIN task_schedule s
+            ON s.schedule_id = task_schedule_id(p.project_id, NULL, $1, $2)
+        LEFT JOIN task_config c
+            ON c.project_id = p.project_id AND c.warehouse_id IS NULL AND c.queue_name = $1
+        ORDER BY p.project_id
+        "#,
+        queue_name.as_str(),
+        schedule_key,
+    )
+    .fetch_all(conn)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| ProjectTaskScheduleState {
+            project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
+            interval: row.interval_seconds.map(chrono::Duration::seconds),
+            queue_config: row.queue_config,
+        })
+        .collect())
+}
+
+pub(crate) async fn delete_warehouse_task_schedules(
+    conn: &mut PgConnection,
+    warehouse_id: WarehouseId,
+) -> Result<(), TaskScheduleStoreError> {
+    sqlx::query!(
+        "DELETE FROM task_schedule WHERE warehouse_id = $1",
+        *warehouse_id
+    )
+    .execute(conn)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    Ok(())
+}
+
 pub(crate) async fn trigger_task_schedule(
     conn: &mut PgConnection,
     schedule_id: TaskScheduleId,
@@ -400,14 +481,12 @@ pub(crate) async fn materialize_due_task_schedules(
         WHERE s.enabled
             AND s.next_run_at <= now()
             AND s.spec_version <= $2
+            -- The schedule id is derived from the scope, so it identifies the instance.
             AND NOT EXISTS (
                 SELECT 1
                 FROM task t
-                WHERE t.project_id = s.project_id
-                    AND t.warehouse_id IS NOT DISTINCT FROM s.warehouse_id
-                    AND t.entity_type = CASE WHEN s.warehouse_id IS NULL
-                        THEN 'project'::entity_type ELSE 'warehouse'::entity_type END
-                    AND t.entity_id = s.schedule_id
+                WHERE t.entity_id = s.schedule_id
+                    AND t.entity_type IN ('project', 'warehouse')
                     AND t.queue_name = s.queue_name
             )
         ORDER BY s.next_run_at, s.schedule_id
@@ -538,7 +617,7 @@ mod tests {
         PostgresBackend, PostgresTransaction,
         tasks::{
             pick_task, record_failure, record_success,
-            test::{retry_delay, setup_warehouse},
+            test::{retry_delay, setup_two_warehouses, setup_warehouse},
         },
     };
 
@@ -967,6 +1046,220 @@ mod tests {
         let db_err = err.as_database_error().unwrap();
         assert_eq!(db_err.code().as_deref(), Some("23514"));
         assert_eq!(db_err.constraint(), Some("task_schedule_id_check"));
+    }
+
+    #[sqlx::test]
+    async fn test_warehouse_schedule_must_belong_to_its_warehouses_project(pool: PgPool) {
+        let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
+        sqlx::query("INSERT INTO project (project_id, project_name) VALUES ('other', 'other')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let err = sqlx::query(
+            "INSERT INTO task_schedule (schedule_id, project_id, warehouse_id, queue_name, \
+             schedule_key, interval_seconds, anchor, payload, next_run_at) \
+             VALUES (task_schedule_id('other', $1, 'q', 'k'), 'other', $1, 'q', 'k', 60, now(), \
+             '{}', now())",
+        )
+        .bind(*warehouse_id)
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        let db_err = err.as_database_error().unwrap();
+        assert_eq!(db_err.code().as_deref(), Some("23503"));
+        assert_eq!(db_err.constraint(), Some("task_schedule_warehouse_fk"));
+    }
+
+    #[sqlx::test]
+    async fn test_upsert_writes_only_when_its_condition_holds(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = queue();
+        let write = |interval: chrono::Duration, condition| {
+            TaskScheduleUpsert::builder()
+                .project_id(project_id.clone())
+                .warehouse_id(Some(warehouse_id))
+                .queue_name(q.clone())
+                .schedule_key("k")
+                .interval(interval)
+                .condition(Some(condition))
+                .build()
+        };
+        let hours = chrono::Duration::hours;
+        let mut t = pool.begin().await.unwrap();
+        let err = upsert_task_schedule(
+            &mut t,
+            write(hours(1), TaskScheduleCondition::Interval(hours(1))),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                UpsertTaskScheduleError::TaskScheduleConditionFailedError(_)
+            ),
+            "{err:?}"
+        );
+        let created = upsert_task_schedule(&mut t, write(hours(1), TaskScheduleCondition::Absent))
+            .await
+            .unwrap();
+        assert_eq!(created.interval, hours(1));
+        for refused in [
+            write(hours(2), TaskScheduleCondition::Absent),
+            write(hours(2), TaskScheduleCondition::Interval(hours(3))),
+        ] {
+            let err = upsert_task_schedule(&mut t, refused).await.unwrap_err();
+            let UpsertTaskScheduleError::TaskScheduleConditionFailedError(err) = err else {
+                panic!("expected TaskScheduleConditionFailedError, got {err:?}");
+            };
+            assert_eq!(
+                (err.queue_name, err.schedule_key.as_str()),
+                (q.clone(), "k")
+            );
+        }
+        let updated = upsert_task_schedule(
+            &mut t,
+            write(hours(2), TaskScheduleCondition::Interval(hours(1))),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(updated.interval, hours(2));
+        assert_eq!(get(&pool, &created).await.interval, hours(2));
+    }
+
+    #[sqlx::test]
+    async fn test_project_schedule_states_list_every_project_once(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = queue();
+        upsert(
+            &pool,
+            &project_id,
+            None,
+            &q,
+            "k",
+            chrono::Duration::hours(2),
+        )
+        .await;
+        // A warehouse schedule with the same queue and key is not the project's.
+        upsert(
+            &pool,
+            &project_id,
+            Some(warehouse_id),
+            &q,
+            "k",
+            chrono::Duration::hours(3),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO task_config (task_config_id, project_id, warehouse_id, queue_name, config) \
+             VALUES ($1, $2, NULL, $3, '{\"a\": 1}')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(project_id.as_str())
+        .bind(q.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Neither is a warehouse's config of the queue.
+        sqlx::query(
+            "INSERT INTO task_config (task_config_id, project_id, warehouse_id, queue_name, config) \
+             VALUES ($1, $2, $3, $4, '{\"a\": 2}')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(project_id.as_str())
+        .bind(*warehouse_id)
+        .bind(q.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO project (project_id, project_name) VALUES ('zzz', 'zzz')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let states = list_project_task_schedule_states(&mut conn, &q, "k")
+            .await
+            .unwrap();
+        // Ordered by project id; `zzz` sorts after every UUID.
+        assert_eq!(
+            states,
+            vec![
+                ProjectTaskScheduleState {
+                    project_id: project_id.clone(),
+                    interval: Some(chrono::Duration::hours(2)),
+                    queue_config: Some(serde_json::json!({"a": 1})),
+                },
+                ProjectTaskScheduleState {
+                    project_id: Arc::new(ProjectId::from_db_unchecked("zzz".to_string())),
+                    interval: None,
+                    queue_config: None,
+                },
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_deleting_a_warehouses_schedules_includes_newer_versions(pool: PgPool) {
+        let (project_id, warehouse_id, other_warehouse_id) =
+            setup_two_warehouses(pool.clone()).await;
+        clear_schedules(&pool).await;
+        let q = queue();
+        let project_schedule = upsert(
+            &pool,
+            &project_id,
+            None,
+            &q,
+            "k",
+            chrono::Duration::hours(1),
+        )
+        .await;
+        upsert(
+            &pool,
+            &project_id,
+            Some(warehouse_id),
+            &q,
+            "k",
+            chrono::Duration::hours(1),
+        )
+        .await;
+        upsert(
+            &pool,
+            &project_id,
+            Some(warehouse_id),
+            &q,
+            "newer",
+            chrono::Duration::hours(1),
+        )
+        .await;
+        sqlx::query("UPDATE task_schedule SET spec_version = 99 WHERE schedule_key = 'newer'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let other_schedule = upsert(
+            &pool,
+            &project_id,
+            Some(other_warehouse_id),
+            &q,
+            "k",
+            chrono::Duration::hours(1),
+        )
+        .await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        delete_warehouse_task_schedules(&mut conn, warehouse_id)
+            .await
+            .unwrap();
+        let left: BTreeSet<Uuid> = sqlx::query_scalar("SELECT schedule_id FROM task_schedule")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            left,
+            BTreeSet::from([*project_schedule.schedule_id, *other_schedule.schedule_id])
+        );
     }
 
     #[sqlx::test]
@@ -1466,14 +1759,16 @@ mod tests {
         // A project-scoped task without an entity id has the same semantics.
         let project_input = TaskInput {
             task_metadata: ScheduleTaskMetadata {
-                project_id,
+                project_id: project_id.clone(),
                 parent_task_id: None,
                 scheduled_for: None,
                 entity: TaskEntity::Project,
             },
             payload: serde_json::json!({}),
         };
-        let mut t = PostgresTransaction::begin_write(state).await.unwrap();
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
         let first = PostgresBackend::enqueue_task(q, project_input.clone(), t.transaction())
             .await
             .unwrap();
@@ -1486,6 +1781,34 @@ mod tests {
                 .unwrap(),
             EnqueueOutcome::Existing {
                 task_id: project_task_id,
+                status: TaskIntermediateStatus::Scheduled,
+            }
+        );
+        t.commit().await.unwrap();
+
+        // So does a warehouse-scoped task without an entity id.
+        let warehouse_input = TaskInput {
+            task_metadata: ScheduleTaskMetadata {
+                project_id,
+                parent_task_id: None,
+                scheduled_for: None,
+                entity: TaskEntity::Warehouse { warehouse_id },
+            },
+            payload: serde_json::json!({}),
+        };
+        let mut t = PostgresTransaction::begin_write(state).await.unwrap();
+        let first = PostgresBackend::enqueue_task(q, warehouse_input.clone(), t.transaction())
+            .await
+            .unwrap();
+        let EnqueueOutcome::Inserted(warehouse_task_id) = first else {
+            panic!("expected Inserted, got {first:?}");
+        };
+        assert_eq!(
+            PostgresBackend::enqueue_task(q, warehouse_input, t.transaction())
+                .await
+                .unwrap(),
+            EnqueueOutcome::Existing {
+                task_id: warehouse_task_id,
                 status: TaskIntermediateStatus::Scheduled,
             }
         );
@@ -1547,7 +1870,23 @@ mod tests {
             .await
             .unwrap();
         assert!(
+            !PostgresBackend::reparent_pending_task(
+                &TaskQueueName::from("another-queue"),
+                &[],
+                pending,
+                new_parent,
+                serde_json::json!({"run": 2}),
+                t.transaction(),
+            )
+            .await
+            .unwrap()
+        );
+        // The queue's legacy names count as its own.
+        let renamed: &'static TaskQueueName = Box::leak(Box::new(queue()));
+        assert!(
             PostgresBackend::reparent_pending_task(
+                renamed,
+                &[q],
                 pending,
                 new_parent,
                 serde_json::json!({"run": 2}),
@@ -1558,6 +1897,8 @@ mod tests {
         );
         assert!(
             !PostgresBackend::reparent_pending_task(
+                q,
+                &[],
                 running,
                 new_parent,
                 serde_json::json!({"run": 2}),

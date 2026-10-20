@@ -2,9 +2,12 @@
 -- so the unique key of `task` (unchanged, still matched by older servers) allows one active
 -- instance per schedule.
 
--- Takes the strongest lock first, so this transaction never upgrades a lock it holds. A
--- transaction that holds one of the tables and then needs the other can still deadlock with it;
+-- Every lock this file needs, strongest per table, so this transaction never upgrades a lock it
+-- holds. The foreign keys to `project` and `warehouse` are locked first: creating a project
+-- writes `project` and then `task`, as do the cascades of deleting one. A transaction that holds
+-- `task` and then writes `warehouse`, such as deleting a warehouse, can still deadlock with it;
 -- Postgres then aborts one of the two.
+LOCK TABLE project, warehouse IN SHARE ROW EXCLUSIVE MODE;
 LOCK TABLE task, task_log IN ACCESS EXCLUSIVE MODE;
 
 -- The id of the schedule with this scope and key. Derived, so a schedule deleted and created
@@ -29,13 +32,17 @@ BEGIN ATOMIC
     );
 END;
 
+-- Target of `task_schedule_warehouse_fk`: a warehouse schedule belongs to its warehouse's project.
+CREATE UNIQUE INDEX IF NOT EXISTS warehouse_warehouse_id_project_id_idx
+    ON warehouse (warehouse_id, project_id);
+
 -- `schedule_id` is `task_schedule_id(project_id, warehouse_id, queue_name, schedule_key)`, enforced
 -- by `task_schedule_id_check`, so the primary key is the only unique key: one arbiter for
 -- concurrent upserts.
 CREATE TABLE IF NOT EXISTS task_schedule (
     schedule_id uuid PRIMARY KEY,
     project_id text NOT NULL REFERENCES project (project_id) ON DELETE CASCADE,
-    warehouse_id uuid REFERENCES warehouse (warehouse_id) ON DELETE CASCADE,
+    warehouse_id uuid,
     queue_name text NOT NULL,
     -- Chosen and interpreted by the queue that owns the schedule.
     schedule_key text NOT NULL,
@@ -58,7 +65,9 @@ CREATE TABLE IF NOT EXISTS task_schedule (
     CONSTRAINT task_schedule_interval_check CHECK (interval_seconds BETWEEN 60 AND 3153600000),
     CONSTRAINT task_schedule_key_check CHECK (length(schedule_key) BETWEEN 1 AND 512),
     CONSTRAINT task_schedule_id_check
-        CHECK (schedule_id = task_schedule_id(project_id, warehouse_id, queue_name, schedule_key))
+        CHECK (schedule_id = task_schedule_id(project_id, warehouse_id, queue_name, schedule_key)),
+    CONSTRAINT task_schedule_warehouse_fk FOREIGN KEY (warehouse_id, project_id)
+        REFERENCES warehouse (warehouse_id, project_id) ON DELETE CASCADE
 );
 
 DROP TRIGGER IF EXISTS set_updated_at ON task_schedule;
@@ -71,10 +80,13 @@ CREATE INDEX IF NOT EXISTS task_schedule_warehouse_idx ON task_schedule (warehou
     WHERE warehouse_id IS NOT NULL;
 
 -- Listing a task's children. Partial: only tasks with a parent are indexed.
-CREATE INDEX IF NOT EXISTS task_warehouse_parent_task_id_idx
-    ON task (warehouse_id, parent_task_id) WHERE parent_task_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS task_log_warehouse_parent_task_id_idx
-    ON task_log (warehouse_id, parent_task_id) WHERE parent_task_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS task_parent_task_id_idx
+    ON task (parent_task_id) WHERE parent_task_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS task_log_parent_task_id_idx
+    ON task_log (parent_task_id) WHERE parent_task_id IS NOT NULL;
+
+-- Finding a task by its entity, including the active instance of a schedule.
+CREATE INDEX IF NOT EXISTS task_entity_id_idx ON task (entity_id) WHERE entity_id IS NOT NULL;
 
 -- Heartbeats update non-indexed columns only; free space on the page keeps them heap-only.
 ALTER TABLE task SET (fillfactor = 70);

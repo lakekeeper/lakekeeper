@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT task_id, status as \"status: TaskIntermediateStatus\"\n        FROM task\n        WHERE project_id = $1\n            AND warehouse_id IS NOT DISTINCT FROM $2\n            AND entity_type = $3\n            AND entity_id IS NOT DISTINCT FROM $4\n            AND queue_name = $5\n        ",
+  "query": "\n            SELECT task_id, status as \"status: TaskIntermediateStatus\"\n            FROM task\n            WHERE project_id = $1\n                AND warehouse_id = $2\n                AND entity_type = $3\n                AND entity_id IS NULL\n                AND queue_name = $4\n            ",
   "describe": {
     "columns": [
       {
@@ -59,7 +59,6 @@
             }
           }
         },
-        "Uuid",
         "Text"
       ]
     },
@@ -68,5 +67,5 @@
       false
     ]
   },
-  "hash": "ac156d739ec497847c59d4b7807e220b1e43a6a10616c1a5d0af31fd3042bcbf"
+  "hash": "4eec0a0740078924ce793d2de8a08ce1846c7d4791551a242c80b3a31b229077"
 }

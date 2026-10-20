@@ -49,14 +49,12 @@ pub async fn run_post_migration_hooks<C: CatalogStore>(
         // own ERROR log; don't escalate here.
         let _ = rejected;
     }
-    if let Err(e) =
-        task_log_cleanup_queue::create_missing_project_schedules::<C>(state.clone()).await
-    {
+    if let Err(e) = task_log_cleanup_queue::sync_project_schedules::<C>(state.clone()).await {
         // Not fatal by default: a pending cleanup task from an older server also creates its
         // project's schedule.
         let e = anyhow::anyhow!(e).context(
-            "Missing task log cleanup schedules were not created. This hook is idempotent and \
-             safe to retry: re-run `migrate --force-idempotent-post-migration-hooks`.",
+            "Task log cleanup schedules were not synced. This hook is idempotent and safe to \
+             retry: re-run `migrate --force-idempotent-post-migration-hooks`.",
         );
         if options.fail_on_idempotent_hook_error {
             return Err(e);

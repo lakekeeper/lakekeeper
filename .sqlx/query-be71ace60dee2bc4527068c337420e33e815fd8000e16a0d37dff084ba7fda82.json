@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE task\n        SET parent_task_id = $2, task_data = $3\n        WHERE task_id = $1 AND status = 'scheduled'\n        RETURNING task_id\n        ",
+  "query": "\n        UPDATE task\n        SET parent_task_id = $2, task_data = $3\n        WHERE task_id = $1 AND status = 'scheduled' AND queue_name = ANY($4)\n        RETURNING task_id\n        ",
   "describe": {
     "columns": [
       {
@@ -19,12 +19,13 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Jsonb"
+        "Jsonb",
+        "TextArray"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "9441e304ce7ca53d9687c9d17c241f075e91a96d3c1f8feebf116dee4f9db286"
+  "hash": "be71ace60dee2bc4527068c337420e33e815fd8000e16a0d37dff084ba7fda82"
 }

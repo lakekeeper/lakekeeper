@@ -46,10 +46,10 @@ use crate::{
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, EnqueueOutcome, MaterializedTick, RetryPolicy, Task, TaskAttemptId,
-            TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName,
-            TaskResolveScope, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
-            TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, ProjectTaskScheduleState,
+            RetryPolicy, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId,
+            TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule, TaskScheduleFilter,
+            TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
             UpsertTaskScheduleError,
         },
     },
@@ -1457,6 +1457,8 @@ where
     ) -> Result<EnqueueOutcome>;
 
     async fn reparent_pending_task_impl(
+        queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
         task_id: TaskId,
         new_parent: TaskId,
         task_data: serde_json::Value,
@@ -1479,6 +1481,17 @@ where
         schedule_id: TaskScheduleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<bool, TaskScheduleStoreError>;
+
+    async fn list_project_task_schedule_states_impl(
+        queue_name: &TaskQueueName,
+        schedule_key: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<ProjectTaskScheduleState>, TaskScheduleStoreError>;
+
+    async fn delete_warehouse_task_schedules_impl(
+        warehouse_id: WarehouseId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<(), TaskScheduleStoreError>;
 
     async fn trigger_task_schedule_impl(
         schedule_id: TaskScheduleId,

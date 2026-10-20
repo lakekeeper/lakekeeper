@@ -545,7 +545,8 @@ pub struct ListTasksRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
-    /// Only list the tasks whose parent is this task.
+    /// Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+    /// a client that depends on it checks `parent-task-id` of each returned task.
     #[serde(default)]
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
@@ -600,7 +601,8 @@ pub struct ListProjectTasksRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
-    /// Only list the tasks whose parent is this task.
+    /// Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+    /// a client that depends on it checks `parent-task-id` of each returned task.
     #[serde(default)]
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
@@ -643,7 +645,8 @@ pub struct ControlTasksRequest {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "action-type")]
 pub enum ControlTaskAction {
-    /// Stop the task gracefully. The task will be retried.
+    /// Stop the task gracefully. The task will be retried. An attempt that does not stop before
+    /// its heartbeat times out counts as failed; after its last try, the task fails.
     Stop,
     /// Cancel the task permanently. The task is not retried.
     Cancel,

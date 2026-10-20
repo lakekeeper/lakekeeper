@@ -31,15 +31,17 @@ pub mod task_log_cleanup_queue;
 pub mod task_schedule;
 pub use task_schedule::{
     DueTick, MAX_TASK_SCHEDULE_INTERVAL, MIN_TASK_SCHEDULE_INTERVAL, MaterializedTick,
-    TaskSchedule, TaskScheduleFilter, TaskScheduleId, TaskScheduleIntervalOutOfRangeError,
-    TaskScheduleNotFoundError, TaskScheduleSpecVersionUnsupportedError, TaskScheduleStoreError,
+    ProjectTaskScheduleState, TaskSchedule, TaskScheduleCondition,
+    TaskScheduleConditionFailedError, TaskScheduleFilter, TaskScheduleId,
+    TaskScheduleIntervalOutOfRangeError, TaskScheduleNotFoundError,
+    TaskScheduleSpecVersionUnsupportedError, TaskScheduleStoreError,
     TaskScheduleTickOutOfRangeError, TaskScheduleUpsert, TriggerTaskScheduleError,
     UpsertTaskScheduleError, due_tick, first_tick_at_or_after,
 };
 
 #[cfg(any(test, feature = "test-utils"))]
 pub const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration = chrono::Duration::seconds(300);
-const DEFAULT_MAX_RETRIES: i32 = 5;
+const DEFAULT_MAX_RETRIES: i32 = 10;
 const DEFAULT_RETRY_BACKOFF_BASE: chrono::Duration = chrono::Duration::seconds(30);
 const DEFAULT_RETRY_BACKOFF_MAX: chrono::Duration = chrono::Duration::hours(1);
 
@@ -1329,10 +1331,10 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         }
     }
 
-    /// Move a pending task to `new_parent` and replace its payload, in one write.
+    /// Move a pending task of this queue to `new_parent` and replace its payload, in one write.
     ///
-    /// Returns `false` and changes nothing if the task is not pending (running, finished or
-    /// unknown).
+    /// Returns `false` and changes nothing if the task is not a pending task of this queue
+    /// (running, finished, of another queue or unknown).
     ///
     /// # Errors
     /// Returns an error if the payload cannot be serialized or the store fails.
@@ -1352,9 +1354,16 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Some(Box::new(e)),
             )
         })?;
-        C::reparent_pending_task(task_id, new_parent, payload, transaction)
-            .await
-            .map_err(Into::into)
+        C::reparent_pending_task(
+            Self::queue_name(),
+            &Q::legacy_queue_names(),
+            task_id,
+            new_parent,
+            payload,
+            transaction,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Record success in an existing transaction.

@@ -65,13 +65,19 @@ async fn cleanup_schedules(state: CatalogState, project_id: &ArcProjectId) -> Ve
     schedules
 }
 
-/// A new cleanup schedule runs first at its first tick at or after its creation, within one day.
-fn assert_first_run_within_a_day(schedule: &TaskSchedule) {
+/// A new cleanup schedule runs first at its first tick at or after its creation, within one
+/// interval.
+fn assert_first_run_within_an_interval(schedule: &TaskSchedule) {
     assert_eq!(
         schedule.next_run_at,
-        first_tick_at_or_after(schedule.anchor, 86_400, schedule.created_at).unwrap()
+        first_tick_at_or_after(
+            schedule.anchor,
+            schedule.interval.num_seconds(),
+            schedule.created_at
+        )
+        .unwrap()
     );
-    assert!(schedule.next_run_at - schedule.created_at <= chrono::Duration::days(1));
+    assert!(schedule.next_run_at - schedule.created_at < schedule.interval);
 }
 
 /// Moves the schedule's anchor and next run an hour into the past, so exactly that tick is due.
@@ -187,7 +193,7 @@ async fn test_task_log_cleanup_runs_from_its_schedule(pool: PgPool) {
         ),
         (SCHEDULE_KEY, None, chrono::Duration::days(1))
     );
-    assert_first_run_within_a_day(&schedule);
+    assert_first_run_within_an_interval(&schedule);
     assert_eq!(
         active_cleanup_tasks(&pool, &project_id).await,
         Vec::<Uuid>::new()
@@ -256,8 +262,8 @@ async fn test_legacy_cleanup_task_is_absorbed_by_the_schedule(pool: PgPool) {
     // A stale log entry, and settings someone else chose for the schedule.
     let stale = insert_stale_log(&pool, &project_id).await;
     sqlx::query(
-        "UPDATE task_schedule SET enabled = false, payload = '{\"kept\": true}' \
-         WHERE schedule_id = $1",
+        "UPDATE task_schedule SET enabled = false, payload = '{\"kept\": true}', \
+         interval_seconds = 259200 WHERE schedule_id = $1",
     )
     .bind(*schedule.schedule_id)
     .execute(&pool)
@@ -284,12 +290,14 @@ async fn test_legacy_cleanup_task_is_absorbed_by_the_schedule(pool: PgPool) {
         (
             after[0].schedule_id,
             after[0].enabled,
-            after[0].payload.clone()
+            after[0].payload.clone(),
+            after[0].interval
         ),
         (
             schedule.schedule_id,
             false,
-            serde_json::json!({"kept": true})
+            serde_json::json!({"kept": true}),
+            chrono::Duration::days(3)
         )
     );
 
@@ -311,13 +319,10 @@ async fn test_legacy_cleanup_task_is_absorbed_by_the_schedule(pool: PgPool) {
     let recreated = cleanup_schedules(state.clone(), &project_id).await;
     assert_eq!(recreated.len(), 1);
     assert_eq!(
-        (
-            recreated[0].schedule_key.as_str(),
-            recreated[0].interval,
-            recreated[0].next_run_at,
-        ),
-        (SCHEDULE_KEY, chrono::Duration::days(1), recreated[0].anchor)
+        (recreated[0].schedule_key.as_str(), recreated[0].interval),
+        (SCHEDULE_KEY, chrono::Duration::days(1))
     );
+    assert_first_run_within_an_interval(&recreated[0]);
 }
 
 #[sqlx::test]
@@ -330,22 +335,23 @@ async fn test_changing_the_cleanup_period_applies_to_the_schedule(pool: PgPool) 
     let before = cleanup_schedules(state.clone(), &project_id).await;
     assert_eq!(before.len(), 1);
 
-    let request: SetTaskQueueConfigRequest = serde_json::from_value(serde_json::json!({
-        "queue-config": {"cleanup-period": "P7D", "retention-period": "P90D"},
-    }))
-    .unwrap();
-    let mut request_metadata = lakekeeper_integration_tests::random_request_metadata();
-    request_metadata.with_project_id((*project_id).clone());
-    ApiServer::<PostgresBackend, AllowAllAuthorizer, lakekeeper_storage_postgres::SecretsState>::set_project_task_queue_config(
-        &QUEUE_NAME,
-        request,
-        ctx.clone(),
-        request_metadata,
-    )
-    .await
-    .unwrap();
+    let set_period = |period: &str| {
+        let request: SetTaskQueueConfigRequest = serde_json::from_value(serde_json::json!({
+            "queue-config": {"cleanup-period": period, "retention-period": "P90D"},
+        }))
+        .unwrap();
+        let mut request_metadata = lakekeeper_integration_tests::random_request_metadata();
+        request_metadata.with_project_id((*project_id).clone());
+        ApiServer::<PostgresBackend, AllowAllAuthorizer, lakekeeper_storage_postgres::SecretsState>::set_project_task_queue_config(
+            &QUEUE_NAME,
+            request,
+            ctx.clone(),
+            request_metadata,
+        )
+    };
+    set_period("P7D").await.unwrap();
 
-    let after = cleanup_schedules(state, &project_id).await;
+    let after = cleanup_schedules(state.clone(), &project_id).await;
     assert_eq!(after.len(), 1);
     assert_eq!(
         (after[0].schedule_id, after[0].interval, after[0].anchor),
@@ -355,32 +361,103 @@ async fn test_changing_the_cleanup_period_applies_to_the_schedule(pool: PgPool) 
             before[0].anchor
         )
     );
-}
 
-#[sqlx::test]
-async fn test_post_migration_hooks_create_missing_cleanup_schedules(pool: PgPool) {
-    let (_ctx, state, project_id) = setup(&pool).await;
-    let existing = cleanup_schedules(state.clone(), &project_id).await;
-    assert_eq!(existing.len(), 1);
+    // A project created by an older server has no schedule; setting its period creates one.
     sqlx::query("DELETE FROM task_schedule WHERE project_id = $1")
         .bind(project_id.as_str())
         .execute(&pool)
         .await
         .unwrap();
-
-    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(
-        state.clone(),
-        Vec::new(),
-        Default::default(),
-    )
-    .await
-    .unwrap();
-
+    set_period("P14D").await.unwrap();
     let created = cleanup_schedules(state, &project_id).await;
     assert_eq!(created.len(), 1);
     assert_eq!(
         (created[0].schedule_id, created[0].interval),
-        (existing[0].schedule_id, chrono::Duration::days(1))
+        (before[0].schedule_id, chrono::Duration::days(14))
     );
-    assert_first_run_within_a_day(&created[0]);
+    assert_first_run_within_an_interval(&created[0]);
+}
+
+#[sqlx::test]
+async fn test_post_migration_hooks_sync_cleanup_schedules_with_the_config(pool: PgPool) {
+    let (_ctx, state, project_id) = setup(&pool).await;
+    let existing = cleanup_schedules(state.clone(), &project_id).await;
+    assert_eq!(existing.len(), 1);
+    // A project created by an older server, with a period it set: no schedule yet.
+    sqlx::query("DELETE FROM task_schedule WHERE project_id = $1")
+        .bind(project_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO task_config (task_config_id, project_id, warehouse_id, queue_name, config) \
+         VALUES ($1, $2, NULL, $3, '{\"cleanup-period\": \"P7D\", \"retention-period\": \"P90D\"}')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(project_id.as_str())
+    .bind(QUEUE_NAME.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let run_hooks = || {
+        lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(
+            state.clone(),
+            Vec::new(),
+            Default::default(),
+        )
+    };
+
+    run_hooks().await.unwrap();
+    let created = cleanup_schedules(state.clone(), &project_id).await;
+    assert_eq!(created.len(), 1);
+    assert_eq!(
+        (created[0].schedule_id, created[0].interval),
+        (existing[0].schedule_id, chrono::Duration::days(7))
+    );
+    assert_first_run_within_an_interval(&created[0]);
+
+    // An older server changed the period without touching the schedule.
+    sqlx::query(
+        "UPDATE task_config SET config = '{\"cleanup-period\": \"P3D\", \"retention-period\": \
+         \"P90D\"}' WHERE project_id = $1 AND queue_name = $2",
+    )
+    .bind(project_id.as_str())
+    .bind(QUEUE_NAME.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    // A project with a config that does not parse gets the default period.
+    sqlx::query("INSERT INTO project (project_id, project_name) VALUES ('invalid', 'invalid')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO task_config (task_config_id, project_id, warehouse_id, queue_name, config) \
+         VALUES ($1, 'invalid', NULL, $2, '{\"cleanup-period\": \"soon\"}')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(QUEUE_NAME.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    run_hooks().await.unwrap();
+    let synced = cleanup_schedules(state.clone(), &project_id).await;
+    assert_eq!(synced.len(), 1);
+    assert_eq!(
+        (synced[0].interval, synced[0].anchor, synced[0].next_run_at),
+        (
+            chrono::Duration::days(3),
+            created[0].anchor,
+            first_tick_at_or_after(created[0].anchor, 259_200, synced[0].updated_at.unwrap())
+                .unwrap()
+        )
+    );
+    let invalid = ArcProjectId::new(lakekeeper::ProjectId::from_db_unchecked(
+        "invalid".to_string(),
+    ));
+    let defaulted = cleanup_schedules(state, &invalid).await;
+    assert_eq!(defaulted.len(), 1);
+    assert_eq!(defaulted[0].interval, chrono::Duration::days(1));
+    assert_first_run_within_an_interval(&defaulted[0]);
 }

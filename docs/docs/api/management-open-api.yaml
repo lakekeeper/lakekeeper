@@ -8719,7 +8719,9 @@ components:
             - run-now
     ControlTaskActionStop:
       type: object
-      description: Stop the task gracefully. The task will be retried.
+      description: |-
+        Stop the task gracefully. The task will be retried. An attempt that does not stop before
+        its heartbeat times out counts as failed; after its last try, the task fails.
       required:
         - action-type
       properties:
@@ -13441,7 +13443,9 @@ components:
             - string
             - 'null'
           format: uuid
-          description: Only list the tasks whose parent is this task.
+          description: |-
+            Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+            a client that depends on it checks `parent-task-id` of each returned task.
         queue-name:
           type:
             - array
@@ -13649,7 +13653,9 @@ components:
             - string
             - 'null'
           format: uuid
-          description: Only list the tasks whose parent is this task.
+          description: |-
+            Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+            a client that depends on it checks `parent-task-id` of each returned task.
         queue-name:
           type:
             - array

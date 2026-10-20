@@ -78,6 +78,29 @@ pub struct TaskScheduleUpsert {
     /// disabled schedule moves its next run to its first tick at or after now.
     #[builder(default)]
     pub enabled: Option<bool>,
+    /// Write only if the stored schedule is in this state. `None` writes in any state; a schedule
+    /// of a newer spec version is refused either way.
+    #[builder(default)]
+    pub condition: Option<TaskScheduleCondition>,
+}
+
+/// The state a stored schedule must be in for a [`TaskScheduleUpsert`] to write it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskScheduleCondition {
+    /// No schedule with this id is stored.
+    Absent,
+    /// The stored schedule has this interval.
+    Interval(chrono::Duration),
+}
+
+/// A project with its project-level schedule and configuration of one queue.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectTaskScheduleState {
+    pub project_id: ArcProjectId,
+    /// Interval of the project-level schedule with the queue and key; `None` if there is none.
+    pub interval: Option<chrono::Duration>,
+    /// Project-level configuration of the queue, if set.
+    pub queue_config: Option<serde_json::Value>,
 }
 
 /// Which schedules to list. Every set filter must match.
@@ -149,6 +172,26 @@ impl From<TaskScheduleSpecVersionUnsupportedError> for ErrorModel {
     }
 }
 
+/// The stored schedule is not in the state the upsert's condition requires.
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error("Task schedule `{schedule_key}` of queue `{queue_name}` does not meet the write condition")]
+pub struct TaskScheduleConditionFailedError {
+    pub queue_name: TaskQueueName,
+    pub schedule_key: String,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(TaskScheduleConditionFailedError);
+impl From<TaskScheduleConditionFailedError> for ErrorModel {
+    fn from(value: TaskScheduleConditionFailedError) -> Self {
+        ErrorModel::builder()
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(value.to_string())
+            .r#type("TaskScheduleConditionFailed")
+            .stack(value.stack)
+            .build()
+    }
+}
+
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("Task schedule with id `{schedule_id}` not found")]
 pub struct TaskScheduleNotFoundError {
@@ -173,6 +216,7 @@ define_transparent_error! {
     variants: [
         TaskScheduleIntervalOutOfRangeError,
         TaskScheduleSpecVersionUnsupportedError,
+        TaskScheduleConditionFailedError,
         CatalogBackendError
     ]
 }

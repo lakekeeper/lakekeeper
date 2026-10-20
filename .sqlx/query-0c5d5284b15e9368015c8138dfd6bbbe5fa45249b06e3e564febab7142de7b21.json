@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            t.task_id,\n            t.attempt,\n            t.entity_type as \"entity_type: TaskEntityTypeDB\",\n            t.entity_id\n        FROM task t\n        LEFT JOIN LATERAL (\n            SELECT cfg.max_time_since_last_heartbeat\n            FROM task_config cfg\n            WHERE cfg.queue_name = ANY($1)\n                AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))\n                AND cfg.project_id = t.project_id\n            ORDER BY (cfg.queue_name = $3) DESC\n            LIMIT 1\n        ) tc ON true\n        WHERE t.queue_name = ANY($1)\n            AND t.status != 'scheduled'\n            AND (now() - t.last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2)\n        ORDER BY t.scheduled_for, t.task_id\n        FOR UPDATE OF t SKIP LOCKED\n        LIMIT 1\n        ",
+  "query": "\n        SELECT\n            t.task_id,\n            t.attempt,\n            t.entity_type as \"entity_type: TaskEntityTypeDB\",\n            t.entity_id\n        FROM task t\n        LEFT JOIN LATERAL (\n            SELECT cfg.max_time_since_last_heartbeat\n            FROM task_config cfg\n            WHERE cfg.queue_name = ANY($1)\n                AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))\n                AND cfg.project_id = t.project_id\n            ORDER BY (cfg.queue_name = $3) DESC\n            LIMIT 1\n        ) tc ON true\n        WHERE t.queue_name = ANY($1)\n            AND t.status IN ('running', 'should-stop')\n            AND (now() - t.last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2)\n        ORDER BY t.scheduled_for, t.task_id\n        FOR UPDATE OF t SKIP LOCKED\n        LIMIT 1\n        ",
   "describe": {
     "columns": [
       {
@@ -79,5 +79,5 @@
       true
     ]
   },
-  "hash": "f69aab6b69e027fed8818e6c00f8e2be291f67ff0df8064dd7bdaffddb08f3cf"
+  "hash": "0c5d5284b15e9368015c8138dfd6bbbe5fa45249b06e3e564febab7142de7b21"
 }

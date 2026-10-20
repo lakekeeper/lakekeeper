@@ -21,11 +21,12 @@ use crate::{
         impl_error_stack_methods, impl_from_with_detail,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, EnqueueOutcome, MaterializedTick, ResolvedTaskEntity, RetryPolicy,
-            Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInfo,
-            TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule, TaskScheduleFilter,
-            TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
-            UpsertTaskScheduleError, task_schedule::validate_task_schedule_interval,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, ProjectTaskScheduleState,
+            ResolvedTaskEntity, RetryPolicy, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope,
+            TaskFilter, TaskId, TaskInfo, TaskInput, TaskQueueName, TaskResolveScope, TaskSchedule,
+            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
+            TriggerTaskScheduleError, UpsertTaskScheduleError,
+            task_schedule::validate_task_schedule_interval,
         },
     },
 };
@@ -354,15 +355,26 @@ where
         Ok(tasks)
     }
 
-    /// Move a pending task to `new_parent` and replace its `task_data`, in one write.
-    /// Returns `false` and changes nothing if the task is not pending.
+    /// Move a pending task of the queue, under its name or a legacy one, to `new_parent` and
+    /// replace its `task_data`, in one write. Returns `false` and changes nothing if the task is
+    /// not a pending task of the queue.
     async fn reparent_pending_task(
+        queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
         task_id: TaskId,
         new_parent: TaskId,
         task_data: serde_json::Value,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<bool> {
-        Self::reparent_pending_task_impl(task_id, new_parent, task_data, transaction).await
+        Self::reparent_pending_task_impl(
+            queue_name,
+            legacy_queue_names,
+            task_id,
+            new_parent,
+            task_data,
+            transaction,
+        )
+        .await
     }
 
     /// Create or update a task schedule. A changed interval or anchor, or enabling a disabled
@@ -392,6 +404,27 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<bool, TaskScheduleStoreError> {
         Self::delete_task_schedule_impl(schedule_id, transaction).await
+    }
+
+    /// Every project, with the interval of its project-level schedule of `queue_name` and
+    /// `schedule_key` and its project-level configuration of the queue, ordered by project id.
+    /// The schedules stay locked until the transaction ends, so a concurrent config change applies
+    /// to a schedule only after this transaction writes it.
+    async fn list_project_task_schedule_states(
+        queue_name: &TaskQueueName,
+        schedule_key: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<ProjectTaskScheduleState>, TaskScheduleStoreError> {
+        Self::list_project_task_schedule_states_impl(queue_name, schedule_key, transaction).await
+    }
+
+    /// Delete every schedule of a warehouse, of any spec version. Tasks they already produced
+    /// are left alone.
+    async fn delete_warehouse_task_schedules(
+        warehouse_id: WarehouseId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<(), TaskScheduleStoreError> {
+        Self::delete_warehouse_task_schedules_impl(warehouse_id, transaction).await
     }
 
     /// Start an extra run of a schedule now. `next_run_at` is not changed. If an instance is

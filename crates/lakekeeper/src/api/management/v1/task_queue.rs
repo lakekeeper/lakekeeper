@@ -119,7 +119,7 @@ pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
         task_log_cleanup_queue::apply_queue_config::<C>(
             project_id,
             &request.queue_config.0,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await?;
     }

@@ -36,8 +36,9 @@ pub(crate) use get_task_details::get_task_details;
 pub(crate) use list_tasks::list_tasks;
 pub(crate) use resolve_tasks::resolve_tasks;
 pub(crate) use task_schedule::{
-    delete_task_schedule, list_task_schedules, materialize_due_task_schedules,
-    trigger_task_schedule, upsert_task_schedule,
+    delete_task_schedule, delete_warehouse_task_schedules, list_project_task_schedule_states,
+    list_task_schedules, materialize_due_task_schedules, trigger_task_schedule,
+    upsert_task_schedule,
 };
 
 /// Attempts of a write whose conflicting row is gone before it can be read back.
@@ -136,6 +137,7 @@ fn pg_interval(duration: chrono::Duration) -> Result<PgInterval, ErrorModel> {
 }
 
 /// The active task holding the unique key (project, warehouse, entity type, entity id, queue).
+/// One query per shape of the key, so that each can use an index.
 async fn lookup_active_task(
     conn: &mut PgConnection,
     project_id: &str,
@@ -144,26 +146,64 @@ async fn lookup_active_task(
     entity_id: Option<Uuid>,
     queue_name: &str,
 ) -> Result<Option<(TaskId, TaskIntermediateStatus)>, CatalogBackendError> {
-    let row = sqlx::query!(
-        r#"
-        SELECT task_id, status as "status: TaskIntermediateStatus"
-        FROM task
-        WHERE project_id = $1
-            AND warehouse_id IS NOT DISTINCT FROM $2
-            AND entity_type = $3
-            AND entity_id IS NOT DISTINCT FROM $4
-            AND queue_name = $5
-        "#,
-        project_id,
-        warehouse_id,
-        entity_type as _,
-        entity_id,
-        queue_name,
-    )
-    .fetch_optional(conn)
-    .await
+    let row = match (warehouse_id, entity_id) {
+        (_, Some(entity_id)) => sqlx::query!(
+            r#"
+            SELECT task_id, status as "status: TaskIntermediateStatus"
+            FROM task
+            WHERE entity_id = $4
+                AND project_id = $1
+                AND warehouse_id IS NOT DISTINCT FROM $2
+                AND entity_type = $3
+                AND queue_name = $5
+            "#,
+            project_id,
+            warehouse_id,
+            entity_type as _,
+            entity_id,
+            queue_name,
+        )
+        .fetch_optional(conn)
+        .await
+        .map(|r| r.map(|r| (r.task_id, r.status))),
+        (Some(warehouse_id), None) => sqlx::query!(
+            r#"
+            SELECT task_id, status as "status: TaskIntermediateStatus"
+            FROM task
+            WHERE project_id = $1
+                AND warehouse_id = $2
+                AND entity_type = $3
+                AND entity_id IS NULL
+                AND queue_name = $4
+            "#,
+            project_id,
+            warehouse_id,
+            entity_type as _,
+            queue_name,
+        )
+        .fetch_optional(conn)
+        .await
+        .map(|r| r.map(|r| (r.task_id, r.status))),
+        (None, None) => sqlx::query!(
+            r#"
+            SELECT task_id, status as "status: TaskIntermediateStatus"
+            FROM task
+            WHERE project_id = $1
+                AND warehouse_id IS NULL
+                AND entity_type = $2
+                AND entity_id IS NULL
+                AND queue_name = $3
+            "#,
+            project_id,
+            entity_type as _,
+            queue_name,
+        )
+        .fetch_optional(conn)
+        .await
+        .map(|r| r.map(|r| (r.task_id, r.status))),
+    }
     .map_err(DBErrorHandler::into_catalog_backend_error)?;
-    Ok(row.map(|r| (TaskId::from(r.task_id), r.status)))
+    Ok(row.map(|(task_id, status)| (TaskId::from(task_id), status)))
 }
 
 /// The warehouse, entity type and entity id a task's entity is stored as.
@@ -222,23 +262,30 @@ pub(crate) async fn enqueue_task(
     .into())
 }
 
-/// Move a pending task to a new parent and replace its payload.
+/// Move a pending task of the queue to a new parent and replace its payload.
 pub(crate) async fn reparent_pending_task(
     conn: &mut PgConnection,
+    queue_name: &TaskQueueName,
+    legacy_queue_names: &[&TaskQueueName],
     task_id: TaskId,
     new_parent: TaskId,
     task_data: serde_json::Value,
 ) -> Result<bool, IcebergErrorResponse> {
+    let queue_names: Vec<String> = std::iter::once(queue_name)
+        .chain(legacy_queue_names.iter().copied())
+        .map(|n| n.as_str().to_string())
+        .collect();
     let row = sqlx::query!(
         r#"
         UPDATE task
         SET parent_task_id = $2, task_data = $3
-        WHERE task_id = $1 AND status = 'scheduled'
+        WHERE task_id = $1 AND status = 'scheduled' AND queue_name = ANY($4)
         RETURNING task_id
         "#,
         *task_id,
         *new_parent,
         task_data,
+        &queue_names,
     )
     .fetch_optional(conn)
     .await
@@ -660,7 +707,7 @@ async fn fail_timed_out_attempt(
             LIMIT 1
         ) tc ON true
         WHERE t.queue_name = ANY($1)
-            AND t.status != 'scheduled'
+            AND t.status IN ('running', 'should-stop')
             AND (now() - t.last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2)
         ORDER BY t.scheduled_for, t.task_id
         FOR UPDATE OF t SKIP LOCKED
