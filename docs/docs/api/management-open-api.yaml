@@ -10158,6 +10158,11 @@ components:
         protected:
           type: boolean
           description: Whether the warehouse is protected from being deleted.
+        rollback-compaction-max-age-seconds:
+          type: integer
+          format: int64
+          description: A compaction snapshot older than this many seconds is not rolled back.
+          minimum: 0
         rollback-compaction-on-conflict:
           type: boolean
           description: |-
@@ -15622,6 +15627,15 @@ components:
             When `true`, a writer's commit that would fail optimistic-concurrency validation solely
             because of intervening rollbackable compaction snapshots reaps those snapshots and
             rebases the writer on top, so the writer wins over compaction ("transparent commit").
+        max-compaction-age-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            A compaction snapshot older than this many seconds is not rolled back; the writer gets
+            a normal concurrency failure. Defaults to 3600 (one hour).
+          minimum: 1
     SoftDeletionQueueConfig:
       type: object
       description: Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.

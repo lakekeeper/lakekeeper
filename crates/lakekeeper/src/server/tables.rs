@@ -1706,15 +1706,20 @@ fn apply_commit_maybe_reaping(
     };
 
     // Only conflict failures are candidates for reaping, and only when the warehouse opted in.
-    if !warehouse.rollback_compaction_on_conflict
-        || original.error.r#type != *"CatalogCommitConflicts"
-    {
+    let policy = warehouse.rollback_compaction_policy;
+    if !policy.enabled || original.error.r#type != *"CatalogCommitConflicts" {
         return Err(original);
     }
 
-    let Some(plan) =
-        transparent_commit::plan_compaction_reap(&previous.table_metadata, requirements, updates)
-    else {
+    let Some(plan) = transparent_commit::plan_compaction_reap(
+        &previous.table_metadata,
+        requirements,
+        updates,
+        transparent_commit::ReapAgeLimit {
+            now_ms: chrono::Utc::now().timestamp_millis(),
+            max_compaction_age_seconds: policy.max_compaction_age_seconds,
+        },
+    ) else {
         return Err(original);
     };
 
@@ -2543,7 +2548,9 @@ mod unit_tests {
         };
 
         use super::*;
-        use crate::service::{LoadTableResponse, NamespaceId, ResolvedWarehouse, TableId};
+        use crate::service::{
+            LoadTableResponse, NamespaceId, ResolvedWarehouse, RollbackCompactionPolicy, TableId,
+        };
 
         const MAIN: &str = "main";
 
@@ -2651,7 +2658,11 @@ mod unit_tests {
 
         fn warehouse_with_flag(enabled: bool) -> ResolvedWarehouse {
             let mut wh = ResolvedWarehouse::new_random();
-            wh.rollback_compaction_on_conflict = enabled;
+            // Test snapshots are timestamped near the Unix epoch.
+            wh.rollback_compaction_policy = RollbackCompactionPolicy {
+                enabled,
+                max_compaction_age_seconds: u64::MAX,
+            };
             wh
         }
 

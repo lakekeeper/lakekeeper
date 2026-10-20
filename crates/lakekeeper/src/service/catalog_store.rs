@@ -704,10 +704,10 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError>;
 
-    /// Enable or disable transparent-commit (rollback-compaction-on-conflict) for a warehouse.
+    /// Set the transparent-commit (rollback-compaction-on-conflict) policy of a warehouse.
     async fn set_warehouse_rollback_compaction_policy_impl(
         warehouse_id: WarehouseId,
-        enabled: bool,
+        policy: RollbackCompactionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseRollbackCompactionPolicyError>;
 

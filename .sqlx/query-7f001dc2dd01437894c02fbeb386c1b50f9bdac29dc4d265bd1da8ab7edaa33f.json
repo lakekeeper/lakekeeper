@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH\n            whi AS (INSERT INTO warehouse (\n                                   warehouse_id,\n                                   warehouse_name,\n                                   project_id,\n                                   storage_profile,\n                                   storage_secret_id,\n                                   status,\n                                   tabular_expiration_seconds,\n                                   tabular_delete_mode,\n                                   allowed_format_versions,\n                                   default_format_version,\n                                   managed_by)\n                                -- COALESCE keeps the column's own default as the\n                                -- fallback for callers that do not pick an id.\n                                VALUES (COALESCE($10, uuid_generate_v1mc()), $1, $2, $3, $4, 'active', $5, $6, $7, $8, $9)\n                                RETURNING\n                                    project_id,\n                                    warehouse_id,\n                                    warehouse_name,\n                                    storage_profile as \"storage_profile: Json<StorageProfile>\",\n                                    storage_secret_id,\n                                    status AS \"status: WarehouseStatus\",\n                                    tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                                    tabular_expiration_seconds,\n                                    protected,\n                                    allowed_format_versions,\n                                    default_format_version,\n                                    rollback_compaction_on_conflict,\n                                    managed_by as \"managed_by: ManagedBy\",\n                                    updated_at,\n                                    version),\n            whs AS (INSERT INTO warehouse_statistics (number_of_views,\n                                                      number_of_tables,\n                                                      warehouse_id)\n                     VALUES (0, 0, (SELECT warehouse_id FROM whi)))\n            SELECT\n                *\n            FROM whi",
+  "query": "\n        SELECT \n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            allowed_format_versions,\n            default_format_version,\n            rollback_compaction_on_conflict,\n            rollback_compaction_max_age_seconds,\n            managed_by as \"managed_by: ManagedBy\",\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -157,6 +157,17 @@
       },
       {
         "ordinal": 12,
+        "name": "rollback_compaction_max_age_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_max_age_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -177,7 +188,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -188,7 +199,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -201,35 +212,6 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
-        "Jsonb",
-        "Uuid",
-        "Int8",
-        {
-          "Custom": {
-            "name": "tabular_delete_mode",
-            "kind": {
-              "Enum": [
-                "soft",
-                "hard"
-              ]
-            }
-          }
-        },
-        "Int2Array",
-        "Int2",
-        {
-          "Custom": {
-            "name": "managed_by",
-            "kind": {
-              "Enum": [
-                "self-managed",
-                "instance-admin"
-              ]
-            }
-          }
-        },
         "Uuid"
       ]
     },
@@ -247,9 +229,10 @@
       true,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "6f45d81b1b6f48b4bfdeb10224b19fc80253b4f83dc62bc9d6b35fd708743495"
+  "hash": "7f001dc2dd01437894c02fbeb386c1b50f9bdac29dc4d265bd1da8ab7edaa33f"
 }

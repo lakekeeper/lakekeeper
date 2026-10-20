@@ -39,9 +39,10 @@ use crate::{
     service::{
         AllowedFormatVersions, ArcProjectId, ArcResolvedWarehouse, COMMIT_STATE_UNKNOWN_ERROR_TYPE,
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId, State, TabularId,
-        TabularListFlags, Transaction, UpdatedWarehouseStorage, ViewOrTableDeletionInfo,
-        WarehouseFormatVersionPolicy, WarehouseSpecLocked, WriteTransaction,
+        CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId,
+        RollbackCompactionPolicy, State, TabularId, TabularListFlags, Transaction,
+        UpdatedWarehouseStorage, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy,
+        WarehouseSpecLocked, WriteTransaction,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
@@ -308,6 +309,27 @@ pub struct SetWarehouseRollbackCompactionPolicyRequest {
     /// because of intervening rollbackable compaction snapshots reaps those snapshots and
     /// rebases the writer on top, so the writer wins over compaction ("transparent commit").
     pub enabled: bool,
+    /// A compaction snapshot older than this many seconds is not rolled back; the writer gets
+    /// a normal concurrency failure. Defaults to 3600 (one hour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<u64>, minimum = 1))]
+    pub max_compaction_age_seconds: Option<std::num::NonZeroU64>,
+}
+
+impl From<&SetWarehouseRollbackCompactionPolicyRequest> for RollbackCompactionPolicy {
+    fn from(request: &SetWarehouseRollbackCompactionPolicyRequest) -> Self {
+        Self {
+            enabled: request.enabled,
+            max_compaction_age_seconds: request.max_compaction_age_seconds.map_or(
+                RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS,
+                std::num::NonZeroU64::get,
+            ),
+        }
+    }
+}
+
+fn default_rollback_compaction_max_age_seconds() -> u64 {
+    RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -368,6 +390,9 @@ pub struct GetWarehouseResponse {
     /// snapshots and rebases the writer on top, so the writer wins over compaction.
     #[serde(default)]
     pub rollback_compaction_on_conflict: bool,
+    /// A compaction snapshot older than this many seconds is not rolled back.
+    #[serde(default = "default_rollback_compaction_max_age_seconds")]
+    pub rollback_compaction_max_age_seconds: u64,
     /// Last updated timestamp.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -1690,7 +1715,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
         let updated_warehouse = C::set_warehouse_rollback_compaction_policy(
             warehouse_id,
-            request.enabled,
+            RollbackCompactionPolicy::from(&request),
             transaction.transaction(),
         )
         .await?;
@@ -1698,7 +1723,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_rollback_compaction_policy_set(
-            request.enabled,
+            Arc::new(request),
             updated_warehouse.clone(),
         );
 
@@ -2428,7 +2453,10 @@ impl GetWarehouseResponse {
             managed_by: warehouse.managed_by,
             allowed_format_versions: warehouse.allowed_format_versions.to_vec(),
             default_format_version: warehouse.default_format_version,
-            rollback_compaction_on_conflict: warehouse.rollback_compaction_on_conflict,
+            rollback_compaction_on_conflict: warehouse.rollback_compaction_policy.enabled,
+            rollback_compaction_max_age_seconds: warehouse
+                .rollback_compaction_policy
+                .max_compaction_age_seconds,
             updated_at: warehouse.updated_at,
         }
     }
@@ -2972,7 +3000,7 @@ mod test {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: crate::service::AllowedFormatVersions::default(),
             default_format_version: None,
-            rollback_compaction_on_conflict: false,
+            rollback_compaction_policy: crate::service::RollbackCompactionPolicy::default(),
             updated_at: None,
             version: crate::service::WarehouseVersion::from(0),
         }

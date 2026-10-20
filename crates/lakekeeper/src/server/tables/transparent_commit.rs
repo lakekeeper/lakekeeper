@@ -14,7 +14,7 @@
 //! lives in `iceberg`'s [`TableMetadata::rollback_branch_to_snapshot`].
 //!
 //! Both halves are guarded by two independent opt-ins: a per-warehouse feature flag
-//! (`rollback_compaction_on_conflict`, default off) and a per-snapshot summary marker set by
+//! ([`crate::service::RollbackCompactionPolicy`], default off) and a per-snapshot summary marker set by
 //! the compaction engine. The marker makes the feature work for external compaction engines
 //! too, not just Lakekeeper's own maintenance.
 
@@ -82,6 +82,26 @@ pub(crate) enum ReapRejection {
     SequenceNumberConflict,
     /// A gap snapshot carries row-lineage row ranges (V3); not yet supported.
     RowLineageUnsupported,
+    /// A gap snapshot is older than the warehouse's maximum compaction age.
+    CompactionTooOld,
+}
+
+/// How old a compaction snapshot may be and still be rolled back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReapAgeLimit {
+    /// The time of the commit, in milliseconds since the Unix epoch.
+    pub(crate) now_ms: i64,
+    /// The maximum age of a reaped snapshot, by its `timestamp-ms`.
+    pub(crate) max_compaction_age_seconds: u64,
+}
+
+impl ReapAgeLimit {
+    fn admits(self, snapshot: &Snapshot) -> bool {
+        let age_ms = self.now_ms.saturating_sub(snapshot.timestamp_ms());
+        u64::try_from(age_ms).map_or(true, |age_ms| {
+            age_ms <= self.max_compaction_age_seconds.saturating_mul(1000)
+        })
+    }
 }
 
 /// Decide whether a failed commit can be satisfied by excising rollbackable compaction
@@ -94,8 +114,9 @@ pub(crate) fn plan_compaction_reap(
     metadata: &TableMetadata,
     requirements: &[TableRequirement],
     updates: &[TableUpdate],
+    age_limit: ReapAgeLimit,
 ) -> Option<ReapPlan> {
-    match plan_compaction_reap_inner(metadata, requirements, updates) {
+    match plan_compaction_reap_inner(metadata, requirements, updates, age_limit) {
         Ok(plan) => Some(plan),
         Err(reason) => {
             tracing::debug!(?reason, "transparent-commit: declining to reap compaction");
@@ -109,6 +130,7 @@ fn plan_compaction_reap_inner(
     metadata: &TableMetadata,
     requirements: &[TableRequirement],
     updates: &[TableUpdate],
+    age_limit: ReapAgeLimit,
 ) -> Result<ReapPlan, ReapRejection> {
     // 1. Exactly one `assert-ref-snapshot-id` with a concrete expected snapshot.
     let mut assertions = requirements.iter().filter_map(|r| match r {
@@ -201,6 +223,9 @@ fn plan_compaction_reap_inner(
             .ok_or(ReapRejection::GapNotResolvable)?;
         if !is_rollbackable_snapshot(snapshot) {
             return Err(ReapRejection::NonRollbackableInGap);
+        }
+        if !age_limit.admits(snapshot) {
+            return Err(ReapRejection::CompactionTooOld);
         }
         // V3 row lineage: excising a snapshot that assigned row ids would leave `next-row-id`
         // ahead of the retained snapshots, breaking the rebased writer's row-id validation, so
@@ -296,6 +321,28 @@ mod tests {
     use super::*;
 
     const MAIN: &str = "main";
+
+    /// The writer commits at 3000 ms; every test snapshot is younger than an hour.
+    const AGE_LIMIT: ReapAgeLimit = ReapAgeLimit {
+        now_ms: 3000,
+        max_compaction_age_seconds: 3600,
+    };
+
+    fn plan_inner(
+        metadata: &TableMetadata,
+        requirements: &[TableRequirement],
+        updates: &[TableUpdate],
+    ) -> Result<ReapPlan, ReapRejection> {
+        plan_compaction_reap_inner(metadata, requirements, updates, AGE_LIMIT)
+    }
+
+    fn plan(
+        metadata: &TableMetadata,
+        requirements: &[TableRequirement],
+        updates: &[TableUpdate],
+    ) -> Option<ReapPlan> {
+        plan_compaction_reap(metadata, requirements, updates, AGE_LIMIT)
+    }
 
     fn base_builder() -> TableMetadataBuilder {
         let schema = Schema::builder()
@@ -410,7 +457,7 @@ mod tests {
     fn reaps_single_rollbackable_compaction() {
         let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
         let (reqs, updates) = writer(1, 3, 2);
-        let plan = plan_compaction_reap(&md, &reqs, &updates).expect("should reap");
+        let plan = plan(&md, &reqs, &updates).expect("should reap");
         assert_eq!(plan.branch, MAIN);
         assert_eq!(plan.expected_base_snapshot_id, 1);
         assert_eq!(plan.reaped_snapshot_ids, vec![2]);
@@ -421,14 +468,14 @@ mod tests {
         let md =
             table_a_then_compaction(&[(POLARIS_ROLLBACK_MARKER, "rollback")], Operation::Replace);
         let (reqs, updates) = writer(1, 3, 2);
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_some());
+        assert!(plan(&md, &reqs, &updates).is_some());
     }
 
     #[test]
     fn declines_unmarked_replace() {
         let md = table_a_then_compaction(&[], Operation::Replace);
         let (reqs, updates) = writer(1, 3, 2);
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
@@ -436,7 +483,7 @@ mod tests {
         // Append carrying the marker is not a compaction snapshot.
         let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Append);
         let (reqs, updates) = writer(1, 3, 2);
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
@@ -448,7 +495,7 @@ mod tests {
             snapshot(3, Some(2), 3, 2500, Operation::Append, &[]),
         );
         let (reqs, updates) = writer(1, 4, 2);
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
@@ -492,14 +539,14 @@ mod tests {
             .unwrap()
             .metadata;
         let (reqs, updates) = writer(1, 3, 2);
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
     fn declines_without_ref_assertion() {
         let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
         let (_reqs, updates) = writer(1, 3, 2);
-        assert!(plan_compaction_reap(&md, &[], &updates).is_none());
+        assert!(plan(&md, &[], &updates).is_none());
     }
 
     #[test]
@@ -510,7 +557,7 @@ mod tests {
             r#ref: MAIN.to_string(),
             snapshot_id: Some(1),
         });
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
@@ -520,7 +567,7 @@ mod tests {
         updates.push(TableUpdate::RemoveSnapshots {
             snapshot_ids: vec![2],
         });
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
@@ -532,7 +579,7 @@ mod tests {
         updates[0] = TableUpdate::AddSnapshot {
             snapshot: snapshot(3, Some(2), 2, 3000, Operation::Delete, &[]),
         };
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
@@ -540,7 +587,7 @@ mod tests {
         let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
         // Writer asserts the current tip (2) — no conflict, nothing to reap.
         let (reqs, updates) = writer(2, 3, 3);
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
@@ -548,7 +595,7 @@ mod tests {
         let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
         // Writer's snapshot reuses seq 1, which is not greater than the rewound base's seq.
         let (reqs, updates) = writer(1, 3, 1);
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_none());
+        assert!(plan(&md, &reqs, &updates).is_none());
     }
 
     #[test]
@@ -560,7 +607,7 @@ mod tests {
                 snapshot: snapshot(3, Some(1), 2, 3000, op.clone(), &[]),
             };
             assert_eq!(
-                plan_compaction_reap_inner(&md, &reqs, &updates),
+                plan_inner(&md, &reqs, &updates),
                 Err(ReapRejection::WriterOperationRetriesCleanly),
                 "{op:?}"
             );
@@ -574,6 +621,32 @@ mod tests {
         updates[0] = TableUpdate::AddSnapshot {
             snapshot: snapshot(3, Some(1), 2, 3000, Operation::Overwrite, &[]),
         };
-        assert!(plan_compaction_reap(&md, &reqs, &updates).is_some());
+        assert!(plan(&md, &reqs, &updates).is_some());
+    }
+
+    #[test]
+    fn reaps_compaction_exactly_at_max_age() {
+        // The compaction snapshot was taken at 2000 ms.
+        let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
+        let (reqs, updates) = writer(1, 3, 2);
+        let limit = ReapAgeLimit {
+            now_ms: 2000 + 3_600_000,
+            max_compaction_age_seconds: 3600,
+        };
+        assert!(plan_compaction_reap(&md, &reqs, &updates, limit).is_some());
+    }
+
+    #[test]
+    fn declines_compaction_older_than_max_age() {
+        let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
+        let (reqs, updates) = writer(1, 3, 2);
+        let limit = ReapAgeLimit {
+            now_ms: 2000 + 3_600_001,
+            max_compaction_age_seconds: 3600,
+        };
+        assert_eq!(
+            plan_compaction_reap_inner(&md, &reqs, &updates, limit),
+            Err(ReapRejection::CompactionTooOld)
+        );
     }
 }

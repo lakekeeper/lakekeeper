@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT \n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            allowed_format_versions,\n            default_format_version,\n            rollback_compaction_on_conflict,\n            managed_by as \"managed_by: ManagedBy\",\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_id = $1\n        ",
+  "query": "UPDATE warehouse\n            SET protected = $1\n            WHERE warehouse_id = $2\n            RETURNING \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                rollback_compaction_on_conflict,\n                rollback_compaction_max_age_seconds,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n            ",
   "describe": {
     "columns": [
       {
@@ -157,6 +157,17 @@
       },
       {
         "ordinal": 12,
+        "name": "rollback_compaction_max_age_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_max_age_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -177,7 +188,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -188,7 +199,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -201,6 +212,7 @@
     ],
     "parameters": {
       "Left": [
+        "Bool",
         "Uuid"
       ]
     },
@@ -218,9 +230,10 @@
       true,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "9508f222dbae9a616ade5ca7ea21a1194819f209c1debac79b9f1fb8446c2d26"
+  "hash": "21fb5d731c0b84331a49749eee24efb81be9f59e6f4c084e3b1ab3a08f2aba17"
 }
