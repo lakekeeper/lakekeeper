@@ -70,8 +70,8 @@ struct ProcessCaches {
 
 impl Caches for ProcessCaches {
     async fn evict(&self, evictions: &Evictions) {
-        // At the same time: an eviction of a built-in cache waits for the in-flight load of
-        // its key.
+        // At the same time, so a slow receiver delays no built-in eviction. A load that races
+        // an eviction is caught by the second eviction after the grace period.
         tokio::join!(evictions.apply(), evictions.apply_to(&self.receivers));
     }
 }

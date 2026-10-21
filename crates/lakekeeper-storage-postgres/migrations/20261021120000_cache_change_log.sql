@@ -17,14 +17,16 @@ create table cache_change_log (
 -- minutes, and most runs find nothing to delete.
 create index cache_change_log_changed_at on cache_change_log (changed_at);
 
--- Rows are inserted and deleted in bulk; vacuum after a fixed number of rows, never by
--- a fraction of the table.
+-- Rows are inserted and deleted in bulk; vacuum and analyze after a fixed number of rows,
+-- never by a fraction of the table.
 alter table cache_change_log set (
     vacuum_truncate = false,
     autovacuum_vacuum_scale_factor = 0,
     autovacuum_vacuum_threshold = 5000,
     autovacuum_vacuum_insert_scale_factor = 0,
-    autovacuum_vacuum_insert_threshold = 10000
+    autovacuum_vacuum_insert_threshold = 10000,
+    autovacuum_analyze_scale_factor = 0,
+    autovacuum_analyze_threshold = 5000
 );
 
 -- Stable entry point for extensions: record that the current transaction changed `p_keys`

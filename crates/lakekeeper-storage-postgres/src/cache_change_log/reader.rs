@@ -82,8 +82,11 @@ async fn read_poll(
     let mut tx = begin_with_timeout(conn, statement_timeout).await?;
     // Two branches: transactions running at the previous snapshot, and transactions
     // started after it, below the new snapshot's xmax. A row with a higher xid came from
-    // another server, by a dump and restore. `pg_current_snapshot()` is the statement's own
-    // snapshot, so the rows it reads are those of transactions committed in it.
+    // another server, by a dump and restore; such a row can also carry the xid of a local
+    // transaction that is still running, so both branches keep only xids the new snapshot
+    // sees as finished. `pg_current_snapshot()` is the statement's own snapshot, so the rows
+    // it reads are those of transactions committed in it. Keys are read without NULLs and as
+    // a one-dimensional array, whatever an extension stored; no keys name the whole domain.
     let rows = sqlx::query!(
         r#"
         WITH s AS (SELECT pg_current_snapshot() AS next),
@@ -91,6 +94,7 @@ async fn read_poll(
             (SELECT l.xid, l.id, l.domain, l.keys
              FROM cache_change_log l
              WHERE l.xid = ANY(ARRAY(SELECT pg_snapshot_xip($1::text::pg_snapshot)))
+               AND pg_visible_in_snapshot(l.xid, pg_current_snapshot())
              ORDER BY l.xid, l.id
              LIMIT $2)
             UNION ALL
@@ -98,6 +102,7 @@ async fn read_poll(
              FROM cache_change_log l
              WHERE l.xid >= pg_snapshot_xmax($1::text::pg_snapshot)
                AND l.xid < pg_snapshot_xmax(pg_current_snapshot())
+               AND pg_visible_in_snapshot(l.xid, pg_current_snapshot())
              ORDER BY l.xid, l.id
              LIMIT $2)
             ORDER BY xid, id
@@ -109,7 +114,7 @@ async fn read_poll(
                coalesce(pg_snapshot_xmax(s.next) < pg_snapshot_xmax($1::text::pg_snapshot), false)
                    AS "went_back!",
                c.domain AS "domain?",
-               c.keys AS "keys?"
+               ARRAY(SELECT k FROM unnest(c.keys) AS k WHERE k IS NOT NULL) AS "keys?"
         FROM s LEFT JOIN changed c ON true
         ORDER BY c.xid, c.id
         "#,
@@ -285,6 +290,62 @@ mod tests {
                 ("secret", "l3"),
                 ("role", "c")
             ])
+        );
+        assert_eq!(log.poll().await.unwrap(), changes(&[]));
+    }
+
+    #[sqlx::test]
+    async fn malformed_key_arrays_are_read_without_nulls_in_one_dimension(pool: PgPool) {
+        let mut log = started(&pool).await;
+        for keys in [
+            "ARRAY[NULL::text]",
+            "ARRAY['a', NULL]",
+            "ARRAY[['b', 'c'], ['d', 'e']]",
+            "'[0:1]={f,g}'::text[]",
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT lakekeeper_record_cache_change('extension_domain', {keys})"
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let row = |keys: &[&str]| LoggedChange {
+            domain: "extension_domain".to_string(),
+            keys: keys.iter().map(ToString::to_string).collect(),
+        };
+        assert_eq!(
+            log.poll().await.unwrap(),
+            PollOutcome::Changes(vec![
+                row(&[]),
+                row(&["a"]),
+                row(&["b", "c", "d", "e"]),
+                row(&["f", "g"]),
+            ])
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_restored_row_with_the_xid_of_a_running_transaction_is_returned_once(pool: PgPool) {
+        let mut log = started(&pool).await;
+        let mut running = pool.begin().await.unwrap();
+        let xid = record_in(&mut running, "secret", "local").await;
+        sqlx::query(
+            "INSERT INTO cache_change_log (xid, domain, keys)
+             VALUES ($1::text::xid8, 'secret', ARRAY['restored'])",
+        )
+        .bind(xid.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(log.poll().await.unwrap(), changes(&[]));
+        assert_eq!(log.poll().await.unwrap(), changes(&[]));
+        running.commit().await.unwrap();
+        assert_eq!(
+            log.poll().await.unwrap(),
+            changes(&[("secret", "local"), ("secret", "restored")])
         );
         assert_eq!(log.poll().await.unwrap(), changes(&[]));
     }

@@ -1219,11 +1219,14 @@ pub mod test {
     #[sqlx::test]
     async fn test_get_warehouse_by_name(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        // A project of its own: the warehouse caches are shared by every test in the process.
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
+        let (_, warehouse_id) =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
 
         let fetched_warehouse = PostgresBackend::get_warehouse_by_name(
             "test_warehouse",
-            &Arc::new(ProjectId::from(uuid::Uuid::nil())),
+            &Arc::new(project_id),
             WarehouseStatus::active(),
             state.clone(),
         )

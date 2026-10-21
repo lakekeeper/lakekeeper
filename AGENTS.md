@@ -88,7 +88,7 @@ Applies to `docs/docs/*.md` and `site/docs/`. Release notes: also follow `.githu
 - Cold path (management/admin routes): bypass per-process in-memory caches; read authoritative data from the DB.
 - Hot authz path: may tolerate cache lag.
 - Write cached entities through store methods that take `&mut WriteTransaction` and record the changed cache keys; never evict by hand after a write.
-- Fill shared caches only from reads that see committed data (`State` or a `ReadTransaction`), never from a write transaction.
+- Fill shared caches only from reads that see committed data (`State` or `ReadTransaction::committed_reads()`), never from a write transaction.
 - Never rely on per-process caches for cross-replica correctness: cross-replica eviction is best effort, and the TTL stays the bound.
 - Never retrofit a behavior-narrowing query param onto an existing route (worst case: scoping a DELETE). Released servers ignore unknown query params, so under version skew a new client gets the un-scoped operation. Add a new route instead — old servers reject it.
 
