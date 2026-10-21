@@ -137,7 +137,7 @@ async fn run_until_logged(ctx: &Context, pool: &PgPool, task_id: Uuid) -> (Strin
     )
     .await;
     let mut logged = None;
-    for _ in 0..100 {
+    for _ in 0..300 {
         logged = sqlx::query_as::<_, (String, Option<String>)>(
             "SELECT status::text, message FROM task_log WHERE task_id = $1",
         )

@@ -1,17 +1,58 @@
+-- Stores endpoint names as text and adds task schedules. One file, because the order of their
+-- locks matters: older servers lock `task` before `project` and `idempotency_record`, so `task` is
+-- locked after the copy of the endpoint statistics, which then holds no task lock, and before the
+-- swap, which locks `project` and `idempotency_record` exclusively.
+
+-- ---- Endpoint names as text: copy ----
+
+-- Project deletes wait until the copy has its foreign key.
+LOCK TABLE project IN SHARE ROW EXCLUSIVE MODE;
+
+CREATE TABLE endpoint_statistics_text
+(
+    endpoint_statistics_id uuid        not null default uuid_generate_v1mc(),
+    warehouse_id           uuid,
+    project_id             text        not null,
+    matched_path           text COLLATE "C" not null,
+    status_code            int         not null,
+    count                  bigint      not null default 0,
+    timestamp              timestamptz not null default get_stats_date_default()
+);
+call add_time_columns('endpoint_statistics_text');
+
+-- Copied without blocking writes of older servers; what they write after the copy is lost.
+INSERT INTO endpoint_statistics_text
+    (endpoint_statistics_id, warehouse_id, project_id, matched_path, status_code, count, timestamp, created_at, updated_at)
+SELECT endpoint_statistics_id, warehouse_id, project_id, matched_path::text, status_code, count, timestamp, created_at, updated_at
+FROM endpoint_statistics;
+
+-- Built after the copy, which is faster.
+ALTER TABLE endpoint_statistics_text
+    ADD CONSTRAINT endpoint_statistics_text_pkey PRIMARY KEY (endpoint_statistics_id),
+    ADD CONSTRAINT endpoint_statistics_text_key
+        UNIQUE NULLS NOT DISTINCT (project_id, warehouse_id, matched_path, status_code, timestamp),
+    ADD CONSTRAINT endpoint_statistics_project_id_fkey
+        FOREIGN KEY (project_id) REFERENCES project (project_id) ON DELETE CASCADE;
+CREATE INDEX idx_endpoint_stats_text_project_timestamp ON endpoint_statistics_text (project_id, timestamp DESC);
+CREATE INDEX idx_endpoint_stats_text_project_warehouse_time ON endpoint_statistics_text (project_id, warehouse_id, timestamp DESC);
+CREATE INDEX idx_endpoint_stats_text_project_status_time ON endpoint_statistics_text (project_id, status_code, timestamp DESC);
+
+-- ---- Task schedules ----
+
 -- One row per recurring job. Each due tick inserts a task whose `entity_id` is the schedule id,
 -- so the unique key of `task` (unchanged, still matched by older servers) allows one active
 -- instance per schedule.
 
--- Every lock this file needs, strongest per table, so this file never upgrades a lock it holds.
--- The foreign keys to `project` and `warehouse` are locked first: creating a project writes
--- `project` and then `task`, as do the cascades of deleting one. A transaction that holds `task`
--- and then writes `warehouse`, such as deleting a warehouse, can still deadlock with it; Postgres
--- then aborts one of the two.
--- Sorts before `20261015120000_endpoint_names_as_text`, which locks `project` and
--- `idempotency_record` exclusively: older servers lock `task` before both, so a batch with both
--- files has to lock `task` first.
+-- Every lock the task schedules need, strongest per table. The foreign keys to `project` and
+-- `warehouse` are locked first: creating a project writes `project` and then `task`, as do the
+-- cascades of deleting one. A transaction that holds `task` and then writes `warehouse`, such as
+-- deleting a warehouse, can still deadlock with it; Postgres then aborts one of the two.
+-- Fails after 5 s instead of queueing older servers' task queries behind a long-held lock, such
+-- as a running `pg_dump`; the next start retries.
+SET LOCAL lock_timeout = '5s';
 LOCK TABLE project, warehouse IN SHARE ROW EXCLUSIVE MODE;
 LOCK TABLE task, task_log IN ACCESS EXCLUSIVE MODE;
+SET LOCAL lock_timeout TO DEFAULT;
 
 -- The id of the schedule with this scope and key. Derived, so a schedule deleted and created
 -- again keeps its id and still sees the instance it left active. Never change the encoding:
@@ -121,3 +162,24 @@ ALTER TABLE task_log
     ADD COLUMN IF NOT EXISTS resource_demand bigint,
     DROP CONSTRAINT IF EXISTS task_log_resource_demand_check,
     ADD CONSTRAINT task_log_resource_demand_check CHECK (resource_demand >= 0) NOT VALID;
+
+-- ---- Endpoint names as text: swap ----
+
+-- Locks project exclusively. Fails after 5 s instead of stalling older servers; the next start retries.
+SET LOCAL lock_timeout = '5s';
+DROP TABLE endpoint_statistics;
+ALTER TABLE endpoint_statistics_text RENAME TO endpoint_statistics;
+ALTER TABLE endpoint_statistics RENAME CONSTRAINT endpoint_statistics_text_pkey TO endpoint_statistics_pkey;
+ALTER TABLE endpoint_statistics
+    RENAME CONSTRAINT endpoint_statistics_text_key TO endpoint_statistics_project_id_warehouse_id_matched_path_st_key;
+ALTER INDEX idx_endpoint_stats_text_project_timestamp RENAME TO idx_endpoint_stats_project_timestamp;
+ALTER INDEX idx_endpoint_stats_text_project_warehouse_time RENAME TO idx_endpoint_stats_project_warehouse_time;
+ALTER INDEX idx_endpoint_stats_text_project_status_time RENAME TO idx_endpoint_stats_project_status_time;
+
+select trigger_updated_at('endpoint_statistics');
+
+-- After the drop, in older servers' lock order; default collation for their cached plans.
+ALTER TABLE idempotency_record
+    DROP CONSTRAINT idempotency_operation_check,
+    ALTER COLUMN operation TYPE text;
+SET LOCAL lock_timeout TO DEFAULT;

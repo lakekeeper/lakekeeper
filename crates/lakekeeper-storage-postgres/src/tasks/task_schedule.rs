@@ -395,6 +395,8 @@ pub(crate) async fn trigger_task_schedule(
                 SELECT schedule_id, project_id, warehouse_id, queue_name, payload
                 FROM task_schedule
                 WHERE schedule_id = $1
+                -- A concurrent delete of the schedule, or of its project or warehouse, waits.
+                FOR KEY SHARE
             ),
             inserted AS (
                 INSERT INTO task (
@@ -2016,7 +2018,18 @@ mod tests {
         );
     }
 
-    const TASK_SCHEDULES_MIGRATION: i64 = 20_261_008_120_000;
+    const TASK_SCHEDULES_MIGRATION: i64 = 20_261_015_120_000;
+
+    #[test]
+    fn test_task_schedules_migration_is_the_file_that_adds_them() {
+        assert_eq!(
+            sqlx::migrate!()
+                .iter()
+                .find(|m| m.version == TASK_SCHEDULES_MIGRATION)
+                .map(|m| m.description.to_string()),
+            Some("endpoint names as text and task schedules".to_string())
+        );
+    }
 
     async fn apply_migrations(pool: &PgPool, filter: impl Fn(i64) -> bool) {
         let migrator = sqlx::migrate!();

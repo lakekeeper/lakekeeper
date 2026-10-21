@@ -1318,13 +1318,20 @@ impl CatalogStore for super::PostgresBackend {
         request: PickTaskRequest<'_>,
         state: Self::State,
     ) -> Result<Option<Task>> {
+        let PickTaskRequest {
+            queue_name,
+            legacy_queue_names,
+            default_max_time_since_last_heartbeat,
+            retry_policy,
+            resource_demand,
+        } = request;
         pick_task_with_retry_policy(
             &state.write_pool(),
-            request.queue_name,
-            request.legacy_queue_names,
-            request.default_max_time_since_last_heartbeat,
-            request.retry_policy,
-            request.resource_demand,
+            queue_name,
+            legacy_queue_names,
+            default_max_time_since_last_heartbeat,
+            retry_policy,
+            resource_demand,
         )
         .await
     }

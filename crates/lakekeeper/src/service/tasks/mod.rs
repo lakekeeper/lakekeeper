@@ -139,9 +139,34 @@ pub struct RetryPolicy {
     pub retry_decision: fn(&FailedAttempt<'_>) -> RetryDecision,
 }
 
+impl RetryPolicy {
+    /// The policy of queue `Q`.
+    #[must_use]
+    pub fn of<Q: TaskConfig>() -> Self {
+        Self {
+            max_retries: Q::max_retries(),
+            retry_decision: Q::retry_decision,
+        }
+    }
+
+    /// [`Self::retry_decision`] for `failed`. A hook that panics retries after
+    /// [`default_retry_backoff`]: the attempt stays first in line, so a panic would repeat on
+    /// every pick of the queue.
+    #[must_use]
+    pub fn decide(&self, failed: &FailedAttempt<'_>) -> RetryDecision {
+        std::panic::catch_unwind(|| (self.retry_decision)(failed)).unwrap_or_else(|_| {
+            tracing::error!(
+                task_id = %failed.task_id,
+                attempt = failed.attempt,
+                "Retry decision of a failed attempt panicked; retrying after the default backoff"
+            );
+            RetryDecision::retry(default_retry_backoff(failed))
+        })
+    }
+}
+
 /// Which tasks a worker picks.
 #[derive(Debug, Clone, typed_builder::TypedBuilder)]
-#[non_exhaustive]
 pub struct PickTaskRequest<'a> {
     /// The queue to pick from.
     pub queue_name: &'a TaskQueueName,
@@ -160,8 +185,11 @@ pub struct PickTaskRequest<'a> {
 
 /// Resource demands `d` with `above < d <= at_most`; a task without a resource demand counts as
 /// 0. An unset bound is unbounded, so the default range includes every task.
+///
+/// A worker picks the oldest due task in its range. A task above every worker's range waits until
+/// one covers it, and smaller tasks can keep a larger one waiting; give large tasks a range of
+/// their own. The range reserves nothing: loops sharing one capacity must account for each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, typed_builder::TypedBuilder)]
-#[non_exhaustive]
 pub struct TaskResourceDemandRange {
     /// Exclusive lower bound.
     #[builder(default, setter(strip_option))]
@@ -169,6 +197,14 @@ pub struct TaskResourceDemandRange {
     /// Inclusive upper bound.
     #[builder(default, setter(strip_option))]
     pub at_most: Option<i64>,
+}
+
+impl TaskResourceDemandRange {
+    /// Whether no demand lies in the range.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!((self.above, self.at_most), (Some(above), Some(at_most)) if above >= at_most)
+    }
 }
 
 /// Delay before a failed attempt is retried: 30 seconds after the first failed attempt,
@@ -665,9 +701,9 @@ pub struct TaskMetadata {
     pub entity: TaskEntity,
     /// The schedule that produced this task, if any.
     pub schedule_id: Option<TaskScheduleId>,
-    /// How much worker capacity the task needs, at least 0, in a unit its queue chooses. A worker
-    /// may pick only tasks in a range of it, where a task without one counts as 0. Tasks created
-    /// by a schedule or the schedule endpoint have none.
+    /// How much worker capacity the task needs, in a unit its queue chooses; a negative one counts
+    /// as 0. A worker may pick only tasks in a range of it, where a task without one counts as 0.
+    /// Tasks created by a schedule or the schedule endpoint have none.
     pub resource_demand: Option<i64>,
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -1167,10 +1203,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             .queue_name(Q::queue_name())
             .legacy_queue_names(&legacy_queue_names)
             .default_max_time_since_last_heartbeat(Q::max_time_since_last_heartbeat())
-            .retry_policy(RetryPolicy {
-                max_retries: Q::max_retries(),
-                retry_decision: Q::retry_decision,
-            })
+            .retry_policy(RetryPolicy::of::<Q>())
             .resource_demand(resource_demand)
             .build();
         let task = C::pick_new_task(request, catalog_state.clone())
@@ -1382,7 +1415,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         let status = Status::Failure {
             details: error,
             max_retries: Q::max_retries(),
-            retry_decision: Q::retry_decision(&failed),
+            retry_decision: RetryPolicy::of::<Q>().decide(&failed),
         };
 
         for attempt in 1..=5 {
@@ -1589,7 +1622,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             id,
             &details,
             Q::max_retries(),
-            &Q::retry_decision(&failed),
+            &RetryPolicy::of::<Q>().decide(&failed),
             &mut trx.transaction(),
         )
         .await
@@ -1826,6 +1859,45 @@ mod test {
             ]
             .map(chrono::Duration::milliseconds)
         );
+    }
+
+    #[test]
+    fn a_panicking_retry_decision_retries_after_the_default_backoff() {
+        let policy = RetryPolicy {
+            max_retries: 5,
+            retry_decision: |_| panic!("hook failed"),
+        };
+        let failed = FailedAttempt {
+            task_id: TaskId::from(Uuid::now_v7()),
+            attempt: 3,
+            schedule_id: None,
+            kind: FailureKind::TimedOut,
+            error: "",
+            resource_demand: Some(8),
+            execution_details: None,
+        };
+        assert_eq!(
+            policy.decide(&failed),
+            RetryDecision::retry(default_retry_backoff(&failed))
+        );
+    }
+
+    #[test]
+    fn a_queue_tries_a_task_ten_times_by_default() {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct Config {}
+        impl TaskConfig for Config {
+            fn queue_name() -> &'static TaskQueueName {
+                static QUEUE_NAME: std::sync::LazyLock<TaskQueueName> =
+                    std::sync::LazyLock::new(|| "test-default".into());
+                &QUEUE_NAME
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+        }
+        assert_eq!(RetryPolicy::of::<Config>().max_retries, 10);
     }
 
     #[test]

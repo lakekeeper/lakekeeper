@@ -411,7 +411,9 @@ impl TaskInsertColumns {
             columns.entity_types.push(entity_type);
             columns.entity_ids.push(entity_id);
             columns.entity_names.push(entity_name);
-            columns.resource_demands.push(resource_demand);
+            columns
+                .resource_demands
+                .push(resource_demand.map(|demand| demand.max(0)));
         }
         Ok(columns)
     }
@@ -608,7 +610,7 @@ pub(crate) async fn pick_task_with_retry_policy(
     retry_policy: RetryPolicy,
     resource_demand: TaskResourceDemandRange,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
-    let TaskResourceDemandRange { above, at_most, .. } = resource_demand;
+    let TaskResourceDemandRange { above, at_most } = resource_demand;
     let queue_name = queue_name.as_str();
     // All names this queue answers to: the current name plus any pre-rename
     // aliases. Rows enqueued before a rename still carry the old name, so the
@@ -626,6 +628,9 @@ pub(crate) async fn pick_task_with_retry_policy(
     .await
     {
         tracing::error!(?e, "Failed to record a timed-out attempt of '{queue_name}'");
+    }
+    if resource_demand.is_empty() {
+        return Ok(None);
     }
     let x = sqlx::query!(
         r#"
@@ -799,7 +804,7 @@ async fn fail_timed_out_attempt(
     record_failure(
         id,
         retry_policy.max_retries,
-        &(retry_policy.retry_decision)(&failed),
+        &retry_policy.decide(&failed),
         details,
         &mut transaction,
     )
@@ -2970,7 +2975,15 @@ mod test {
             .above(5)
             .at_most(10)
             .build();
-        assert_eq!(pick_all(q, six_to_ten).await, vec![ten, six]);
+        assert_eq!(pick_all(q.clone(), six_to_ten).await, vec![ten, six]);
+
+        // An empty range picks nothing.
+        let empty = TaskResourceDemandRange::builder()
+            .above(5)
+            .at_most(5)
+            .build();
+        assert!(empty.is_empty());
+        assert_eq!(pick_all(q, empty).await, vec![]);
     }
 
     #[sqlx::test]
@@ -3261,31 +3274,19 @@ mod test {
     }
 
     #[sqlx::test]
-    async fn test_a_negative_resource_demand_is_refused(pool: PgPool) {
+    async fn test_a_negative_resource_demand_counts_as_zero(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q = generate_tq_name();
-        let mut conn = pool.acquire().await.unwrap();
-        let err = queue_task_batch(
-            &mut conn,
-            &q,
-            vec![TaskInput {
-                task_metadata: ScheduleTaskMetadata {
-                    resource_demand: Some(-1),
-                    project_id,
-                    parent_task_id: None,
-                    scheduled_for: None,
-                    entity: TaskEntity::Warehouse { warehouse_id },
-                },
-                payload: serde_json::json!({}),
-            }],
-        )
-        .await
-        .unwrap_err();
-        let source = err.error.source.unwrap();
-        let db_err = source
-            .downcast_ref::<sqlx::Error>()
-            .and_then(sqlx::Error::as_database_error)
-            .unwrap();
+        let task_id = queue_with_demand(&pool, &q, warehouse_id, &project_id, Some(-1), 1).await;
+        assert_eq!(demands(&pool, task_id).await, (vec![Some(0)], vec![]));
+
+        // The database refuses a negative one.
+        let err = sqlx::query("UPDATE task SET resource_demand = -1 WHERE task_id = $1")
+            .bind(*task_id)
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        let db_err = err.as_database_error().unwrap();
         assert_eq!(db_err.code().as_deref(), Some("23514"));
         assert_eq!(db_err.constraint(), Some("task_resource_demand_check"));
     }
