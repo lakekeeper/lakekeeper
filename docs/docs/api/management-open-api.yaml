@@ -3156,6 +3156,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/server/maintenance-mode:
+    post:
+      tags:
+        - server
+      summary: Set Maintenance Mode
+      description: |-
+        Switches the Lakekeeper process that serves this request into or out of
+        read-only maintenance mode. While read-only, the process rejects mutating
+        requests with `503` and starts no new background tasks. The mode is held
+        per process: call each replica on its own address, not through a load
+        balancer. A restart returns the process to the mode set by
+        `LAKEKEEPER__MAINTENANCE_MODE`, and `off` is rejected with `409` while
+        that variable sets `read-only`. Requires instance-admin privilege.
+      operationId: set_maintenance_mode
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetMaintenanceModeRequest'
+        required: true
+      responses:
+        '200':
+          description: Maintenance mode of the serving process
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaintenanceModeResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/tag-definition:
     get:
       tags:
@@ -13708,6 +13741,33 @@ components:
           items:
             $ref: '#/components/schemas/GetWarehouseResponse'
           description: List of warehouses in the project.
+    MaintenanceMode:
+      type: string
+      enum:
+        - off
+        - read-only
+    MaintenanceModeResponse:
+      type: object
+      description: |-
+        Maintenance mode of the process that served the request. Each process holds
+        its own mode; call every replica on its own address to change them all.
+      required:
+        - mode
+        - startup-mode
+      properties:
+        hostname:
+          type:
+            - string
+            - 'null'
+          description: Host name of the serving process (the pod name on Kubernetes), if known.
+        mode:
+          $ref: '#/components/schemas/MaintenanceMode'
+          description: Mode in effect after the request.
+        startup-mode:
+          $ref: '#/components/schemas/MaintenanceMode'
+          description: |-
+            Mode set by `LAKEKEEPER__MAINTENANCE_MODE` at startup. A restart returns the
+            process to it.
     ManagedBy:
       type: string
       description: |-
@@ -15367,6 +15427,17 @@ components:
       enum:
         - admin
         - operator
+    SetMaintenanceModeRequest:
+      type: object
+      description: Request to switch this process into or out of read-only maintenance mode.
+      required:
+        - mode
+      properties:
+        mode:
+          $ref: '#/components/schemas/MaintenanceMode'
+          description: |-
+            Mode to switch to. `off` is rejected while `LAKEKEEPER__MAINTENANCE_MODE`
+            sets `read-only`.
     SetManagedAccessRequest:
       type: object
       required:
