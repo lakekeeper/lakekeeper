@@ -245,7 +245,7 @@ pub struct RollbackCompactionPolicy {
 
 impl RollbackCompactionPolicy {
     /// Applies when a policy does not set `max_compaction_age_seconds`.
-    pub const DEFAULT_MAX_COMPACTION_AGE_SECONDS: u64 = 3600;
+    pub const DEFAULT_MAX_COMPACTION_AGE_SECONDS: u64 = 86_400;
     /// Applies when a policy does not set `snapshot_removal_fence_seconds`.
     pub const DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS: u64 = 60;
 

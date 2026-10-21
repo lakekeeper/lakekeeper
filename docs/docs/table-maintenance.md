@@ -126,7 +126,7 @@ Iceberg optimistic concurrency is symmetric: whoever commits second loses. When 
 
 The catalog uses a lazy *tag-and-reap* model. A compaction commit lands as an ordinary, durable snapshot; it merely carries a marker in its snapshot summary declaring it rollbackable. If no conflicting writer ever appears, it stays as a perfectly valid compaction result and nothing further happens. Only when a writer's commit would otherwise fail optimistic-concurrency validation does the catalog act: if *every* snapshot between the writer's expected base and the current branch tip is a rollbackable compaction snapshot, the catalog excises those snapshots, rebases the writer onto its expected base, and commits — folding the revert into the writer's own commit. The pre-compaction data files still physically exist, so restoring the earlier snapshot leaves the writer's positional deletes referencing live files again.
 
-If any genuine data commit sits between the writer's base and the tip, the catalog does **not** roll back — the writer takes a normal concurrency failure and retries, and the compaction snapshot becomes permanent. A compaction is rolled back only while it is younger than the warehouse's maximum compaction age, one hour by default. After that, a conflicting writer takes a normal concurrency failure. This is a yield primitive, not a rebase — the catalog drops the compaction snapshot rather than replaying it, which is what makes it safe on V2 positional-delete tables.
+If any genuine data commit sits between the writer's base and the tip, the catalog does **not** roll back — the writer takes a normal concurrency failure and retries, and the compaction snapshot becomes permanent. A compaction is rolled back only while it is younger than the warehouse's maximum compaction age, 24 hours by default. After that, a conflicting writer takes a normal concurrency failure. This is a yield primitive, not a rebase — the catalog drops the compaction snapshot rather than replaying it, which is what makes it safe on V2 positional-delete tables.
 
 ### Two-part opt-in
 
@@ -140,7 +140,7 @@ Transparent commit is disabled by default and requires two independent opt-ins:
       -d '{"enabled": true}'
     ```
 
-    The optional `max-compaction-age-seconds` sets how old a compaction may be and still be rolled back. It is measured from the compaction snapshot's timestamp. The optional `snapshot-removal-fence-seconds` sets the window described in [Snapshot expiration](#transparent-commit-snapshot-expiration). Each request sets the whole policy, so a request without them sets them back to 3600 and 60 seconds.
+    The optional `max-compaction-age-seconds` sets how old a compaction may be and still be rolled back. It is measured from the compaction snapshot's timestamp. The optional `snapshot-removal-fence-seconds` sets the window described in [Snapshot expiration](#transparent-commit-snapshot-expiration). Each request sets the whole policy, so a request without them sets them back to 86400 and 60 seconds.
 
     Changing the flag needs the `set_rollback_compaction_policy` permission on the warehouse. With OpenFGA, `modify` on the warehouse grants it.
 
