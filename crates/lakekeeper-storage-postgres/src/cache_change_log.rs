@@ -119,10 +119,10 @@ mod tests {
 
     use super::*;
 
-    type LogRow = (String, Vec<String>, Option<i64>, String);
+    type LogRow = (String, Vec<String>, String);
 
     async fn log_rows(pool: &PgPool) -> Vec<LogRow> {
-        sqlx::query_as("SELECT domain, keys, version, xid::text FROM cache_change_log ORDER BY id")
+        sqlx::query_as("SELECT domain, keys, xid::text FROM cache_change_log ORDER BY id")
             .fetch_all(pool)
             .await
             .unwrap()
@@ -153,10 +153,9 @@ mod tests {
                 (
                     "warehouse".to_string(),
                     vec![warehouse(1).encode(), warehouse(2).encode()],
-                    None,
                     current.clone(),
                 ),
-                ("role_ancestors".to_string(), vec![], None, current),
+                ("role_ancestors".to_string(), vec![], current),
             ]
         );
     }
@@ -176,7 +175,7 @@ mod tests {
         let rows: Vec<_> = log_rows(&pool)
             .await
             .into_iter()
-            .map(|(domain, keys, _, _)| (domain, keys))
+            .map(|(domain, keys, _)| (domain, keys))
             .collect();
         assert_eq!(
             rows,
@@ -239,9 +238,9 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn the_extension_function_records_a_versioned_row(pool: PgPool) {
+    async fn the_extension_function_records_a_row_under_the_current_xid(pool: PgPool) {
         let mut tx = pool.begin().await.unwrap();
-        sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', ARRAY['key-1'], 7)")
+        sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', ARRAY['key-1'])")
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -256,7 +255,6 @@ mod tests {
             vec![(
                 "extension_domain".to_string(),
                 vec!["key-1".to_string()],
-                Some(7),
                 current
             )]
         );
@@ -280,8 +278,8 @@ mod tests {
         let rows = log_rows(&pool).await;
         assert_eq!(rows.len(), 1);
         assert_eq!(
-            (rows[0].0.as_str(), rows[0].1.clone(), rows[0].2),
-            ("extension_domain", vec![], None)
+            (rows[0].0.as_str(), rows[0].1.clone()),
+            ("extension_domain", vec![])
         );
     }
 }

@@ -6,8 +6,6 @@ create table cache_change_log (
     domain text not null,
     -- An empty array names the whole domain.
     keys text[] not null,
-    -- A version the writer holds under a row lock, for domains whose readers compare versions.
-    version bigint,
     -- Rows older than the retention are pruned.
     changed_at timestamptz not null default clock_timestamp(),
     -- Rows are read in (xid, id) order. The key also gives deletes a replica identity under
@@ -31,11 +29,10 @@ alter table cache_change_log set (
 -- from a Lakekeeper session.
 create function lakekeeper_record_cache_change(
     p_domain text,
-    p_keys text[],
-    p_version bigint default null
+    p_keys text[]
 ) returns void
 language sql
 as $$
-    insert into cache_change_log (domain, keys, version)
-    values (p_domain, p_keys, p_version)
+    insert into cache_change_log (domain, keys)
+    values (p_domain, p_keys)
 $$;

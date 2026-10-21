@@ -93,13 +93,13 @@ async fn read_poll(
         r#"
         WITH s AS (SELECT pg_current_snapshot() AS next),
         changed AS (
-            (SELECT l.xid, l.id, l.domain, l.keys, l.version
+            (SELECT l.xid, l.id, l.domain, l.keys
              FROM cache_change_log l
              WHERE l.xid = ANY(ARRAY(SELECT pg_snapshot_xip($1::text::pg_snapshot)))
              ORDER BY l.xid, l.id
              LIMIT $2)
             UNION ALL
-            (SELECT l.xid, l.id, l.domain, l.keys, l.version
+            (SELECT l.xid, l.id, l.domain, l.keys
              FROM cache_change_log l
              WHERE l.xid >= pg_snapshot_xmax($1::text::pg_snapshot)
                AND l.xid < pg_snapshot_xmax(pg_current_snapshot())
@@ -114,8 +114,7 @@ async fn read_poll(
                coalesce(pg_snapshot_xmax(s.next) < pg_snapshot_xmax($1::text::pg_snapshot), false)
                    AS "went_back!",
                c.domain AS "domain?",
-               c.keys AS "keys?",
-               c.version AS "version?"
+               c.keys AS "keys?"
         FROM s LEFT JOIN changed c ON true
         ORDER BY c.xid, c.id
         "#,
@@ -139,7 +138,6 @@ async fn read_poll(
             Some(LoggedChange {
                 domain: r.domain?,
                 keys: r.keys?,
-                version: r.version,
             })
         })
         .collect();
@@ -222,7 +220,6 @@ mod tests {
                 .map(|(domain, key)| LoggedChange {
                     domain: (*domain).to_string(),
                     keys: vec![(*key).to_string()],
-                    version: None,
                 })
                 .collect(),
         )

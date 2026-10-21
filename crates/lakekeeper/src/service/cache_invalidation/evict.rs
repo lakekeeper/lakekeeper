@@ -237,7 +237,6 @@ mod tests {
         LoggedChange {
             domain: domain.to_string(),
             keys: keys.iter().map(ToString::to_string).collect(),
-            version: None,
         }
     }
 

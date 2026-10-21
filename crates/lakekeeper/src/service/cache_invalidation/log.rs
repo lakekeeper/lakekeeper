@@ -10,8 +10,6 @@ pub struct LoggedChange {
     pub domain: String,
     /// Encoded keys; empty for the whole domain.
     pub keys: Vec<String>,
-    /// A version the writer recorded, for domains whose readers compare versions.
-    pub version: Option<i64>,
 }
 
 /// Why the log cannot tell what changed since the previous poll.

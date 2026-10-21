@@ -328,7 +328,6 @@ mod tests {
         LoggedChange {
             domain: "secret".to_string(),
             keys: vec![uuid::Uuid::now_v7().to_string()],
-            version: None,
         }
     }
 
