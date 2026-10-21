@@ -182,6 +182,43 @@ test_fast_path_namespace_broad_off_for_tables if {
 	result == set()
 }
 
+test_fast_path_off_keeps_per_table_checks if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": [
+				{"table": {"catalogName": "managed", "schemaName": "finance", "tableName": "products"}},
+				{"table": {"catalogName": "managed", "schemaName": "finance", "tableName": "revenue"}},
+			],
+		},
+	}
+		with data.configuration.lakekeeper as mock_lakekeeper_without_tabular_fast_path
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_list_everything_and_products
+
+	# The warehouse allows `list_everything`, but the per-table checks decide.
+	result == {0}
+}
+
+test_fast_path_on_with_same_grants_allows_all_tables if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": [
+				{"table": {"catalogName": "managed", "schemaName": "finance", "tableName": "products"}},
+				{"table": {"catalogName": "managed", "schemaName": "finance", "tableName": "revenue"}},
+			],
+		},
+	}
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_list_everything_and_products
+
+	result == {0, 1}
+}
+
 test_fast_path_stays_on_for_schemas if {
 	result := trino.batch with input as {
 		"context": mock_context,
