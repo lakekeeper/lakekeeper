@@ -23,6 +23,8 @@ use iceberg::{
     spec::{FormatVersion, Operation, Snapshot, TableMetadata},
 };
 
+use crate::service::SnapshotRemovalFence;
+
 /// Primary marker a compaction stamps on its `REPLACE` snapshot summary to opt into being
 /// rolled back on conflict. Expected value: `"true"` (compared case-insensitively).
 pub(crate) const ROLLBACKABLE_SNAPSHOT_MARKER: &str = "lakekeeper.rollbackable";
@@ -299,6 +301,37 @@ fn is_rollbackable_snapshot(snapshot: &Snapshot) -> bool {
         ROLLBACKABLE_SNAPSHOT_MARKER,
         ROLLBACKABLE_SNAPSHOT_MARKER_VALUE,
     ) || has_marker(POLARIS_ROLLBACK_MARKER, POLARIS_ROLLBACK_MARKER_VALUE)
+}
+
+/// Whether the client's own updates remove snapshots, as an expire-snapshots run does.
+pub(crate) fn removes_snapshots(updates: &[TableUpdate]) -> bool {
+    updates
+        .iter()
+        .any(|u| matches!(u, TableUpdate::RemoveSnapshots { .. }))
+}
+
+/// Whether a commit that removes snapshots must wait because a compaction was rolled back
+/// within `window`.
+///
+/// A client that expires snapshots, such as Java's `ExpireSnapshots`, loads the table before
+/// and after its commit and deletes the files of every snapshot missing from the second load
+/// as if it had expired that snapshot. A rolled-back compaction missing from the second load
+/// would make it delete files the new branch tip still reads. The conflict makes such a client
+/// retry from a load that no longer contains the rolled-back compaction.
+pub(crate) fn snapshot_removal_fenced(
+    fence: &SnapshotRemovalFence,
+    window: chrono::Duration,
+) -> bool {
+    fence.since_last_reap.is_some_and(|since| since < window)
+}
+
+/// Whether a rollback must be skipped because a commit removed snapshots within `window`.
+/// The client of that commit may not have loaded the table a second time yet; see
+/// [`snapshot_removal_fenced`].
+pub(crate) fn reap_fenced(fence: &SnapshotRemovalFence, window: chrono::Duration) -> bool {
+    fence
+        .since_last_snapshot_removal
+        .is_some_and(|since| since < window)
 }
 
 /// The updates synthesized by a reap, to be recorded alongside the writer's own updates so that
@@ -648,5 +681,33 @@ mod tests {
             plan_compaction_reap_inner(&md, &reqs, &updates, limit),
             Err(ReapRejection::CompactionTooOld)
         );
+    }
+
+    #[test]
+    fn fence_blocks_only_inside_window() {
+        let window = chrono::Duration::seconds(60);
+        let at = |secs| SnapshotRemovalFence {
+            since_last_reap: Some(chrono::Duration::seconds(secs)),
+            since_last_snapshot_removal: Some(chrono::Duration::seconds(secs)),
+        };
+        assert!(snapshot_removal_fenced(&at(59), window));
+        assert!(reap_fenced(&at(59), window));
+        // Written by a transaction that started after the reading one.
+        assert!(snapshot_removal_fenced(&at(-1), window));
+        assert!(reap_fenced(&at(-1), window));
+        assert!(!snapshot_removal_fenced(&at(60), window));
+        assert!(!reap_fenced(&at(60), window));
+        let never = SnapshotRemovalFence::default();
+        assert!(!snapshot_removal_fenced(&never, window));
+        assert!(!reap_fenced(&never, window));
+    }
+
+    #[test]
+    fn recognizes_snapshot_removal_updates() {
+        assert!(removes_snapshots(&[TableUpdate::RemoveSnapshots {
+            snapshot_ids: vec![1]
+        }]));
+        let (_, writer_updates) = writer(1, 3, 2);
+        assert!(!removes_snapshots(&writer_updates));
     }
 }

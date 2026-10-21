@@ -314,6 +314,12 @@ pub struct SetWarehouseRollbackCompactionPolicyRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "open-api", schema(value_type = Option<u64>, minimum = 1))]
     pub max_compaction_age_seconds: Option<std::num::NonZeroU64>,
+    /// For this many seconds after a compaction was rolled back, a commit that removes
+    /// snapshots (such as an expire-snapshots run) gets a retryable conflict. For this many
+    /// seconds after such a commit, no compaction is rolled back. Defaults to 60.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<u64>, minimum = 1))]
+    pub snapshot_removal_fence_seconds: Option<std::num::NonZeroU64>,
 }
 
 impl From<&SetWarehouseRollbackCompactionPolicyRequest> for RollbackCompactionPolicy {
@@ -324,12 +330,20 @@ impl From<&SetWarehouseRollbackCompactionPolicyRequest> for RollbackCompactionPo
                 RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS,
                 std::num::NonZeroU64::get,
             ),
+            snapshot_removal_fence_seconds: request.snapshot_removal_fence_seconds.map_or(
+                RollbackCompactionPolicy::DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS,
+                std::num::NonZeroU64::get,
+            ),
         }
     }
 }
 
 fn default_rollback_compaction_max_age_seconds() -> u64 {
     RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS
+}
+
+fn default_rollback_compaction_snapshot_removal_fence_seconds() -> u64 {
+    RollbackCompactionPolicy::DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -393,6 +407,9 @@ pub struct GetWarehouseResponse {
     /// A compaction snapshot older than this many seconds is not rolled back.
     #[serde(default = "default_rollback_compaction_max_age_seconds")]
     pub rollback_compaction_max_age_seconds: u64,
+    /// Seconds a compaction rollback and a snapshot-removal commit on one table are kept apart.
+    #[serde(default = "default_rollback_compaction_snapshot_removal_fence_seconds")]
+    pub rollback_compaction_snapshot_removal_fence_seconds: u64,
     /// Last updated timestamp.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -2457,6 +2474,9 @@ impl GetWarehouseResponse {
             rollback_compaction_max_age_seconds: warehouse
                 .rollback_compaction_policy
                 .max_compaction_age_seconds,
+            rollback_compaction_snapshot_removal_fence_seconds: warehouse
+                .rollback_compaction_policy
+                .snapshot_removal_fence_seconds,
             updated_at: warehouse.updated_at,
         }
     }

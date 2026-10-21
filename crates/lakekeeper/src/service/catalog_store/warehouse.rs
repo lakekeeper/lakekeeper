@@ -238,11 +238,26 @@ pub struct RollbackCompactionPolicy {
     pub enabled: bool,
     /// A compaction snapshot older than this many seconds is not rolled back.
     pub max_compaction_age_seconds: u64,
+    /// For this many seconds after a rollback, commits that remove snapshots are rejected
+    /// with a retryable conflict. For this many seconds after such a commit, no compaction
+    /// is rolled back.
+    pub snapshot_removal_fence_seconds: u64,
 }
 
 impl RollbackCompactionPolicy {
     /// Applies when a policy does not set `max_compaction_age_seconds`.
     pub const DEFAULT_MAX_COMPACTION_AGE_SECONDS: u64 = 3600;
+    /// Applies when a policy does not set `snapshot_removal_fence_seconds`.
+    pub const DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS: u64 = 60;
+
+    /// The fence window as a duration.
+    #[must_use]
+    pub fn snapshot_removal_fence(&self) -> chrono::Duration {
+        i64::try_from(self.snapshot_removal_fence_seconds)
+            .ok()
+            .and_then(chrono::Duration::try_seconds)
+            .unwrap_or(chrono::Duration::MAX)
+    }
 }
 
 impl Default for RollbackCompactionPolicy {
@@ -250,6 +265,7 @@ impl Default for RollbackCompactionPolicy {
         Self {
             enabled: false,
             max_compaction_age_seconds: Self::DEFAULT_MAX_COMPACTION_AGE_SECONDS,
+            snapshot_removal_fence_seconds: Self::DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS,
         }
     }
 }

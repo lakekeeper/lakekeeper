@@ -71,6 +71,7 @@ pub(super) async fn set_warehouse_deletion_profile<
                 default_format_version,
                 rollback_compaction_on_conflict,
                 rollback_compaction_max_age_seconds,
+                rollback_compaction_fence_seconds,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -150,6 +151,7 @@ pub(crate) async fn create_warehouse(
                                     default_format_version,
                                     rollback_compaction_on_conflict,
                                     rollback_compaction_max_age_seconds,
+                                    rollback_compaction_fence_seconds,
                                     managed_by as "managed_by: ManagedBy",
                                     updated_at,
                                     version),
@@ -396,6 +398,7 @@ struct WarehouseRecord {
     default_format_version: Option<i16>,
     rollback_compaction_on_conflict: bool,
     rollback_compaction_max_age_seconds: i64,
+    rollback_compaction_fence_seconds: i64,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
     version: i64,
 }
@@ -438,6 +441,15 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
                         value.rollback_compaction_max_age_seconds
                     ))
                 })?,
+                snapshot_removal_fence_seconds: u64::try_from(
+                    value.rollback_compaction_fence_seconds,
+                )
+                .map_err(|_| {
+                    DatabaseIntegrityError::new(format!(
+                        "Invalid rollback_compaction_fence_seconds '{}' stored for warehouse.",
+                        value.rollback_compaction_fence_seconds
+                    ))
+                })?,
             },
             updated_at: value.updated_at,
             version: WarehouseVersion::from(value.version),
@@ -472,6 +484,7 @@ pub(crate) async fn list_warehouses<
                 default_format_version,
                 rollback_compaction_on_conflict,
                 rollback_compaction_max_age_seconds,
+                rollback_compaction_fence_seconds,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -514,6 +527,7 @@ pub(super) async fn get_warehouse_by_name(
             default_format_version,
             rollback_compaction_on_conflict,
             rollback_compaction_max_age_seconds,
+            rollback_compaction_fence_seconds,
             managed_by as "managed_by: ManagedBy",
             updated_at,
             version
@@ -559,6 +573,7 @@ pub(crate) async fn get_warehouse_by_id<
             default_format_version,
             rollback_compaction_on_conflict,
             rollback_compaction_max_age_seconds,
+            rollback_compaction_fence_seconds,
             managed_by as "managed_by: ManagedBy",
             updated_at,
             version
@@ -711,6 +726,7 @@ pub(crate) async fn rename_warehouse(
             default_format_version,
             rollback_compaction_on_conflict,
             rollback_compaction_max_age_seconds,
+            rollback_compaction_fence_seconds,
             managed_by as "managed_by: ManagedBy",
             updated_at,
             version
@@ -756,6 +772,7 @@ pub(crate) async fn set_warehouse_status(
                 default_format_version,
                 rollback_compaction_on_conflict,
                 rollback_compaction_max_age_seconds,
+                rollback_compaction_fence_seconds,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -798,6 +815,7 @@ pub(crate) async fn set_warehouse_protection(
                 default_format_version,
                 rollback_compaction_on_conflict,
                 rollback_compaction_max_age_seconds,
+                rollback_compaction_fence_seconds,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -840,6 +858,7 @@ pub(crate) async fn set_warehouse_managed_by(
                 default_format_version,
                 rollback_compaction_on_conflict,
                 rollback_compaction_max_age_seconds,
+                rollback_compaction_fence_seconds,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -865,11 +884,13 @@ pub(crate) async fn set_warehouse_rollback_compaction_policy(
 ) -> Result<ResolvedWarehouse, SetWarehouseRollbackCompactionPolicyError> {
     let max_compaction_age_seconds =
         i64::try_from(policy.max_compaction_age_seconds).unwrap_or(i64::MAX);
+    let fence_seconds = i64::try_from(policy.snapshot_removal_fence_seconds).unwrap_or(i64::MAX);
     let warehouse = sqlx::query_as!(
         WarehouseRecord,
         r#"UPDATE warehouse
             SET rollback_compaction_on_conflict = $1,
-                rollback_compaction_max_age_seconds = $3
+                rollback_compaction_max_age_seconds = $3,
+                rollback_compaction_fence_seconds = $4
             WHERE warehouse_id = $2
             RETURNING
                 project_id,
@@ -885,13 +906,15 @@ pub(crate) async fn set_warehouse_rollback_compaction_policy(
                 default_format_version,
                 rollback_compaction_on_conflict,
                 rollback_compaction_max_age_seconds,
+                rollback_compaction_fence_seconds,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
             "#,
         policy.enabled,
         *warehouse_id,
-        max_compaction_age_seconds
+        max_compaction_age_seconds,
+        fence_seconds
     )
     .fetch_optional(&mut **transaction)
     .await
@@ -966,6 +989,7 @@ pub(crate) async fn set_warehouse_format_version_policy(
                 default_format_version,
                 rollback_compaction_on_conflict,
                 rollback_compaction_max_age_seconds,
+                rollback_compaction_fence_seconds,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -1024,6 +1048,7 @@ pub(crate) async fn update_storage_profile(
                 default_format_version,
                 rollback_compaction_on_conflict,
                 rollback_compaction_max_age_seconds,
+                rollback_compaction_fence_seconds,
                 managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
@@ -1697,6 +1722,7 @@ pub mod test {
         let policy = RollbackCompactionPolicy {
             enabled: true,
             max_compaction_age_seconds: 600,
+            snapshot_removal_fence_seconds: 30,
         };
         let mut trx = PostgresTransaction::begin_write(state.clone())
             .await
