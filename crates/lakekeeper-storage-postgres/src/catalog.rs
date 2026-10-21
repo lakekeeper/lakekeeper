@@ -72,8 +72,11 @@ use lakekeeper::{
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
-            TaskId, TaskInput, TaskQueueName, TaskResolveScope,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
+            ProjectTaskScheduleState, RetryDecision, Task, TaskAttemptId, TaskCheckState,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope,
+            TaskSchedule, TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError,
+            TaskScheduleUpsert, TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -125,9 +128,12 @@ use crate::{
     },
     tasks::{
         cancel_scheduled_tasks, check_and_heartbeat_task, cleanup_task_logs_older_than,
-        get_task_details, get_task_queue_config, list_tasks, pick_task, queue_task_batch,
-        record_failure, record_success, request_tasks_stop, reschedule_tasks_for, resolve_tasks,
-        set_task_queue_config,
+        delete_task_schedule, delete_warehouse_task_schedules, enqueue_task, get_task_details,
+        get_task_queue_config, list_project_task_schedule_states, list_task_schedules, list_tasks,
+        materialize_due_task_schedules, pick_task_with_retry_policy, queue_task_batch,
+        record_failure, record_success, reparent_pending_task, request_tasks_stop,
+        reschedule_tasks_for, resolve_tasks, set_task_queue_config, trigger_task_schedule,
+        upsert_task_schedule,
     },
     user::{create_or_update_user, delete_user, list_users, search_user},
     warehouse::{
@@ -1309,16 +1315,23 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn pick_new_task_impl(
-        queue_name: &TaskQueueName,
-        legacy_queue_names: &[&TaskQueueName],
-        default_max_time_since_last_heartbeat: Duration,
+        request: PickTaskRequest<'_>,
         state: Self::State,
     ) -> Result<Option<Task>> {
-        pick_task(
+        let PickTaskRequest {
+            queue_name,
+            legacy_queue_names,
+            default_max_time_since_last_heartbeat,
+            retry_policy,
+            resource_demand,
+        } = request;
+        pick_task_with_retry_policy(
             &state.write_pool(),
             queue_name,
             legacy_queue_names,
             default_max_time_since_last_heartbeat,
+            retry_policy,
+            resource_demand,
         )
         .await
     }
@@ -1343,9 +1356,10 @@ impl CatalogStore for super::PostgresBackend {
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
+        retry_decision: &RetryDecision,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        record_failure(&id, max_retries, error_details, transaction).await
+        record_failure(&id, max_retries, retry_decision, error_details, transaction).await
     }
 
     async fn get_task_details_impl(
@@ -1379,6 +1393,83 @@ impl CatalogStore for super::PostgresBackend {
         tracing::trace!("Queued {} tasks", queued.len());
 
         Ok(queued.into_iter().map(|t| t.task_id).collect())
+    }
+
+    async fn enqueue_task_impl(
+        queue_name: &'static TaskQueueName,
+        task: TaskInput,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome> {
+        enqueue_task(transaction, queue_name, task).await
+    }
+
+    async fn reparent_pending_task_impl(
+        queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
+        task_id: TaskId,
+        new_parent: TaskId,
+        task_data: serde_json::Value,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool> {
+        reparent_pending_task(
+            transaction,
+            queue_name,
+            legacy_queue_names,
+            task_id,
+            new_parent,
+            task_data,
+        )
+        .await
+    }
+
+    async fn upsert_task_schedule_impl(
+        schedule: TaskScheduleUpsert,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<TaskSchedule, UpsertTaskScheduleError> {
+        upsert_task_schedule(transaction, schedule).await
+    }
+
+    async fn list_task_schedules_impl(
+        filter: &TaskScheduleFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskSchedule>, TaskScheduleStoreError> {
+        list_task_schedules(transaction, filter).await
+    }
+
+    async fn delete_task_schedule_impl(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool, TaskScheduleStoreError> {
+        delete_task_schedule(transaction, schedule_id).await
+    }
+
+    async fn list_project_task_schedule_states_impl(
+        queue_name: &TaskQueueName,
+        schedule_key: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<ProjectTaskScheduleState>, TaskScheduleStoreError> {
+        list_project_task_schedule_states(transaction, queue_name, schedule_key).await
+    }
+
+    async fn delete_warehouse_task_schedules_impl(
+        warehouse_id: WarehouseId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<(), TaskScheduleStoreError> {
+        delete_warehouse_task_schedules(transaction, warehouse_id).await
+    }
+
+    async fn trigger_task_schedule_impl(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome, TriggerTaskScheduleError> {
+        trigger_task_schedule(transaction, schedule_id).await
+    }
+
+    async fn materialize_due_task_schedules_impl(
+        limit: i64,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<MaterializedTick>, TaskScheduleStoreError> {
+        materialize_due_task_schedules(transaction, limit).await
     }
 
     async fn cancel_scheduled_tasks_impl(

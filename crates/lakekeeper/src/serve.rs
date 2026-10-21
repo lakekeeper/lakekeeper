@@ -9,8 +9,9 @@ use crate::{
     CONFIG, CancellationToken,
     api::{
         ApiContext,
-        management::v1::server::{
-            APACHE_LICENSE_STATUS, BuildInfo, DEFAULT_BUILD_INFO, LicenseStatus,
+        management::v1::{
+            extension::ArcManagementApiExtension,
+            server::{APACHE_LICENSE_STATUS, BuildInfo, DEFAULT_BUILD_INFO, LicenseStatus},
         },
         router::{RouterArgs, new_full_router, new_health_router, serve as service_serve},
         shutdown_signal,
@@ -143,6 +144,10 @@ pub struct ServeConfiguration<
     #[builder(default)]
     /// A function to modify the router before serving
     pub modify_router_fn: Option<fn(axum::Router) -> axum::Router>,
+    /// Routes added to the management API. They are authenticated and counted in endpoint
+    /// statistics like Lakekeeper's own routes; each handler authorizes and audits its request.
+    #[builder(default)]
+    pub management_api_extensions: Vec<ArcManagementApiExtension<A, C, S>>,
     /// Cloud events sinks / publishers.
     ///
     /// The cloud-event publisher is registered only when this is non-empty.
@@ -360,6 +365,7 @@ async fn serve_inner<
         contract_verification,
         admission_gates,
         modify_router_fn,
+        management_api_extensions,
         cloud_event_sinks,
         enable_built_in_task_queues: enable_built_in_queues,
         register_additional_task_queues_fn,
@@ -564,7 +570,7 @@ async fn serve_inner<
     // it (a worker serves no API requests to record). The metrics server itself
     // still runs, spawned below.
     let router = if CONFIG.serve_http_api {
-        let mut router = new_full_router::<C, _, _, _>(RouterArgs {
+        let router = new_full_router::<C, _, _, _>(RouterArgs {
             authenticator: authenticator.clone(),
             state: state.clone(),
             service_health_provider: health_provider.clone(),
@@ -573,13 +579,10 @@ async fn serve_inner<
             endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
             instance_admin_membership: Arc::new(ConfiguredInstanceAdmins::from_config()),
             admission_gates,
+            management_api_extensions,
         })
         .await?;
-
-        if let Some(modify_router_fn) = modify_router_fn {
-            router = modify_router_fn(router);
-        }
-        router
+        modify_router_fn.unwrap_or(std::convert::identity)(router)
     } else {
         // Headless: the host announces the mode at startup (see the binary's
         // `serve`). Serve only `/health` for probes.
@@ -656,6 +659,25 @@ async fn serve_inner<
             Ok(())
         });
         service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
+
+        // Writes, so skipped in read-only maintenance.
+        if !skip_built_in_queues_for_maintenance {
+            let materializer_catalog_state = state.v1_state.catalog.clone();
+            let materializer_cancellation_token = cancellation_token.clone();
+            let materializer_abort_handle = service_futures.spawn(async move {
+                crate::service::tasks::task_schedule::task_schedule_materializer::<C>(
+                    materializer_catalog_state,
+                    CONFIG.task_poll_interval,
+                    materializer_cancellation_token,
+                )
+                .await;
+                Ok(())
+            });
+            service_ids.insert(
+                materializer_abort_handle.id(),
+                "Task Schedule Materializer".to_string(),
+            );
+        }
     }
 
     // HTTP Server / Axum. Serves the full API, or just `/health` in headless

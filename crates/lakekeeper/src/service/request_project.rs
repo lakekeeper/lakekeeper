@@ -197,6 +197,17 @@ mod tests {
         }
     }
 
+    /// axum serves HEAD with the GET handler, which needs the same project.
+    #[cfg(feature = "router")]
+    #[test]
+    fn a_head_request_to_a_get_route_addresses_its_warehouse() {
+        let endpoint = CatalogV1Endpoint::ListNamespaces;
+        assert_eq!(
+            warehouse_reference(&Method::HEAD, endpoint.path(), Some(WAREHOUSE), None),
+            Some(warehouse())
+        );
+    }
+
     #[cfg(feature = "router")]
     #[test]
     fn config_addresses_the_project_its_argument_names() {

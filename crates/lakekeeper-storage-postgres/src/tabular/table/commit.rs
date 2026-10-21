@@ -634,7 +634,8 @@ mod tests {
         spec::{
             FormatVersion, NestedField, NullOrder, Operation, PrimitiveType, Schema, Snapshot,
             SnapshotReference, SnapshotRetention, SortDirection, SortField, SortOrder, Summary,
-            TableMetadata, TableMetadataBuilder, Transform, Type, UnboundPartitionSpec,
+            TableMetadata, TableMetadataBuilder, Transform, Type, UnboundPartitionField,
+            UnboundPartitionSpec,
         },
     };
     use lakekeeper::{
@@ -680,7 +681,14 @@ mod tests {
     fn partition_spec() -> UnboundPartitionSpec {
         UnboundPartitionSpec::builder()
             .with_spec_id(0)
-            .add_partition_field(2, "y", Transform::Identity)
+            .add_partition_field(
+                UnboundPartitionField::builder()
+                    .source_ids(vec![2])
+                    .name("y")
+                    .transform(Transform::Identity)
+                    .build()
+                    .unwrap(),
+            )
             .unwrap()
             .build()
     }

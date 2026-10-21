@@ -13,10 +13,7 @@ use crate::{
     service::{
         Actor, ArcProjectId, CatalogStore, Result, SecretStore, State, Transaction, UserUpsertMode,
         authz::{Authorizer, GrantResource, emit_bootstrap_grants_async, write_bootstrap_grants},
-        tasks::{
-            ScheduleTaskMetadata, TaskEntity,
-            task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
-        },
+        tasks::task_log_cleanup_queue,
     },
 };
 
@@ -341,23 +338,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     t.transaction(),
                 )
                 .await?;
-                TaskLogCleanupTask::schedule_task::<C>(
-                    ScheduleTaskMetadata {
-                        project_id: default_project_id.clone(),
-                        parent_task_id: None,
-                        scheduled_for: None,
-                        entity: TaskEntity::Project,
-                    },
-                    TaskLogCleanupPayload::new(),
+                task_log_cleanup_queue::create_project_schedule::<C>(
+                    default_project_id.clone(),
                     t.transaction(),
                 )
-                .await
-                .map_err(|e| {
-                    e.append_detail(format!(
-                        "Failed to queue `{}` task for new project with id {default_project_id}.",
-                        task_log_cleanup_queue::QUEUE_NAME.as_str(),
-                    ))
-                })?;
+                .await?;
                 authorizer
                     .create_project(&request_metadata, default_project_id)
                     .await?;

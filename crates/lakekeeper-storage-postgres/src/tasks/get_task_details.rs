@@ -20,7 +20,7 @@ use uuid::Uuid;
 use super::TaskEntityTypeDB;
 use crate::{
     dbutils::DBErrorHandler,
-    tasks::{task_entity_from_db, task_status_from_db},
+    tasks::{task_entity_from_db, task_schedule_id_from_db, task_status_from_db},
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -46,6 +46,7 @@ struct TaskDetailsRow {
     pub message: Option<String>,
     pub project_id: String,
     pub warehouse_id: Option<uuid::Uuid>,
+    pub resource_demand: Option<i64>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -82,6 +83,7 @@ fn parse_task_details(
                     DatabaseIntegrityError::new("Task attempt is missing created_at timestamp.")
                 })?,
                 progress: r.progress,
+                resource_demand: r.resource_demand,
                 execution_details: r.execution_details,
             })
         })
@@ -104,10 +106,12 @@ fn parse_task_details(
             attempt: most_recent.attempt,
         },
         task_metadata: TaskMetadata {
+            resource_demand: most_recent.resource_demand,
             project_id: Arc::new(ProjectId::from_db_unchecked(most_recent.project_id)),
             parent_task_id: most_recent.parent_task_id.map(TaskId::from),
             scheduled_for: most_recent.attempt_scheduled_for,
             entity: scope,
+            schedule_id: task_schedule_id_from_db(most_recent.entity_type, most_recent.entity_id),
         },
         status,
         picked_up_at: most_recent.started_at,
@@ -183,7 +187,8 @@ where
             task_data as "task_data!",
             execution_details,
             duration,
-            message
+            message,
+            resource_demand
          FROM (
         SELECT
             project_id,
@@ -209,7 +214,8 @@ where
                 then now() - picked_up_at
                 else null
             end as duration,
-            null as message
+            null as message,
+            resource_demand
         FROM task
         WHERE task_id = $1
             AND project_id = $2
@@ -239,7 +245,8 @@ where
             task_data,
             execution_details,
             duration,
-            message
+            message,
+            resource_demand
         FROM task_log        
         WHERE task_id = $1
             AND project_id = $2
@@ -293,8 +300,8 @@ mod tests {
 
     use super::*;
     use crate::tasks::{
-        check_and_heartbeat_task, pick_task, queue_task_batch, record_failure, record_success,
-        test::setup_warehouse,
+        check_and_heartbeat_task, pick_task, queue_task_batch, record_failure_without_backoff,
+        record_success, test::setup_warehouse,
     };
 
     #[allow(clippy::too_many_arguments)]
@@ -337,6 +344,7 @@ mod tests {
             message: Some("Test message".to_string()),
             project_id: project_id.to_string(),
             warehouse_id,
+            resource_demand: None,
         }
     }
 
@@ -608,6 +616,7 @@ mod tests {
             queue_name,
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id,
                     parent_task_id,
                     entity: TaskEntity::EntityInWarehouse {
@@ -846,7 +855,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task, 1, "only attempt failed", &mut conn)
+        record_failure_without_backoff(&task, 1, "only attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -905,7 +914,7 @@ mod tests {
             .unwrap();
         assert_eq!(task1.attempt(), 1);
 
-        record_failure(&task1, 5, "First attempt failed", &mut conn)
+        record_failure_without_backoff(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -916,7 +925,7 @@ mod tests {
             .unwrap();
         assert_eq!(task2.attempt(), 2);
 
-        record_failure(&task2, 5, "Second attempt failed", &mut conn)
+        record_failure_without_backoff(&task2, 5, "Second attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -1000,7 +1009,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        record_failure(&task1, 5, "First attempt failed", &mut conn)
+        record_failure_without_backoff(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -1079,7 +1088,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-            record_failure(&task, 10, &format!("Attempt {i} failed"), &mut conn)
+            record_failure_without_backoff(&task, 10, &format!("Attempt {i} failed"), &mut conn)
                 .await
                 .unwrap();
         }
@@ -1264,6 +1273,7 @@ mod tests {
             vec![
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::EntityInWarehouse {
@@ -1278,6 +1288,7 @@ mod tests {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::Project,
@@ -1288,6 +1299,7 @@ mod tests {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::EntityInWarehouse {
