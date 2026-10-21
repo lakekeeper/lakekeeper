@@ -11,10 +11,6 @@ permissions:
 jobs:
   assign:
     if: ${{ !github.event.issue.pull_request && github.event.comment.body == '/assign' }}
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.event.issue.number }}
-      cancel-in-progress: false
-      queue: max
     runs-on: ubuntu-latest
     steps:
       - name: Assign issue to commenter
@@ -30,22 +26,6 @@ jobs:
 
             if (issue.state !== 'open' || issue.assignees.length !== 0) {
               core.info(`Issue #${issue.number} is not available for self-assignment.`);
-              return;
-            }
-
-            const timeline = await github.paginate(
-              github.rest.issues.listEventsForTimeline,
-              { ...issueRequest, per_page: 100 },
-            );
-            const lastClaimResetIndex = timeline.findLastIndex(
-              (event) => event.event === 'unassigned' || event.event === 'reopened',
-            );
-            const firstAssignComment = timeline
-              .slice(lastClaimResetIndex + 1)
-              .find((event) => event.event === 'commented' && event.body === '/assign');
-
-            if (firstAssignComment?.id !== context.payload.comment.id) {
-              core.info(`An earlier /assign comment claimed issue #${issue.number}.`);
               return;
             }
 

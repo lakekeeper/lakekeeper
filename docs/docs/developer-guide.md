@@ -6,7 +6,7 @@ description: "Contribute to Lakekeeper: development setup, pull request and CI e
 
 All commits to main go through a PR. CI checks have to pass before merging the PR. Keep in mind that CI checks include lints. Before merge, commits are squashed, but GitHub is taking care of this, so don't worry. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). We encourage small and orthogonal PRs. If you want to work on a bigger feature, please open an issue and discuss it with us first.
 
-If you want to work on something but don't know what, take a look at our issues tagged with `help wanted`. To claim an open issue with no assignees, comment only `/assign` on the issue. The first such comment wins. A new claim is possible after all assignees are removed. If you're still unsure, please reach out to us via the [Lakekeeper Discord](https://discord.gg/jkAGG8p93B). If you have questions while working on something, please use the GitHub issue or our Discord. We are happy to guide you!
+If you want to work on something but don't know what, take a look at our issues tagged with `help wanted`. To claim an open issue with no assignees, comment only `/assign` on the issue. If you're still unsure, please reach out to us via the [Lakekeeper Discord](https://discord.gg/jkAGG8p93B). If you have questions while working on something, please use the GitHub issue or our Discord. We are happy to guide you!
 
 ## Foundation & CLA
 
