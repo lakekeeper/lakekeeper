@@ -165,9 +165,9 @@ This optimization is transparent — it produces the same results as per-resourc
 
 ### Shortcut for broad access
 
-If a user may list everything in a warehouse or namespace (`list_everything`), Trino shows that user all schemas, tables and views inside it, including their columns. The bridge checks this once per query and does not check each object. This keeps queries such as `information_schema.columns` fast.
+If a user may list everything in a warehouse or namespace (`list_everything`), Trino shows that user all schemas, tables and views inside it, including their columns. The bridge checks `list_everything` on the warehouse. If the warehouse check does not allow it, the bridge checks each namespace that the request contains. It does not check each table and view. This keeps queries such as `information_schema.columns` fast.
 
-If `list_everything` should not show the columns and names of every table and view, set `LAKEKEEPER_LIST_EVERYTHING_GRANTS_TABULAR_METADATA` to `false` (or `list_everything_grants_tabular_metadata` in `configuration.rego`). The bridge then checks `get_metadata` on each table and view. Listing the columns of many tables then needs one call to Lakekeeper per table. Schemas always use the shortcut.
+If `list_everything` should not show the columns and names of every table and view, set `LAKEKEEPER_LIST_EVERYTHING_GRANTS_TABULAR_METADATA` to `false` (or `list_everything_grants_tabular_metadata` in `configuration.rego`). The bridge then checks `get_metadata` on each table and view. It sends these checks to Lakekeeper in batches, but listing the columns of many tables still needs more calls to Lakekeeper than the shortcut. Schemas always use the shortcut.
 
 ## Context Forwarding
 
