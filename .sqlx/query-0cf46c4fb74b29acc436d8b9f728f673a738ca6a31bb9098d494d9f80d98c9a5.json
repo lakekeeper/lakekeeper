@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM task_schedule WHERE schedule_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0cf46c4fb74b29acc436d8b9f728f673a738ca6a31bb9098d494d9f80d98c9a5"
+}

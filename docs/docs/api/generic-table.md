@@ -38,4 +38,4 @@ description: "Interactive OpenAPI reference for Lakekeeper's Generic Table API f
 }
 </style>
 <redoc spec-url="../generic-table-open-api.yaml"></redoc>
-<script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"> </script>
+<script src="https://cdn.redoc.ly/redoc/v2.5.4/bundles/redoc.standalone.js"> </script>

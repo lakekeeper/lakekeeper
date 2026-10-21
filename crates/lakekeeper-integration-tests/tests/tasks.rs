@@ -133,6 +133,7 @@ mod test {
             &QUEUE_NAME,
             TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id: setup.warehouse.project_id.clone(),
                     parent_task_id: None,
                     entity: TaskEntity::EntityInWarehouse {
@@ -150,6 +151,7 @@ mod test {
         )
         .await
         .unwrap()
+        .inserted()
         .unwrap();
         transaction.commit().await.unwrap();
         tx.send(task_id).await.unwrap();

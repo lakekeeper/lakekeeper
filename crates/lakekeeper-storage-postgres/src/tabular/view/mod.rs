@@ -1023,6 +1023,7 @@ pub mod tests {
 
         let _ = TabularExpirationTask::schedule_task::<PostgresBackend>(
             ScheduleTaskMetadata {
+                resource_demand: None,
                 project_id,
                 parent_task_id: None,
                 scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),

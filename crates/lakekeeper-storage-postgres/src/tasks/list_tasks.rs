@@ -21,7 +21,7 @@ use super::TaskEntityTypeDB;
 use crate::{
     dbutils::DBErrorHandler,
     pagination::{PaginateToken, V1PaginateToken},
-    tasks::{task_entity_from_db, task_status_from_db},
+    tasks::{task_entity_from_db, task_schedule_id_from_db, task_status_from_db},
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -43,6 +43,7 @@ struct TaskRow {
     parent_task_id: Option<Uuid>,
     task_created_at: DateTime<chrono::Utc>,
     updated_at: Option<DateTime<chrono::Utc>>,
+    resource_demand: Option<i64>,
 }
 
 fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
@@ -63,10 +64,12 @@ fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
         },
         queue_name: row.queue_name.into(),
         task_metadata: TaskMetadata {
+            resource_demand: row.resource_demand,
             project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
             entity: scope,
             parent_task_id: row.parent_task_id.map(TaskId::from),
             scheduled_for: row.attempt_scheduled_for,
+            schedule_id: task_schedule_id_from_db(row.entity_type, row.entity_id),
         },
         status,
         picked_up_at: row.started_at,
@@ -107,6 +110,7 @@ pub(crate) async fn list_tasks(
         entities,
         created_after,
         created_before,
+        parent_task_id,
         page_token,
         page_size,
     } = (*query).clone();
@@ -125,7 +129,6 @@ pub(crate) async fn list_tasks(
             "InternalError",
             None,
         ))?,
-        TaskFilter::All => (None, None, true),
     };
 
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
@@ -164,6 +167,8 @@ pub(crate) async fn list_tasks(
             }
             WarehouseTaskEntityFilter::Warehouse => (None, TaskEntityTypeDB::Warehouse),
         })
+        // A task matching two entries would be listed twice.
+        .unique()
         .unzip::<_, _, Vec<_>, Vec<_>>();
 
     let tasks = sqlx::query_as!(
@@ -191,12 +196,14 @@ pub(crate) async fn list_tasks(
                 progress,
                 parent_task_id,
                 created_at as task_created_at,
-                updated_at
+                updated_at,
+                t.resource_demand
             FROM task t
             LEFT JOIN selected_entities se ON (
                 NOT $12 AND -- only join if filtering
-                t.entity_id IS NOT DISTINCT FROM se.entity_id 
-                AND t.entity_type = se.entity_type
+                t.entity_type = se.entity_type
+                -- A warehouse-scoped task may carry the id of its schedule.
+                AND (se.entity_type = 'warehouse' OR t.entity_id IS NOT DISTINCT FROM se.entity_id)
             )
             WHERE ($18 OR project_id = $15)
                 AND CASE
@@ -209,6 +216,7 @@ pub(crate) async fn list_tasks(
                 AND ($12 OR se.entity_type IS NOT NULL)
                 AND (created_at >= $13 OR $13 IS NULL)
                 AND (created_at <= $14 OR $14 IS NULL)
+                AND ($19::uuid IS NULL OR parent_task_id = $19)
             ORDER BY task_created_at DESC, task_id DESC
             LIMIT $2
         ),
@@ -230,12 +238,14 @@ pub(crate) async fn list_tasks(
                 progress,
                 parent_task_id,
                 task_created_at,
-                null::timestamptz as updated_at
+                null::timestamptz as updated_at,
+                tl.resource_demand
             FROM task_log tl
             LEFT JOIN selected_entities se ON (
                 NOT $12 AND -- only join if filtering
-                tl.entity_id IS NOT DISTINCT FROM se.entity_id 
-                AND tl.entity_type = se.entity_type
+                tl.entity_type = se.entity_type
+                -- A warehouse-scoped task may carry the id of its schedule.
+                AND (se.entity_type = 'warehouse' OR tl.entity_id IS NOT DISTINCT FROM se.entity_id)
             )
             WHERE ($18 OR project_id = $15)
                 AND CASE
@@ -248,6 +258,7 @@ pub(crate) async fn list_tasks(
                 AND ($12 OR se.entity_type IS NOT NULL)
                 AND (task_created_at >= $13 OR $13 IS NULL)
                 AND (task_created_at <= $14 OR $14 IS NULL)
+                AND ($19::uuid IS NULL OR parent_task_id = $19)
             ORDER BY task_created_at DESC, task_id DESC, attempt DESC
             LIMIT $2
         )
@@ -268,7 +279,8 @@ pub(crate) async fn list_tasks(
             progress as "progress!",
             parent_task_id,
             task_created_at as "task_created_at!",
-            updated_at
+            updated_at,
+            resource_demand
          FROM (
             SELECT * FROM active_tasks
             UNION ALL
@@ -295,6 +307,7 @@ pub(crate) async fn list_tasks(
         warehouse_id.is_none(), // 16
         include_sub_tasks, // 17
         project_id.is_none(), // 18
+        parent_task_id.map(|id| *id), // 19
     )
     .fetch_all(&mut *transaction)
     .await
@@ -350,7 +363,8 @@ mod tests {
     use super::*;
     use crate::{
         tasks::{
-            pick_task, queue_task_batch, record_failure, record_success, test::setup_warehouse,
+            pick_task, queue_task_batch, record_failure_without_backoff, record_success,
+            test::setup_warehouse,
         },
         tests::get_api_context,
     };
@@ -423,6 +437,7 @@ mod tests {
             queue_name,
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id,
                     parent_task_id: None,
                     entity: TaskEntity::EntityInWarehouse {
@@ -779,6 +794,77 @@ mod tests {
                 panic!("Expected TaskEntity::Table")
             }
         }
+    }
+
+    #[sqlx::test]
+    async fn test_list_tasks_with_repeated_entity_filters_lists_each_task_once(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let tq_name = generate_tq_name();
+        let table_task = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            entity_id,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let warehouse_task = super::super::queue_task_batch(
+            &mut conn,
+            &tq_name,
+            vec![TaskInput {
+                task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
+                    project_id: project_id.clone(),
+                    parent_task_id: None,
+                    entity: TaskEntity::Warehouse { warehouse_id },
+                    scheduled_for: None,
+                },
+                payload: serde_json::json!({}),
+            }],
+        )
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .task_id;
+
+        let table = WarehouseTaskEntityFilter::Table {
+            table_id: entity_id.as_uuid().into(),
+        };
+        let request = ListTasksRequest {
+            entities: Some(vec![
+                table.clone(),
+                WarehouseTaskEntityFilter::Warehouse,
+                table,
+                WarehouseTaskEntityFilter::Warehouse,
+            ]),
+            ..Default::default()
+        };
+        let result = list_tasks(
+            &TaskFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
+            &request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result
+                .tasks
+                .iter()
+                .map(lakekeeper::service::tasks::TaskInfo::task_id)
+                .collect_vec(),
+            vec![warehouse_task, table_task]
+        );
     }
 
     #[sqlx::test]
@@ -1141,7 +1227,7 @@ mod tests {
                     .unwrap()
                     .unwrap();
             assert_eq!(picked_task.task_id(), task_id);
-            record_failure(&picked_task, 1, "Task failed", &mut conn)
+            record_failure_without_backoff(&picked_task, 1, "Task failed", &mut conn)
                 .await
                 .unwrap();
         }
@@ -1369,7 +1455,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task1, 2, "First attempt failed", &mut conn)
+        record_failure_without_backoff(&task1, 2, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -1387,7 +1473,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task2, 1, "Failed permanently", &mut conn)
+        record_failure_without_backoff(&task2, 1, "Failed permanently", &mut conn)
             .await
             .unwrap();
 
@@ -1541,7 +1627,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task_q2_1, 1, "Queue 2 failed", &mut conn)
+        record_failure_without_backoff(&task_q2_1, 1, "Queue 2 failed", &mut conn)
             .await
             .unwrap();
 
@@ -1778,7 +1864,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task1, 5, "First attempt failed", &mut conn)
+        record_failure_without_backoff(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -1948,6 +2034,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "project_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::Project,
@@ -1957,6 +2044,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "warehouse_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::EntityInWarehouse {
@@ -2016,6 +2104,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "warehouse_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::EntityInWarehouse {
@@ -2029,6 +2118,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "project_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::Project,
@@ -2038,6 +2128,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "warehouse_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::EntityInWarehouse {
@@ -2110,6 +2201,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "other_project_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: other_project.project_id,
                         parent_task_id: None,
                         entity: TaskEntity::Project,
@@ -2119,6 +2211,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "warehouse_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::EntityInWarehouse {
@@ -2132,6 +2225,7 @@ mod tests {
                 TaskInput {
                     payload: serde_json::json!({"data": "project_task"}),
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         entity: TaskEntity::Project,

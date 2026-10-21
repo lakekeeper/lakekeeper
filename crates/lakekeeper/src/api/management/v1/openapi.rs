@@ -223,18 +223,22 @@ impl utoipa::Modify for SecurityAddon {
     }
 }
 
-/// Get the `OpenAPI` documentation for the management API.
+/// Get the `OpenAPI` documentation for the management API, including the documents of the
+/// management API extensions.
 ///
 /// # Errors
 /// Never fails, but returns warnings if components cannot be patched.
-#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn api_doc<A: Authorizer>(
     queue_api_configs: &[&QueueApiConfig],
     project_queue_api_configs: &[&QueueApiConfig],
+    extension_docs: &[utoipa::openapi::OpenApi],
 ) -> utoipa::openapi::OpenApi {
     let mut doc = ManagementApiDoc::openapi();
     doc.merge(A::api_doc());
+    for extension_doc in extension_docs {
+        doc.merge(extension_doc.clone());
+    }
 
     add_dependent_schemas(&mut doc, &BUILT_IN_DEPENDENT_SCHEMAS);
 
@@ -1712,6 +1716,7 @@ mod spec_integrity_tests {
         serde_json::to_value(api_doc::<AllowAllAuthorizer>(
             &queue_configs,
             &project_queue_configs,
+            &[],
         ))
         .expect("the generated document must serialise")
     }

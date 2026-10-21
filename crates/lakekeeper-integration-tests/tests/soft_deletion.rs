@@ -708,6 +708,7 @@ async fn scheduled_purge_task(table: &SoftDeletedTable, name: &str) -> TaskId {
     .unwrap();
     let task_id = TabularPurgeTask::schedule_task::<PostgresBackend>(
         ScheduleTaskMetadata {
+            resource_demand: None,
             project_id: table.project_id.clone(),
             parent_task_id: None,
             scheduled_for: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
@@ -724,6 +725,7 @@ async fn scheduled_purge_task(table: &SoftDeletedTable, name: &str) -> TaskId {
     )
     .await
     .unwrap()
+    .inserted()
     .expect("a purge task is scheduled");
     t.commit().await.unwrap();
     task_id

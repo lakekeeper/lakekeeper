@@ -4,14 +4,15 @@ use iceberg::NamespaceIdent;
 use lakekeeper::{
     api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
     service::{
-        CatalogGenericTableOps, CatalogStore, CatalogTabularOps, GenericTableCreation,
-        GenericTableFormat, GenericTableId, Location, NamedEntity, TabularId, TabularListFlags,
-        Transaction,
+        CatalogGenericTableOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        GenericTableCreation, GenericTableFormat, GenericTableId, Location, NamedEntity, TabularId,
+        TabularListFlags, Transaction, WarehouseStatus,
         authz::AllowAllAuthorizer,
         storage::MemoryProfile,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, TaskQueueRegistry, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+            tabular_purge_queue,
         },
     },
 };
@@ -90,6 +91,7 @@ async fn test_queue_expiration_queue_task(pool: PgPool) {
             .unwrap();
     TabularExpirationTask::schedule_task::<PostgresBackend>(
         ScheduleTaskMetadata {
+            resource_demand: None,
             project_id,
             parent_task_id: None,
             scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
@@ -259,6 +261,7 @@ async fn test_expiration_queue_drops_generic_table(pool: PgPool) {
 
     TabularExpirationTask::schedule_task::<PostgresBackend>(
         ScheduleTaskMetadata {
+            resource_demand: None,
             project_id,
             parent_task_id: None,
             scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
@@ -317,5 +320,115 @@ async fn test_expiration_queue_drops_generic_table(pool: PgPool) {
         gone,
         "expiration task did not hard-delete the generic table within 5s"
     );
+    cancellation_token.cancel();
+}
+
+/// A soft-deleted table expires on schedule even while its warehouse is inactive.
+#[sqlx::test]
+async fn test_expiration_queue_drops_table_in_inactive_warehouse(pool: PgPool) {
+    migrate_core_only(&pool).await.unwrap();
+    let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+    let queues = TaskQueueRegistry::new();
+    let secrets = SecretsState::from_pools(pool.clone(), pool.clone());
+    queues
+        .register_built_in_queues::<PostgresBackend, SecretsState, AllowAllAuthorizer>(
+            catalog_state.clone(),
+            secrets,
+            AllowAllAuthorizer::default(),
+            Duration::from_millis(100),
+        )
+        .await;
+    let cancellation_token = lakekeeper::CancellationToken::new();
+    let runner = queues.task_queues_runner(cancellation_token.clone()).await;
+    let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
+
+    let (project_id, warehouse_id) = initialize_warehouse(
+        catalog_state.clone(),
+        Some(MemoryProfile::default().into()),
+        None,
+        None,
+        true,
+    )
+    .await;
+    let table = initialize_table(
+        warehouse_id,
+        catalog_state.clone(),
+        false,
+        None,
+        None,
+        Some("tab".to_string()),
+    )
+    .await;
+
+    let mut trx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(catalog_state.clone())
+            .await
+            .unwrap();
+    TabularExpirationTask::schedule_task::<PostgresBackend>(
+        ScheduleTaskMetadata {
+            resource_demand: None,
+            project_id,
+            parent_task_id: None,
+            scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+            entity: TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id: WarehouseTaskEntityId::Table {
+                    table_id: table.table_id,
+                },
+                entity_name: table.table_ident.into_name_parts(),
+            },
+        },
+        TabularExpirationPayload::new(DeleteKind::Purge),
+        trx.transaction(),
+    )
+    .await
+    .unwrap();
+    PostgresBackend::mark_tabular_as_deleted(
+        warehouse_id,
+        table.table_id,
+        false,
+        trx.transaction(),
+    )
+    .await
+    .unwrap();
+    PostgresBackend::set_warehouse_status(
+        warehouse_id,
+        WarehouseStatus::Inactive,
+        trx.transaction(),
+    )
+    .await
+    .unwrap();
+    trx.commit().await.unwrap();
+
+    // Listings hide the tables of an inactive warehouse, so read the rows directly.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let gone = loop {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM tabular WHERE tabular_id = $1)")
+                .bind(*table.table_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if !exists {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert!(gone, "expiration task did not drop the table within 5s");
+
+    let purges: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM task WHERE queue_name = $1 AND entity_id = $2) \
+         + (SELECT count(*) FROM task_log WHERE queue_name = $1 AND entity_id = $2)",
+    )
+    .bind(tabular_purge_queue::QUEUE_NAME.as_str())
+    .bind(*table.table_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(purges, 1, "the purge of the table's files is scheduled");
     cancellation_token.cancel();
 }

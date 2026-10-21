@@ -1,0 +1,75 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH due AS (\n            SELECT *\n            FROM unnest($1::uuid[], $2::uuid[], $3::timestamptz[], $4::timestamptz[], $5::bigint[])\n                AS d(schedule_id, task_id, tick, following, missed)\n        ),\n        inserted AS (\n            INSERT INTO task (\n                task_id,\n                queue_name,\n                status,\n                warehouse_id,\n                scheduled_for,\n                task_data,\n                entity_id,\n                entity_type,\n                project_id\n            )\n            SELECT\n                d.task_id,\n                s.queue_name,\n                'scheduled',\n                s.warehouse_id,\n                d.tick,\n                s.payload,\n                s.schedule_id,\n                CASE WHEN s.warehouse_id IS NULL THEN 'project'::entity_type\n                    ELSE 'warehouse'::entity_type END,\n                s.project_id\n            FROM due d\n            JOIN task_schedule s ON s.schedule_id = d.schedule_id\n            ON CONFLICT (project_id, warehouse_id, entity_type, entity_id, queue_name) DO NOTHING\n            RETURNING task_id, entity_id, scheduled_for\n        )\n        UPDATE task_schedule s\n        SET next_run_at = d.following,\n            missed_runs = s.missed_runs + d.missed\n        FROM due d\n        JOIN inserted i ON i.entity_id = d.schedule_id\n        WHERE s.schedule_id = d.schedule_id\n        RETURNING\n            s.schedule_id,\n            s.next_run_at,\n            i.task_id,\n            i.scheduled_for AS tick,\n            d.missed AS \"missed!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schedule_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "schedule_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "next_run_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "next_run_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "tick",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "scheduled_for"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "missed!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray",
+        "TimestamptzArray",
+        "TimestamptzArray",
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "d9d661eb29966a6d0eb2f7d29243238d2a2e3d1127ac0841fe0b2301e60ad23a"
+}

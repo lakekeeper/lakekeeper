@@ -46,8 +46,11 @@ use crate::{
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
-            TaskId, TaskInput, TaskQueueName, TaskResolveScope,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
+            ProjectTaskScheduleState, RetryDecision, Task, TaskAttemptId, TaskCheckState,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope,
+            TaskSchedule, TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError,
+            TaskScheduleUpsert, TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -709,7 +712,7 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ViewOrTableInfo, MarkTabularAsDeletedError>;
 
-    /// Drops staged and non-staged tables and views.
+    /// Drops staged and non-staged tables and views, in active and inactive warehouses.
     ///
     /// Returns the table location
     async fn drop_tabular_impl<'a>(
@@ -1391,9 +1394,7 @@ where
 
     // ------------- Tasks -------------
     async fn pick_new_task_impl(
-        queue_name: &TaskQueueName,
-        legacy_queue_names: &[&TaskQueueName],
-        default_max_time_since_last_heartbeat: chrono::Duration,
+        request: PickTaskRequest<'_>,
         state: Self::State,
     ) -> Result<Option<Task>>;
 
@@ -1413,6 +1414,7 @@ where
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32, // Max retries from task config, used to determine if we should mark the task as failed or retry
+        retry_decision: &RetryDecision, // What follows the attempt; a retry is ignored after max_retries
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
@@ -1443,6 +1445,60 @@ where
         tasks: Vec<TaskInput>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<TaskId>>;
+
+    /// Enqueue a single task. Reports the active task with the same key if there is one.
+    async fn enqueue_task_impl(
+        queue_name: &'static TaskQueueName,
+        task: TaskInput,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome>;
+
+    async fn reparent_pending_task_impl(
+        queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
+        task_id: TaskId,
+        new_parent: TaskId,
+        task_data: serde_json::Value,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool>;
+
+    // ------------- Task schedules -------------
+    /// The interval is already validated.
+    async fn upsert_task_schedule_impl(
+        schedule: TaskScheduleUpsert,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<TaskSchedule, UpsertTaskScheduleError>;
+
+    async fn list_task_schedules_impl(
+        filter: &TaskScheduleFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskSchedule>, TaskScheduleStoreError>;
+
+    async fn delete_task_schedule_impl(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool, TaskScheduleStoreError>;
+
+    async fn list_project_task_schedule_states_impl(
+        queue_name: &TaskQueueName,
+        schedule_key: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<ProjectTaskScheduleState>, TaskScheduleStoreError>;
+
+    async fn delete_warehouse_task_schedules_impl(
+        warehouse_id: WarehouseId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<(), TaskScheduleStoreError>;
+
+    async fn trigger_task_schedule_impl(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome, TriggerTaskScheduleError>;
+
+    async fn materialize_due_task_schedules_impl(
+        limit: i64,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<MaterializedTick>, TaskScheduleStoreError>;
 
     /// Cancel scheduled tasks matching the filter.
     ///
