@@ -1,11 +1,14 @@
 //! Cache invalidation across instances: a change another instance logged evicts this
 //! instance's cached entry.
 
+use std::sync::{Arc, Mutex};
+
 use lakekeeper::{
     CancellationToken,
     service::{
-        CatalogWarehouseOps, WarehouseStatus, authz::AllowAllAuthorizer,
-        cache_invalidation::background_tasks,
+        CatalogWarehouseOps, WarehouseStatus,
+        authz::AllowAllAuthorizer,
+        cache_invalidation::{CacheChangeReceiver, CacheChangeReceivers, background_tasks},
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, eventually, memory_io_profile};
@@ -37,7 +40,12 @@ async fn a_change_logged_by_another_instance_evicts_the_cached_warehouse(pool: P
         .clone()
     };
     let cancellation_token = CancellationToken::new();
-    for (_, task) in background_tasks::<PostgresBackend>(catalog.clone(), &cancellation_token).await
+    for (_, task) in background_tasks::<PostgresBackend>(
+        catalog.clone(),
+        CacheChangeReceivers::default(),
+        &cancellation_token,
+    )
+    .await
     {
         tokio::spawn(task);
     }
@@ -65,6 +73,57 @@ async fn a_change_logged_by_another_instance_evicts_the_cached_warehouse(pool: P
         .unwrap();
     eventually("the logged change evicts the cached warehouse", || async {
         read_name().await == "renamed"
+    })
+    .await;
+    cancellation_token.cancel();
+}
+
+/// Records the keys it is asked to evict.
+#[derive(Debug, Default)]
+struct Recording(Mutex<Vec<String>>);
+
+#[async_trait::async_trait]
+impl CacheChangeReceiver for Recording {
+    fn domain(&self) -> &str {
+        "extension_domain"
+    }
+
+    async fn evict(&self, keys: &[String]) {
+        self.0.lock().unwrap().extend_from_slice(keys);
+    }
+
+    async fn evict_all(&self) {}
+}
+
+/// A change an extension logs for its own domain reaches the receiver of that domain.
+#[sqlx::test]
+async fn a_change_of_an_extension_domain_reaches_its_receiver(pool: PgPool) {
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let receiver = Arc::new(Recording::default());
+    let cancellation_token = CancellationToken::new();
+    for (_, task) in background_tasks::<PostgresBackend>(
+        ctx.v1_state.catalog.clone(),
+        CacheChangeReceivers::new(vec![receiver.clone()]).unwrap(),
+        &cancellation_token,
+    )
+    .await
+    {
+        tokio::spawn(task);
+    }
+
+    sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', ARRAY['key-1'])")
+        .execute(&pool)
+        .await
+        .unwrap();
+    eventually("the receiver evicts the logged key", || async {
+        *receiver.0.lock().unwrap() == ["key-1"]
     })
     .await;
     cancellation_token.cancel();

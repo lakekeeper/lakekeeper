@@ -8,6 +8,7 @@ mod evict;
 mod log;
 mod metrics;
 mod poller;
+mod receiver;
 
 pub use change_set::{CacheDomain, CacheKey, CacheKeyDecodeError, ChangeSet};
 pub use log::{
@@ -15,6 +16,9 @@ pub use log::{
     PollOutcome, PruneOutcome, PruneSettings, ResetReason,
 };
 pub use poller::background_tasks;
+pub use receiver::{
+    ArcCacheChangeReceiver, CacheChangeReceiver, CacheChangeReceiverError, CacheChangeReceivers,
+};
 
 /// Evict the entries `changes` name from this instance's caches, except the keys in `kept`.
 pub(crate) async fn evict_locally(changes: &ChangeSet, kept: &[CacheKey]) {

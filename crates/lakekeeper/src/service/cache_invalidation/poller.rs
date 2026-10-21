@@ -6,8 +6,8 @@ use futures::future::BoxFuture;
 use tracing::Instrument;
 
 use super::{
-    BoxedCacheChangeLog, ChangeLogSettings, PollOutcome, PruneOutcome, PruneSettings,
-    evict::Evictions, metrics,
+    BoxedCacheChangeLog, CacheChangeReceivers, ChangeLogSettings, PollOutcome, PruneOutcome,
+    PruneSettings, evict::Evictions, metrics,
 };
 use crate::{CONFIG, CancellationToken, service::CatalogStore};
 
@@ -24,10 +24,12 @@ const PRUNE_STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The background tasks of cache invalidation, by name, which run until
 /// `cancellation_token` is cancelled: reading the change log, if
-/// `cache.invalidation.enabled`, and pruning it. The first read of the log runs before this
-/// returns, for at most 10 s. Pruning does not run in read-only maintenance mode.
+/// `cache.invalidation.enabled`, and pruning it. The changes of an extension domain go to its
+/// receiver in `receivers`. The first read of the log runs before this returns, for at most
+/// 10 s. Pruning does not run in read-only maintenance mode.
 pub async fn background_tasks<C: CatalogStore>(
     catalog_state: C::State,
+    receivers: CacheChangeReceivers,
     cancellation_token: &CancellationToken,
 ) -> Vec<(&'static str, BoxFuture<'static, ()>)> {
     let mut tasks: Vec<(&'static str, BoxFuture<'static, ()>)> = Vec::new();
@@ -41,7 +43,7 @@ pub async fn background_tasks<C: CatalogStore>(
         );
         let mut poller = Poller::new(
             log,
-            ProcessCaches,
+            ProcessCaches { receivers },
             invalidation.poll_interval,
             invalidation.reevict_grace,
         );
@@ -77,13 +79,17 @@ trait Caches: Clone + Send + Sync + 'static {
     fn evict(&self, evictions: &Evictions) -> impl Future<Output = ()> + Send;
 }
 
-/// The caches of this process.
-#[derive(Debug, Clone, Copy)]
-struct ProcessCaches;
+/// The caches of this process, and the receivers of extension domains.
+#[derive(Debug, Clone)]
+struct ProcessCaches {
+    receivers: CacheChangeReceivers,
+}
 
 impl Caches for ProcessCaches {
     async fn evict(&self, evictions: &Evictions) {
-        evictions.apply().await;
+        // At the same time: an eviction of a built-in cache waits for the in-flight load of
+        // its key.
+        tokio::join!(evictions.apply(), evictions.apply_to(&self.receivers));
     }
 }
 
@@ -410,24 +416,13 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn changes_of_domains_this_server_does_not_cache_evict_nothing() {
-        let other = LoggedChange {
-            domain: "extension_domain".to_string(),
-            keys: vec!["key-1".to_string()],
-            version: None,
-        };
-
-        let evictions = run(vec![Ok(PollOutcome::Changes(vec![other]))]).await;
-
-        assert_eq!(evictions, vec![]);
-    }
-
     #[test]
     fn the_backoff_doubles_per_failure_up_to_ten_seconds_or_the_interval() {
         let mut poller = Poller::new(
             Box::new(ScriptedLog(VecDeque::new())),
-            ProcessCaches,
+            ProcessCaches {
+                receivers: CacheChangeReceivers::default(),
+            },
             INTERVAL,
             GRACE,
         );
