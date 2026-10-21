@@ -1236,6 +1236,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        // Delete schedules before the warehouse row is locked: the materializer holds a schedule
+        // row while its task insert waits for the warehouse row.
+        C::delete_warehouse_task_schedules(warehouse_id, transaction.transaction()).await?;
         // Cancel before ensure_warehouse_spec_mutable locks the warehouse row: a worker recording
         // its outcome holds its task row and needs the warehouse row for the task_log foreign key.
         cancel_tasks_on_warehouse_delete::<C>(

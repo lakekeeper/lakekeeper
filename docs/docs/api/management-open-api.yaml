@@ -8719,7 +8719,9 @@ components:
             - run-now
     ControlTaskActionStop:
       type: object
-      description: Stop the task gracefully. The task will be retried.
+      description: |-
+        Stop the task gracefully. The task will be retried. An attempt that does not stop before
+        its heartbeat times out counts as failed; after its last try, the task fails.
       required:
         - action-type
       properties:
@@ -13436,6 +13438,14 @@ components:
             Next page token, re-use the same request as for the original request,
             but set this to the `next_page_token` from the previous response.
             Stop iterating when no more items are returned in a page.
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+            a client that depends on it checks `parent-task-id` of each returned task.
         queue-name:
           type:
             - array
@@ -13638,6 +13648,14 @@ components:
             Next page token, re-use the same request as for the original request,
             but set this to the `next_page_token` from the previous response.
             Stop iterating when no more items are returned in a page.
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+            a client that depends on it checks `parent-task-id` of each returned task.
         queue-name:
           type:
             - array
@@ -14305,6 +14323,14 @@ components:
         queue-name:
           type: string
           description: Name of the queue processing this task
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+            has none.
         scheduled-for:
           type: string
           format: date-time
@@ -16767,6 +16793,14 @@ components:
           type: number
           format: float
           description: Progress achieved in this attempt
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How much worker capacity this attempt needed, in a unit its queue chooses; unset if it
+            had none.
         scheduled-for:
           type: string
           format: date-time
@@ -16789,7 +16823,7 @@ components:
             - 'null'
           description: |-
             How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
-            If a value below 1 day is provided, it will be set to the default of 1 day.
+            Values below 1 day are raised to 1 day; values above 100 years are lowered to 100 years.
           example: PT1H30M45.5S
         retention-period:
           type:
@@ -17871,6 +17905,14 @@ components:
         queue-name:
           type: string
           description: Name of the queue processing this task
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+            has none.
         scheduled-for:
           type: string
           format: date-time

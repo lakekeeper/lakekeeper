@@ -159,6 +159,9 @@ define_id_type!(RoleId, true);
 define_id_type!(GenericTableId, true);
 define_id_type!(TagDefinitionId, true);
 define_id_type!(TagId, true);
+// Derived from a task schedule's project, warehouse, queue and key, so it stays the same when the
+// schedule is deleted and created again.
+define_id_type!(TaskScheduleId, true);
 
 impl GenericTableId {
     #[must_use]

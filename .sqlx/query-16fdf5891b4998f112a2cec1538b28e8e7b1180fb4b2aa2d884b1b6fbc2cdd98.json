@@ -1,0 +1,107 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            t.task_id,\n            t.attempt,\n            t.entity_type as \"entity_type: TaskEntityTypeDB\",\n            t.entity_id,\n            t.resource_demand,\n            t.execution_details\n        FROM task t\n        LEFT JOIN LATERAL (\n            SELECT cfg.max_time_since_last_heartbeat\n            FROM task_config cfg\n            WHERE cfg.queue_name = ANY($1)\n                AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))\n                AND cfg.project_id = t.project_id\n            ORDER BY (cfg.queue_name = $3) DESC\n            LIMIT 1\n        ) tc ON true\n        WHERE t.queue_name = ANY($1)\n            AND t.status IN ('running', 'should-stop')\n            AND (now() - t.last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2)\n        ORDER BY t.scheduled_for, t.task_id\n        FOR UPDATE OF t SKIP LOCKED\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "attempt",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "attempt"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "entity_type: TaskEntityTypeDB",
+        "type_info": {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "project",
+                "warehouse",
+                "namespace",
+                "role",
+                "user",
+                "server",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "entity_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "entity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "entity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "resource_demand",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "resource_demand"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "execution_details",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "execution_details"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Interval",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "16fdf5891b4998f112a2cec1538b28e8e7b1180fb4b2aa2d884b1b6fbc2cdd98"
+}

@@ -11,7 +11,9 @@ use crate::{
         ArcProjectId, CatalogStore, CatalogTaskOps, SecretStore, State, Transaction,
         authz::Authorizer,
         task_configs::TaskQueueConfigFilter,
-        tasks::{TaskFilter, TaskId, TaskQueueName, WarehouseTaskEntityId},
+        tasks::{
+            EnqueueOutcome, TaskId, TaskQueueName, WarehouseTaskEntityId, task_log_cleanup_queue,
+        },
     },
 };
 
@@ -106,13 +108,21 @@ pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
     }
     let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
     C::set_task_queue_config(
-        project_id,
+        project_id.clone(),
         warehouse_id,
         queue_name,
         request,
         transaction.transaction(),
     )
     .await?;
+    if queue_name == &*task_log_cleanup_queue::QUEUE_NAME && warehouse_id.is_none() {
+        task_log_cleanup_queue::apply_queue_config::<C>(
+            project_id,
+            &request.queue_config.0,
+            &mut transaction,
+        )
+        .await?;
+    }
     transaction.commit().await?;
     Ok(())
 }
@@ -225,16 +235,7 @@ pub(crate) async fn schedule_task<C: CatalogStore, A: Authorizer, S: SecretStore
         payload,
     );
 
-    enqueue_or_format_conflict::<C>(
-        catalog_state,
-        warehouse_id,
-        project_id,
-        queue_name,
-        queue_name_static,
-        entity_id,
-        task_input,
-    )
-    .await
+    enqueue_or_format_conflict::<C>(catalog_state, queue_name, queue_name_static, task_input).await
 }
 
 /// Reject the schedule call early when the queue is unknown or has not
@@ -369,6 +370,7 @@ fn build_task_input(
 ) -> crate::service::tasks::TaskInput {
     crate::service::tasks::TaskInput {
         task_metadata: crate::service::tasks::ScheduleTaskMetadata {
+            resource_demand: None,
             project_id,
             parent_task_id: None,
             scheduled_for,
@@ -383,125 +385,40 @@ fn build_task_input(
 }
 
 /// Run the actual `enqueue_task` write and translate the result into either
-/// `200 { task_id }` or `409 TaskAlreadyActive` with the existing `task_id`
-/// in the body (best-effort lookup; misbehaving catalog logs a warning and
-/// falls back to the generic message).
-#[allow(clippy::too_many_arguments)]
+/// `200 { task_id }` or `409 TaskAlreadyActive` naming the active task.
 async fn enqueue_or_format_conflict<C: CatalogStore>(
     catalog_state: C::State,
-    warehouse_id: WarehouseId,
-    project_id: ArcProjectId,
     queue_name: &TaskQueueName,
     queue_name_static: &'static TaskQueueName,
-    entity_id: WarehouseTaskEntityId,
     task_input: crate::service::tasks::TaskInput,
 ) -> Result<ScheduleTaskResponse> {
-    let mut tx = C::Transaction::begin_write(catalog_state.clone()).await?;
-    let inserted = C::enqueue_task(queue_name_static, task_input, tx.transaction()).await?;
+    let mut tx = C::Transaction::begin_write(catalog_state).await?;
+    let outcome = C::enqueue_task(queue_name_static, task_input, tx.transaction()).await?;
     tx.commit().await?;
 
-    if let Some(task_id) = inserted {
-        return Ok(ScheduleTaskResponse { task_id });
-    }
-
-    // Tiny race: the conflicting row may have been moved to `task_log`
-    // between the failing insert and this lookup (worker finished). Then
-    // the lookup returns no rows and the 409 prints the generic message;
-    // the next schedule attempt would succeed.
-    let existing_task_id = match lookup_active_task_id::<C>(
-        warehouse_id,
-        project_id,
-        queue_name_static,
-        entity_id,
-        catalog_state,
-    )
-    .await
-    {
-        Ok(found) => found,
-        Err(e) => {
-            tracing::warn!(
-                warehouse_id = %warehouse_id,
-                queue = %queue_name,
-                "Failed to look up existing active task_id for 409 body: {e}"
-            );
-            None
+    match outcome {
+        EnqueueOutcome::Inserted(task_id) => Ok(ScheduleTaskResponse { task_id }),
+        EnqueueOutcome::Existing { task_id, .. } => {
+            Err(format_task_already_active_error(queue_name, task_id).into())
         }
-    };
-    Err(format_task_already_active_error(queue_name, existing_task_id).into())
+    }
 }
 
 /// Build the 409 conflict body for "schedule attempted but a task is
-/// already active on this `(warehouse, entity, queue)` triple". Public
-/// only so the lifecycle/unit tests can pin both shapes (with and without
-/// the looked-up `task_id`).
+/// already active on this `(warehouse, entity, queue)` triple".
 fn format_task_already_active_error(
     queue_name: &TaskQueueName,
-    existing_task_id: Option<TaskId>,
+    existing_task_id: TaskId,
 ) -> ErrorModel {
-    let msg = match existing_task_id {
-        Some(id) => format!(
-            "A task on queue '{queue_name}' is already active for this entity (task-id={id}). \
-             POST /task/control with this id to retime (run-now / run-at) or cancel it."
+    ErrorModel::conflict(
+        format!(
+            "A task on queue '{queue_name}' is already active for this entity \
+             (task-id={existing_task_id}). POST /task/control with this id to retime \
+             (run-now / run-at) or cancel it."
         ),
-        None => format!(
-            "A task on queue '{queue_name}' is already active for this entity. \
-             Use POST /task/list to find it; POST /task/control to retime or cancel it."
-        ),
-    };
-    ErrorModel::conflict(msg, "TaskAlreadyActive", None)
-}
-
-/// Find the single active `task_id` for `(warehouse, entity, queue)`, used to
-/// enrich the 409 body returned by `schedule_task`. Best-effort: a lookup
-/// failure is downgraded to "`task_id` unknown" in the error message rather
-/// than failing the call.
-///
-/// Reads from the `task` table only, which by schema holds only active
-/// rows (status ∈ `{scheduled, running, should-stop}`; terminal rows move
-/// to `task_log` — see migration `20250523101407_tasks_store_their_state`).
-/// The explicit status filter below is therefore redundant in steady state
-/// but documents intent and protects against a future schema where
-/// `task` could hold terminal rows.
-///
-/// Tiny race: if the conflicting row transitions to terminal and is moved
-/// to `task_log` between `enqueue_task` returning `None` and this lookup
-/// running, the lookup returns `None` and the 409 falls back to the
-/// generic message. Acceptable — the next schedule attempt would succeed.
-async fn lookup_active_task_id<C: CatalogStore>(
-    warehouse_id: WarehouseId,
-    project_id: ArcProjectId,
-    queue_name: &'static TaskQueueName,
-    entity_id: WarehouseTaskEntityId,
-    catalog_state: C::State,
-) -> std::result::Result<Option<TaskId>, ErrorModel> {
-    use crate::api::management::v1::tasks::{
-        ListTasksRequest, TaskStatus, WarehouseTaskEntityFilter,
-    };
-
-    let entity_filter = match entity_id {
-        WarehouseTaskEntityId::Table { table_id } => WarehouseTaskEntityFilter::Table { table_id },
-        WarehouseTaskEntityId::View { view_id } => WarehouseTaskEntityFilter::View { view_id },
-        WarehouseTaskEntityId::GenericTable { generic_table_id } => {
-            WarehouseTaskEntityFilter::GenericTable { generic_table_id }
-        }
-    };
-    let query = ListTasksRequest::builder()
-        .status(Some(vec![
-            TaskStatus::Scheduled,
-            TaskStatus::Running,
-            TaskStatus::Stopping,
-        ]))
-        .queue_name(Some(vec![queue_name.clone()]))
-        .entities(Some(vec![entity_filter]))
-        .build();
-    let filter = TaskFilter::WarehouseId {
-        warehouse_id,
-        project_id,
-    };
-    let mut tx = C::Transaction::begin_read(catalog_state).await?;
-    let tasks = C::list_tasks(&filter, &query, tx.transaction()).await?;
-    tx.commit().await?;
-    Ok(tasks.tasks.into_iter().next().map(|t| t.id.task_id))
+        "TaskAlreadyActive",
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -514,7 +431,7 @@ mod test {
         let id =
             TaskId::from(uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
 
-        let err = format_task_already_active_error(&queue, Some(id));
+        let err = format_task_already_active_error(&queue, id);
 
         assert_eq!(err.code, 409);
         assert_eq!(err.r#type, "TaskAlreadyActive");
@@ -526,20 +443,6 @@ mod test {
         );
         assert!(err.message.contains("run-now"));
         assert!(err.message.contains("run-at"));
-    }
-
-    #[test]
-    fn task_already_active_error_falls_back_to_generic_message_when_lookup_failed() {
-        let queue: TaskQueueName = "remove_orphan_files".into();
-
-        let err = format_task_already_active_error(&queue, None);
-
-        assert_eq!(err.code, 409);
-        assert_eq!(err.r#type, "TaskAlreadyActive");
-        // No task-id in body, but the user is still pointed at the right next step.
-        assert!(!err.message.contains("task-id="));
-        assert!(err.message.contains("POST /task/list"));
-        assert!(err.message.contains("POST /task/control"));
     }
 
     // Postgres-backed lifecycle coverage lives in
