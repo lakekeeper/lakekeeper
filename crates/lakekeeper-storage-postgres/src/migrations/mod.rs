@@ -1376,19 +1376,7 @@ mod tests {
     /// one names every domain. A run that applies nothing records nothing.
     #[sqlx::test(migrations = false)]
     async fn test_migrate_records_every_domain_when_it_applies_a_migration(pool: PgPool) {
-        async fn changes_since(pool: &PgPool, head: i64) -> Vec<(String, Vec<String>)> {
-            sqlx::query_as("SELECT domain, keys FROM cache_change_log WHERE id > $1 ORDER BY id")
-                .bind(head)
-                .fetch_all(pool)
-                .await
-                .unwrap()
-        }
-        async fn head(pool: &PgPool) -> i64 {
-            sqlx::query_scalar("SELECT COALESCE(max(id), 0) FROM cache_change_log")
-                .fetch_one(pool)
-                .await
-                .unwrap()
-        }
+        use crate::test_utils::{change_log_head as head, changes_since};
 
         migrate_core_only(&pool).await.unwrap();
         let before_rerun = head(&pool).await;

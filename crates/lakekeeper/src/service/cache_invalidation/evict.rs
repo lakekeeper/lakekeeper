@@ -1,9 +1,6 @@
 //! Evicting the cache entries that change-log rows name from this instance's caches.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use strum::IntoEnumIterator;
 use tracing::Instrument;
@@ -36,8 +33,8 @@ const RECEIVER_TIMEOUT: Duration = Duration::from_secs(10);
 /// The cache entries that a batch of changes makes stale.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Evictions {
-    keys: Vec<CacheKey>,
-    domains: BTreeSet<CacheDomain>,
+    /// The changes of Lakekeeper's domains.
+    changes: ChangeSet,
     /// The keys of the other domains, by domain; `None` for every entry of the domain.
     extension_keys: BTreeMap<String, Option<Vec<String>>>,
     all: bool,
@@ -62,22 +59,20 @@ impl Evictions {
                 continue;
             };
             if change.keys.is_empty() {
-                evictions.domains.insert(domain);
+                evictions.changes.insert_whole_domain(domain);
             }
             for key in &change.keys {
                 match CacheKey::decode(domain, key) {
-                    Ok(key) => evictions.keys.push(key),
+                    Ok(key) => {
+                        evictions.changes.insert(key);
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "Evicting the whole cache domain of a key that does not decode");
-                        evictions.domains.insert(domain);
+                        evictions.changes.insert_whole_domain(domain);
                     }
                 }
             }
         }
-        let domains = &evictions.domains;
-        evictions
-            .keys
-            .retain(|key| !domains.contains(&key.domain()));
         evictions
     }
 
@@ -93,42 +88,16 @@ impl Evictions {
         }
     }
 
-    /// The entries that `changes` name.
-    pub(super) fn of_set(changes: &ChangeSet) -> Self {
-        let mut evictions = Self::default();
-        for (domain, keys) in changes.keys() {
-            match keys {
-                Some(keys) => evictions.keys.extend(keys.cloned()),
-                None => {
-                    evictions.domains.insert(domain);
-                }
-            }
-        }
-        evictions
-    }
-
-    /// These evictions without the keys in `kept`. A whole domain stays evicted.
-    pub(super) fn without(mut self, kept: &[CacheKey]) -> Self {
-        self.keys.retain(|key| !kept.contains(key));
-        self
-    }
-
     pub(super) fn is_empty(&self) -> bool {
-        !self.all
-            && self.domains.is_empty()
-            && self.keys.is_empty()
-            && self.extension_keys.is_empty()
+        !self.all && self.changes.is_empty() && self.extension_keys.is_empty()
     }
 
     /// Evict the entries from this process's caches.
     pub(super) async fn apply(&self) {
         if self.all {
             CacheDomain::iter().for_each(invalidate_domain);
-            return;
-        }
-        self.domains.iter().copied().for_each(invalidate_domain);
-        for key in &self.keys {
-            invalidate_key(key).await;
+        } else {
+            evict_locally(&self.changes, &[]).await;
         }
     }
 
@@ -183,6 +152,20 @@ impl Evictions {
         for (domain, result) in futures::future::join_all(tasks).await {
             if let Err(error) = result {
                 tracing::warn!(domain, %error, "A cache change receiver failed");
+            }
+        }
+    }
+}
+
+/// Evict the entries `changes` name from this process's caches, except the keys in `kept`.
+pub(crate) async fn evict_locally(changes: &ChangeSet, kept: &[CacheKey]) {
+    for (domain, keys) in changes.keys() {
+        match keys {
+            None => invalidate_domain(domain),
+            Some(keys) => {
+                for key in keys.filter(|key| !kept.contains(key)) {
+                    invalidate_key(key).await;
+                }
             }
         }
     }
@@ -252,13 +235,16 @@ mod tests {
             row("role_ancestors", &[]),
         ]);
 
+        let mut changes = ChangeSet::new();
+        changes
+            .insert(CacheKey::Warehouse(warehouse))
+            .insert(name)
+            .insert_whole_domain(CacheDomain::RoleAncestors);
         assert_eq!(
             evictions,
             Evictions {
-                keys: vec![CacheKey::Warehouse(warehouse), name],
-                domains: BTreeSet::from([CacheDomain::RoleAncestors]),
-                extension_keys: BTreeMap::new(),
-                all: false,
+                changes,
+                ..Evictions::default()
             }
         );
     }
@@ -271,13 +257,13 @@ mod tests {
             row("secret", &["not-a-uuid"]),
         ]);
 
+        let mut changes = ChangeSet::new();
+        changes.insert_whole_domain(CacheDomain::Secret);
         assert_eq!(
             evictions,
             Evictions {
-                keys: vec![],
-                domains: BTreeSet::from([CacheDomain::Secret]),
-                extension_keys: BTreeMap::new(),
-                all: false,
+                changes,
+                ..Evictions::default()
             }
         );
     }

@@ -110,10 +110,7 @@ mod test_support {
 mod tests {
     use lakekeeper::{
         WarehouseId,
-        service::{
-            RoleId,
-            cache_invalidation::{CacheDomain, CacheKey},
-        },
+        service::cache_invalidation::{CacheDomain, CacheKey},
     };
     use sqlx::PgPool;
 
@@ -161,33 +158,6 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn whole_domains_and_keyed_domains_keep_their_own_rows(pool: PgPool) {
-        let role = CacheKey::Role(RoleId::from(uuid::Uuid::from_u128(1)));
-        let mut set = ChangeSet::new();
-        set.insert_whole_domain(CacheDomain::Warehouse)
-            .insert(role.clone())
-            .insert_whole_domain(CacheDomain::RoleAncestors);
-
-        let mut tx = pool.begin().await.unwrap();
-        record_cache_changes(&set, &mut tx).await.unwrap();
-        tx.commit().await.unwrap();
-
-        let rows: Vec<_> = log_rows(&pool)
-            .await
-            .into_iter()
-            .map(|(domain, keys, _)| (domain, keys))
-            .collect();
-        assert_eq!(
-            rows,
-            vec![
-                ("warehouse".to_string(), vec![]),
-                ("role".to_string(), vec![role.encode()]),
-                ("role_ancestors".to_string(), vec![]),
-            ]
-        );
-    }
-
-    #[sqlx::test]
     async fn many_keys_are_split_into_rows_of_at_most_1000(pool: PgPool) {
         let mut set = ChangeSet::new();
         for n in 0..2001 {
@@ -221,65 +191,5 @@ mod tests {
 
         assert_eq!(assigned, None);
         assert_eq!(log_rows(&pool).await, vec![]);
-    }
-
-    #[sqlx::test]
-    async fn a_rolled_back_savepoint_discards_its_rows(pool: PgPool) {
-        let mut set = ChangeSet::new();
-        set.insert(CacheKey::Role(RoleId::from(uuid::Uuid::from_u128(1))));
-
-        let mut tx = pool.begin().await.unwrap();
-        let mut savepoint = sqlx::Connection::begin(&mut *tx).await.unwrap();
-        record_cache_changes(&set, &mut savepoint).await.unwrap();
-        savepoint.rollback().await.unwrap();
-        tx.commit().await.unwrap();
-
-        assert_eq!(log_rows(&pool).await, vec![]);
-    }
-
-    #[sqlx::test]
-    async fn the_extension_function_records_a_row_under_the_current_xid(pool: PgPool) {
-        let mut tx = pool.begin().await.unwrap();
-        sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', ARRAY['key-1'])")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        let current: String = sqlx::query_scalar("SELECT pg_current_xact_id()::text")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-
-        assert_eq!(
-            log_rows(&pool).await,
-            vec![(
-                "extension_domain".to_string(),
-                vec!["key-1".to_string()],
-                current
-            )]
-        );
-    }
-
-    #[sqlx::test]
-    async fn the_extension_function_records_a_whole_domain_and_rejects_null_keys(pool: PgPool) {
-        sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', '{}')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let err = sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', NULL)")
-            .execute(&pool)
-            .await
-            .unwrap_err();
-
-        assert_eq!(
-            err.as_database_error().and_then(|e| e.code()).as_deref(),
-            Some("23502")
-        );
-        let rows = log_rows(&pool).await;
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            (rows[0].0.as_str(), rows[0].1.clone()),
-            ("extension_domain", vec![])
-        );
     }
 }

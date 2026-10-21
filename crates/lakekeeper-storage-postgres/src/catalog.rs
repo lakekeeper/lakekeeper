@@ -69,9 +69,7 @@ use lakekeeper::{
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
         },
-        cache_invalidation::{
-            BoxedCacheChangeLog, ChangeLogSettings, ChangeSet, PruneOutcome, PruneSettings,
-        },
+        cache_invalidation::{BoxedCacheChangeLog, ChangeSet},
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -176,18 +174,15 @@ impl CatalogStore for super::PostgresBackend {
             .map_err(DBErrorHandler::into_catalog_backend_error)
     }
 
-    fn cache_change_log(
-        catalog_state: Self::State,
-        settings: ChangeLogSettings,
-    ) -> BoxedCacheChangeLog {
-        Box::new(PostgresCacheChangeLog::for_state(&catalog_state, settings))
+    fn cache_change_log(catalog_state: Self::State) -> BoxedCacheChangeLog {
+        Box::new(PostgresCacheChangeLog::for_state(&catalog_state))
     }
 
     async fn prune_cache_change_log(
         catalog_state: Self::State,
-        settings: PruneSettings,
-    ) -> std::result::Result<PruneOutcome, CatalogBackendError> {
-        prune_cache_change_log(&catalog_state.write_pool(), settings)
+        retention: std::time::Duration,
+    ) -> std::result::Result<Option<u64>, CatalogBackendError> {
+        prune_cache_change_log(&catalog_state.write_pool(), retention)
             .await
             .map_err(DBErrorHandler::into_catalog_backend_error)
     }

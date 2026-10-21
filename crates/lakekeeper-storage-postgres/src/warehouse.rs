@@ -647,7 +647,7 @@ pub(crate) async fn rename_warehouse(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<RenamedWarehouse, CatalogRenameWarehouseError> {
     let previous_name = sqlx::query_scalar!(
-        "SELECT warehouse_name FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR NO KEY UPDATE",
+        "SELECT warehouse_name FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
         *warehouse_id
     )
     .fetch_optional(&mut **transaction)

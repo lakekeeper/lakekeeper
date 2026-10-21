@@ -1,4 +1,5 @@
-use lakekeeper::service::cache_invalidation::{PruneOutcome, PruneSettings};
+use std::time::Duration;
+
 use sqlx::{PgConnection, PgPool};
 
 use super::begin_with_timeout;
@@ -10,42 +11,41 @@ const PRUNE_LOCK_SEED: i64 = 0x6361_6368_656C_6F67;
 
 /// The most rows one delete transaction removes.
 const PRUNE_BATCH_ROWS: i64 = 10_000;
+/// The longest one statement of a pruning run may run.
+const PRUNE_STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// One pruning run on `pool`'s database: delete the rows older than the retention. Every
+/// One pruning run on `pool`'s database: delete the rows older than `retention`. Returns
+/// the number of rows deleted, or `None` when another instance is pruning. Every
 /// transaction of the run takes the pruning lock; the run skips or stops when another
 /// instance holds it.
-pub(crate) async fn prune(pool: &PgPool, settings: PruneSettings) -> sqlx::Result<PruneOutcome> {
-    prune_in_batches(pool, settings, PRUNE_BATCH_ROWS).await
+pub(crate) async fn prune(pool: &PgPool, retention: Duration) -> sqlx::Result<Option<u64>> {
+    prune_in_batches(pool, retention, PRUNE_BATCH_ROWS).await
 }
 
 async fn prune_in_batches(
     pool: &PgPool,
-    settings: PruneSettings,
+    retention: Duration,
     batch_rows: i64,
-) -> sqlx::Result<PruneOutcome> {
+) -> sqlx::Result<Option<u64>> {
     let mut conn = pool.acquire().await?;
-    let mut outcome = PruneOutcome::Skipped;
-    while let Some(rows) = delete_batch(&mut conn, settings, batch_rows).await? {
-        let deleted_rows = match outcome {
-            PruneOutcome::Pruned { deleted_rows } => deleted_rows + rows,
-            PruneOutcome::Skipped => rows,
-        };
-        outcome = PruneOutcome::Pruned { deleted_rows };
+    let mut deleted: Option<u64> = None;
+    while let Some(rows) = delete_batch(&mut conn, retention, batch_rows).await? {
+        deleted = Some(deleted.unwrap_or(0) + rows);
         if rows < u64::try_from(batch_rows).unwrap_or(u64::MAX) {
             break;
         }
     }
-    Ok(outcome)
+    Ok(deleted)
 }
 
 /// Delete up to `limit` rows in one transaction. `None` when another instance holds the
 /// pruning lock.
 async fn delete_batch(
     conn: &mut PgConnection,
-    settings: PruneSettings,
+    retention: Duration,
     limit: i64,
 ) -> sqlx::Result<Option<u64>> {
-    let mut tx = begin_with_timeout(conn, settings.statement_timeout).await?;
+    let mut tx = begin_with_timeout(conn, PRUNE_STATEMENT_TIMEOUT).await?;
     let locked = sqlx::query_scalar!(
         r#"SELECT pg_try_advisory_xact_lock(
                hashtextextended(to_regclass('cache_change_log')::oid::text, $1)
@@ -70,7 +70,7 @@ async fn delete_batch(
         )
         SELECT count(*) AS "rows!" FROM deleted
         "#,
-        settings.retention.as_secs_f64(),
+        retention.as_secs_f64(),
         limit,
     )
     .fetch_one(&mut *tx)
@@ -81,15 +81,10 @@ async fn delete_batch(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use crate::cache_change_log::test_support::record;
 
-    const SETTINGS: PruneSettings = PruneSettings {
-        retention: Duration::from_secs(3600),
-        statement_timeout: Duration::from_secs(10),
-    };
+    const RETENTION: Duration = Duration::from_secs(3600);
 
     /// Make the rows of `keys` look `minutes` old.
     async fn age(pool: &PgPool, keys: &[&str], minutes: i32) {
@@ -133,10 +128,7 @@ mod tests {
         age(&pool, &["old"], 61).await;
         age(&pool, &["young"], 59).await;
 
-        assert_eq!(
-            prune(&pool, SETTINGS).await.unwrap(),
-            PruneOutcome::Pruned { deleted_rows: 1 }
-        );
+        assert_eq!(prune(&pool, RETENTION).await.unwrap(), Some(1));
         assert_eq!(remaining_keys(&pool).await, ["young", "new"]);
     }
 
@@ -149,8 +141,8 @@ mod tests {
         age(&pool, &keys, 120).await;
 
         assert_eq!(
-            prune_in_batches(&pool, SETTINGS, 2).await.unwrap(),
-            PruneOutcome::Pruned { deleted_rows: 5 }
+            prune_in_batches(&pool, RETENTION, 2).await.unwrap(),
+            Some(5)
         );
         assert_eq!(remaining_keys(&pool).await, Vec::<String>::new());
     }
@@ -161,7 +153,7 @@ mod tests {
         age(&pool, &["old"], 120).await;
         let lock = hold_lock(&pool, "cache_change_log").await;
 
-        assert_eq!(prune(&pool, SETTINGS).await.unwrap(), PruneOutcome::Skipped);
+        assert_eq!(prune(&pool, RETENTION).await.unwrap(), None);
         assert_eq!(remaining_keys(&pool).await, ["old"]);
         lock.rollback().await.unwrap();
     }
@@ -179,10 +171,7 @@ mod tests {
         .unwrap();
         let lock = hold_lock(&pool, "other_lakekeeper.cache_change_log").await;
 
-        assert_eq!(
-            prune(&pool, SETTINGS).await.unwrap(),
-            PruneOutcome::Pruned { deleted_rows: 1 }
-        );
+        assert_eq!(prune(&pool, RETENTION).await.unwrap(), Some(1));
         lock.rollback().await.unwrap();
     }
 }

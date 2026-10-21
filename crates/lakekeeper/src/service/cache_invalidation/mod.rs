@@ -11,22 +11,14 @@ mod poller;
 mod receiver;
 
 pub use change_set::{CacheDomain, CacheKey, CacheKeyDecodeError, ChangeSet};
+pub(crate) use evict::evict_locally;
 pub use log::{
-    BoxedCacheChangeLog, CacheChangeLog, ChangeLogError, ChangeLogSettings, LoggedChange,
-    PollOutcome, PruneOutcome, PruneSettings, ResetReason,
+    BoxedCacheChangeLog, CacheChangeLog, ChangeLogError, LoggedChange, PollOutcome, ResetReason,
 };
 pub use poller::background_tasks;
 pub use receiver::{
     ArcCacheChangeReceiver, CacheChangeReceiver, CacheChangeReceiverError, CacheChangeReceivers,
 };
-
-/// Evict the entries `changes` name from this instance's caches, except the keys in `kept`.
-pub(crate) async fn evict_locally(changes: &ChangeSet, kept: &[CacheKey]) {
-    evict::Evictions::of_set(changes)
-        .without(kept)
-        .apply()
-        .await;
-}
 
 /// Whether writes record their changed keys (`cache.invalidation.recording_enabled`).
 #[must_use]

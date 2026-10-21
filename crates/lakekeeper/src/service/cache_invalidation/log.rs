@@ -1,7 +1,4 @@
-//! Reading and pruning the change log: the contract between a storage backend and the
-//! poller.
-
-use std::time::Duration;
+//! Reading the change log: the contract between a storage backend and the poller.
 
 /// One change-log row: some keys of one domain that a committed transaction changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,8 +20,9 @@ pub enum ResetReason {
     TransactionIdsWentBack,
     /// More changes than one poll returns were committed since the previous poll.
     Overflow,
-    /// The first read after startup failed, and the instance served requests before it
-    /// knew its position in the log.
+    /// The first read after startup failed or did not finish within 10 s, and the instance
+    /// served requests before it knew its position in the log. Set by the poller; a backend
+    /// never returns it.
     StartedLate,
 }
 
@@ -49,33 +47,6 @@ pub enum ChangeLogError {
     /// A statement or the connection failed.
     #[error("A change log statement failed")]
     Query(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
-}
-
-/// Settings of a [`CacheChangeLog`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChangeLogSettings {
-    /// The longest the poll statement may run on the server. The poll gives up after one
-    /// and a half times as long.
-    pub statement_timeout: Duration,
-}
-
-/// Settings of one pruning run of the change log.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PruneSettings {
-    /// Rows older than this are deleted. Must exceed the longest cache TTL: a poller that
-    /// misses a pruned row then only misses entries that have expired.
-    pub retention: Duration,
-    /// The longest one statement of the run may run.
-    pub statement_timeout: Duration,
-}
-
-/// The result of one pruning run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PruneOutcome {
-    /// Another instance is pruning.
-    Skipped,
-    /// The run deleted `deleted_rows` rows.
-    Pruned { deleted_rows: u64 },
 }
 
 /// The change log as the poller sees it: each [`Self::poll`] returns the changes committed

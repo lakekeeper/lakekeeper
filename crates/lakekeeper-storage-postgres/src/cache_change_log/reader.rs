@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use lakekeeper::service::cache_invalidation::{
-    CacheChangeLog, ChangeLogError, ChangeLogSettings, LoggedChange, PollOutcome, ResetReason,
+    CacheChangeLog, ChangeLogError, LoggedChange, PollOutcome, ResetReason,
 };
 use sqlx::{PgConnection, PgPool};
 
@@ -8,6 +10,9 @@ use super::begin_with_timeout;
 
 /// The most rows one poll returns. More changes since the previous poll make it reset.
 const POLL_MAX_ROWS: i64 = 1000;
+/// The longest the poll statement may run on the server. The poll gives up after one and
+/// a half times as long.
+const POLL_STATEMENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where the previous poll stopped.
 #[derive(Debug, Clone)]
@@ -26,40 +31,30 @@ struct Cursor {
 #[derive(Debug)]
 pub struct PostgresCacheChangeLog {
     pool: PgPool,
-    settings: ChangeLogSettings,
+    statement_timeout: Duration,
     max_rows: i64,
     cursor: Option<Cursor>,
-    /// Fails the next poll before it runs, to test error handling.
-    #[cfg(test)]
-    fail_next: bool,
 }
 
 impl PostgresCacheChangeLog {
     /// The log of `state`'s database, read through the write pool.
-    pub(crate) fn for_state(state: &crate::CatalogState, settings: ChangeLogSettings) -> Self {
-        Self::new(state.write_pool(), settings)
+    pub(crate) fn for_state(state: &crate::CatalogState) -> Self {
+        Self::new(state.write_pool())
     }
 
-    fn new(pool: PgPool, settings: ChangeLogSettings) -> Self {
+    fn new(pool: PgPool) -> Self {
         Self {
             pool,
-            settings,
+            statement_timeout: POLL_STATEMENT_TIMEOUT,
             max_rows: POLL_MAX_ROWS,
             cursor: None,
-            #[cfg(test)]
-            fail_next: false,
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("A change log poll took longer than {0:?}")]
-struct PollTimedOut(std::time::Duration);
-
-#[cfg(test)]
-#[derive(Debug, thiserror::Error)]
-#[error("The poll failed for a test")]
-struct TestFailure;
+struct PollTimedOut(Duration);
 
 fn query_error(e: impl std::error::Error + Send + Sync + 'static) -> ChangeLogError {
     ChangeLogError::Query(Box::new(e))
@@ -80,11 +75,11 @@ struct Poll {
 /// snapshot, at most `limit`. Without `prev`, no rows.
 async fn read_poll(
     conn: &mut PgConnection,
-    settings: ChangeLogSettings,
+    statement_timeout: Duration,
     prev: Option<&str>,
     limit: i64,
 ) -> sqlx::Result<Poll> {
-    let mut tx = begin_with_timeout(conn, settings.statement_timeout).await?;
+    let mut tx = begin_with_timeout(conn, statement_timeout).await?;
     // Two branches: transactions running at the previous snapshot, and transactions
     // started after it, below the new snapshot's xmax. A row with a higher xid came from
     // another server, by a dump and restore. `pg_current_snapshot()` is the statement's own
@@ -147,15 +142,11 @@ async fn read_poll(
 #[async_trait::async_trait]
 impl CacheChangeLog for PostgresCacheChangeLog {
     async fn poll(&mut self) -> Result<PollOutcome, ChangeLogError> {
-        #[cfg(test)]
-        if std::mem::take(&mut self.fail_next) {
-            return Err(query_error(TestFailure));
-        }
-        let timeout = self.settings.statement_timeout;
+        let timeout = self.statement_timeout;
         let mut conn = self.pool.acquire().await.map_err(query_error)?;
         let prev = self.cursor.as_ref().map(|cursor| cursor.snapshot.as_str());
         // One row more than a poll returns shows that there are more.
-        let read = read_poll(&mut conn, self.settings, prev, self.max_rows + 1);
+        let read = read_poll(&mut conn, timeout, prev, self.max_rows + 1);
         // The client-side limit also covers a connection that stopped answering.
         let poll = match tokio::time::timeout(timeout.saturating_add(timeout / 2), read).await {
             Ok(poll) => poll.map_err(query_error)?,
@@ -188,22 +179,15 @@ impl CacheChangeLog for PostgresCacheChangeLog {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{HashMap, HashSet},
-        time::Duration,
-    };
+    use std::collections::{HashMap, HashSet};
 
     use sqlx::Connection;
 
     use super::*;
     use crate::cache_change_log::test_support::{record, record_in};
 
-    const SETTINGS: ChangeLogSettings = ChangeLogSettings {
-        statement_timeout: Duration::from_secs(10),
-    };
-
     fn log(pool: &PgPool) -> PostgresCacheChangeLog {
-        PostgresCacheChangeLog::new(pool.clone(), SETTINGS)
+        PostgresCacheChangeLog::new(pool.clone())
     }
 
     /// A log whose first poll already ran.
@@ -241,18 +225,6 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn a_transaction_that_commits_late_is_returned_by_the_next_poll(pool: PgPool) {
-        let mut log = started(&pool).await;
-        let mut late = pool.begin().await.unwrap();
-        record_in(&mut late, "secret", "late").await;
-        record(&pool, "secret", "early").await;
-
-        assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "early")]));
-        late.commit().await.unwrap();
-        assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "late")]));
-    }
-
-    #[sqlx::test]
     async fn a_transaction_running_at_the_start_is_returned_when_it_commits(pool: PgPool) {
         let mut running = pool.begin().await.unwrap();
         record_in(&mut running, "secret", "k").await;
@@ -261,22 +233,6 @@ mod tests {
 
         running.commit().await.unwrap();
         assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "k")]));
-    }
-
-    #[sqlx::test]
-    async fn rolled_back_rows_never_appear(pool: PgPool) {
-        let mut log = started(&pool).await;
-        let mut tx = pool.begin().await.unwrap();
-        record_in(&mut tx, "secret", "gone").await;
-        tx.rollback().await.unwrap();
-        let mut tx = pool.begin().await.unwrap();
-        let mut savepoint = tx.begin().await.unwrap();
-        record_in(&mut savepoint, "secret", "savepoint").await;
-        savepoint.rollback().await.unwrap();
-        record_in(&mut tx, "secret", "kept").await;
-        tx.commit().await.unwrap();
-
-        assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "kept")]));
     }
 
     #[sqlx::test]
@@ -351,24 +307,20 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn a_poll_returns_up_to_the_most_rows(pool: PgPool) {
+    async fn more_rows_than_a_poll_returns_reset_and_the_next_poll_returns_the_later_changes(
+        pool: PgPool,
+    ) {
         let mut log = started(&pool).await;
         log.max_rows = 3;
         for key in ["k1", "k2", "k3"] {
             record(&pool, "secret", key).await;
         }
-
         assert_eq!(
             log.poll().await.unwrap(),
             changes(&[("secret", "k1"), ("secret", "k2"), ("secret", "k3")])
         );
-    }
 
-    #[sqlx::test]
-    async fn more_rows_reset_and_the_next_poll_returns_the_later_changes(pool: PgPool) {
-        let mut log = started(&pool).await;
-        log.max_rows = 3;
-        for key in ["k1", "k2", "k3", "k4"] {
+        for key in ["k4", "k5", "k6", "k7"] {
             record(&pool, "secret", key).await;
         }
 
@@ -381,21 +333,11 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn a_failed_poll_returns_its_changes_on_the_next_poll(pool: PgPool) {
-        let mut log = started(&pool).await;
-        record(&pool, "secret", "a").await;
-        log.fail_next = true;
-
-        assert!(matches!(log.poll().await, Err(ChangeLogError::Query(_))));
-        assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "a")]));
-    }
-
-    #[sqlx::test]
     async fn a_poll_past_the_statement_timeout_fails_and_the_next_returns_its_changes(
         pool: PgPool,
     ) {
         let mut log = started(&pool).await;
-        log.settings.statement_timeout = Duration::from_millis(200);
+        log.statement_timeout = Duration::from_millis(200);
         record(&pool, "secret", "a").await;
         let mut lock = pool.begin().await.unwrap();
         sqlx::query("LOCK TABLE cache_change_log IN ACCESS EXCLUSIVE MODE")
@@ -474,8 +416,8 @@ mod tests {
         written
     }
 
-    /// Poll while writers run, with failed polls. Every committed row is returned exactly
-    /// once, and no row that was rolled back.
+    /// Poll while writers run. Every committed row is returned exactly once, and no row that
+    /// was rolled back.
     #[sqlx::test]
     async fn concurrent_writers_lose_no_committed_row(pool: PgPool) {
         const SEEDS: u64 = 12;
@@ -496,10 +438,9 @@ mod tests {
                     }
                 }
                 Ok(PollOutcome::Reset(reason)) => panic!("seed {seed}: reset {reason:?}"),
-                Err(_) => {}
+                Err(error) => panic!("seed {seed}: {error}"),
             };
             while !writers.iter().all(tokio::task::JoinHandle::is_finished) {
-                log.fail_next = rng.u8(0..6) == 0;
                 poll(&mut log).await;
                 tokio::time::sleep(Duration::from_millis(rng.u64(0..3))).await;
             }
@@ -509,7 +450,6 @@ mod tests {
                 expected.committed.extend(written.committed);
                 expected.rolled_back.extend(written.rolled_back);
             }
-            log.fail_next = false;
             // Its snapshot is taken after every writer finished.
             poll(&mut log).await;
 

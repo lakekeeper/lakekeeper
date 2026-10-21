@@ -174,7 +174,6 @@ const FANOUT_CAP: usize = 10_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
     domains: BTreeMap<CacheDomain, DomainChange>,
-    fanout_cap: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,25 +194,13 @@ impl ChangeSet {
     /// change.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_cap(FANOUT_CAP)
-    }
-
-    /// An empty set with a fan-out cap of `fanout_cap` keys.
-    #[cfg(any(test, feature = "test-utils"))]
-    #[must_use]
-    pub fn with_fanout_cap(fanout_cap: usize) -> Self {
-        Self::with_cap(fanout_cap)
-    }
-
-    fn with_cap(fanout_cap: usize) -> Self {
         Self {
             domains: BTreeMap::new(),
-            fanout_cap,
         }
     }
 
     /// Add one changed key. Its domain becomes a whole-domain change once it holds more
-    /// keys than the fan-out cap.
+    /// than 10 000 keys.
     pub fn insert(&mut self, key: CacheKey) -> &mut Self {
         let change = self
             .domains
@@ -221,7 +208,7 @@ impl ChangeSet {
             .or_insert_with(|| DomainChange::Keys(BTreeMap::new()));
         if let DomainChange::Keys(keys) = change {
             keys.insert(key.encode(), key);
-            if keys.len() > self.fanout_cap {
+            if keys.len() > FANOUT_CAP {
                 *change = DomainChange::Whole;
             }
         }
@@ -231,23 +218,6 @@ impl ChangeSet {
     /// Mark every entry of `domain` as changed.
     pub fn insert_whole_domain(&mut self, domain: CacheDomain) -> &mut Self {
         self.domains.insert(domain, DomainChange::Whole);
-        self
-    }
-
-    /// Add every change of `other`, under this set's fan-out cap.
-    pub fn extend(&mut self, other: ChangeSet) -> &mut Self {
-        for (domain, change) in other.domains {
-            match change {
-                DomainChange::Whole => {
-                    self.insert_whole_domain(domain);
-                }
-                DomainChange::Keys(keys) => {
-                    for key in keys.into_values() {
-                        self.insert(key);
-                    }
-                }
-            }
-        }
         self
     }
 
@@ -289,14 +259,6 @@ mod tests {
     }
 
     #[test]
-    fn every_domain_name_parses_back() {
-        for domain in CacheDomain::iter() {
-            assert_eq!(CacheDomain::from_name(domain.as_str()), Some(domain));
-        }
-        assert_eq!(CacheDomain::from_name("extension_domain"), None);
-    }
-
-    #[test]
     fn domain_names_are_the_stored_contract() {
         let names: Vec<_> = CacheDomain::iter().map(CacheDomain::as_str).collect();
         assert_eq!(
@@ -310,6 +272,10 @@ mod tests {
                 "secret"
             ]
         );
+        for domain in CacheDomain::iter() {
+            assert_eq!(CacheDomain::from_name(domain.as_str()), Some(domain));
+        }
+        assert_eq!(CacheDomain::from_name("extension_domain"), None);
     }
 
     #[test]
@@ -382,15 +348,8 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_set_has_no_changes() {
-        let set = ChangeSet::with_fanout_cap(10);
-        assert!(set.is_empty());
-        assert_eq!(encoded(&set), vec![]);
-    }
-
-    #[test]
     fn keys_are_sorted_and_de_duplicated_per_domain() {
-        let mut set = ChangeSet::with_fanout_cap(10);
+        let mut set = ChangeSet::new();
         set.insert(warehouse(2))
             .insert(warehouse(1))
             .insert(warehouse(2))
@@ -413,55 +372,21 @@ mod tests {
 
     #[test]
     fn more_keys_than_the_cap_change_the_whole_domain() {
-        let mut set = ChangeSet::with_fanout_cap(3);
-        for n in 0..3 {
+        let mut set = ChangeSet::new();
+        for n in 0..10_000 {
             set.insert(warehouse(n));
         }
-        assert_eq!(encoded(&set)[0].1.as_ref().map(Vec::len), Some(3));
-        set.insert(warehouse(3));
-        assert_eq!(encoded(&set), vec![(CacheDomain::Warehouse, None)]);
-        set.insert(warehouse(4));
-        assert_eq!(encoded(&set), vec![(CacheDomain::Warehouse, None)]);
-    }
-
-    #[test]
-    fn a_cap_of_zero_records_every_change_as_the_whole_domain() {
-        let mut set = ChangeSet::with_fanout_cap(0);
-        set.insert(warehouse(1));
+        assert_eq!(encoded(&set)[0].1.as_ref().map(Vec::len), Some(10_000));
+        set.insert(warehouse(10_000));
         assert_eq!(encoded(&set), vec![(CacheDomain::Warehouse, None)]);
     }
 
     #[test]
     fn the_whole_domain_absorbs_its_keys() {
-        let mut set = ChangeSet::with_fanout_cap(10);
+        let mut set = ChangeSet::new();
         set.insert(CacheKey::Role(RoleId::from(uuid::Uuid::from_u128(1))))
             .insert_whole_domain(CacheDomain::Role)
             .insert(CacheKey::Role(RoleId::from(uuid::Uuid::from_u128(2))));
         assert_eq!(encoded(&set), vec![(CacheDomain::Role, None)]);
-    }
-
-    #[test]
-    fn extend_merges_both_sets_under_the_receivers_cap() {
-        let mut a = ChangeSet::with_fanout_cap(2);
-        a.insert(warehouse(1));
-        let mut b = ChangeSet::with_fanout_cap(10);
-        b.insert(warehouse(2))
-            .insert_whole_domain(CacheDomain::RoleAncestors);
-        a.extend(b);
-        assert_eq!(
-            encoded(&a),
-            vec![
-                (
-                    CacheDomain::Warehouse,
-                    Some(vec![warehouse(1).encode(), warehouse(2).encode()])
-                ),
-                (CacheDomain::RoleAncestors, None),
-            ]
-        );
-
-        let mut c = ChangeSet::with_fanout_cap(10);
-        c.insert(warehouse(3));
-        a.extend(c);
-        assert_eq!(encoded(&a)[0], (CacheDomain::Warehouse, None));
     }
 }

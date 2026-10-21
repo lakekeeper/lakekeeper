@@ -6,21 +6,16 @@ use futures::future::BoxFuture;
 use tracing::Instrument;
 
 use super::{
-    BoxedCacheChangeLog, CacheChangeReceivers, ChangeLogSettings, PollOutcome, PruneOutcome,
-    PruneSettings, ResetReason, evict::Evictions, metrics,
+    BoxedCacheChangeLog, CacheChangeReceivers, PollOutcome, ResetReason, evict::Evictions, metrics,
 };
 use crate::{CONFIG, CancellationToken, service::CatalogStore};
 
-/// The longest one read of the change log may run on the database.
-const POLL_STATEMENT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest the first read of the log may delay startup.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest pause between reads after failed reads, unless the interval is longer.
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// How often the change log is pruned.
 const PRUNE_INTERVAL: Duration = Duration::from_mins(5);
-/// The longest one statement of a pruning run may run.
-const PRUNE_STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The background tasks of cache invalidation, by name, which run until
 /// `cancellation_token` is cancelled: reading the change log, if
@@ -35,19 +30,14 @@ pub async fn background_tasks<C: CatalogStore>(
     let mut tasks: Vec<(&'static str, BoxFuture<'static, ()>)> = Vec::new();
     let invalidation = &CONFIG.cache.invalidation;
     if invalidation.enabled {
-        let log = C::cache_change_log(
-            catalog_state.clone(),
-            ChangeLogSettings {
-                statement_timeout: POLL_STATEMENT_TIMEOUT,
-            },
-        );
+        let log = C::cache_change_log(catalog_state.clone());
         let mut poller = Poller::new(
             log,
             ProcessCaches { receivers },
             invalidation.poll_interval,
             invalidation.reevict_grace,
         );
-        poller.start(STARTUP_TIMEOUT).await;
+        poller.start().await;
         tasks.push((
             "Cache Invalidation Poller",
             Box::pin(poller.run(cancellation_token.clone())),
@@ -115,15 +105,15 @@ impl<C: Caches> Poller<C> {
     }
 
     /// The first read, which starts the log at the current state of the database before this
-    /// instance serves requests. If it fails or takes longer than `timeout`, the first read
-    /// that succeeds evicts everything.
-    async fn start(&mut self, timeout: Duration) {
-        if !tokio::time::timeout(timeout, self.poll_once())
+    /// instance serves requests. If it fails or takes longer than 10 s, the first read that
+    /// succeeds evicts everything.
+    async fn start(&mut self) {
+        if !tokio::time::timeout(STARTUP_TIMEOUT, self.poll_once())
             .await
             .unwrap_or(false)
         {
             tracing::warn!(
-                "The first read of the cache change log failed; retrying in the background"
+                "The first read of the cache change log failed or did not finish within {STARTUP_TIMEOUT:?}; retrying in the background"
             );
             self.started_late = true;
         }
@@ -252,10 +242,7 @@ async fn prune_periodically<C: CatalogStore>(
     catalog_state: C::State,
     cancellation_token: CancellationToken,
 ) {
-    let settings = PruneSettings {
-        retention: configured_retention(),
-        statement_timeout: PRUNE_STATEMENT_TIMEOUT,
-    };
+    let retention = configured_retention();
     let mut rng = fastrand::Rng::new();
     loop {
         tokio::select! {
@@ -264,7 +251,7 @@ async fn prune_periodically<C: CatalogStore>(
         }
         let run = tokio::time::timeout(
             PRUNE_INTERVAL,
-            C::prune_cache_change_log(catalog_state.clone(), settings),
+            C::prune_cache_change_log(catalog_state.clone(), retention),
         );
         let outcome = tokio::select! {
             () = cancellation_token.cancelled() => return,
@@ -275,11 +262,11 @@ async fn prune_periodically<C: CatalogStore>(
                 metrics::record_prune_error();
                 tracing::warn!("Pruning the cache change log timed out");
             }
-            Ok(Ok(PruneOutcome::Pruned { deleted_rows })) => {
+            Ok(Ok(Some(deleted_rows))) => {
                 metrics::record_pruned(deleted_rows);
                 tracing::debug!(deleted_rows, "Pruned the cache change log");
             }
-            Ok(Ok(PruneOutcome::Skipped)) => {
+            Ok(Ok(None)) => {
                 tracing::debug!("Another instance is pruning the cache change log");
             }
             Ok(Err(error)) => {
@@ -370,7 +357,7 @@ mod tests {
             GRACE,
         );
         poller.rng = fastrand::Rng::with_seed(SEED);
-        poller.start(STARTUP_TIMEOUT).await;
+        poller.start().await;
         let cancellation_token = CancellationToken::new();
         let task = tokio::spawn(poller.run(cancellation_token.clone()));
         tokio::time::sleep(Duration::from_secs(60)).await;

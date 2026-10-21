@@ -45,8 +45,7 @@ use crate::{
             SubtreeGrantRoot, UserOrRoleId,
         },
         cache_invalidation::{
-            BoxedCacheChangeLog, CacheDomain, CacheKey, ChangeLogSettings, ChangeSet, PruneOutcome,
-            PruneSettings, evict_locally,
+            BoxedCacheChangeLog, CacheDomain, CacheKey, ChangeSet, evict_locally,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -557,17 +556,14 @@ where
     ) -> std::result::Result<(), CatalogBackendError>;
 
     /// The change log as the cache poller reads it, from the primary.
-    fn cache_change_log(
-        catalog_state: Self::State,
-        settings: ChangeLogSettings,
-    ) -> BoxedCacheChangeLog;
+    fn cache_change_log(catalog_state: Self::State) -> BoxedCacheChangeLog;
 
-    /// Delete change-log rows older than `settings.retention`, if no other instance is
-    /// pruning.
+    /// Delete change-log rows older than `retention`. Returns the number of rows deleted,
+    /// or `None` when another instance is pruning.
     async fn prune_cache_change_log(
         catalog_state: Self::State,
-        settings: PruneSettings,
-    ) -> std::result::Result<PruneOutcome, CatalogBackendError>;
+        retention: std::time::Duration,
+    ) -> std::result::Result<Option<u64>, CatalogBackendError>;
 
     // ---------------- Project Management ----------------
     /// Create a project
