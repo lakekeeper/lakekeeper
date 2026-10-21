@@ -8,7 +8,7 @@ For full details, see the [Developer Guide](docs/docs/developer-guide.md).
 - Small, self-contained fixes: just open a PR.
 - Bigger features: open an issue and discuss with us first.
 - Not sure what to work on? Check issues tagged `help wanted`.
-- To assign an open issue with no assignees to yourself, comment only `/assign` on the issue.
+- To claim an open issue with no assignees, comment only `/assign` on the issue. The first such comment wins. A new claim is possible after all assignees are removed.
 - Questions? Use the GitHub issue or our [Discord](https://discord.gg/jkAGG8p93B).
 
 ## Contributor License Agreement

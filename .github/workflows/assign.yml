@@ -32,6 +32,22 @@ jobs:
               return;
             }
 
+            const timeline = await github.paginate(
+              github.rest.issues.listEventsForTimeline,
+              { ...issueRequest, per_page: 100 },
+            );
+            const lastUnassignedIndex = timeline.findLastIndex(
+              (event) => event.event === 'unassigned',
+            );
+            const firstAssignComment = timeline
+              .slice(lastUnassignedIndex + 1)
+              .find((event) => event.event === 'commented' && event.body === '/assign');
+
+            if (firstAssignComment?.id !== context.payload.comment.id) {
+              core.info(`An earlier /assign comment claimed issue #${issue.number}.`);
+              return;
+            }
+
             await github.rest.issues.addAssignees({
               ...issueRequest,
               assignees: [context.payload.comment.user.login],
