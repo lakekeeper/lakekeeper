@@ -310,7 +310,7 @@ pub struct SetWarehouseRollbackCompactionPolicyRequest {
     /// rebases the writer on top, so the writer wins over compaction ("transparent commit").
     pub enabled: bool,
     /// A compaction snapshot older than this many seconds is not rolled back; the writer gets
-    /// a normal concurrency failure. Defaults to 3600 (one hour).
+    /// a normal concurrency failure. Defaults to 86400 (24 hours).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "open-api", schema(value_type = Option<u64>, minimum = 1))]
     pub max_compaction_age_seconds: Option<std::num::NonZeroU64>,

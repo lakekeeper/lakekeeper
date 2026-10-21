@@ -2,7 +2,7 @@
 SET LOCAL lock_timeout = '5s';
 alter table warehouse
     add column rollback_compaction_on_conflict boolean not null default false,
-    add column rollback_compaction_max_age_seconds bigint not null default 3600
+    add column rollback_compaction_max_age_seconds bigint not null default 86400
         check (rollback_compaction_max_age_seconds > 0),
     add column rollback_compaction_fence_seconds bigint not null default 60
         check (rollback_compaction_fence_seconds > 0);

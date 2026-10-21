@@ -15639,7 +15639,7 @@ components:
           format: int64
           description: |-
             A compaction snapshot older than this many seconds is not rolled back; the writer gets
-            a normal concurrency failure. Defaults to 3600 (one hour).
+            a normal concurrency failure. Defaults to 86400 (24 hours).
           minimum: 1
         snapshot-removal-fence-seconds:
           type:
