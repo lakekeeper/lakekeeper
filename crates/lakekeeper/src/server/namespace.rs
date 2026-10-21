@@ -823,6 +823,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                 }
                 TabularPurgeTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         scheduled_for: None,

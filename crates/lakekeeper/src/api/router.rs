@@ -34,7 +34,10 @@ use crate::{
             new_v1_full_router,
             tables::{DATA_ACCESS_HEADER_NAME, ETAG_HEADER_NAME, IF_NONE_MATCH_HEADER_NAME},
         },
-        management::v1::ApiServer,
+        management::v1::{
+            ApiServer,
+            extension::{ArcManagementApiExtension, management_extension_routes},
+        },
     },
     request_metadata::{
         X_BREAK_GLASS_HEADER_NAME, X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
@@ -124,6 +127,8 @@ pub struct RouterArgs<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N:
     /// request); host binaries may register gates that reject already
     /// authenticated principals before they reach any handler.
     pub admission_gates: AdmissionGates,
+    /// Routes added to the management API, behind the same layers as its own routes.
+    pub management_api_extensions: Vec<ArcManagementApiExtension<A, C, S>>,
 }
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -146,6 +151,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + 
             )
             .field("instance_admin_membership", &self.instance_admin_membership)
             .field("admission_gates", &self.admission_gates)
+            .field("management_api_extensions", &self.management_api_extensions)
             .finish()
     }
 }
@@ -154,6 +160,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + 
 ///
 /// # Errors
 /// - Fails if the token verifier chain cannot be created
+/// - Fails if a management API extension is invalid, or a different set of extension
+///   endpoints is already installed in this process
 pub async fn new_full_router<
     C: CatalogStore,
     A: Authorizer + Clone,
@@ -169,7 +177,7 @@ pub async fn new_full_router<
         endpoint_statistics_tracker_tx,
         instance_admin_membership,
         admission_gates,
-        // registered_task_queues,
+        management_api_extensions,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::server::CatalogServer<C, A, S>, State<A, C, S>>();
@@ -179,8 +187,21 @@ pub async fn new_full_router<
         State<A, C, S>,
     >();
 
+    let registered_api_configs = state.v1_state.registered_task_queues.api_config().await;
+    let (warehouse_task_api_configs, project_task_api_configs) = registered_api_configs
+        .iter()
+        .partition::<Vec<_>, _>(|config| {
+            matches!(config.scope, crate::service::tasks::QueueScope::Warehouse)
+        });
+
     let authorizer = state.v1_state.authz.clone();
-    let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
+    let management_routes = Router::new()
+        .merge(ApiServer::new_v1_router(&authorizer))
+        .merge(management_extension_routes(
+            &management_api_extensions,
+            &warehouse_task_api_configs,
+            &project_task_api_configs,
+        )?);
     let maybe_cors_layer = get_cors_layer(cors_origins);
 
     let maybe_auth_layer = if let Some(authenticator) = authenticator {
@@ -230,17 +251,11 @@ pub async fn new_full_router<
     // Add health later so that it is not authenticated
     .route("/health", health_route(service_health_provider));
 
-    let registered_api_configs = state.v1_state.registered_task_queues.api_config().await;
-    let (warehouse_task_api_configs, project_task_api_configs) = registered_api_configs
-        .iter()
-        .partition::<Vec<_>, _>(|config| {
-            matches!(config.scope, crate::service::tasks::QueueScope::Warehouse)
-        });
-
     let router = maybe_merge_swagger_router(
         router,
         &warehouse_task_api_configs,
         &project_task_api_configs,
+        &management_api_extensions,
     );
     let router = router
         .layer(axum::middleware::from_fn(
@@ -469,19 +484,27 @@ fn get_cors_layer(
     maybe_cors_layer
 }
 
-#[cfg_attr(not(feature = "open-api"), allow(unused_variables))]
+#[cfg(feature = "open-api")]
 fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     router: Router<ApiContext<State<A, C, S>>>,
     queue_api_configs: &[&QueueApiConfig],
     project_queue_api_configs: &[&QueueApiConfig],
+    management_api_extensions: &[ArcManagementApiExtension<A, C, S>],
 ) -> Router<ApiContext<State<A, C, S>>> {
-    #[cfg(feature = "open-api")]
     if CONFIG.serve_swagger_ui {
+        let extension_docs = management_api_extensions
+            .iter()
+            .map(|extension| extension.api_doc())
+            .collect::<Vec<_>>();
         router.merge(
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
                 .url(
                     "/api-docs/management/v1/openapi.json",
-                    v1_api_doc::<A>(queue_api_configs, project_queue_api_configs),
+                    v1_api_doc::<A>(
+                        queue_api_configs,
+                        project_queue_api_configs,
+                        &extension_docs,
+                    ),
                 )
                 .external_url_unchecked(
                     "/api-docs/catalog/v1/openapi.json",
@@ -491,10 +514,16 @@ fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     } else {
         router
     }
-    #[cfg(not(feature = "open-api"))]
-    {
-        router
-    }
+}
+
+#[cfg(not(feature = "open-api"))]
+fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    router: Router<ApiContext<State<A, C, S>>>,
+    _: &[&QueueApiConfig],
+    _: &[&QueueApiConfig],
+    _: &[ArcManagementApiExtension<A, C, S>],
+) -> Router<ApiContext<State<A, C, S>>> {
+    router
 }
 
 /// Serve the given router on the given listener until `cancellation_token` is

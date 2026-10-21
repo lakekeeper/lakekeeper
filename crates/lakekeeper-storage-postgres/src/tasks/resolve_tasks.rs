@@ -194,7 +194,7 @@ mod tests {
 
     use super::*;
     use crate::tasks::{
-        pick_task, queue_task_batch, record_failure, record_success,
+        pick_task, queue_task_batch, record_failure_without_backoff, record_success,
         test::{setup_two_warehouses, setup_warehouse},
     };
 
@@ -214,6 +214,7 @@ mod tests {
             queue_name,
             vec![TaskInput {
                 task_metadata: ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id,
                     parent_task_id,
                     entity: TaskEntity::EntityInWarehouse {
@@ -500,7 +501,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task2, 1, "Task 2 failed", &mut conn)
+        record_failure_without_backoff(&task2, 1, "Task 2 failed", &mut conn)
             .await
             .unwrap();
 
@@ -913,7 +914,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        record_failure(&task1, 5, "First attempt failed", &mut conn)
+        record_failure_without_backoff(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -988,6 +989,7 @@ mod tests {
             vec![
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::EntityInWarehouse {
@@ -1002,6 +1004,7 @@ mod tests {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::Project,
@@ -1012,6 +1015,7 @@ mod tests {
                 },
                 TaskInput {
                     task_metadata: ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id,
                         entity: TaskEntity::EntityInWarehouse {
@@ -1077,7 +1081,9 @@ mod tests {
                     .await
                     .unwrap();
             } else {
-                record_failure(&task, 1, "Failed", &mut conn).await.unwrap();
+                record_failure_without_backoff(&task, 1, "Failed", &mut conn)
+                    .await
+                    .unwrap();
             }
         }
 
