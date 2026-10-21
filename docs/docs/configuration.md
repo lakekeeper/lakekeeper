@@ -471,9 +471,9 @@ Most cache entries' time-to-live is jittered downward by a small random fraction
 **Cache Invalidation Across Instances**
 {: #cache-invalidation }
 
-When several Lakekeeper instances share one database, a change made through one instance reaches the caches of all instances within about a second. This covers the warehouse, namespace, secrets, role, user assignments and role ancestors caches. The short-term credentials cache and the user cache are not covered: their entries stay until their time-to-live ends.
+When several Lakekeeper instances share one database, a change made through one instance reaches the caches of all instances within one poll interval, about a second with the default settings. This covers the warehouse, namespace, secrets, role, user assignments and role ancestors caches. The short-term credentials cache and the user cache are not covered: their entries stay until their time-to-live ends.
 
-The instance that makes a change removes the changed entries from its own caches at once. Every write that changes a cached entry also writes a change record to the database, in the same transaction. Each instance reads the new change records from the primary database about once per second, through `LAKEKEEPER__PG_DATABASE_URL_WRITE`, and removes the changed entries. After `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE` (default 10 seconds), it removes them a second time: a read replica that is behind the primary can return old data, and the cache can store it again. If an instance cannot know which changes it missed, for example after a database failover, it empties all the caches listed above.
+The instance that makes a change removes the changed entries from its own caches at once. Every write that changes a cached entry also writes a change record to the database, in the same transaction. Each instance reads the new change records from the primary database every `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL` (default 1 second), through `LAKEKEEPER__PG_DATABASE_URL_WRITE`, and removes the changed entries. After `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE` (default 10 seconds), it removes them a second time: a read replica that is behind the primary can return old data, and the cache can store it again. If an instance cannot know which changes it missed, for example after a database failover, it empties all the caches listed above.
 
 If an instance cannot read the change records for a while, for example while it cannot reach the database, it removes the changed entries when it can read the change records again. Until then, an entry stays at most until its time-to-live ends. So the time-to-live, plus the delay of your read replicas, is the longest time a change needs to reach every instance. If a removed role assignment or role membership must not apply that long, lower `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` and `LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS` together, for example to `30`.
 
@@ -581,7 +581,7 @@ Caches the set of roles assigned to each user (`UserId → role assignments`). O
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`; a larger value stops Lakekeeper at startup. Default: `120` (2 minutes) |
 
-These changes update the affected users' entries on all instances within about a second, see [Cache Invalidation Across Instances](#cache-invalidation):
+These changes update the affected users' entries on all instances within one poll interval (default 1 second), see [Cache Invalidation Across Instances](#cache-invalidation):
 
 - adding a user to a role or removing them
 - adding or removing a member role
@@ -622,7 +622,7 @@ Only authorizers that resolve role nesting from Lakekeeper's own role store use 
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. A value above `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` is lowered to it, with a warning at startup. Default: `120` (2 minutes) |
 
-Adding or removing a member role, deleting a role, or rebinding a role's source system empties this cache on all instances within about a second, see [Cache Invalidation Across Instances](#cache-invalidation). It empties every entry, not only the role named, since one membership change changes the ancestors of every role nested below it. To read from the database every time, set `LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED=false`.
+Adding or removing a member role, deleting a role, or rebinding a role's source system empties this cache on all instances within one poll interval (default 1 second), see [Cache Invalidation Across Instances](#cache-invalidation). It empties every entry, not only the role named, since one membership change changes the ancestors of every role nested below it. To read from the database every time, set `LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED=false`.
 
 _Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
 
