@@ -137,3 +137,65 @@ test_fast_path_namespace_broad_allows_matching_schema if {
 	0 in result
 	not 1 in result
 }
+
+# ===================================================================
+# `list_everything_grants_tabular_metadata: false` turns off the fast
+# path for tables and views. Schemas keep it.
+# ===================================================================
+
+test_fast_path_warehouse_broad_off_for_tables if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterColumns",
+			"filterResources": [{"table": {
+				"catalogName": "managed",
+				"schemaName": "schema_a",
+				"tableName": "table_a",
+				"columns": ["c1", "c2", "c3"],
+			}}],
+		},
+	}
+		with data.configuration.lakekeeper as mock_lakekeeper_without_tabular_fast_path
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_warehouse_list_everything
+
+	# Slow path runs; the mock denies per-table checks.
+	result == set()
+}
+
+test_fast_path_namespace_broad_off_for_tables if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": [
+				{"table": {"catalogName": "managed", "schemaName": "schema_a", "tableName": "table_a"}},
+				{"table": {"catalogName": "managed", "schemaName": "schema_b", "tableName": "table_b"}},
+			],
+		},
+	}
+		with data.configuration.lakekeeper as mock_lakekeeper_without_tabular_fast_path
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_namespace_list_everything_schema_a
+
+	result == set()
+}
+
+test_fast_path_stays_on_for_schemas if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterSchemas",
+			"filterResources": [
+				{"schema": {"catalogName": "managed", "schemaName": "schema_a"}},
+				{"schema": {"catalogName": "managed", "schemaName": "schema_b"}},
+			],
+		},
+	}
+		with data.configuration.lakekeeper as mock_lakekeeper_without_tabular_fast_path
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_warehouse_list_everything
+
+	result == {0, 1}
+}

@@ -22,6 +22,10 @@ env := opa.runtime().env
 # - scope: The scope specified in the client credentials flow
 # - max_batch_check_size: Maximum number of checks per batch-check request.
 #       Lakekeeper server limit is 1000. Default: 1000
+# - list_everything_grants_tabular_metadata: If true, a user allowed `list_everything` on a
+#       warehouse or namespace sees the names and columns of all tables and views inside it
+#       without a check per table or view. Set to false to check `get_metadata` on each.
+#       Default: true
 #
 # A default project is pre-defined and can be configured via environment variables.
 # Additional projects can be added below.
@@ -33,6 +37,11 @@ lakekeeper := [{
 	"client_secret": env.LAKEKEEPER_CLIENT_SECRET,
 	"scope": object.get(env, "LAKEKEEPER_SCOPE", "lakekeeper"),
 	"max_batch_check_size": to_number(object.get(env, "LAKEKEEPER_MAX_BATCH_CHECK_SIZE", "1000")),
+	"list_everything_grants_tabular_metadata": object.get(
+		env,
+		"LAKEKEEPER_LIST_EVERYTHING_GRANTS_TABULAR_METADATA",
+		"true",
+	) == "true",
 }]
 
 # ------------- Trino Configuration -------------

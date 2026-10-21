@@ -163,3 +163,9 @@ mock_http_namespace_list_everything_schema_a(request) := {"status_code": 200, "b
 	contains(request.url, "batch-check")
 	results := [_mock_namespace_list_everything_schema_a_result(check) | some check in request.body.checks]
 }
+
+# Lakekeeper instance config with the tabular fast path turned off.
+mock_lakekeeper_without_tabular_fast_path := [object.union(
+	mock_lakekeeper[0],
+	{"list_everything_grants_tabular_metadata": false},
+)]

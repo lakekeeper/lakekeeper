@@ -32,17 +32,24 @@ _broad_access_cache_secs := 30
 # from Trino).
 _broad_access_request_id := object.get(input.context, "queryId", "")
 
+# Schemas always use the fast path: Lakekeeper itself lists every namespace of a
+# warehouse to a caller allowed `list_everything` on it. Tables and views use it
+# unless `list_everything_grants_tabular_metadata` is false for the instance.
+_fast_path_enabled(_) if input.action.operation == "FilterSchemas"
+
+_fast_path_enabled(lakekeeper_id) if {
+	object.get(lakekeeper.config_by_id[lakekeeper_id], "list_everything_grants_tabular_metadata", true) == true
+}
+
 # --- Fast path: warehouse-level `list_everything` ---
 #
-# `can_list_everything` on a warehouse is defined as `describe_effective` in the
-# FGA model, which propagates `describe_effective from parent` to every
-# namespace/table and implies `can_get_metadata` on each. So it's semantically
-# safe to short-circuit FilterTables/FilterColumns/FilterSchemas.
-# SelectFromColumns needs `read_data` (= `select_effective`, NOT implied by
-# `describe_effective`) and must stay on the slow path.
+# Short-circuits FilterTables/FilterColumns/FilterSchemas. SelectFromColumns
+# needs `read_data`, which `list_everything` never implies, and must stay on
+# the slow path.
 _warehouse_broad contains catalog_name if {
 	some catalog_name in _managed_catalog_names
 	trino_catalog := catalog_config_by_name[catalog_name]
+	_fast_path_enabled(trino_catalog.lakekeeper_id)
 	warehouse_id := lakekeeper.warehouse_id_for_name(trino_catalog.lakekeeper_id, trino_catalog.lakekeeper_warehouse)
 	check := lakekeeper.build_warehouse_check(warehouse_id, lakekeeper_user_id, "list_everything")
 	results := lakekeeper.batch_check_results_cached(
@@ -63,6 +70,7 @@ _namespace_broad[catalog_name] := allowed_names if {
 	some catalog_name in _managed_catalog_names
 	not catalog_name in _warehouse_broad
 	trino_catalog := catalog_config_by_name[catalog_name]
+	_fast_path_enabled(trino_catalog.lakekeeper_id)
 	warehouse_id := lakekeeper.warehouse_id_for_name(trino_catalog.lakekeeper_id, trino_catalog.lakekeeper_warehouse)
 	schema_set := _distinct_schemas_for(catalog_name)
 	count(schema_set) > 0
