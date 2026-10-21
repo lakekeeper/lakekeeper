@@ -9,8 +9,9 @@ use lakekeeper::{
             EnqueueOutcome, MaterializedTick, ProjectTaskScheduleState, TaskQueueName,
             TaskSchedule, TaskScheduleCondition, TaskScheduleConditionFailedError,
             TaskScheduleFilter, TaskScheduleId, TaskScheduleNotFoundError,
-            TaskScheduleSpecVersionUnsupportedError, TaskScheduleStoreError, TaskScheduleUpsert,
-            TriggerTaskScheduleError, UpsertTaskScheduleError, due_tick, first_tick_at_or_after,
+            TaskScheduleScopeNotFoundError, TaskScheduleSpecVersionUnsupportedError,
+            TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
+            UpsertTaskScheduleError, due_tick, first_tick_at_or_after,
         },
     },
 };
@@ -113,10 +114,37 @@ pub(crate) async fn upsert_task_schedule(
         .map_err(DBErrorHandler::into_catalog_backend_error)?;
         let now = match &stored {
             Some(stored) => stored.now,
-            None => sqlx::query_scalar!(r#"SELECT now() AS "now!""#)
+            None => {
+                // Takes the locks of the insert's foreign key checks, in their order, so a scope
+                // deleted meanwhile returns an error and leaves the transaction usable.
+                let scope = sqlx::query!(
+                    r#"
+                    SELECT
+                        now() AS "now!",
+                        (SELECT true FROM project WHERE project_id = $1 FOR KEY SHARE)
+                            AS "project_exists?",
+                        (SELECT true FROM warehouse
+                            WHERE warehouse_id = $2 AND project_id = $1 FOR KEY SHARE)
+                            AS "warehouse_exists?"
+                    "#,
+                    project_id.as_str(),
+                    warehouse_id,
+                )
                 .fetch_one(&mut *conn)
                 .await
-                .map_err(DBErrorHandler::into_catalog_backend_error)?,
+                .map_err(DBErrorHandler::into_catalog_backend_error)?;
+                let scope_exists = scope.project_exists.is_some()
+                    && (warehouse_id.is_none() || scope.warehouse_exists.is_some());
+                if !scope_exists {
+                    return Err(TaskScheduleScopeNotFoundError {
+                        project_id,
+                        warehouse_id: warehouse_id.map(WarehouseId::from),
+                        stack: Vec::new(),
+                    }
+                    .into());
+                }
+                scope.now
+            }
         };
         if let Some(stored) = &stored
             && stored.spec_version > SPEC_VERSION
@@ -606,9 +634,9 @@ mod tests {
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, EnqueueOutcome, FailedAttempt, FailureKind,
                 RetryDecision, ScheduleTaskMetadata, TaskEntity, TaskId, TaskInput,
                 TaskIntermediateStatus, TaskQueueName, TaskSchedule, TaskScheduleFilter,
-                TaskScheduleId, TaskScheduleIntervalOutOfRangeError, TaskScheduleUpsert,
-                TriggerTaskScheduleError, UpsertTaskScheduleError, WarehouseTaskEntityId,
-                default_retry_backoff,
+                TaskScheduleId, TaskScheduleIntervalOutOfRangeError, TaskScheduleKeyLengthError,
+                TaskScheduleUpsert, TriggerTaskScheduleError, UpsertTaskScheduleError,
+                WarehouseTaskEntityId, default_retry_backoff,
             },
         },
     };
@@ -917,6 +945,191 @@ mod tests {
             (interval_seconds, minimum_seconds, maximum_seconds),
             (59, 60, 3_153_600_000)
         );
+    }
+
+    #[sqlx::test]
+    async fn test_key_outside_1_to_512_characters_is_refused(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let mut t = PostgresTransaction::begin_write(crate::CatalogState::from_pools(
+            pool.clone(),
+            pool.clone(),
+        ))
+        .await
+        .unwrap();
+        let spec = |key: String| {
+            TaskScheduleUpsert::builder()
+                .project_id(project_id.clone())
+                .warehouse_id(Some(warehouse_id))
+                .queue_name(queue())
+                .schedule_key(key)
+                .interval(chrono::Duration::minutes(1))
+                .build()
+        };
+        for (key, length) in [(String::new(), 0), ("a".repeat(513), 513)] {
+            let err = PostgresBackend::upsert_task_schedule(spec(key), t.transaction())
+                .await
+                .unwrap_err();
+            let UpsertTaskScheduleError::TaskScheduleKeyLengthError(TaskScheduleKeyLengthError {
+                length: refused,
+                maximum,
+                ..
+            }) = err
+            else {
+                panic!("expected TaskScheduleKeyLengthError, got {err:?}");
+            };
+            assert_eq!((refused, maximum), (length, 512));
+        }
+        // Counted in characters, as the column's check does.
+        let schedule =
+            PostgresBackend::upsert_task_schedule(spec("é".repeat(512)), t.transaction())
+                .await
+                .unwrap();
+        assert_eq!(schedule.schedule_key.chars().count(), 512);
+    }
+
+    #[sqlx::test]
+    async fn test_new_schedule_without_its_project_or_warehouse_is_scope_not_found(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        sqlx::query("INSERT INTO project (project_id, project_name) VALUES ('other', 'other')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let other = ArcProjectId::new(ProjectId::from_db_unchecked("other".to_string()));
+        let missing = ArcProjectId::new(ProjectId::from_db_unchecked("missing".to_string()));
+        let q = queue();
+        let spec = |project_id: &ArcProjectId, warehouse_id| {
+            TaskScheduleUpsert::builder()
+                .project_id(project_id.clone())
+                .warehouse_id(warehouse_id)
+                .queue_name(q.clone())
+                .schedule_key("scoped")
+                .interval(chrono::Duration::minutes(1))
+                .build()
+        };
+        let mut t = pool.begin().await.unwrap();
+        for (project_id, warehouse_id) in [
+            (missing.clone(), None),
+            (missing, Some(warehouse_id)),
+            (other, Some(warehouse_id)),
+        ] {
+            let err = upsert_task_schedule(&mut t, spec(&project_id, warehouse_id))
+                .await
+                .unwrap_err();
+            let UpsertTaskScheduleError::TaskScheduleScopeNotFoundError(
+                TaskScheduleScopeNotFoundError {
+                    project_id: refused_project_id,
+                    warehouse_id: refused_warehouse_id,
+                    ..
+                },
+            ) = err
+            else {
+                panic!("expected TaskScheduleScopeNotFoundError, got {err:?}");
+            };
+            assert_eq!(
+                (refused_project_id, refused_warehouse_id),
+                (project_id, warehouse_id)
+            );
+        }
+        // The transaction is still usable.
+        let created = upsert_task_schedule(&mut t, spec(&project_id, Some(warehouse_id)))
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(get(&pool, &created).await, created);
+    }
+
+    #[sqlx::test]
+    async fn test_materializer_skips_schedules_another_one_holds(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        clear_schedules(&pool).await;
+        let q = queue();
+        let mut schedule_ids = BTreeSet::new();
+        for key in ["a", "b", "c"] {
+            let schedule = upsert(
+                &pool,
+                &project_id,
+                Some(warehouse_id),
+                &q,
+                key,
+                chrono::Duration::minutes(1),
+            )
+            .await;
+            schedule_ids.insert(schedule.schedule_id);
+        }
+
+        let mut first = pool.begin().await.unwrap();
+        let claimed = materialize_due_task_schedules(&mut first, 1000)
+            .await
+            .unwrap();
+        assert_eq!(
+            claimed
+                .iter()
+                .map(|t| t.schedule_id)
+                .collect::<BTreeSet<_>>(),
+            schedule_ids
+        );
+        // Locked by the first materializer: skipped, not waited for.
+        assert_eq!(materialize_ticks(&pool).await, Vec::new());
+        first.commit().await.unwrap();
+        // Their instances are active now.
+        assert_eq!(materialize_ticks(&pool).await, Vec::new());
+        for tick in &claimed {
+            assert_eq!(
+                active_task_ids(&pool, tick.schedule_id).await,
+                vec![tick.task_id]
+            );
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_concurrent_materializers_create_one_task_per_tick(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        clear_schedules(&pool).await;
+        let q = queue();
+        let mut schedule_ids = BTreeSet::new();
+        for key in 0..50 {
+            let schedule = upsert(
+                &pool,
+                &project_id,
+                Some(warehouse_id),
+                &q,
+                &key.to_string(),
+                chrono::Duration::minutes(1),
+            )
+            .await;
+            schedule_ids.insert(schedule.schedule_id);
+        }
+
+        let materializers = (0..8)
+            .map(|_| {
+                let pool = pool.clone();
+                tokio::spawn(async move {
+                    let mut t = pool.begin().await.unwrap();
+                    let ticks = materialize_due_task_schedules(&mut t, 10).await.unwrap();
+                    t.commit().await.unwrap();
+                    ticks
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut ticks = Vec::new();
+        for materializer in materializers {
+            ticks.extend(materializer.await.unwrap());
+        }
+        // Up to 8 * 10 claims for 50 schedules; what one pass left is picked up by the next.
+        ticks.extend(materialize_ticks(&pool).await);
+
+        let materialized = ticks.iter().map(|t| t.schedule_id).collect::<Vec<_>>();
+        assert_eq!(materialized.len(), 50);
+        assert_eq!(
+            materialized.into_iter().collect::<BTreeSet<_>>(),
+            schedule_ids
+        );
+        for tick in &ticks {
+            assert_eq!(
+                active_task_ids(&pool, tick.schedule_id).await,
+                vec![tick.task_id]
+            );
+        }
     }
 
     #[sqlx::test]

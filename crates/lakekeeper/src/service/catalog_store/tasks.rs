@@ -26,7 +26,8 @@ use crate::{
             TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInfo, TaskInput,
             TaskQueueName, TaskResolveScope, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
             TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
-            UpsertTaskScheduleError, task_schedule::validate_task_schedule_interval,
+            UpsertTaskScheduleError,
+            task_schedule::{validate_task_schedule_interval, validate_task_schedule_key},
         },
     },
 };
@@ -371,12 +372,13 @@ where
     /// Create or update a task schedule. A changed interval or anchor, or enabling a disabled
     /// schedule, moves `next_run_at` to the first tick at or after now; ticks passed over this
     /// way are not counted in `missed_runs`, which is always kept. Fails for a schedule written
-    /// by a newer server version.
+    /// by a newer server version, and for a new schedule whose project or warehouse is gone.
     async fn upsert_task_schedule(
         schedule: TaskScheduleUpsert,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<TaskSchedule, UpsertTaskScheduleError> {
         validate_task_schedule_interval(schedule.interval)?;
+        validate_task_schedule_key(&schedule.schedule_key)?;
         Self::upsert_task_schedule_impl(schedule, transaction).await
     }
 

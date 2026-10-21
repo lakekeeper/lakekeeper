@@ -30,13 +30,13 @@ pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
 pub mod task_schedule;
 pub use task_schedule::{
-    DueTick, MAX_TASK_SCHEDULE_INTERVAL, MIN_TASK_SCHEDULE_INTERVAL, MaterializedTick,
-    ProjectTaskScheduleState, TaskSchedule, TaskScheduleCondition,
+    DueTick, MAX_TASK_SCHEDULE_INTERVAL, MAX_TASK_SCHEDULE_KEY_LENGTH, MIN_TASK_SCHEDULE_INTERVAL,
+    MaterializedTick, ProjectTaskScheduleState, TaskSchedule, TaskScheduleCondition,
     TaskScheduleConditionFailedError, TaskScheduleFilter, TaskScheduleId,
-    TaskScheduleIntervalOutOfRangeError, TaskScheduleNotFoundError,
-    TaskScheduleSpecVersionUnsupportedError, TaskScheduleStoreError,
-    TaskScheduleTickOutOfRangeError, TaskScheduleUpsert, TriggerTaskScheduleError,
-    UpsertTaskScheduleError, due_tick, first_tick_at_or_after,
+    TaskScheduleIntervalOutOfRangeError, TaskScheduleKeyLengthError, TaskScheduleNotFoundError,
+    TaskScheduleScopeNotFoundError, TaskScheduleSpecVersionUnsupportedError,
+    TaskScheduleStoreError, TaskScheduleTickOutOfRangeError, TaskScheduleUpsert,
+    TriggerTaskScheduleError, UpsertTaskScheduleError, due_tick, first_tick_at_or_after,
 };
 
 #[cfg(any(test, feature = "test-utils"))]

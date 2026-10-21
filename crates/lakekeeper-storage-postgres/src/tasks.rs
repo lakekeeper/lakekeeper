@@ -2670,8 +2670,12 @@ mod test {
         );
     }
 
-    #[sqlx::test]
-    async fn test_cancelling_a_task_waiting_for_its_retry_logs_the_cancellation(pool: PgPool) {
+    /// Fails a task's first attempt, then cancels it with the filter `filter` builds from it while
+    /// it waits for its retry.
+    async fn assert_cancelling_a_task_waiting_for_its_retry_logs_the_cancellation(
+        pool: PgPool,
+        filter: impl FnOnce(&Task) -> CancelTasksFilter,
+    ) {
         let (_, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
         let mut conn = pool.acquire().await.unwrap();
         record_failure(
@@ -2684,15 +2688,9 @@ mod test {
         .await
         .unwrap();
 
-        cancel_scheduled_tasks(
-            &mut conn,
-            CancelTasksFilter::TaskIds(vec![task.task_id()]),
-            None,
-            &[],
-            false,
-        )
-        .await
-        .unwrap();
+        cancel_scheduled_tasks(&mut conn, filter(&task), None, &[], false)
+            .await
+            .unwrap();
         let active: i64 = sqlx::query_scalar("SELECT count(*) FROM task WHERE task_id = $1")
             .bind(*task.task_id())
             .fetch_one(&pool)
@@ -2706,6 +2704,41 @@ mod test {
                 (2, TaskOutcome::Cancelled, None),
             ]
         );
+    }
+
+    #[sqlx::test]
+    async fn test_cancelling_by_id_a_task_waiting_for_its_retry_logs_the_cancellation(
+        pool: PgPool,
+    ) {
+        assert_cancelling_a_task_waiting_for_its_retry_logs_the_cancellation(pool, |task| {
+            CancelTasksFilter::TaskIds(vec![task.task_id()])
+        })
+        .await;
+    }
+
+    #[sqlx::test]
+    async fn test_cancelling_by_warehouse_a_task_waiting_for_its_retry_logs_the_cancellation(
+        pool: PgPool,
+    ) {
+        assert_cancelling_a_task_waiting_for_its_retry_logs_the_cancellation(pool, |task| {
+            CancelTasksFilter::WarehouseId {
+                warehouse_id: task.task_metadata.warehouse_id().unwrap(),
+            }
+        })
+        .await;
+    }
+
+    #[sqlx::test]
+    async fn test_cancelling_by_project_a_task_waiting_for_its_retry_logs_the_cancellation(
+        pool: PgPool,
+    ) {
+        assert_cancelling_a_task_waiting_for_its_retry_logs_the_cancellation(pool, |task| {
+            CancelTasksFilter::ProjectId {
+                project_id: (**task.task_metadata.project_id()).clone(),
+                include_sub_tasks: true,
+            }
+        })
+        .await;
     }
 
     #[sqlx::test]

@@ -28,6 +28,9 @@ pub const MIN_TASK_SCHEDULE_INTERVAL: chrono::Duration = chrono::Duration::minut
 /// The longest interval a schedule may have: 100 years.
 pub const MAX_TASK_SCHEDULE_INTERVAL: chrono::Duration = chrono::Duration::days(36_500);
 
+/// The longest key a schedule may have, in characters.
+pub const MAX_TASK_SCHEDULE_KEY_LENGTH: usize = 512;
+
 /// Longest sleep between materializer passes: half of [`MIN_TASK_SCHEDULE_INTERVAL`], so drift
 /// and jitter never skip a one-minute tick.
 const MAX_MATERIALIZER_PERIOD: Duration = Duration::from_secs(30);
@@ -150,6 +153,57 @@ impl From<TaskScheduleIntervalOutOfRangeError> for ErrorModel {
     }
 }
 
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error(
+    "Task schedule key of {length} characters is outside the allowed range of 1 to {maximum} characters"
+)]
+pub struct TaskScheduleKeyLengthError {
+    pub length: usize,
+    pub maximum: usize,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(TaskScheduleKeyLengthError);
+impl From<TaskScheduleKeyLengthError> for ErrorModel {
+    fn from(value: TaskScheduleKeyLengthError) -> Self {
+        ErrorModel::builder()
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(value.to_string())
+            .r#type("TaskScheduleKeyLength")
+            .stack(value.stack)
+            .build()
+    }
+}
+
+/// The project or warehouse of a new schedule does not exist, or the warehouse belongs to another
+/// project.
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error("{}", scope_not_found_message(project_id, *warehouse_id))]
+pub struct TaskScheduleScopeNotFoundError {
+    pub project_id: ArcProjectId,
+    pub warehouse_id: Option<WarehouseId>,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(TaskScheduleScopeNotFoundError);
+impl From<TaskScheduleScopeNotFoundError> for ErrorModel {
+    fn from(value: TaskScheduleScopeNotFoundError) -> Self {
+        ErrorModel::builder()
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(value.to_string())
+            .r#type("TaskScheduleScopeNotFound")
+            .stack(value.stack)
+            .build()
+    }
+}
+
+fn scope_not_found_message(project_id: &ArcProjectId, warehouse_id: Option<WarehouseId>) -> String {
+    match warehouse_id {
+        Some(warehouse_id) => {
+            format!("Warehouse `{warehouse_id}` not found in project `{project_id}`")
+        }
+        None => format!("Project `{project_id}` not found"),
+    }
+}
+
 /// The stored schedule uses a tick specification this server does not know.
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error(
@@ -215,6 +269,8 @@ define_transparent_error! {
     stack_message: "Error upserting task schedule in catalog",
     variants: [
         TaskScheduleIntervalOutOfRangeError,
+        TaskScheduleKeyLengthError,
+        TaskScheduleScopeNotFoundError,
         TaskScheduleSpecVersionUnsupportedError,
         TaskScheduleConditionFailedError,
         CatalogBackendError
@@ -251,6 +307,22 @@ pub(crate) fn validate_task_schedule_interval(
             interval_seconds: interval.num_seconds(),
             minimum_seconds: MIN_TASK_SCHEDULE_INTERVAL.num_seconds(),
             maximum_seconds: MAX_TASK_SCHEDULE_INTERVAL.num_seconds(),
+            stack: Vec::new(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate a key against [`MAX_TASK_SCHEDULE_KEY_LENGTH`].
+///
+/// # Errors
+/// If the key is empty or longer.
+pub(crate) fn validate_task_schedule_key(key: &str) -> Result<(), TaskScheduleKeyLengthError> {
+    let length = key.chars().count();
+    if !(1..=MAX_TASK_SCHEDULE_KEY_LENGTH).contains(&length) {
+        return Err(TaskScheduleKeyLengthError {
+            length,
+            maximum: MAX_TASK_SCHEDULE_KEY_LENGTH,
             stack: Vec::new(),
         });
     }

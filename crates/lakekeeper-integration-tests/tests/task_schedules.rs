@@ -457,8 +457,57 @@ async fn test_post_migration_hooks_sync_cleanup_schedules_with_the_config(pool: 
     let invalid = ArcProjectId::new(lakekeeper::ProjectId::from_db_unchecked(
         "invalid".to_string(),
     ));
-    let defaulted = cleanup_schedules(state, &invalid).await;
+    let defaulted = cleanup_schedules(state.clone(), &invalid).await;
     assert_eq!(defaulted.len(), 1);
     assert_eq!(defaulted[0].interval, chrono::Duration::days(1));
     assert_first_run_within_an_interval(&defaulted[0]);
+
+    // Nothing changed: nothing is written.
+    run_hooks().await.unwrap();
+    assert_eq!(cleanup_schedules(state.clone(), &project_id).await, synced);
+    assert_eq!(cleanup_schedules(state, &invalid).await, defaulted);
+}
+
+#[sqlx::test]
+async fn test_post_migration_hooks_skip_a_project_deleted_during_the_sync(pool: PgPool) {
+    let (_ctx, state, project_id) = setup(&pool).await;
+    sqlx::query("DELETE FROM task_schedule WHERE project_id = $1")
+        .bind(project_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO project (project_id, project_name) VALUES ('doomed', 'doomed')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut delete = pool.begin().await.unwrap();
+    sqlx::query("DELETE FROM project WHERE project_id = 'doomed'")
+        .execute(&mut *delete)
+        .await
+        .unwrap();
+
+    // The sync lists the project, then waits for the delete to create its schedule.
+    let sync = tokio::spawn({
+        let state = state.clone();
+        async move {
+            lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(
+                state,
+                Vec::new(),
+                lakekeeper::service::PostMigrationHookOptions {
+                    fail_on_idempotent_hook_error: true,
+                    ..Default::default()
+                },
+            )
+            .await
+        }
+    });
+    lakekeeper_integration_tests::wait_for_a_lock_wait(&pool).await;
+    delete.commit().await.unwrap();
+    sync.await.unwrap().unwrap();
+
+    assert_eq!(cleanup_schedules(state.clone(), &project_id).await.len(), 1);
+    let doomed = ArcProjectId::new(lakekeeper::ProjectId::from_db_unchecked(
+        "doomed".to_string(),
+    ));
+    assert_eq!(cleanup_schedules(state, &doomed).await, Vec::new());
 }

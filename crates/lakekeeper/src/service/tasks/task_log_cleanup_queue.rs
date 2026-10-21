@@ -237,7 +237,7 @@ pub(crate) async fn apply_queue_config<C: CatalogStore>(
 
 /// Give every project without a cleanup schedule one with a [`spread_anchor`], and set the
 /// interval of every schedule to its project's configured cleanup period. A schedule changed
-/// concurrently is left alone.
+/// concurrently, or a project deleted concurrently, is left alone.
 ///
 /// # Errors
 /// If the store fails.
@@ -249,19 +249,20 @@ pub(crate) async fn sync_project_schedules<C: CatalogStore>(catalog_state: C::St
     for state in states {
         let interval = configured_cleanup_period(&state);
         match state.interval {
-            None => {
-                if upsert_project_schedule::<C>(
-                    state.project_id,
-                    interval,
-                    Some(spread_anchor()),
-                    Some(TaskScheduleCondition::Absent),
-                    t.transaction(),
-                )
-                .await?
-                {
-                    created += 1;
-                }
-            }
+            None => match upsert_project_schedule::<C>(
+                state.project_id,
+                interval,
+                Some(spread_anchor()),
+                Some(TaskScheduleCondition::Absent),
+                t.transaction(),
+            )
+            .await
+            {
+                Ok(true) => created += 1,
+                // Created concurrently, or the project was deleted after the list was read.
+                Ok(false) | Err(UpsertTaskScheduleError::TaskScheduleScopeNotFoundError(_)) => {}
+                Err(e) => return Err(e.into()),
+            },
             Some(stored) if stored.num_seconds() != interval.num_seconds() => {
                 if upsert_project_schedule::<C>(
                     state.project_id,
@@ -313,7 +314,7 @@ async fn upsert_project_schedule<C: CatalogStore>(
     anchor: Option<chrono::DateTime<chrono::Utc>>,
     condition: Option<TaskScheduleCondition>,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-) -> Result<bool> {
+) -> std::result::Result<bool, UpsertTaskScheduleError> {
     let schedule = TaskScheduleUpsert::builder()
         .project_id(project_id.clone())
         .queue_name(QUEUE_NAME.clone())
@@ -329,11 +330,9 @@ async fn upsert_project_schedule<C: CatalogStore>(
             Ok(false)
         }
         Err(UpsertTaskScheduleError::TaskScheduleConditionFailedError(_)) => Ok(false),
-        Err(e) => Err(e
-            .append_detail(format!(
-                "Failed to upsert `{QN_STR}` schedule for project `{project_id}`."
-            ))
-            .into()),
+        Err(e) => Err(e.append_detail(format!(
+            "Failed to upsert `{QN_STR}` schedule for project `{project_id}`."
+        ))),
     }
 }
 

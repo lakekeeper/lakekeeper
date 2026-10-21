@@ -34,8 +34,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    TestWarehouseResponse, create_ns, create_table, eventually, memory_io_profile,
-    random_request_metadata, setup_with_registry, spawn_build_in_queues,
+    TestWarehouseResponse, create_ns, create_table, memory_io_profile, random_request_metadata,
+    setup_with_registry, spawn_build_in_queues, wait_for_a_lock_wait,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use serde::{Deserialize, Serialize};
@@ -344,20 +344,6 @@ async fn task_rows(pool: &PgPool, warehouse_id: WarehouseId) -> Vec<(String, Str
 
 fn row(queue_name: &TaskQueueName, status: &str) -> (String, String) {
     (queue_name.to_string(), status.to_string())
-}
-
-async fn wait_for_a_lock_wait(pool: &PgPool) {
-    eventually("a session waits for a lock", || async {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM pg_stat_activity \
-             WHERE datname = current_database() AND wait_event_type = 'Lock'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap()
-            > 0
-    })
-    .await;
 }
 
 #[sqlx::test]
