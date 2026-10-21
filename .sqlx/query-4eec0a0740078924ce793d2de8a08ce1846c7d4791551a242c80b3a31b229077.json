@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT task_id, status as \"status: TaskIntermediateStatus\"\n            FROM task\n            WHERE project_id = $1\n                AND warehouse_id = $2\n                AND entity_type = $3\n                AND entity_id IS NULL\n                AND queue_name = $4\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "status: TaskIntermediateStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "project",
+                "warehouse",
+                "namespace",
+                "role",
+                "user",
+                "server",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4eec0a0740078924ce793d2de8a08ce1846c7d4791551a242c80b3a31b229077"
+}

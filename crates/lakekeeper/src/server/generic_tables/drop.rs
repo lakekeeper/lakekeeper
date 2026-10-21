@@ -121,6 +121,7 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
             if purge_requested {
                 TabularPurgeTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         scheduled_for: None,
@@ -145,6 +146,7 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         TabularDeleteProfile::Soft { expiration_seconds } => {
             let _ = TabularExpirationTask::schedule_task::<C>(
                 ScheduleTaskMetadata {
+                    resource_demand: None,
                     project_id: project_id.clone(),
                     parent_task_id: None,
                     scheduled_for: Some(chrono::Utc::now() + expiration_seconds),

@@ -41,10 +41,7 @@ use crate::{
         },
         secrets::SecretStore,
         task_configs::TaskQueueConfigFilter,
-        tasks::{
-            ScheduleTaskMetadata, TaskEntity, TaskQueueName,
-            task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
-        },
+        tasks::{TaskQueueName, task_log_cleanup_queue},
     },
 };
 
@@ -157,23 +154,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
 
-        TaskLogCleanupTask::schedule_task::<C>(
-            ScheduleTaskMetadata {
-                project_id: project_id.clone(),
-                parent_task_id: None,
-                scheduled_for: None,
-                entity: TaskEntity::Project,
-            },
-            TaskLogCleanupPayload::new(),
-            t.transaction(),
-        )
-        .await
-        .map_err(|e| {
-            e.append_detail(format!(
-                "Failed to create `{}` task for new project with id {project_id}.",
-                task_log_cleanup_queue::QUEUE_NAME.as_str(),
-            ))
-        })?;
+        task_log_cleanup_queue::create_project_schedule::<C>(project_id.clone(), t.transaction())
+            .await?;
 
         t.commit().await?;
 

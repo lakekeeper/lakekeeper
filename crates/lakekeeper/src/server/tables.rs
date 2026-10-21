@@ -921,6 +921,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 if purge_requested {
                     TabularPurgeTask::schedule_task::<C>(
                         ScheduleTaskMetadata {
+                            resource_demand: None,
                             project_id: project_id.clone(),
 
                             parent_task_id: None,
@@ -944,6 +945,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         scheduled_for: Some(chrono::Utc::now() + expiration_seconds),

@@ -1,0 +1,176 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            schedule_id,\n            project_id,\n            warehouse_id,\n            queue_name,\n            schedule_key,\n            interval_seconds,\n            anchor,\n            payload,\n            enabled,\n            next_run_at,\n            missed_runs,\n            created_at,\n            updated_at\n        FROM task_schedule\n        WHERE project_id = $1\n            AND ($2::uuid IS NULL OR warehouse_id = $2)\n            AND ($3::text IS NULL OR queue_name = $3)\n            AND ($4::text IS NULL OR schedule_key = $4)\n            AND spec_version <= $5\n        ORDER BY schedule_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schedule_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "schedule_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "queue_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "queue_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "schedule_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "schedule_key"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "interval_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "interval_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "anchor",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "anchor"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "next_run_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "next_run_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "missed_runs",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "missed_runs"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "3f8847c9d8529a84b3ae6f2c4cb70908bcadf6d6b11e3637d0e797958a0d20fa"
+}
