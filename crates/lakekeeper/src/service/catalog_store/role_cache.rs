@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{sync::LazyLock, time::Duration};
 
 use moka::{
     future::Cache,
@@ -108,7 +105,10 @@ pub(crate) async fn role_cache_invalidate_ident(project_id: &ProjectId, ident: &
     if CONFIG.cache.role.enabled {
         tracing::debug!("Invalidating role ident {ident} from cache");
         IDENT_TO_ID_CACHE
-            .invalidate(&(Arc::new(project_id.clone()), Arc::new(ident.clone())))
+            .invalidate(&(
+                ArcProjectId::new(project_id.clone()),
+                ArcRoleIdent::new(ident.clone()),
+            ))
             .await;
         update_cache_size_metric();
     }

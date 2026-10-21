@@ -64,19 +64,19 @@ pub(crate) async fn record_cache_changes(
     Ok(())
 }
 
-/// A transaction whose statements end after `statement_timeout` on the server. A
-/// transaction-scoped setting also holds behind a pooler in transaction mode.
+/// A transaction whose statements end after `statement_timeout` on the server, started in
+/// one round trip. A transaction-scoped setting also holds behind a pooler in transaction
+/// mode.
 async fn begin_with_timeout(
     conn: &mut PgConnection,
     statement_timeout: Duration,
 ) -> sqlx::Result<sqlx::Transaction<'_, sqlx::Postgres>> {
-    let mut tx = conn.begin().await?;
-    sqlx::query("SELECT set_config('statement_timeout', $1, true)")
-        // At least 1 ms: `0` would turn the timeout off.
-        .bind(format!("{}ms", statement_timeout.as_millis().max(1)))
-        .execute(&mut *tx)
-        .await?;
-    Ok(tx)
+    // At least 1 ms: `0` would turn the timeout off. An integer, so safe to format.
+    let millis = statement_timeout.as_millis().max(1);
+    conn.begin_with(sqlx::AssertSqlSafe(format!(
+        "BEGIN; SET LOCAL statement_timeout = '{millis}ms'"
+    )))
+    .await
 }
 
 #[cfg(test)]

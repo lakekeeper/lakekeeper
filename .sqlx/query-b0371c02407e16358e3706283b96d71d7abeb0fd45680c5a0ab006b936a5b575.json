@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT storage_secret_id FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
+  "query": "SELECT storage_secret_id FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR NO KEY UPDATE",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       true
     ]
   },
-  "hash": "54670486c61a57f711802910c999b9660a79338a428243c5807f0a98eec2a3b1"
+  "hash": "b0371c02407e16358e3706283b96d71d7abeb0fd45680c5a0ab006b936a5b575"
 }

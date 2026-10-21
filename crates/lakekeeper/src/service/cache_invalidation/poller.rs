@@ -7,7 +7,7 @@ use tracing::Instrument;
 
 use super::{
     BoxedCacheChangeLog, CacheChangeReceivers, ChangeLogSettings, PollOutcome, PruneOutcome,
-    PruneSettings, evict::Evictions, metrics,
+    PruneSettings, ResetReason, evict::Evictions, metrics,
 };
 use crate::{CONFIG, CancellationToken, service::CatalogStore};
 
@@ -47,14 +47,7 @@ pub async fn background_tasks<C: CatalogStore>(
             invalidation.poll_interval,
             invalidation.reevict_grace,
         );
-        if tokio::time::timeout(STARTUP_TIMEOUT, poller.start())
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                "The first read of the cache change log timed out; retrying in the background"
-            );
-        }
+        poller.start(STARTUP_TIMEOUT).await;
         tasks.push((
             "Cache Invalidation Poller",
             Box::pin(poller.run(cancellation_token.clone())),
@@ -102,6 +95,9 @@ struct Poller<C> {
     interval: Duration,
     grace: Duration,
     failures: u32,
+    /// The first read failed, so this instance serves requests without a position in the
+    /// log; its first successful read evicts everything.
+    started_late: bool,
     rng: fastrand::Rng,
 }
 
@@ -113,14 +109,24 @@ impl<C: Caches> Poller<C> {
             interval,
             grace,
             failures: 0,
+            started_late: false,
             rng: fastrand::Rng::new(),
         }
     }
 
-    /// Start the log: the first read returns no changes. A failed start is retried by
-    /// [`Self::run`].
-    async fn start(&mut self) {
-        self.poll_once().await;
+    /// The first read, which starts the log at the current state of the database before this
+    /// instance serves requests. If it fails or takes longer than `timeout`, the first read
+    /// that succeeds evicts everything.
+    async fn start(&mut self, timeout: Duration) {
+        if !tokio::time::timeout(timeout, self.poll_once())
+            .await
+            .unwrap_or(false)
+        {
+            tracing::warn!(
+                "The first read of the cache change log failed; retrying in the background"
+            );
+            self.started_late = true;
+        }
     }
 
     /// Read the log until `cancellation_token` is cancelled.
@@ -133,13 +139,18 @@ impl<C: Caches> Poller<C> {
             }
             tokio::select! {
                 () = cancellation_token.cancelled() => return,
-                () = self.poll_once() => {}
+                _ = self.poll_once() => {}
             }
         }
     }
 
-    async fn poll_once(&mut self) {
-        let evictions = match self.log.poll().await {
+    /// Read the log once and evict what it names. Returns whether the read succeeded.
+    async fn poll_once(&mut self) -> bool {
+        let mut outcome = self.log.poll().await;
+        if outcome.is_ok() && std::mem::take(&mut self.started_late) {
+            outcome = Ok(PollOutcome::Reset(ResetReason::StartedLate));
+        }
+        let evictions = match outcome {
             Ok(PollOutcome::Changes(changes)) => {
                 metrics::record_poll(&changes);
                 Evictions::of(&changes)
@@ -160,13 +171,14 @@ impl<C: Caches> Poller<C> {
                     "Reading the cache change log failed; retrying in {:?}",
                     self.delay_after_failures()
                 );
-                return;
+                return false;
             }
         };
         self.failures = 0;
         if !evictions.is_empty() {
             self.evict_twice(evictions);
         }
+        true
     }
 
     /// Evict now and once more after the grace period, in a task of its own: an eviction
@@ -288,9 +300,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::*;
-    use crate::service::cache_invalidation::{
-        CacheChangeLog, ChangeLogError, LoggedChange, ResetReason,
-    };
+    use crate::service::cache_invalidation::{CacheChangeLog, ChangeLogError, LoggedChange};
 
     const INTERVAL: Duration = Duration::from_secs(1);
     const GRACE: Duration = Duration::from_secs(10);
@@ -341,6 +351,14 @@ mod tests {
     async fn run(outcomes: Vec<Result<PollOutcome, ChangeLogError>>) -> Vec<(Duration, Evictions)> {
         let mut outcomes = VecDeque::from(outcomes);
         outcomes.push_front(Ok(PollOutcome::Changes(Vec::new())));
+        run_from_start(outcomes).await
+    }
+
+    /// Start a poller on `outcomes`, the first of which is the start's read, run it for 60 s,
+    /// and return what it evicted.
+    async fn run_from_start(
+        outcomes: VecDeque<Result<PollOutcome, ChangeLogError>>,
+    ) -> Vec<(Duration, Evictions)> {
         let caches = Recorded {
             start: Instant::now(),
             evictions: Arc::default(),
@@ -352,7 +370,7 @@ mod tests {
             GRACE,
         );
         poller.rng = fastrand::Rng::with_seed(SEED);
-        poller.start().await;
+        poller.start(STARTUP_TIMEOUT).await;
         let cancellation_token = CancellationToken::new();
         let task = tokio::spawn(poller.run(cancellation_token.clone()));
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -411,6 +429,33 @@ mod tests {
                 (next, evict_second.clone()),
                 (recovered + GRACE, evict_first),
                 (next + GRACE, evict_second),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_a_failed_start_the_first_read_that_succeeds_evicts_everything() {
+        let change = secret_change();
+        let evict_change = Evictions::of(std::slice::from_ref(&change));
+
+        let evictions = run_from_start(VecDeque::from([
+            Err(ChangeLogError::Standby),
+            Ok(PollOutcome::Changes(Vec::new())),
+            Ok(PollOutcome::Changes(vec![change])),
+        ]))
+        .await;
+
+        let mut rng = fastrand::Rng::with_seed(SEED);
+        // 2 s after the failed start.
+        let recovered = Duration::from_secs(2);
+        let next = recovered + jittered(INTERVAL, &mut rng);
+        assert_eq!(
+            evictions,
+            vec![
+                (recovered, Evictions::all()),
+                (next, evict_change.clone()),
+                (recovered + GRACE, Evictions::all()),
+                (next + GRACE, evict_change),
             ]
         );
     }

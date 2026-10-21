@@ -385,6 +385,8 @@ SELECT lakekeeper_record_cache_change('ext_my_extension_scope', ARRAY['project:p
 
 - Call it on a connection whose `search_path` finds Lakekeeper's tables, as Lakekeeper's own connections do.
 - Each call adds one record, so pass all keys of a domain in one call. An empty array means all entries of the domain.
+- Use a statement-level trigger (`FOR EACH STATEMENT` with a transition table), so a bulk change adds one record and not one per row. More than 1000 records between two reads make every instance empty all its caches.
+- `lakekeeper migrate` records only the domains of Lakekeeper. A migration of an extension that changes cached rows calls the function itself.
 - Give the domain a prefix such as `ext_`, so it cannot collide with a domain Lakekeeper adds later.
 
 Then register a receiver for the domain when starting the server:

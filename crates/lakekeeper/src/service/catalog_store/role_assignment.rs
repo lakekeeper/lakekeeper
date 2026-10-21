@@ -1435,6 +1435,28 @@ where
         Ok(result)
     }
 
+    /// Delete the role-provider sync records of `user_ids` for `provider_id` in
+    /// `project_id`, so the provider re-syncs those users on their next request. Records
+    /// the users: their cached entries hold the sync times.
+    async fn expire_role_assignment_syncs(
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        user_ids: &[UserId],
+        transaction: &mut WriteTransaction<Self>,
+    ) -> Result<(), CatalogBackendError> {
+        Self::expire_role_assignment_syncs_impl(
+            project_id,
+            provider_id,
+            user_ids,
+            transaction.transaction(),
+        )
+        .await?;
+        for user_id in user_ids {
+            transaction.record(CacheKey::UserAssignments(user_id.clone()));
+        }
+        Ok(())
+    }
+
     /// Standalone counterpart to [`add_user_role_assignments`] that owns its
     /// transaction.
     ///

@@ -64,7 +64,7 @@ async fn delete_batch(
             DELETE FROM cache_change_log
             WHERE ctid = ANY(ARRAY(
                 SELECT ctid FROM cache_change_log
-                WHERE changed_at < clock_timestamp() - make_interval(secs => $1)
+                WHERE changed_at < now() - make_interval(secs => $1)
                 LIMIT $2))
             RETURNING 1
         )

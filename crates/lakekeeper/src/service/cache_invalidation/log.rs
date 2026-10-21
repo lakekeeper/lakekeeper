@@ -23,6 +23,9 @@ pub enum ResetReason {
     TransactionIdsWentBack,
     /// More changes than one poll returns were committed since the previous poll.
     Overflow,
+    /// The first read after startup failed, and the instance served requests before it
+    /// knew its position in the log.
+    StartedLate,
 }
 
 /// The result of one [`CacheChangeLog::poll`].

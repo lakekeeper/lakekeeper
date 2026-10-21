@@ -24,6 +24,7 @@ use crate::{
     strum_macros::EnumString,
 )]
 #[strum(serialize_all = "snake_case")]
+#[non_exhaustive]
 pub enum CacheDomain {
     /// Warehouses by id and by name.
     Warehouse,
@@ -55,6 +56,7 @@ impl CacheDomain {
 
 /// One cached entry that a write makes stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CacheKey {
     /// A warehouse by id.
     Warehouse(WarehouseId),
@@ -166,7 +168,7 @@ fn parse_json<T: DeserializeOwned>(key: &str) -> Option<T> {
 }
 
 /// The most keys of one domain a change set lists; more make it a whole-domain change.
-const FANOUT_CAP: usize = 50_000;
+const FANOUT_CAP: usize = 10_000;
 
 /// The cache entries a write makes stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,7 +191,7 @@ impl Default for ChangeSet {
 }
 
 impl ChangeSet {
-    /// An empty set. A domain that collects more than 50 000 keys becomes a whole-domain
+    /// An empty set. A domain that collects more than 10 000 keys becomes a whole-domain
     /// change.
     #[must_use]
     pub fn new() -> Self {

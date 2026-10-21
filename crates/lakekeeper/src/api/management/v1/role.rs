@@ -14,10 +14,11 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogBackendError,
-        CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CatalogRoleOps, CatalogStore,
-        CreateRoleError, DeleteRoleError, ManagedRoleImmutable, Result, RoleHasGrants, RoleId,
-        RoleProviderId, RoleProviderIdReserved, RoleProviderNotApiManaged, RoleSourceId,
-        SecretStore, State, SystemRoleImmutable, Transaction, UpdateRoleError, WriteTransaction,
+        CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CatalogRoleAssignmentOps,
+        CatalogRoleOps, CatalogStore, CreateRoleError, DeleteRoleError, ManagedRoleImmutable,
+        Result, RoleHasGrants, RoleId, RoleProviderId, RoleProviderIdReserved,
+        RoleProviderNotApiManaged, RoleSourceId, SecretStore, State, SystemRoleImmutable,
+        Transaction, UpdateRoleError, WriteTransaction,
         authz::{
             ApiRoleProviders, AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer,
             CatalogProjectAction, CatalogRoleAction, RoleSourceSystem, SourceSystemTarget,
@@ -1005,14 +1006,9 @@ async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
     // exactly its assignees.
     let provider_id = role.ident.provider_id();
     if !provider_id.is_lakekeeper() && !provider_id.is_system() && !affected_users.is_empty() {
-        C::expire_role_assignment_syncs_impl(
-            project_id,
-            provider_id,
-            &affected_users,
-            t.transaction(),
-        )
-        .await
-        .map_err::<DeleteRoleError, _>(Into::into)?;
+        C::expire_role_assignment_syncs(project_id, provider_id, &affected_users, &mut t)
+            .await
+            .map_err::<DeleteRoleError, _>(Into::into)?;
     }
     t.commit()
         .await

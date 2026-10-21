@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT warehouse_name FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
+  "query": "SELECT warehouse_name FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR NO KEY UPDATE",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "1006c1a5cf1168b57524e111e9b06232d15c1a6a5d1cf8c603270041eade52eb"
+  "hash": "6b12513e5505b3813e1d258045f04020bf5fc6ee54d8aff6172f7c9199a2f507"
 }

@@ -13,6 +13,10 @@ create table cache_change_log (
     constraint cache_change_log_pkey primary key (xid, id)
 );
 
+-- Pruning finds the old rows through this index. Every instance tries to prune every few
+-- minutes, and most runs find nothing to delete.
+create index cache_change_log_changed_at on cache_change_log (changed_at);
+
 -- Rows are inserted and deleted in bulk; vacuum after a fixed number of rows, never by
 -- a fraction of the table.
 alter table cache_change_log set (

@@ -85,7 +85,7 @@ These metrics show whether [cache invalidation across instances](./configuration
 
 `domain` values: `warehouse`, `namespace`, `role`, `user_assignments`, `role_ancestors`, `secret`, and `other` for every other domain, such as domains of extensions.
 
-`reason` values: `server_changed` (the database restarted, or a different database server answered), `transaction_ids_went_back` (a restore or a failover to an older state), and `overflow` (more than 1000 change records were written between two reads).
+`reason` values: `server_changed` (the database restarted, or a different database server answered), `transaction_ids_went_back` (a restore or a failover to an older state), `overflow` (more than 1000 change records were written between two reads), and `started_late` (the first read after startup failed, so the instance served requests before it could read the changes).
 
 How to read them:
 

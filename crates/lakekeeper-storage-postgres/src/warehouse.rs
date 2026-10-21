@@ -647,7 +647,7 @@ pub(crate) async fn rename_warehouse(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<RenamedWarehouse, CatalogRenameWarehouseError> {
     let previous_name = sqlx::query_scalar!(
-        "SELECT warehouse_name FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
+        "SELECT warehouse_name FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR NO KEY UPDATE",
         *warehouse_id
     )
     .fetch_optional(&mut **transaction)
@@ -903,7 +903,7 @@ pub(crate) async fn update_storage_profile(
         serde_json::to_value(storage_profile).map_err(StorageProfileSerializationError::from)?;
 
     let previous_secret_id = sqlx::query_scalar!(
-        "SELECT storage_secret_id FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR UPDATE",
+        "SELECT storage_secret_id FROM warehouse WHERE warehouse_id = $1 AND status = 'active' FOR NO KEY UPDATE",
         *warehouse_id
     )
     .fetch_optional(&mut **transaction)
