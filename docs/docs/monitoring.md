@@ -45,15 +45,15 @@ The user-assignments and user caches also count the entries they leave uncached 
 
 Its `cache_type` values are `user_assignments` and `user`. Each count costs one database read on the next request for that user. A rate that stays high relative to `lakekeeper_cache_misses_total` of the same `cache_type` points to frequent changes overlapping the same users: role changes and syncs for `user_assignments`, user writes for `user`.
 
-Role-membership cache invalidation emits one additional metric:
+Role-membership changes emit one additional metric:
 
 | Metric                                                                                | Type      | Labels      | Description |
 |---------------------------------------------------------------------------------------|-----------|-------------|-----|
-| <code class="selectable">lakekeeper_role_<wbr>membership_edge_<wbr>fanout_users</code> | Histogram | `operation` | Users invalidated by one role-to-role membership edge change |
+| <code class="selectable">lakekeeper_role_<wbr>membership_edge_<wbr>fanout_users</code> | Histogram | `operation` | Number of users whose cached role assignments change when one role is added to or removed from another role |
 
-`operation` is `add` or `remove`. The user-assignments cache stores a fully-expanded transitive closure. One edge change can therefore invalidate many users at once. A high p99 means a single edit fans out widely. Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
+`operation` is `add` or `remove`. The user-assignments cache stores, for each user, all roles the user has, also through nested roles. One change can therefore change the entries of many users at once. A high p99 means that single changes affect many users. Lakekeeper also logs a `warn` when one change affects more than 1000 users.
 
-The same edge change clears the role-ancestors cache in full. It alters the ancestors of the member role and everything nested below it. `lakekeeper_cache_size{cache_type="role_ancestors"}` is an approximate count maintained by background maintenance. It falls after a clear rather than at the moment of one, so do not alert on it reaching zero promptly. Under the OpenFGA backend the series is not emitted at all. OpenFGA resolves role nesting from its own tuples and never reads this cache. Alert on absence there, not on a zero value.
+The same change empties the role-ancestors cache on every instance. It alters the ancestors of the member role and everything nested below it. `lakekeeper_cache_size{cache_type="role_ancestors"}` is an approximate count maintained by background maintenance. It falls some time after the cache is emptied, not at once, so do not alert on it reaching zero quickly. Under the OpenFGA backend the series is not emitted at all. OpenFGA resolves role nesting from its own tuples and never reads this cache. Alert on absence there, not on a zero value.
 
 #### Table Metadata Cache { #table-metadata-cache .lkp }
 
@@ -69,6 +69,30 @@ One cache is built per maintenance task rather than once per process, so its bud
 Both gauges return to zero once the last task finishes, because each cache is dropped with the task that built it.
 
 A low hit rate here does not mean the cache is too small, unlike the other caches. Every task starts with an empty cache and reads most manifests once, so misses dominate by design. Judge the budget by whether `lakekeeper_cache_weighted_bytes` plateaus — at capacity, manifests are evicted and re-read from object storage — and by the headroom the peak leaves against the container memory limit.
+
+### Cache Invalidation Metrics
+
+These metrics show whether [cache invalidation across instances](./configuration.md#cache-invalidation) works. The `lakekeeper_cache_invalidation_*` metrics are emitted only while `LAKEKEEPER__CACHE__INVALIDATION__ENABLED` is `true`.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| <code class="selectable">lakekeeper_cache_<wbr>invalidation_<wbr>last_poll_timestamp_seconds</code> | Gauge | — | Unix time of the last successful read of the change records |
+| <code class="selectable">lakekeeper_cache_<wbr>invalidation_<wbr>poll_errors_total</code> | Counter | — | Failed reads of the change records |
+| <code class="selectable">lakekeeper_cache_<wbr>invalidation_<wbr>changes_total</code> | Counter | `domain` | Change records read, by cache |
+| <code class="selectable">lakekeeper_cache_<wbr>invalidation_<wbr>resets_total</code> | Counter | `reason` | How often the instance emptied all covered caches because it could not know which changes it missed |
+| <code class="selectable">lakekeeper_cache_<wbr>change_log_<wbr>pruned_rows_total</code> | Counter | — | Old change records deleted |
+| <code class="selectable">lakekeeper_cache_<wbr>change_log_<wbr>prune_errors_total</code> | Counter | — | Failed runs that delete old change records |
+
+`domain` values: `warehouse`, `namespace`, `role`, `user_assignments`, `role_ancestors`, `secret`, and `other` for every other domain, such as domains of extensions.
+
+`reason` values: `server_changed` (the database restarted, or a different database server answered), `transaction_ids_went_back` (a restore or a failover to an older state), and `overflow` (more than 1000 change records were written between two reads).
+
+How to read them:
+
+- Alert if `lakekeeper_cache_invalidation_last_poll_timestamp_seconds` is older than 60 seconds plus `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL`, or if it is missing while `LAKEKEEPER__CACHE__INVALIDATION__ENABLED` is `true`. The instance then serves old entries until it can read the change records again, at the latest until their time-to-live ends.
+- A few resets after a database restart or failover are normal.
+- Many `overflow` resets mean that large changes often empty the caches of all instances. A shorter `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL` reads fewer records at a time.
+- A growing `lakekeeper_cache_change_log_prune_errors_total` means that old records are not deleted and the table grows.
 
 ### Audit Enrichment Metrics
 
@@ -263,7 +287,7 @@ See [Configuration - Endpoint Statistics](./configuration.md#endpoint-statistics
 
 ## Best Practices
 
-Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, role provider health, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, low cache hit rates, `lakekeeper_role_provider_up == 0` (combined with `absent(...)` to catch a provider that never reported), and `lakekeeper_cedar_policy_source_up == 0`.
+Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, role provider health, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, low cache hit rates, `lakekeeper_role_provider_up == 0` (combined with `absent(...)` to catch a provider that never reported), `lakekeeper_cedar_policy_source_up == 0`, and an old or missing `lakekeeper_cache_invalidation_last_poll_timestamp_seconds` (see [Cache Invalidation Metrics](#cache-invalidation-metrics)).
 
 ## Troubleshooting
 

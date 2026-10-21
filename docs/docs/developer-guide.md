@@ -371,6 +371,54 @@ when no hooks are needed (the common case in the snippet above).
 Callers that don't register extensions use the back-compat shim
 `migrate_core_only(pool)`. Core upstream tooling and tests already do.
 
+#### Caches of extensions across instances
+
+An extension that caches data from its own tables can have every Lakekeeper instance remove the changed entries, like Lakekeeper does for its own caches (see [Cache Invalidation Across Instances](./configuration.md#cache-invalidation)).
+
+A *domain* names one cache, for example `ext_my_extension_scope`. Record each change in the transaction that makes it, for example from a trigger on the `ext_*` table:
+
+```sql
+SELECT lakekeeper_record_cache_change('ext_my_extension_scope', ARRAY['project:p1']);
+```
+
+- Call it on a connection whose `search_path` finds Lakekeeper's tables, as Lakekeeper's own connections do.
+- Each call adds one record, so pass all keys of a domain in one call. An empty array means all entries of the domain.
+- Give the domain a prefix such as `ext_`, so it cannot collide with a domain Lakekeeper adds later.
+
+Then register a receiver for the domain when starting the server:
+
+```rust
+use lakekeeper::service::cache_invalidation::CacheChangeReceiver;
+
+#[derive(Debug)]
+struct MyScopeCache;
+
+#[async_trait::async_trait]
+impl CacheChangeReceiver for MyScopeCache {
+    fn domain(&self) -> &str {
+        "ext_my_extension_scope"
+    }
+
+    async fn evict(&self, keys: &[String]) {
+        // Remove `keys` from this process's cache.
+    }
+
+    async fn evict_all(&self) {
+        // Empty this process's cache.
+    }
+}
+
+let config = ServeConfiguration::builder()
+    // ...
+    .cache_change_receivers(vec![Arc::new(MyScopeCache)])
+    .build();
+```
+
+- Every instance, including the one that made the change, calls `evict` when it reads the record. It calls it again after `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE`. For a record with an empty array, and when it cannot know which changes it missed, it calls `evict_all`.
+- Each call runs in a task of its own and is cancelled after 10 seconds. Return quickly and do not wait on the database. Calls may run at the same time.
+- Cached entries must expire within two hours. Change records are kept for at least two hours, and an instance that cannot read them for longer misses the records deleted in the meantime.
+- Receivers are called only while `LAKEKEEPER__CACHE__INVALIDATION__ENABLED` is `true`. The server does not start if a receiver names a domain Lakekeeper uses, or two receivers name the same domain.
+
 #### Recovery: removing an extension's state
 
 Dropping the extension binary and removing its tables restores the database
