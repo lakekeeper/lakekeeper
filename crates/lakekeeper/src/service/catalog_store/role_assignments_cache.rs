@@ -693,6 +693,11 @@ mod tests {
 
     type UaCache = CountedCache<UserId, Arc<ListUserRoleAssignmentsResult>>;
 
+    /// Held by every test that uses the process-wide role-ancestors cache, so one test's
+    /// clear cannot remove the entry another test just inserted.
+    static ROLE_ANCESTORS_CACHE_TEST_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
+
     /// A user-assignments cache of the calling test's own, so other tests' entries and
     /// invalidations cannot reach it.
     fn ua_cache() -> Arc<UaCache> {
@@ -1328,11 +1333,10 @@ mod tests {
         assert!(Arc::ptr_eq(&result, &cached));
     }
 
-    /// A result with `provider_sync_times` populated but no roles must survive
-    /// a cache round-trip intact — this is the "synced but no assignments" shape.
     /// A batch that is partly cached loads only what it missed, and answers for all of it.
     #[tokio::test]
     async fn a_partly_cached_batch_loads_only_the_misses() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let cached = RoleId::new_random();
         let missed = RoleId::new_random();
         let parent = Arc::new(vec![AssignedRole {
@@ -1364,6 +1368,8 @@ mod tests {
         assert_eq!(resolved[&missed].len(), 0);
     }
 
+    /// A result with `provider_sync_times` populated but no roles must survive
+    /// a cache round-trip intact — this is the "synced but no assignments" shape.
     #[tokio::test]
     async fn test_user_assignments_sync_without_roles() {
         let cache = ua_cache();
@@ -1402,6 +1408,7 @@ mod tests {
     /// permissive direction: the member keeps the parent's privileges after the edge is gone.
     #[tokio::test]
     async fn a_clear_during_a_load_is_not_undone_by_it() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let nested = RoleId::new_random();
         let stale = Arc::new(vec![AssignedRole {
             role_id: RoleId::new_random(),
@@ -1436,6 +1443,7 @@ mod tests {
     /// trigger another clear.
     #[tokio::test]
     async fn a_stale_load_does_not_overwrite_a_fresh_entry() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let nested = RoleId::new_random();
         let stale = Arc::new(vec![AssignedRole {
             role_id: RoleId::new_random(),
@@ -1483,14 +1491,6 @@ mod tests {
 
     // ── Role ancestors ────────────────────────────────────────────────────────
 
-    /// The whole-cache clear is what bounds this cache's staleness, so it has to clear
-    /// every key, not the one whose role was named.
-    ///
-    /// One membership edge changes the ancestor set of the member and of everything nested
-    /// beneath it, and the write path does not know which roles those are without a second
-    /// closure walk — which is exactly why the clear is blunt. A clear that only removed
-    /// some keys would leave a removed edge visible, and a policy written against the
-    /// former parent still applying.
     /// A loader that omits a role it was asked about is a backend error, not an answer.
     ///
     /// The two are indistinguishable downstream — an empty closure and an unread one look
@@ -1498,6 +1498,7 @@ mod tests {
     /// parent role silently stops applying. So the read-through refuses to cache a gap.
     #[tokio::test]
     async fn a_loader_that_skips_a_requested_role_errors() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let asked = RoleId::new_random();
         let skipped = RoleId::new_random();
 
@@ -1518,8 +1519,17 @@ mod tests {
         );
     }
 
+    /// The whole-cache clear is what bounds this cache's staleness, so it has to clear
+    /// every key, not the one whose role was named.
+    ///
+    /// One membership edge changes the ancestor set of the member and of everything nested
+    /// beneath it, and the write path does not know which roles those are without a second
+    /// closure walk — which is exactly why the clear is blunt. A clear that only removed
+    /// some keys would leave a removed edge visible, and a policy written against the
+    /// former parent still applying.
     #[tokio::test]
     async fn role_ancestors_invalidate_all_clears_every_entry() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let nested = RoleId::new_random();
         let unrelated = RoleId::new_random();
         let ancestors = Arc::new(vec![AssignedRole {
