@@ -17,9 +17,10 @@ use crate::{
         },
     },
     service::{
-        AuthZViewInfo as _, CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, Result,
-        SecretStore, State, TabularId, TabularListFlags, Transaction, ViewInfo,
+        ArcResolvedWarehouse, AuthZViewInfo as _, CachePolicy, CatalogIdempotencyOps,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        NamespaceHierarchy, Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
+        ViewInfo,
         authz::{
             AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps,
             AuthzWarehouseOps, CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
@@ -166,7 +167,7 @@ async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
     move_destination: Option<Arc<Vec<String>>>,
     authorizer: &A,
     state: C::State,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, ViewInfo), AuthZError> {
+) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy, ViewInfo), AuthZError> {
     let (warehouse, destination_namespace, source_namespace, source_view_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone(),),
         // The destination is read uncached: it is the one resolution here with no version

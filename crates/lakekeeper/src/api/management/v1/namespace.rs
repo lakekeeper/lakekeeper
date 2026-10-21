@@ -9,8 +9,9 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result},
     server::namespace::validate_namespace_ident_creation,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceHierarchy,
-        NamespaceId, NamespaceIdent, ResolvedWarehouse, SecretStore, State, WriteTransaction,
+        ArcResolvedWarehouse, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps,
+        NamespaceHierarchy, NamespaceId, NamespaceIdent, ResolvedWarehouse, SecretStore, State,
+        WriteTransaction,
         authz::{
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
             CatalogWarehouseAction, NamespaceParent,
@@ -56,7 +57,7 @@ async fn authorize_namespace_move<C: CatalogStore, A: Authorizer>(
     force: bool,
     catalog_state: C::State,
 ) -> std::result::Result<
-    (Arc<ResolvedWarehouse>, NamespaceHierarchy),
+    (ArcResolvedWarehouse, NamespaceHierarchy),
     crate::service::authz::AuthZError,
 > {
     let action = move_namespace_action(destination, force);

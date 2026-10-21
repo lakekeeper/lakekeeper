@@ -922,7 +922,7 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ViewOrTableInfo, MarkTabularAsDeletedError>;
 
-    /// Drops staged and non-staged tables and views.
+    /// Drops staged and non-staged tables and views, in active and inactive warehouses.
     ///
     /// Returns the table location
     async fn drop_tabular_impl<'a>(

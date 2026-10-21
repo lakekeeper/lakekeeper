@@ -15,8 +15,8 @@ use crate::{
         tabular::{authorize_entities, fetch_entities},
     },
     service::{
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        NamespaceHierarchy, ResolvedWarehouse, SecretStore, State,
+        ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, NamespaceHierarchy, SecretStore, State,
         authz::{
             AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogNamespaceAction, CatalogViewAction,
@@ -111,7 +111,7 @@ async fn authorize_list_views<C: CatalogStore, A: Authorizer>(
     catalog_state: C::State,
     user_provided_ns: &UserProvidedNamespace,
     request_metadata: &RequestMetadata,
-) -> Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy), AuthZError> {
+) -> Result<(ArcResolvedWarehouse, NamespaceHierarchy), AuthZError> {
     let warehouse_id = user_provided_ns.warehouse_id;
     let provided_namespace = user_provided_ns.namespace.clone();
     let (warehouse, namespace) = tokio::join!(

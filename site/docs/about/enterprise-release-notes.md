@@ -4,6 +4,23 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 
 # Lakekeeper+ Release Notes
 
+## v0.14.1 (2026-10-16)
+
+_Based on Lakekeeper OSS v0.14.1._
+
+### Bug Fixes
+
+- **UI paths.** The UI no longer serves a file for a path that contains `ui/` a second time. Such a path now returns `404`.
+- **Security updates of dependencies.** `rustls`, `quinn-proto` and `xxhash-rust` are updated to fix security advisories RUSTSEC-2026-0338 to -0342, RUSTSEC-2026-0346 to -0349 and GHSA-6g2r-675j-hx59.
+
+### Upstream Lakekeeper changes (bump to v0.14.1)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/). The most important ones for Lakekeeper Plus:
+
+- **Security: S3 remote signing signs only what it knows.** Unknown query parameters and headers are refused, and so are writes that use an encryption key other than the warehouse's ([lakekeeper#2102](https://github.com/lakekeeper/lakekeeper/pull/2102)).
+- **Remote signing with Iceberg 1.12 or later.** Batch deletes and repeated deletes, for example in `expire_snapshots` or `remove_orphan_files`, no longer fail with `403 SignatureDoesNotMatch` ([lakekeeper#2124](https://github.com/lakekeeper/lakekeeper/pull/2124), [lakekeeper#2104](https://github.com/lakekeeper/lakekeeper/pull/2104)).
+- **Concurrent commits to one table** that block each other in the database return a `409` error, which clients retry, instead of `503`. A commit that removes the last branch or tag of a table is now kept ([lakekeeper#2117](https://github.com/lakekeeper/lakekeeper/pull/2117)).
+
 ## v0.14.0 (2026-10-08)
 
 _Based on Lakekeeper OSS v0.14.0._
@@ -339,6 +356,38 @@ Lakekeeper Plus writes the same audit log as Lakekeeper, so this section lists t
 
 Records from v0.14.0 carry `audit_format` **1.0** (the first version). Records from v0.14.0 that Lakekeeper Plus contributes to carry `emitters.lakekeeper_plus` **1.0** (the first version).
 
+
+## v0.13.7 (2026-10-16)
+
+_Based on Lakekeeper OSS v0.13.7._
+
+### Bug Fixes
+
+- **Security: snapshot expiration deletes only files inside the table location.** It runs with the warehouse's storage credentials and follows references in table metadata that clients write. A principal that can commit to one table can no longer get files of other tables deleted. A snapshot whose parent chain loops back on itself no longer stops the expiration.
+- **Snapshot expiration keeps branches and tags that move during it.** When a branch or tag is moved onto a snapshot that the expiration is about to remove, the expiration retries and keeps the snapshot and its files. Before, it dropped the branch or tag.
+- **Security: Okta and Entra ID role providers refuse subjects that consist only of dots.** Such a subject would change the request URL, so that a lookup of the user's groups could return other groups. The request is refused before it is sent.
+- **The health check probes the server by default.** `lakekeeper-plus healthcheck` without flags now checks the server's `/health` endpoint.
+- **Database pool metrics.** The server reports the `lakekeeper_catalog_pg_pool_*` metrics, as Lakekeeper does.
+- **`migrate` sets up the background tasks.** `lakekeeper-plus migrate` now also sets up the scheduled background tasks of Lakekeeper Plus.
+- **UI paths.** The UI no longer serves a file for a path that contains `ui/` a second time. Such a path now returns `404`.
+- **Security updates of dependencies.** `rustls` and `quinn-proto` are updated to fix security advisories RUSTSEC-2026-0338 to -0342 and RUSTSEC-2026-0346 to -0349.
+
+### Upgrade Notes
+
+- **Snapshot expiration leaves files outside the table location in place.** This includes the data files of tables that still carry a `write.data.path`, `write.object-storage.path` or `write.folder-storage.path` property. The task result counts them in `skipped-outside-table-location-count`.
+- **An older binary refuses to start against a newer database.** `wait-for-db` and the server start now stop with an error when the database was migrated by a newer Lakekeeper Plus. `wait-for-db` reads the migration state from the primary database, not from a read replica.
+- **`migrate` writes structured logs.** Its output moves from plain text on stdout to the server's log format.
+
+### Upstream Lakekeeper changes (bump to v0.13.7)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/) of v0.13.6 and v0.13.7. The most important ones for Lakekeeper Plus:
+
+- **Security: S3 remote signing and metadata cleanup stay inside the table.** The signer refuses unknown query parameters and headers, and writes that use an encryption key other than the warehouse's. A commit deletes expired metadata files only inside the table location ([lakekeeper#2102](https://github.com/lakekeeper/lakekeeper/pull/2102)).
+- **Remote signing with Iceberg 1.12 or later.** Batch deletes, repeated deletes and repeated ranged reads no longer fail with `403 SignatureDoesNotMatch` ([lakekeeper#2124](https://github.com/lakekeeper/lakekeeper/pull/2124), [lakekeeper#2104](https://github.com/lakekeeper/lakekeeper/pull/2104)).
+- **Tables can no longer set `write.object-storage.path` or `write.folder-storage.path`.** These old names of `write.data.path` make engines write data files outside the table location. Tables that already have them can remove them ([lakekeeper#2044](https://github.com/lakekeeper/lakekeeper/pull/2044)).
+- **OPA bridge:** deploy the updated policies from `authz/opa-bridge/policies` to get the fix for warehouse IDs that could not be found ([lakekeeper#2052](https://github.com/lakekeeper/lakekeeper/pull/2052)).
+- **Shared HTTP caches** can no longer give one user's response, which may contain vended credentials, to another user ([lakekeeper#1947](https://github.com/lakekeeper/lakekeeper/pull/1947)).
+- **Connections to ADLS, S3 and GCS time out after 10 seconds**, and ADLS reuses connections ([lakekeeper#2022](https://github.com/lakekeeper/lakekeeper/pull/2022)).
 
 ## v0.13.6 (2026-09-18)
 

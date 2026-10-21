@@ -44,7 +44,7 @@ use lakekeeper::{
 };
 pub use secrets::SecretsState;
 use sqlx::{
-    ConnectOptions, Executor, PgPool,
+    ConnectOptions, PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 pub use tabular::DeletionKind;
@@ -103,19 +103,17 @@ impl Transaction<CatalogState> for PostgresTransaction {
     }
 
     async fn begin_read(db_state: CatalogState) -> Result<Self> {
-        let mut transaction = db_state.read_pool().begin().await.map_err(|e| {
-            if crate::pool_metrics::is_pool_timeout(&e) {
-                crate::pool_metrics::record_acquire_timeout("read");
-            }
-            e.into_error_model("Error starting transaction".to_string())
-        })?;
-
-        transaction
-            .execute("SET TRANSACTION READ ONLY")
+        let transaction = db_state
+            .read_pool()
+            .begin_with("BEGIN READ ONLY")
             .await
             .map_err(|e| {
-                e.into_error_model("Error setting transaction to read-only".to_string())
+                if crate::pool_metrics::is_pool_timeout(&e) {
+                    crate::pool_metrics::record_acquire_timeout("read");
+                }
+                e.into_error_model("Error starting transaction".to_string())
             })?;
+
         Ok(Self { transaction })
     }
 
@@ -446,5 +444,27 @@ mod search_path_tests {
         assert_eq!(current, "public");
 
         pool.close().await;
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+
+    #[sqlx::test]
+    async fn read_transactions_refuse_writes(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool);
+        let mut transaction = PostgresTransaction::begin_read(state).await.unwrap();
+
+        let error = sqlx::query("CREATE TEMP TABLE read_only_probe (id int)")
+            .execute(&mut **transaction.transaction())
+            .await
+            .unwrap_err();
+
+        // 25006: read_only_sql_transaction
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("25006")
+        );
     }
 }

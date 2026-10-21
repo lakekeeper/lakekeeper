@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{sync::LazyLock, time::Duration};
 
 use moka::{
     future::Cache,
@@ -16,7 +13,7 @@ use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG, ProjectId, WarehouseId,
     service::{
-        ArcProjectId, ResolvedWarehouse,
+        ArcProjectId, ArcResolvedWarehouse,
         cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         cache_ttl::JitteredTtl,
     },
@@ -97,7 +94,7 @@ static NAME_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, UniCase<String>), Warehou
 
 #[derive(Debug, Clone)]
 pub struct CachedWarehouse {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
 }
 
 /// Drop a warehouse from this replica's cache.
@@ -135,7 +132,10 @@ pub(crate) async fn warehouse_cache_invalidate_name(project_id: &ProjectId, name
     if CONFIG.cache.warehouse.enabled {
         tracing::debug!("Invalidating warehouse name {name} from cache");
         NAME_TO_ID_CACHE
-            .invalidate(&(Arc::new(project_id.clone()), UniCase::new(name.to_string())))
+            .invalidate(&(
+                ArcProjectId::new(project_id.clone()),
+                UniCase::new(name.to_string()),
+            ))
             .await;
         update_cache_size_metric();
     }
@@ -151,7 +151,7 @@ pub(crate) fn warehouse_cache_invalidate_all() {
     }
 }
 
-pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
+pub(super) async fn warehouse_cache_insert(warehouse: ArcResolvedWarehouse) {
     if CONFIG.cache.warehouse.enabled {
         let warehouse_id = warehouse.warehouse_id;
         let project_id = warehouse.project_id.clone();
@@ -202,9 +202,9 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
 pub(super) async fn warehouse_cache_get_or_load<Fut, E>(
     warehouse_id: WarehouseId,
     load: Fut,
-) -> Result<Option<Arc<ResolvedWarehouse>>, E>
+) -> Result<Option<ArcResolvedWarehouse>, E>
 where
-    Fut: std::future::Future<Output = Result<Option<Arc<ResolvedWarehouse>>, E>> + Send,
+    Fut: std::future::Future<Output = Result<Option<ArcResolvedWarehouse>, E>> + Send,
     E: Send + Sync + 'static,
 {
     if !CONFIG.cache.warehouse.enabled {
@@ -282,7 +282,7 @@ fn update_cache_size_metric() {
 
 pub(super) async fn warehouse_cache_get_by_id(
     warehouse_id: WarehouseId,
-) -> Option<Arc<ResolvedWarehouse>> {
+) -> Option<ArcResolvedWarehouse> {
     update_cache_size_metric();
     if let Some(value) = WAREHOUSE_CACHE.get(&warehouse_id).await {
         tracing::debug!("Warehouse id {warehouse_id} found in cache");
@@ -297,7 +297,7 @@ pub(super) async fn warehouse_cache_get_by_id(
 pub(super) async fn warehouse_cache_get_by_name(
     name: &str,
     project_id: &ArcProjectId,
-) -> Option<Arc<ResolvedWarehouse>> {
+) -> Option<ArcResolvedWarehouse> {
     update_cache_size_metric();
     let name_key = (project_id.clone(), UniCase::new(name.to_string()));
     let Some(warehouse_id) = NAME_TO_ID_CACHE.get(&name_key).await else {
@@ -335,7 +335,7 @@ pub(super) async fn warehouse_name_to_id_get_or_load<Fut, E>(
     load: Fut,
 ) -> Result<Option<WarehouseId>, E>
 where
-    Fut: std::future::Future<Output = Result<Option<Arc<ResolvedWarehouse>>, E>> + Send,
+    Fut: std::future::Future<Output = Result<Option<ArcResolvedWarehouse>, E>> + Send,
     E: Send + Sync + 'static,
 {
     secondary_index_get_or_load(
@@ -343,7 +343,7 @@ where
         &NAME_TO_ID_CACHE,
         (project_id, UniCase::new(name.to_string())),
         load,
-        |warehouse: &Arc<ResolvedWarehouse>| warehouse.warehouse_id,
+        |warehouse: &ArcResolvedWarehouse| warehouse.warehouse_id,
         warehouse_cache_insert,
     )
     .await
@@ -464,13 +464,17 @@ impl EventListener for WarehouseCacheEventListener {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use chrono::Utc;
 
     use super::*;
     use crate::{
         ProjectId,
         api::management::v1::warehouse::TabularDeleteProfile,
-        service::{catalog_store::warehouse::WarehouseStatus, storage::MemoryProfile},
+        service::{
+            ResolvedWarehouse, catalog_store::warehouse::WarehouseStatus, storage::MemoryProfile,
+        },
     };
 
     /// Helper function to create a test warehouse
@@ -480,7 +484,7 @@ mod tests {
         project_id: ArcProjectId,
         updated_at: Option<chrono::DateTime<chrono::Utc>>,
         version: i64,
-    ) -> Arc<ResolvedWarehouse> {
+    ) -> ArcResolvedWarehouse {
         Arc::new(ResolvedWarehouse {
             warehouse_id,
             name,

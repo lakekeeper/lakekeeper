@@ -151,6 +151,9 @@ impl std::fmt::Display for RequestId {
     }
 }
 
+/// Reference to [`RequestMetadata`] that can be cheaply cloned and shared.
+pub type ArcRequestMetadata = Arc<RequestMetadata>;
+
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {

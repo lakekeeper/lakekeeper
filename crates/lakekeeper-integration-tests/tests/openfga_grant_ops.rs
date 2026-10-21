@@ -16,7 +16,6 @@
 // which the default nextest filter excludes (a root module would not match).
 mod grant {
     mod openfga_integration_tests {
-        use std::sync::Arc;
 
         use iceberg::NamespaceIdent;
         use lakekeeper::{
@@ -37,8 +36,8 @@ mod grant {
             },
             server::CatalogServer,
             service::{
-                ArcProjectId, CatalogNamespaceOps as _, CatalogWarehouseOps as _, NamespaceId,
-                ResolvedWarehouse, State, UserId,
+                ArcProjectId, ArcResolvedWarehouse, CatalogNamespaceOps as _,
+                CatalogWarehouseOps as _, NamespaceId, State, UserId,
                 authn::Actor,
                 authz::{
                     AuthZGrantOps as _, Authorizer as _, GrantAuthorityCheck, GrantOp,
@@ -80,7 +79,7 @@ mod grant {
         /// the resource's ancestry, not its id, so an authorizer that resolves inheritance
         /// itself can place it. This one reads inheritance from its own tuples and uses only
         /// the id, which is why every test here can share one target.
-        async fn warehouse_target(ctx: &Ctx, warehouse_id: WarehouseId) -> Arc<ResolvedWarehouse> {
+        async fn warehouse_target(ctx: &Ctx, warehouse_id: WarehouseId) -> ArcResolvedWarehouse {
             PostgresBackend::get_active_warehouse_by_id(warehouse_id, ctx.v1_state.catalog.clone())
                 .await
                 .expect("the setup's warehouse resolves")

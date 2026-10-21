@@ -1,11 +1,10 @@
-use std::sync::Arc;
-
 use crate::{
     WarehouseId,
     request_metadata::RequestMetadata,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        ResolvedWarehouse, TabularId, TabularListFlags, ViewOrTableInfo, WarehouseStatus,
+        ArcResolvedWarehouse, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
+        CatalogWarehouseOps, ResolvedWarehouse, TabularId, TabularListFlags, ViewOrTableInfo,
+        WarehouseStatus,
         authz::{
             AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZCannotUseWarehouseId, AuthZError, AuthZTableOps, AuthZWarehouseActionForbidden,
@@ -23,7 +22,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
-) -> Result<Arc<ResolvedWarehouse>, AuthZError> {
+) -> Result<ArcResolvedWarehouse, AuthZError> {
     let warehouse = C::get_warehouse_by_id_cache_aware(
         warehouse_id,
         WarehouseStatus::active(),
@@ -134,7 +133,7 @@ pub(crate) async fn require_undrop_in_warehouse<A: Authorizer, C: CatalogStore>(
 
 #[derive(Debug)]
 pub(super) struct AuthorizeListSoftDeletedTabularsResponse {
-    pub(super) warehouse: Arc<ResolvedWarehouse>,
+    pub(super) warehouse: ArcResolvedWarehouse,
     pub(super) can_list_everything: bool,
 }
 

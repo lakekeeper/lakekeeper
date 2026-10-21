@@ -62,7 +62,14 @@ use uuid::Uuid;
 fn partition_spec() -> UnboundPartitionSpec {
     UnboundPartitionSpec::builder()
         .with_spec_id(0)
-        .add_partition_field(2, "y", Transform::Identity)
+        .add_partition_field(
+            UnboundPartitionField::builder()
+                .source_ids(vec![2])
+                .name("y")
+                .transform(Transform::Identity)
+                .build()
+                .unwrap(),
+        )
         .unwrap()
         .build()
 }
@@ -376,20 +383,21 @@ async fn test_add_partition_spec_commit_table(pool: sqlx::PgPool) {
     let added_spec = UnboundPartitionSpec::builder()
         .with_spec_id(10)
         .add_partition_fields(vec![
-            UnboundPartitionField {
-                // The previous field - has field_id set
-                name: "y".to_string(),
-                transform: Transform::Identity,
-                source_id: 2,
-                field_id: Some(1000),
-            },
-            UnboundPartitionField {
-                // A new field without field id - should still be without field id in changes
-                name: "z".to_string(),
-                transform: Transform::Identity,
-                source_id: 3,
-                field_id: None,
-            },
+            // The previous field - has field_id set
+            UnboundPartitionField::builder()
+                .source_ids(vec![2])
+                .name("y")
+                .field_id(1000)
+                .transform(Transform::Identity)
+                .build()
+                .unwrap(),
+            // A new field without field id - should still be without field id in changes
+            UnboundPartitionField::builder()
+                .source_ids(vec![3])
+                .name("z")
+                .transform(Transform::Identity)
+                .build()
+                .unwrap(),
         ])
         .unwrap()
         .build();
@@ -456,7 +464,14 @@ async fn test_set_default_partition_spec(pool: PgPool) {
 
     let added_spec = UnboundPartitionSpec::builder()
         .with_spec_id(10)
-        .add_partition_field(1, "y_bucket[2]", Transform::Bucket(2))
+        .add_partition_field(
+            UnboundPartitionField::builder()
+                .source_ids(vec![1])
+                .name("y_bucket[2]")
+                .transform(Transform::Bucket(2))
+                .build()
+                .unwrap(),
+        )
         .unwrap()
         .build();
 

@@ -33,7 +33,7 @@ impl DBErrorHandler for sqlx::Error {
                     // https://www.postgresql.org/docs/current/errcodes-appendix.html
                     Some(
                         "2D000" | "25000" | "25001" | "25P01" | "25P02" | "25P03" | "40000"
-                        | "40001" | "40002" | "40003" | "40004",
+                        | "40001" | "40002" | "40003" | "40004" | "40P01",
                     ) => ErrorModel::conflict(
                         "Concurrent modification failed.",
                         "TransactionFailed",
@@ -55,7 +55,7 @@ impl DBErrorHandler for sqlx::Error {
                     // https://www.postgresql.org/docs/current/errcodes-appendix.html
                     Some(
                         "2D000" | "25000" | "25001" | "25P01" | "25P02" | "25P03" | "40000"
-                        | "40001" | "40002" | "40003" | "40004",
+                        | "40001" | "40002" | "40003" | "40004" | "40P01",
                     ) => CatalogBackendError::new(
                         self,
                         CatalogBackendErrorType::ConcurrentModification,

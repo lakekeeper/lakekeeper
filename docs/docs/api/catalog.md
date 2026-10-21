@@ -38,4 +38,4 @@ description: "Interactive OpenAPI reference for Lakekeeper's Apache Iceberg REST
 }
 </style>
 <redoc spec-url="../rest-catalog-open-api.yaml"></redoc>
-<script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"> </script>
+<script src="https://cdn.redoc.ly/redoc/v2.5.4/bundles/redoc.standalone.js"> </script>

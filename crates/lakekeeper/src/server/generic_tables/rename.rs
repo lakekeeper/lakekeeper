@@ -18,10 +18,10 @@ use crate::{
         },
     },
     service::{
-        CachePolicy, CatalogGenericTableOps, CatalogIdempotencyOps, CatalogNamespaceOps,
-        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableInfo,
-        LoadGenericTableError, NamespaceHierarchy, ResolvedWarehouse, SecretStore, State,
-        TabularId, Transaction,
+        ArcResolvedWarehouse, CachePolicy, CatalogGenericTableOps, CatalogIdempotencyOps,
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
+        GenericTableInfo, LoadGenericTableError, NamespaceHierarchy, SecretStore, State, TabularId,
+        Transaction,
         authz::{
             AuthZCannotSeeGenericTable, AuthZError, AuthZGenericTableOps, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
@@ -165,8 +165,7 @@ async fn authorize_rename_generic_table<C: CatalogStore, A: Authorizer + Clone>(
     move_destination: Option<Arc<Vec<String>>>,
     authorizer: &A,
     catalog_state: C::State,
-) -> std::result::Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, GenericTableInfo), AuthZError>
-{
+) -> std::result::Result<(ArcResolvedWarehouse, NamespaceHierarchy, GenericTableInfo), AuthZError> {
     let (warehouse, destination_namespace, source_namespace) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
         // The destination is read uncached: it is the one resolution here with no version

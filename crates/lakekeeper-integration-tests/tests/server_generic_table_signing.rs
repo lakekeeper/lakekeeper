@@ -342,7 +342,7 @@ async fn sign_warehouse_scoped<A: Authorizer>(
     warehouse_id: WarehouseId,
     base_location: &str,
     method: Method,
-) -> lakekeeper::api::Result<S3SignResponse> {
+) -> lakekeeper::api::Result<(http::HeaderMap, S3SignResponse)> {
     sign_warehouse_scoped_request(
         ctx,
         warehouse_id,
@@ -355,7 +355,7 @@ async fn sign_warehouse_scoped_request<A: Authorizer>(
     ctx: &Ctx<A>,
     warehouse_id: WarehouseId,
     request: S3SignRequest,
-) -> lakekeeper::api::Result<S3SignResponse> {
+) -> lakekeeper::api::Result<(http::HeaderMap, S3SignResponse)> {
     CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::FromRequestUri,
@@ -374,7 +374,7 @@ async fn sign_table_scoped<A: Authorizer>(
     tabular_id: uuid::Uuid,
     base_location: &str,
     method: Method,
-) -> lakekeeper::api::Result<S3SignResponse> {
+) -> lakekeeper::api::Result<(http::HeaderMap, S3SignResponse)> {
     CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::TabularId(tabular_id),
@@ -412,7 +412,7 @@ async fn test_sign_generic_table_warehouse_scoped(pool: PgPool) {
         create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
 
     for method in [Method::GET, Method::HEAD, Method::PUT, Method::DELETE] {
-        let Ok(response) =
+        let Ok((_, response)) =
             sign_warehouse_scoped(&ctx, warehouse_id, &base_location, method.clone()).await
         else {
             panic!("a {method} under the generic table's base-location must be signed");
@@ -432,9 +432,10 @@ async fn test_sign_generic_table_table_scoped(pool: PgPool) {
         create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
     let tabular_id = generic_table_id(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
 
-    let response = sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
-        .await
-        .expect("table-scoped signer must resolve the generic table by id");
+    let (_, response) =
+        sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
+            .await
+            .expect("table-scoped signer must resolve the generic table by id");
 
     assert_signed(&response);
 }
@@ -450,9 +451,12 @@ async fn test_sign_generic_table_falls_back_to_location_on_foreign_id(pool: PgPo
     create_generic_table(&ctx, &namespace_name, warehouse_id, "other-blobs").await;
     let other_id = generic_table_id(&ctx, &namespace_name, warehouse_id, "other-blobs").await;
 
-    let response = sign_table_scoped(&ctx, warehouse_id, other_id, &base_location, Method::GET)
-        .await
-        .expect("signer must fall back to location lookup when the path id does not match the URI");
+    let (_, response) =
+        sign_table_scoped(&ctx, warehouse_id, other_id, &base_location, Method::GET)
+            .await
+            .expect(
+                "signer must fall back to location lookup when the path id does not match the URI",
+            );
 
     assert_signed(&response);
 }
@@ -479,7 +483,7 @@ async fn test_sign_generic_table_requires_write_data(pool: PgPool) {
     }
 
     // Reads are unaffected.
-    let response = sign_warehouse_scoped(&ctx, warehouse_id, &base_location, Method::GET)
+    let (_, response) = sign_warehouse_scoped(&ctx, warehouse_id, &base_location, Method::GET)
         .await
         .expect("read_data is still granted");
     assert_signed(&response);
@@ -502,9 +506,10 @@ async fn test_sign_generic_table_table_scoped_requires_write_data(pool: PgPool) 
     assert_forbidden(&err);
 
     // A read through the same by-id route still works.
-    let response = sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
-        .await
-        .expect("read_data is still granted");
+    let (_, response) =
+        sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
+            .await
+            .expect("read_data is still granted");
     assert_signed(&response);
 }
 
@@ -525,7 +530,7 @@ async fn test_sign_generic_table_requires_read_data(pool: PgPool) {
     assert_forbidden(&err);
 
     // Writes are unaffected.
-    let response = sign_warehouse_scoped(&ctx, warehouse_id, &base_location, Method::PUT)
+    let (_, response) = sign_warehouse_scoped(&ctx, warehouse_id, &base_location, Method::PUT)
         .await
         .expect("write_data is still granted");
     assert_signed(&response);
@@ -545,7 +550,7 @@ async fn test_sign_generic_table_batch_delete(pool: PgPool) {
         key_under(&base_location, "data/b.bin"),
     ]);
 
-    let response = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
+    let (_, response) = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
         .await
         .expect("a bulk delete of the generic table's own files must be signed");
     assert_signed(&response);
@@ -596,7 +601,7 @@ async fn test_sign_generic_table_list_prefix(pool: PgPool) {
         dir_key_of(&base_location).replace('/', "%2F"),
     ] {
         let request = list_prefix_request(&prefix);
-        let response = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
+        let (_, response) = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
             .await
             .unwrap_or_else(|e| panic!("listing `{prefix}` must be signed: {e:?}"));
         assert_signed(&response);
@@ -639,7 +644,7 @@ async fn test_sign_list_prefix_requires_a_directory_prefix(pool: PgPool) {
     assert_eq!(err.error.r#type, "RequestUriMismatch", "{err:?}");
 
     // The directory form of the very same location is signable.
-    let response = sign_warehouse_scoped_request(
+    let (_, response) = sign_warehouse_scoped_request(
         &ctx,
         warehouse_id,
         list_prefix_request(&dir_key_of(&location)),
@@ -688,12 +693,13 @@ async fn test_sign_iceberg_table_list_prefix(pool: PgPool) {
         create_catalog_table(&ctx, &namespace_name, warehouse_id, "my_table").await;
     let prefix = dir_key_of(location.as_ref());
 
-    let response = sign_warehouse_scoped_request(&ctx, warehouse_id, list_prefix_request(&prefix))
-        .await
-        .expect("warehouse-scoped signer must sign list requests for iceberg tables");
+    let (_, response) =
+        sign_warehouse_scoped_request(&ctx, warehouse_id, list_prefix_request(&prefix))
+            .await
+            .expect("warehouse-scoped signer must sign list requests for iceberg tables");
     assert_signed(&response);
 
-    let response = CatalogServer::sign(
+    let (_, response) = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::TabularId(*table_id),
         list_prefix_request(&prefix),
@@ -747,12 +753,12 @@ async fn test_sign_iceberg_table_is_unaffected(pool: PgPool) {
         create_catalog_table(&ctx, &namespace_name, warehouse_id, "my_table").await;
     let location = location.to_string();
 
-    let response = sign_warehouse_scoped(&ctx, warehouse_id, &location, Method::GET)
+    let (_, response) = sign_warehouse_scoped(&ctx, warehouse_id, &location, Method::GET)
         .await
         .expect("warehouse-scoped signer must sign iceberg tables");
     assert_signed(&response);
 
-    let response = sign_table_scoped(&ctx, warehouse_id, *table_id, &location, Method::PUT)
+    let (_, response) = sign_table_scoped(&ctx, warehouse_id, *table_id, &location, Method::PUT)
         .await
         .expect("table-scoped signer must sign iceberg tables");
     assert_signed(&response);
@@ -942,7 +948,7 @@ async fn test_sign_by_table_name(pool: PgPool) {
     let (_table_id, location) =
         create_catalog_table(&ctx, &namespace_name, warehouse_id, "by_name").await;
 
-    let response = CatalogServer::sign(
+    let (_, response) = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::Table(Box::new(TableIdent::new(
             NamespaceIdent::new(namespace_name),
@@ -966,7 +972,7 @@ async fn test_sign_by_table_name_falls_back_to_the_request_location(pool: PgPool
     let (_table_id, location) =
         create_catalog_table(&ctx, &namespace_name, warehouse_id, "real_name").await;
 
-    let response = CatalogServer::sign(
+    let (_, response) = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::Table(Box::new(TableIdent::new(
             NamespaceIdent::new(namespace_name),
@@ -1033,7 +1039,7 @@ async fn test_sign_rejects_a_foreign_provider(pool: PgPool) {
     assert_eq!(err.error.r#type, "UnsupportedSignerProvider", "{err:?}");
 
     // Absent still means s3.
-    let response = CatalogServer::sign(
+    let (_, response) = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
         SignTarget::TabularId(*table_id),
         sign_request(Method::GET, sign_url(location.as_ref(), "data/file.bin")),
@@ -1098,4 +1104,169 @@ async fn test_load_table_advertises_remote_signing_config(pool: PgPool) {
         config.contains_key("signer.endpoint"),
         "the deprecated signer keys must remain until clients read the config: {config:?}"
     );
+}
+
+/// The unit tests in the signer check which header names stay unsigned; these
+/// check that a store accepts what it signs. Named so nextest's default profile
+/// filters them out; CI runs them against the store configured via
+/// `LAKEKEEPER_TEST__S3_*`.
+mod s3_compat_integration_tests {
+    use lakekeeper::api::management::v1::warehouse::TabularDeleteProfile;
+    use lakekeeper_integration_tests::s3_compatible_profile;
+
+    use super::*;
+
+    const OBJECT: &[u8] = b"0123456789abcdef";
+
+    /// The store URL of `suffix` under the `s3://…` `base_location`.
+    fn store_url(base_location: &str, suffix: &str) -> url::Url {
+        let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
+        let http =
+            base_location.replacen("s3://", &format!("{}/", endpoint.trim_end_matches('/')), 1);
+        format!("{http}/{suffix}").parse().unwrap()
+    }
+
+    async fn sign(
+        ctx: &Ctx<AllowAllAuthorizer>,
+        warehouse_id: WarehouseId,
+        method: Method,
+        uri: url::Url,
+        headers: &[(&str, &str)],
+    ) -> S3SignResponse {
+        let mut request_headers = HashMap::from([(
+            "x-amz-content-sha256".to_string(),
+            vec!["UNSIGNED-PAYLOAD".to_string()],
+        )]);
+        for (name, value) in headers {
+            request_headers.insert((*name).to_string(), vec![(*value).to_string()]);
+        }
+        let request = S3SignRequest::builder()
+            .region(std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into()))
+            .uri(uri)
+            .method(method)
+            .headers(request_headers)
+            .body(None)
+            .build();
+        let (_, response) = sign_warehouse_scoped_request(ctx, warehouse_id, request)
+            .await
+            .expect("signing must succeed");
+        assert_signed(&response);
+        response
+    }
+
+    /// Sends a signed request the way a client that caches signatures does: with
+    /// the headers the signer returned, except for `overrides`, which carry the
+    /// values of the request being sent now.
+    async fn send(
+        method: Method,
+        signed: &S3SignResponse,
+        overrides: &[(&str, &str)],
+        body: Option<&'static [u8]>,
+    ) -> reqwest::Response {
+        let mut headers = http::HeaderMap::new();
+        for (name, values) in &signed.headers {
+            for value in values {
+                headers.append(
+                    http::HeaderName::try_from(name.as_str()).unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+        }
+        for (name, value) in overrides {
+            headers.insert(
+                http::HeaderName::try_from(*name).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        let mut request = reqwest::Client::new()
+            .request(method, signed.uri.clone())
+            .headers(headers);
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+        request.send().await.unwrap()
+    }
+
+    /// Iceberg's signer client reuses a GET signature for the same URI, so the next
+    /// ranged read of an object goes out with the cached signature and a different
+    /// `Range`, and the AWS SDK v2 counts each attempt in `amz-sdk-request`. Both
+    /// come in title case from the SDK, and the store must still accept the
+    /// signature.
+    #[sqlx::test]
+    async fn test_cached_signature_serves_another_range(pool: PgPool) {
+        let (profile, cred) = s3_compatible_profile();
+        let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(
+            pool,
+            profile,
+            Some(cred),
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+        let warehouse_id = warehouse.warehouse_id;
+        let namespace_name = uuid::Uuid::now_v7().to_string();
+        initialize_namespace(
+            ctx.v1_state.catalog.clone(),
+            warehouse_id,
+            &namespace(&namespace_name),
+            None,
+        )
+        .await;
+        let base_location =
+            create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
+        let object = store_url(&base_location, "data/file.bin");
+
+        let put = sign(&ctx, warehouse_id, Method::PUT, object.clone(), &[]).await;
+        let response = send(Method::PUT, &put, &[], Some(OBJECT)).await;
+        assert!(
+            response.status().is_success(),
+            "uploading the object failed: {}",
+            response.text().await.unwrap()
+        );
+
+        let get = sign(
+            &ctx,
+            warehouse_id,
+            Method::GET,
+            object,
+            &[
+                ("Range", "bytes=0-3"),
+                (
+                    "Amz-Sdk-Invocation-Id",
+                    "00000000-0000-0000-0000-000000000001",
+                ),
+                ("Amz-Sdk-Request", "attempt=1; max=3"),
+            ],
+        )
+        .await;
+
+        let first = send(Method::GET, &get, &[], None).await;
+        assert_eq!(first.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(first.bytes().await.unwrap().as_ref(), &OBJECT[0..4]);
+
+        let second = send(
+            Method::GET,
+            &get,
+            &[
+                ("Range", "bytes=4-7"),
+                (
+                    "Amz-Sdk-Invocation-Id",
+                    "00000000-0000-0000-0000-000000000002",
+                ),
+                ("Amz-Sdk-Request", "attempt=2; max=3"),
+            ],
+            None,
+        )
+        .await;
+        let status = second.status();
+        let body = second.bytes().await.unwrap();
+        assert_eq!(
+            status,
+            StatusCode::PARTIAL_CONTENT,
+            "the store rejected the cached signature: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(body.as_ref(), &OBJECT[4..8]);
+    }
 }

@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use crate::{api::RequestMetadata, service::authz::GrantSpec};
+use crate::{api::ArcRequestMetadata, service::authz::GrantSpec};
 
 // ===== Grant Events =====
 
@@ -32,7 +30,7 @@ use crate::{api::RequestMetadata, service::authz::GrantSpec};
 pub struct GrantsChangedEvent {
     pub removed: Vec<GrantSpec>,
     pub created: Vec<GrantSpec>,
-    pub request_metadata: Arc<RequestMetadata>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 impl GrantsChangedEvent {
@@ -40,7 +38,7 @@ impl GrantsChangedEvent {
     pub fn new(
         removed: Vec<GrantSpec>,
         created: Vec<GrantSpec>,
-        request_metadata: Arc<RequestMetadata>,
+        request_metadata: ArcRequestMetadata,
     ) -> Self {
         Self {
             removed,
@@ -61,7 +59,7 @@ impl GrantsChangedEvent {
 mod tests {
     use std::{
         fmt::{Display, Formatter},
-        sync::Mutex,
+        sync::{Arc, Mutex},
     };
 
     use super::*;
@@ -105,7 +103,7 @@ mod tests {
     #[async_trait::async_trait]
     impl EventListener for DefaultListener {}
 
-    fn request_metadata() -> Arc<RequestMetadata> {
+    fn request_metadata() -> ArcRequestMetadata {
         Arc::new(RequestMetadataTestBuilder::builder().build())
     }
 

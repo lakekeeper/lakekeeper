@@ -228,6 +228,9 @@ pub struct WarehouseFormatVersionPolicy {
     pub default_format_version: Option<FormatVersion>,
 }
 
+/// Reference to [`ResolvedWarehouse`] that can be cheaply cloned and shared.
+pub type ArcResolvedWarehouse = Arc<ResolvedWarehouse>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWarehouse {
     /// ID of the warehouse.
@@ -812,7 +815,7 @@ where
         project_id: &ProjectId,
         request: CatalogCreateWarehouseRequest,
         transaction: &mut WriteTransaction<Self>,
-    ) -> Result<Arc<ResolvedWarehouse>, CatalogCreateWarehouseError> {
+    ) -> Result<ArcResolvedWarehouse, CatalogCreateWarehouseError> {
         let warehouse =
             Self::create_warehouse_impl(project_id, request, transaction.transaction()).await?;
         // A caller can choose the id, so it may name a warehouse that was deleted.
@@ -825,7 +828,7 @@ where
         warehouse_id: WarehouseId,
         managed_by: ManagedBy,
         transaction: &mut WriteTransaction<Self>,
-    ) -> Result<Arc<ResolvedWarehouse>, SetWarehouseManagedByError> {
+    ) -> Result<ArcResolvedWarehouse, SetWarehouseManagedByError> {
         let warehouse = Self::set_warehouse_managed_by_impl(
             warehouse_id,
             managed_by,
@@ -883,7 +886,7 @@ where
         warehouse_id: WarehouseId,
         new_name: &str,
         transaction: &mut WriteTransaction<Self>,
-    ) -> Result<Arc<ResolvedWarehouse>, CatalogRenameWarehouseError> {
+    ) -> Result<ArcResolvedWarehouse, CatalogRenameWarehouseError> {
         let RenamedWarehouse {
             warehouse,
             previous_name,
@@ -904,7 +907,7 @@ where
         // If Some, returns warehouses with any of the statuses in the set
         include_inactive: Option<Vec<WarehouseStatus>>,
         state: Self::State,
-    ) -> Result<Vec<Arc<ResolvedWarehouse>>, CatalogListWarehousesError> {
+    ) -> Result<Vec<ArcResolvedWarehouse>, CatalogListWarehousesError> {
         let warehouses = Self::list_warehouses_impl(project_id, include_inactive, state)
             .await?
             .into_iter()
@@ -928,7 +931,7 @@ where
         warehouse_id: WarehouseId,
         status_filter: &[WarehouseStatus],
         state: Self::State,
-    ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
+    ) -> Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError> {
         // Single-flight read-through: concurrent misses for the same warehouse
         // coalesce onto one load (see `warehouse_cache_get_or_load`). The helper
         // owns the version-gated insert + secondary-index population. `status_filter`
@@ -948,7 +951,7 @@ where
     async fn get_active_warehouse_by_id(
         warehouse_id: WarehouseId,
         state: Self::State,
-    ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
+    ) -> Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError> {
         Self::get_warehouse_by_id(warehouse_id, WarehouseStatus::active(), state).await
     }
 
@@ -958,7 +961,7 @@ where
         status_filter: &[WarehouseStatus],
         cache_policy: CachePolicy,
         state: Self::State,
-    ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
+    ) -> Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError> {
         let warehouse = match cache_policy {
             CachePolicy::Skip => {
                 // Skip cache entirely
@@ -1026,7 +1029,7 @@ where
         project_id: &ArcProjectId,
         status_filter: &[WarehouseStatus],
         catalog_state: Self::State,
-    ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByNameError> {
+    ) -> Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByNameError> {
         // Fast path: name → id → warehouse (records hit/miss metrics).
         let cached_warehouse = warehouse_cache_get_by_name(warehouse_name, project_id).await;
         if let Some(warehouse) = cached_warehouse {
@@ -1078,7 +1081,7 @@ where
     //     warehouse_name: &str,
     //     project_id: &ProjectId,
     //     catalog_state: Self::State,
-    // ) -> Result<Arc<ResolvedWarehouse>, CatalogGetWarehouseByNameError> {
+    // ) -> Result<ArcResolvedWarehouse, CatalogGetWarehouseByNameError> {
     //     Self::get_warehouse_by_name(warehouse_name, project_id, catalog_state)
     //         .await?
     //         .ok_or(WarehouseNameNotFound::new(warehouse_name.to_string()).into())
@@ -1089,7 +1092,7 @@ where
         warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
         transaction: &mut WriteTransaction<Self>,
-    ) -> Result<Arc<ResolvedWarehouse>, SetWarehouseDeletionProfileError> {
+    ) -> Result<ArcResolvedWarehouse, SetWarehouseDeletionProfileError> {
         let warehouse = Self::set_warehouse_deletion_profile_impl(
             warehouse_id,
             deletion_profile,
@@ -1104,7 +1107,7 @@ where
         warehouse_id: WarehouseId,
         status: WarehouseStatus,
         transaction: &mut WriteTransaction<Self>,
-    ) -> Result<Arc<ResolvedWarehouse>, SetWarehouseStatusError> {
+    ) -> Result<ArcResolvedWarehouse, SetWarehouseStatusError> {
         let warehouse =
             Self::set_warehouse_status_impl(warehouse_id, status, transaction.transaction())
                 .await?;
@@ -1137,7 +1140,7 @@ where
         warehouse_id: WarehouseId,
         protect: bool,
         transaction: &mut WriteTransaction<Self>,
-    ) -> std::result::Result<Arc<ResolvedWarehouse>, SetWarehouseProtectedError> {
+    ) -> std::result::Result<ArcResolvedWarehouse, SetWarehouseProtectedError> {
         let warehouse =
             Self::set_warehouse_protected_impl(warehouse_id, protect, transaction.transaction())
                 .await?;
@@ -1150,7 +1153,7 @@ where
         warehouse_id: WarehouseId,
         policy: &WarehouseFormatVersionPolicy,
         transaction: &mut WriteTransaction<Self>,
-    ) -> std::result::Result<Arc<ResolvedWarehouse>, SetWarehouseFormatVersionPolicyError> {
+    ) -> std::result::Result<ArcResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
         let warehouse = Self::set_warehouse_format_version_policy_impl(
             warehouse_id,
             policy,
