@@ -1230,6 +1230,7 @@
         "revoke_subtree_grants",
         "set_format_version_policy",
         "set_protection",
+        "set_rollback_compaction_policy",
         "update_storage",
         "use"
       ],

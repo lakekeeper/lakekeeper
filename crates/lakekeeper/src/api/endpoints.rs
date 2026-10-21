@@ -322,6 +322,7 @@ generate_endpoints! {
         RenameWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/rename"),
         UpdateWarehouseDeleteProfile(POST, "/management/v1/warehouse/{warehouse_id}/delete-profile"),
         UpdateWarehouseFormatVersionPolicy(POST, "/management/v1/warehouse/{warehouse_id}/format-version-policy"),
+        UpdateWarehouseRollbackCompactionPolicy(POST, "/management/v1/warehouse/{warehouse_id}/rollback-compaction-policy"),
         DeactivateWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/deactivate"),
         ActivateWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/activate"),
         UpdateStorageProfile(POST, "/management/v1/warehouse/{warehouse_id}/storage"),
@@ -1094,6 +1095,7 @@ mod test {
         "management-v1-revoke-namespace-subtree-grants",
         "management-v1-list-warehouse-subtree-grants",
         "management-v1-revoke-warehouse-subtree-grants",
+        "management-v1-update-warehouse-rollback-compaction-policy",
     ];
 
     #[test]

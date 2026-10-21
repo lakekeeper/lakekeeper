@@ -488,6 +488,13 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError>;
 
+    /// Set the transparent-commit (rollback-compaction-on-conflict) policy of a warehouse.
+    async fn set_warehouse_rollback_compaction_policy_impl(
+        warehouse_id: WarehouseId,
+        policy: RollbackCompactionPolicy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseRollbackCompactionPolicyError>;
+
     /// Set (or clear) the managed-by marker on a warehouse.
     async fn set_warehouse_managed_by_impl<'a>(
         warehouse_id: WarehouseId,

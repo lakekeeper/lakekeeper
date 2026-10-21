@@ -7,9 +7,9 @@ use crate::{
         management::v1::{
             task_queue::SetTaskQueueConfigRequest,
             warehouse::{
-                RenameWarehouseRequest, UpdateWarehouseCredentialRequest,
-                UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
-                UpdateWarehouseStorageRequest,
+                RenameWarehouseRequest, SetWarehouseRollbackCompactionPolicyRequest,
+                UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
+                UpdateWarehouseFormatVersionPolicyRequest, UpdateWarehouseStorageRequest,
             },
         },
     },
@@ -69,6 +69,14 @@ pub struct UpdateWarehouseDeleteProfileEvent {
 #[derive(Clone, Debug)]
 pub struct UpdateWarehouseFormatVersionPolicyEvent {
     pub request: Arc<UpdateWarehouseFormatVersionPolicyRequest>,
+    pub updated_warehouse: ArcResolvedWarehouse,
+    pub request_metadata: ArcRequestMetadata,
+}
+
+/// Event emitted when the warehouse rollback-compaction-on-conflict policy changes
+#[derive(Clone, Debug)]
+pub struct SetWarehouseRollbackCompactionPolicyEvent {
+    pub request: Arc<SetWarehouseRollbackCompactionPolicyRequest>,
     pub updated_warehouse: ArcResolvedWarehouse,
     pub request_metadata: ArcRequestMetadata,
 }
@@ -185,6 +193,25 @@ impl
         tokio::spawn(async move {
             let () = dispatcher
                 .warehouse_format_version_policy_updated(event)
+                .await;
+        });
+    }
+
+    /// Emit warehouse rollback-compaction policy set event
+    pub(crate) fn emit_warehouse_rollback_compaction_policy_set(
+        self,
+        request: Arc<SetWarehouseRollbackCompactionPolicyRequest>,
+        updated_warehouse: ArcResolvedWarehouse,
+    ) {
+        let event = SetWarehouseRollbackCompactionPolicyEvent {
+            request,
+            updated_warehouse,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher
+                .warehouse_rollback_compaction_policy_set(event)
                 .await;
         });
     }

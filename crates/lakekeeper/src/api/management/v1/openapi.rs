@@ -187,6 +187,7 @@ use crate::{
         super::update_user,
         super::update_warehouse_delete_profile,
         super::update_warehouse_format_version_policy,
+        super::update_warehouse_rollback_compaction_policy,
         super::validate_storage_credential,
         super::validate_storage_profile,
         super::validate_storage_access,

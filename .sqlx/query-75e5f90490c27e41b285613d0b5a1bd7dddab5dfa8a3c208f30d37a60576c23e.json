@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM table_snapshot_log WHERE warehouse_id = $1 AND table_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "75e5f90490c27e41b285613d0b5a1bd7dddab5dfa8a3c208f30d37a60576c23e"
+}
