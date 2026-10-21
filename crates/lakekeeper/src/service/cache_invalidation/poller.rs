@@ -85,8 +85,8 @@ struct Poller<C> {
     interval: Duration,
     grace: Duration,
     failures: u32,
-    /// The first read failed, so this instance serves requests without a position in the
-    /// log; its first successful read evicts everything.
+    /// The first read failed or did not finish within 10 s, so this instance serves requests
+    /// without a position in the log; its first successful read evicts everything.
     started_late: bool,
     rng: fastrand::Rng,
 }
