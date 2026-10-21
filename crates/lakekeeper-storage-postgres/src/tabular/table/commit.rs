@@ -6,9 +6,10 @@ use lakekeeper::{
     WarehouseId,
     server::tables::TableMetadataDiffs,
     service::{
-        CommitTableTransactionError, ConcurrentUpdateError, ConversionError, InternalBackendErrors,
-        InternalParseLocationError, TableCommit, TableId, TableInfo, TabularNotFound,
-        TooManyUpdatesInCommit, UnexpectedTabularInResponse, ViewOrTableInfo,
+        CommitSnapshotRemovals, CommitTableTransactionError, ConcurrentUpdateError,
+        ConversionError, InternalBackendErrors, InternalParseLocationError, TableCommit, TableId,
+        TableInfo, TabularNotFound, TooManyUpdatesInCommit, UnexpectedTabularInResponse,
+        ViewOrTableInfo,
     },
 };
 use lakekeeper_io::Location;
@@ -57,6 +58,7 @@ pub(crate) async fn commit_table_transaction(
                 previous_metadata_location,
                 updates,
                 diffs,
+                snapshot_removals,
             } = c;
             let new_location = Location::from_str(new_metadata.location())
                 .map_err(InternalParseLocationError::from)?;
@@ -67,6 +69,7 @@ pub(crate) async fn commit_table_transaction(
                     new_metadata,
                     new_metadata_location,
                     new_location,
+                    snapshot_removals,
                 },
                 (updates, diffs),
             ))
@@ -185,6 +188,7 @@ struct TableMetadataTransition {
     new_metadata: TableMetadataRef,
     new_metadata_location: Location,
     new_location: Location,
+    snapshot_removals: CommitSnapshotRemovals,
 }
 
 struct CommitVerificationData {
@@ -206,7 +210,10 @@ fn build_table_and_tabular_update_queries(
             last_sequence_number = c."last_sequence_number",
             last_updated_ms = c."last_updated_ms",
             last_partition_id = c."last_partition_id",
-            next_row_id = c."next_row_id"
+            next_row_id = c."next_row_id",
+            last_reap_at = CASE WHEN c."reaped_compaction" THEN now() ELSE t.last_reap_at END,
+            last_snapshot_removal_at = CASE WHEN c."removed_snapshots" THEN now()
+                ELSE t.last_snapshot_removal_at END
         FROM (VALUES
         "#,
     );
@@ -229,6 +236,7 @@ fn build_table_and_tabular_update_queries(
             new_metadata,
             new_metadata_location,
             new_location,
+            snapshot_removals,
         },
     ) in location_metadata_pairs.into_iter().enumerate()
     {
@@ -261,6 +269,10 @@ fn build_table_and_tabular_update_queries(
         query_builder_table.push_bind(new_metadata.last_partition_id());
         query_builder_table.push(", ");
         query_builder_table.push_bind(next_row_id);
+        query_builder_table.push(", ");
+        query_builder_table.push_bind(snapshot_removals.reaped_compaction);
+        query_builder_table.push(", ");
+        query_builder_table.push_bind(snapshot_removals.removed_snapshots);
         query_builder_table.push(")");
 
         query_builder_tabular.push("(");
@@ -284,7 +296,7 @@ fn build_table_and_tabular_update_queries(
     }
 
     query_builder_table
-        .push(") as c(warehouse_id, table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id, next_row_id) WHERE c.warehouse_id = t.warehouse_id AND c.table_id = t.table_id");
+        .push(") as c(warehouse_id, table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id, next_row_id, reaped_compaction, removed_snapshots) WHERE c.warehouse_id = t.warehouse_id AND c.table_id = t.table_id");
     query_builder_tabular.push(
         ") as c(warehouse_id, table_id, new_metadata_location, fs_location, fs_protocol, old_metadata_location) WHERE c.warehouse_id = t.warehouse_id AND c.table_id = t.tabular_id AND t.typ = 'table' AND t.metadata_location IS NOT DISTINCT FROM c.old_metadata_location",
     );
@@ -805,6 +817,7 @@ mod tests {
             previous_metadata_location: Some(previous_metadata_location),
             updates: Arc::new(updates),
             diffs: calculate_diffs(&new_metadata, &previous_metadata, 1, 0),
+            snapshot_removals: CommitSnapshotRemovals::default(),
         };
 
         let mut t = pool.begin().await.unwrap();
@@ -884,6 +897,7 @@ mod tests {
             ),
             updates: Arc::new(set_build.changes),
             diffs: calculate_diffs(&after_set_metadata, &previous_metadata, 1, 0),
+            snapshot_removals: CommitSnapshotRemovals::default(),
         };
         let mut t = pool.begin().await.unwrap();
         commit_table_transaction(warehouse_id, vec![commit_1], &mut t)
@@ -933,6 +947,7 @@ mod tests {
             previous_metadata_location: Some(new_loc_1),
             updates: Arc::new(remove_build.changes),
             diffs: calculate_diffs(&after_remove_metadata, &after_set_metadata, 1, 0),
+            snapshot_removals: CommitSnapshotRemovals::default(),
         };
         let mut t = pool.begin().await.unwrap();
         commit_table_transaction(warehouse_id, vec![commit_2], &mut t)
@@ -985,6 +1000,7 @@ mod tests {
             previous_metadata_location: Some(prev_loc),
             updates: Arc::new(set_build.changes),
             diffs: calculate_diffs(&after_set_metadata, &previous_metadata, 1, 0),
+            snapshot_removals: CommitSnapshotRemovals::default(),
         };
         let mut t = pool.begin().await.unwrap();
         commit_table_transaction(warehouse_id, vec![commit_1], &mut t)
@@ -1012,6 +1028,7 @@ mod tests {
             previous_metadata_location: Some(new_loc_1),
             updates: Arc::new(remove_build.changes),
             diffs: calculate_diffs(&after_remove_metadata, &after_set_metadata, 1, 0),
+            snapshot_removals: CommitSnapshotRemovals::default(),
         };
         let mut t = pool.begin().await.unwrap();
         commit_table_transaction(warehouse_id, vec![commit_2], &mut t)
@@ -1116,6 +1133,7 @@ mod tests {
                 previous_metadata_location: Some(loc_0),
                 updates: Arc::new(build_1.changes),
                 diffs: calculate_diffs(&build_1.metadata, &metadata_0, 1, 0),
+                snapshot_removals: CommitSnapshotRemovals::default(),
             },
         )
         .await;
@@ -1141,6 +1159,7 @@ mod tests {
                 previous_metadata_location: Some(loc_1),
                 updates: Arc::new(build_2.changes),
                 diffs: calculate_diffs(&build_2.metadata, &metadata_1, 1, 0),
+                snapshot_removals: CommitSnapshotRemovals::default(),
             },
         )
         .await;
@@ -1185,6 +1204,7 @@ mod tests {
                 previous_metadata_location: Some(loc_2),
                 updates: Arc::new(build_3.changes),
                 diffs,
+                snapshot_removals: CommitSnapshotRemovals::default(),
             },
         )
         .await;
@@ -1264,6 +1284,7 @@ mod tests {
             previous_metadata_location: Some(prev_loc),
             updates: Arc::new(set_build.changes),
             diffs: calculate_diffs(&after_set_metadata, &previous_metadata, 1, 0),
+            snapshot_removals: CommitSnapshotRemovals::default(),
         };
         let mut t = pool.begin().await.unwrap();
         commit_table_transaction(warehouse_id, vec![commit_1], &mut t)
@@ -1303,6 +1324,7 @@ mod tests {
             previous_metadata_location: Some(new_loc_1),
             updates: Arc::new(move_build.changes),
             diffs: calculate_diffs(&after_move_metadata, &after_set_metadata, 1, 0),
+            snapshot_removals: CommitSnapshotRemovals::default(),
         };
         let mut t = pool.begin().await.unwrap();
         commit_table_transaction(warehouse_id, vec![commit_2], &mut t)

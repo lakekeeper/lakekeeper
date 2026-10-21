@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE warehouse\n            SET allowed_format_versions = $1, default_format_version = $2\n            WHERE warehouse_id = $3\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                rollback_compaction_on_conflict,\n                rollback_compaction_max_age_seconds,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n            ",
+  "query": "\n            UPDATE warehouse\n            SET tabular_expiration_seconds = $1, tabular_delete_mode = $2\n            WHERE warehouse_id = $3\n            AND status = 'active'\n            RETURNING \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                rollback_compaction_on_conflict,\n                rollback_compaction_max_age_seconds,\n                rollback_compaction_fence_seconds,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n            ",
   "describe": {
     "columns": [
       {
@@ -168,6 +168,17 @@
       },
       {
         "ordinal": 13,
+        "name": "rollback_compaction_fence_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_fence_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -188,7 +199,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -199,7 +210,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -212,8 +223,18 @@
     ],
     "parameters": {
       "Left": [
-        "Int2Array",
-        "Int2",
+        "Int8",
+        {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        },
         "Uuid"
       ]
     },
@@ -232,9 +253,10 @@
       false,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "f3cd50118239533d51c61826f3b3b518c39b2f55aa92800828468b75621c8ad4"
+  "hash": "107e4965e572818e76e21a361278786558962c94df171984a0ea135b48a49689"
 }

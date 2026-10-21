@@ -75,9 +75,10 @@ use crate::{
     service::{
         ArcResolvedWarehouse, AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
         CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
-        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit,
-        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed,
-        TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        CatalogTabularOps, CatalogWarehouseOps, CommitSnapshotRemovals, NamedEntity,
+        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
+        TabularId, TabularIdentBorrowed, TabularInfo, TabularListFlags, TabularNotFound,
+        Transaction, WarehouseStatus,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
@@ -1708,6 +1709,17 @@ fn apply_commit_maybe_reaping(
     if !policy.enabled || original.error.r#type != *"CatalogCommitConflicts" {
         return Err(original);
     }
+    if transparent_commit::reap_fenced(
+        &previous.snapshot_removal_fence,
+        policy.snapshot_removal_fence(),
+    ) {
+        tracing::debug!(
+            warehouse_id = %warehouse.warehouse_id,
+            %table_id,
+            "transparent-commit: declining to reap compaction, snapshots were removed recently",
+        );
+        return Err(original);
+    }
 
     let Some(plan) = transparent_commit::plan_compaction_reap(
         &previous.table_metadata,
@@ -1841,6 +1853,20 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                 &change.updates,
                 &warehouse.allowed_format_versions,
             )?;
+            let removed_snapshots = transparent_commit::removes_snapshots(&change.updates);
+            if removed_snapshots
+                && transparent_commit::snapshot_removal_fenced(
+                    &previous_table_metadata.snapshot_removal_fence,
+                    warehouse.rollback_compaction_policy.snapshot_removal_fence(),
+                )
+            {
+                return Err(ErrorModel::conflict(
+                    "A compaction of this table was rolled back recently. Retry the snapshot removal with freshly loaded table metadata.",
+                    "CommitFailedException",
+                    None,
+                )
+                .into());
+            }
             let (
                 TableMetadataBuildResult {
                     metadata: new_metadata,
@@ -1912,6 +1938,10 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                 previous_metadata: Arc::new(previous_table_metadata.table_metadata),
                 number_expired_metadata_log_entries,
                 number_added_metadata_log_entries,
+                snapshot_removals: CommitSnapshotRemovals {
+                    reaped_compaction: reap_plan.is_some(),
+                    removed_snapshots,
+                },
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -2090,6 +2120,7 @@ pub struct CommitContext {
     pub number_expired_metadata_log_entries: usize,
     pub number_added_metadata_log_entries: usize,
     pub table_info: Arc<TableInfo>,
+    pub snapshot_removals: CommitSnapshotRemovals,
 }
 
 impl CommitContext {
@@ -2107,6 +2138,7 @@ impl CommitContext {
             new_metadata_location: self.new_metadata_location.clone(),
             previous_metadata_location: self.previous_metadata_location.clone(),
             updates: self.updates.clone(),
+            snapshot_removals: self.snapshot_removals,
         }
     }
 }
@@ -2659,6 +2691,7 @@ mod unit_tests {
                     Location::from_str("s3://bucket/table/metadata/m1.json").unwrap(),
                 ),
                 warehouse_version: crate::service::WarehouseVersion::from(0),
+                snapshot_removal_fence: crate::service::SnapshotRemovalFence::default(),
             }
         }
 
@@ -2687,6 +2720,7 @@ mod unit_tests {
             wh.rollback_compaction_policy = RollbackCompactionPolicy {
                 enabled,
                 max_compaction_age_seconds: u64::MAX,
+                ..RollbackCompactionPolicy::default()
             };
             wh
         }

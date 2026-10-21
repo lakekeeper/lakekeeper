@@ -21,8 +21,8 @@ use lakekeeper::{
     api::iceberg::v1::tables::{LoadTableFilters, SnapshotsQuery},
     service::{
         ConversionError, InternalParseLocationError, InternalTableMetadataBuildFailed,
-        LoadTableError, LoadTableResponse, RequiredTableComponentMissing, TableId,
-        storage::join_location,
+        LoadTableError, LoadTableResponse, RequiredTableComponentMissing, SnapshotRemovalFence,
+        TableId, storage::join_location,
     },
 };
 use sqlx::types::Json;
@@ -148,6 +148,8 @@ struct TableQueryStruct {
     table_fs_location: String,
     table_fs_protocol: String,
     warehouse_version: i64,
+    ms_since_last_reap: Option<i64>,
+    ms_since_last_snapshot_removal: Option<i64>,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
     default_partition_spec_id: Option<i32>,
@@ -557,6 +559,9 @@ pub(crate) async fn load_tables(
             ti.namespace_id,
             ti."metadata_location",
             w.version as "warehouse_version",
+            (EXTRACT(EPOCH FROM now() - t.last_reap_at) * 1000)::bigint as "ms_since_last_reap",
+            (EXTRACT(EPOCH FROM now() - t.last_snapshot_removal_at) * 1000)::bigint
+                as "ms_since_last_snapshot_removal",
             tcs.schema_id as "current_schema",
             tdps.partition_spec_id as "default_partition_spec_id",
             tsnap.snapshot_ids,
@@ -766,6 +771,12 @@ pub(crate) async fn load_tables(
             let expected_schema_ids = schema_ids_by_table
                 .remove(&table.table_id)
                 .unwrap_or_default();
+            let snapshot_removal_fence = SnapshotRemovalFence {
+                since_last_reap: table.ms_since_last_reap.map(chrono::Duration::milliseconds),
+                since_last_snapshot_removal: table
+                    .ms_since_last_snapshot_removal
+                    .map(chrono::Duration::milliseconds),
+            };
             let table_metadata = table.into_table_metadata(schema_rows, &expected_schema_ids)?;
 
             Ok(LoadTableResponse {
@@ -774,6 +785,7 @@ pub(crate) async fn load_tables(
                 table_metadata,
                 metadata_location,
                 warehouse_version: warehouse_version.into(),
+                snapshot_removal_fence,
             })
         })
         .collect()

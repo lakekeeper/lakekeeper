@@ -10119,6 +10119,11 @@ components:
             warehouse. When `true`, a writer's commit that would fail optimistic-concurrency
             validation solely because of intervening rollbackable compaction snapshots reaps those
             snapshots and rebases the writer on top, so the writer wins over compaction.
+        rollback-compaction-snapshot-removal-fence-seconds:
+          type: integer
+          format: int64
+          description: Seconds a compaction rollback and a snapshot-removal commit on one table are kept apart.
+          minimum: 0
         status:
           $ref: '#/components/schemas/WarehouseStatus'
           description: Whether the warehouse is active.
@@ -15502,6 +15507,16 @@ components:
           description: |-
             A compaction snapshot older than this many seconds is not rolled back; the writer gets
             a normal concurrency failure. Defaults to 3600 (one hour).
+          minimum: 1
+        snapshot-removal-fence-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            For this many seconds after a compaction was rolled back, a commit that removes
+            snapshots (such as an expire-snapshots run) gets a retryable conflict. For this many
+            seconds after such a commit, no compaction is rolled back. Defaults to 60.
           minimum: 1
     SoftDeletionQueueConfig:
       type: object

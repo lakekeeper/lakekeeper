@@ -140,11 +140,17 @@ Transparent commit is disabled by default and requires two independent opt-ins:
       -d '{"enabled": true}'
     ```
 
-    The optional `max-compaction-age-seconds` sets how old a compaction may be and still be rolled back. It is measured from the compaction snapshot's timestamp. Each request sets the whole policy, so a request without it sets the age back to 3600 seconds.
+    The optional `max-compaction-age-seconds` sets how old a compaction may be and still be rolled back. It is measured from the compaction snapshot's timestamp. The optional `snapshot-removal-fence-seconds` sets the window described in [Snapshot expiration](#transparent-commit-snapshot-expiration). Each request sets the whole policy, so a request without them sets them back to 3600 and 60 seconds.
 
     Changing the flag needs the `set_rollback_compaction_policy` permission on the warehouse. With OpenFGA, `modify` on the warehouse grants it.
 
 2. **Per-snapshot marker.** The compaction engine must stamp its `REPLACE` snapshot summary with either `lakekeeper.rollbackable=true` (native) or Apache Polaris's `polaris.internal.conflict-resolution.by-operation-type.replace=rollback` (honoured for compatibility with engines already integrated against Polaris). Because the opt-in is a snapshot-summary marker, external compaction engines participate without any Lakekeeper-specific integration beyond stamping the marker.
+
+### Snapshot expiration { #transparent-commit-snapshot-expiration }
+
+Lakekeeper keeps rollbacks and snapshot expiration apart on each table, for a window of 60 seconds by default. For the window after a compaction of a table was rolled back, a commit that removes snapshots from that table, such as an `expire_snapshots` run, is rejected with a conflict. Iceberg clients retry such a commit with freshly loaded table metadata, so the run normally succeeds on a later attempt or a later run. For the window after a commit removed snapshots, no compaction of that table is rolled back, and a conflicting writer retries as usual. Set the window with `snapshot-removal-fence-seconds`.
+
+The window protects files that a table still reads. Iceberg's Java `ExpireSnapshots` loads the table before and after its commit, and deletes the files of every snapshot that is missing from the second load as if it had expired that snapshot itself. A compaction rolled back between the two loads is such a snapshot, and the files it replaced are the files the table reads again after the rollback. The window must be longer than the time an expiration run needs from its first load to its second load, which is normally less than a second.
 
 ### Notes and limitations
 
