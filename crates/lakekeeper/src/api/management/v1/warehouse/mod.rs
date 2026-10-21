@@ -1682,8 +1682,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
     /// Enable or disable transparent commit (rollback-compaction-on-conflict) for a warehouse.
     ///
-    /// Authorized as a warehouse-spec mutation, reusing the format-version-policy action (both
-    /// are commit-behaviour policy changes gated identically).
+    /// Authorized with [`CatalogWarehouseAction::SetRollbackCompactionPolicy`], a warehouse-spec
+    /// mutation subject to the managed-by lock.
     async fn set_warehouse_rollback_compaction_policy(
         warehouse_id: WarehouseId,
         request: SetWarehouseRollbackCompactionPolicyRequest,
