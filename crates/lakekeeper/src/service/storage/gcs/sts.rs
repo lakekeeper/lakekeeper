@@ -11,8 +11,8 @@ pub(crate) async fn downscope(
     token_source: TokenSource,
     bucket: &str,
     stc_request: &ShortTermCredentialsRequest,
-) -> Result<STSResponse, TableConfigError> {
-    let token = token_source.token().await.map_err(|e| {
+) -> Result<(STSResponse, Option<std::time::SystemTime>), TableConfigError> {
+    let (token, source_expiry) = token_source.token().await.map_err(|e| {
         tracing::error!("Failed to get token from token source: {:?}", e);
         TableConfigError::FailedDependency("Failed to get gcp token from token source".to_string())
     })?;
@@ -45,12 +45,13 @@ pub(crate) async fn downscope(
             TableConfigError::FailedDependency("Failed to downscope.".to_string())
         })?;
 
-    serde_json::from_value(response.clone()).map_err(|e| {
+    let sts_response = serde_json::from_value(response.clone()).map_err(|e| {
         tracing::error!(
             "Failed to parse downscoping response: {e:?}. Received Body: {response}. Request: {gcs_sts_request:?}",
         );
         TableConfigError::FailedDependency("Failed to downscope.".to_string())
-    })
+    })?;
+    Ok((sts_response, source_expiry))
 }
 
 #[derive(Deserialize, Clone, veil::Redact)]
