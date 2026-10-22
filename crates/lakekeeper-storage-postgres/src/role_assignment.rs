@@ -26,7 +26,7 @@ use sqlx::Acquire as _;
 use uuid::Uuid;
 
 use super::{
-    dbutils::DBErrorHandler,
+    dbutils::{DBErrorHandler, user_id_from_db},
     pagination::{PaginateToken, V1PaginateToken},
     user::{DbUserLastUpdatedWith, DbUserType, UserRow, user_rows, user_write},
 };
@@ -63,10 +63,6 @@ fn map_user_sync_error(e: sqlx::Error) -> SyncUserRoleAssignmentsError {
             .into();
     }
     map_role_upsert_error(e)
-}
-
-fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
-    UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
 }
 
 // ─── Row type shared by the two role-members list queries ─────────────────────
@@ -212,7 +208,7 @@ pub(crate) async fn sync_role_members_by_ident(
             WHERE "role".name IS DISTINCT FROM COALESCE($1, "role".name)
                OR "role".description IS DISTINCT FROM
                   CASE WHEN $2 IS NULL THEN "role".description ELSE NULLIF($2, '') END
-            RETURNING id
+            RETURNING id, xmax <> 0 AS updated
         ),
         -- Fallback: when the upsert WHERE was false (nothing changed) upserted_role
         -- returns no rows.  Union with a direct lookup so downstream CTEs always
@@ -289,7 +285,8 @@ pub(crate) async fn sync_role_members_by_ident(
             (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM added_members)   AS "added_ids!: Vec<String>",
             (SELECT COALESCE(array_agg(user_id), ARRAY[]::TEXT[]) FROM removed_members) AS "removed_ids!: Vec<String>",
             (SELECT COALESCE(array_agg(id ORDER BY id), ARRAY[]::TEXT[]) FROM upserted_users)      AS "written_ids!: Vec<String>",
-            (SELECT COALESCE(array_agg(created ORDER BY id), ARRAY[]::BOOLEAN[]) FROM upserted_users) AS "written_created!: Vec<bool>"
+            (SELECT COALESCE(array_agg(created ORDER BY id), ARRAY[]::BOOLEAN[]) FROM upserted_users) AS "written_created!: Vec<bool>",
+            (SELECT COALESCE(bool_or(updated), false) FROM upserted_role)                         AS "role_updated!"
         "#,
         role.name as Option<&str>,
         role.description as Option<&str>,
@@ -363,6 +360,7 @@ pub(crate) async fn sync_role_members_by_ident(
         skipped_deleted,
         synced_at: row.synced_at,
         user_writes,
+        role_updated: row.role_updated,
     })
 }
 
@@ -542,6 +540,11 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         all_roles: all_assignments.roles,
         provider_sync_times: all_assignments.provider_sync_times,
         user_write,
+        updated_roles: written
+            .updated_role_ids
+            .into_iter()
+            .map(RoleId::new)
+            .collect(),
     })
 }
 
@@ -552,6 +555,8 @@ struct UserAssignmentWrites {
     role_ids_by_source: HashMap<String, Uuid>,
     /// Whether query 1 created the user (`Some(true)`) or changed it (`Some(false)`).
     user_created: Option<bool>,
+    /// The existing roles whose name or description query 1 changed.
+    updated_role_ids: Vec<Uuid>,
 }
 
 /// Queries 1 and 2 of the user-centric sync, on `conn`: the caller's transaction,
@@ -617,7 +622,7 @@ async fn write_user_assignments(
                 description = EXCLUDED.description
             WHERE "role".name        IS DISTINCT FROM EXCLUDED.name
                OR "role".description IS DISTINCT FROM EXCLUDED.description
-            RETURNING id, source_id
+            RETURNING id, source_id, xmax <> 0 AS updated
         ),
         -- Fallback: when the upsert WHERE was false (nothing changed) upserted_roles
         -- returns no rows for those entries.  RETURNING id is available directly
@@ -657,7 +662,8 @@ async fn write_user_assignments(
             (SELECT COALESCE(array_agg(role_id), ARRAY[]::UUID[]) FROM removed_assignments) AS "removed_ids!: Vec<Uuid>",
             (SELECT COALESCE(array_agg(id ORDER BY source_id), ARRAY[]::UUID[]) FROM role_ids)          AS "role_ids!: Vec<Uuid>",
             (SELECT COALESCE(array_agg(source_id ORDER BY source_id), ARRAY[]::TEXT[]) FROM role_ids)   AS "role_source_ids!: Vec<String>",
-            (SELECT created FROM upserted_user)                                                         AS "user_created?: bool"
+            (SELECT created FROM upserted_user)                                                         AS "user_created?: bool",
+            (SELECT COALESCE(array_agg(id) FILTER (WHERE updated), ARRAY[]::UUID[]) FROM upserted_roles) AS "updated_role_ids!: Vec<Uuid>"
         "#,
         user.user_id.to_string(),
         user.name as Option<&str>,
@@ -694,6 +700,7 @@ async fn write_user_assignments(
         removed_ids: row.removed_ids,
         role_ids_by_source,
         user_created: row.user_created,
+        updated_role_ids: row.updated_role_ids,
     })
 }
 
@@ -1548,30 +1555,6 @@ pub(crate) async fn affected_users_for_membership_edges<
         .map(|id| user_id_from_db(id))
         .collect::<Result<Vec<_>, _>>()
         .map_err(CatalogBackendError::new_unexpected)
-}
-
-/// How long the read after an edge change's commit waits for a table lock before it
-/// fails, for example behind a pending `ALTER TABLE`.
-const AFFECTED_USERS_AFTER_COMMIT_LOCK_TIMEOUT: &str =
-    "BEGIN READ ONLY; SET LOCAL lock_timeout = '5s'";
-
-/// [`affected_users_for_membership_edges`] in a read-only transaction of its own on
-/// `write_pool`, bounded by a lock timeout. The `BEGIN` and the `SET` go in one round
-/// trip.
-pub(crate) async fn affected_users_for_membership_edges_after_commit(
-    member_role_ids: &[Uuid],
-    write_pool: &sqlx::PgPool,
-) -> Result<Vec<UserId>, CatalogBackendError> {
-    let mut transaction = write_pool
-        .begin_with(AFFECTED_USERS_AFTER_COMMIT_LOCK_TIMEOUT)
-        .await
-        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
-    let users = affected_users_for_membership_edges(member_role_ids, &mut *transaction).await;
-    transaction
-        .rollback()
-        .await
-        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
-    users
 }
 
 // ─── expire_role_assignment_syncs ─────────────────────────────────────────────
@@ -2496,11 +2479,11 @@ mod tests {
             management::v1::user::{UserLastUpdatedWith, UserType},
         },
         service::{
-            AddRoleMembersError, ArcProjectId, CatalogCreateRoleRequest, CatalogRoleAssignmentOps,
-            CatalogRoleForAssignment, CatalogRoleMember, CatalogRoleOps, CatalogStore,
-            CatalogUserRoleAssignmentUser, RoleId, RoleIdent, RoleProviderId, RoleSourceId,
-            SyncRoleMembersError, SyncUserRoleAssignmentsError, Transaction, UniqueMembers,
-            UniqueRoles, UserUpsertMode,
+            AddRoleMembersError, ArcProjectId, CatalogCreateRoleRequest, CatalogProjectOps,
+            CatalogRoleAssignmentOps, CatalogRoleForAssignment, CatalogRoleMember, CatalogRoleOps,
+            CatalogStore, CatalogUserRoleAssignmentUser, RoleId, RoleIdent, RoleProviderId,
+            RoleSourceId, SyncRoleMembersError, SyncUserRoleAssignmentsError, Transaction,
+            UniqueMembers, UniqueRoles, UserUpsertMode, WriteTransaction,
             authn::{ArcUserId, UserId},
             authz::UserOrRoleId,
         },
@@ -2666,9 +2649,10 @@ mod tests {
         // Delete the role in an open transaction; the sync below starts while the
         // row is locked and only proceeds once the delete commits.
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             deleted_role_id,
@@ -2676,7 +2660,7 @@ mod tests {
         )
         .await
         .unwrap();
-        PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+        PostgresBackend::delete_role(&arc_project, deleted_role_id, &mut delete_tx)
             .await
             .unwrap();
 
@@ -2813,7 +2797,7 @@ mod tests {
         assert_eq!(first.role_id, role_id);
         assert_eq!(first.members.len(), 1);
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         PostgresBackend::set_role_source_system(
@@ -2823,7 +2807,7 @@ mod tests {
                 source_id: new_ident.source_id().clone(),
                 provider_id: new_ident.provider_id().clone(),
             },
-            t.transaction(),
+            &mut t,
         )
         .await
         .unwrap();
@@ -2957,9 +2941,10 @@ mod tests {
         let deleted_role_id = first.assignments.roles[0].role_id;
 
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             deleted_role_id,
@@ -2981,7 +2966,7 @@ mod tests {
         // Only then do the delete and the expiry of her sync record run.
         let delete = async {
             wait_for_lock_waiter(&pool).await;
-            PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+            PostgresBackend::delete_role(&arc_project, deleted_role_id, &mut delete_tx)
                 .await
                 .unwrap();
             PostgresBackend::expire_role_assignment_syncs_impl(
@@ -3027,13 +3012,14 @@ mod tests {
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
 
         for commit in [false, true] {
-            let mut t = PostgresTransaction::begin_write(state.clone())
-                .await
-                .unwrap();
+            let mut t =
+                lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                    .await
+                    .unwrap();
             PostgresBackend::lock_role_and_count_grants_impl(&project_id, role_id, t.transaction())
                 .await
                 .unwrap();
-            PostgresBackend::delete_role(&arc_project, role_id, t.transaction())
+            PostgresBackend::delete_role(&arc_project, role_id, &mut t)
                 .await
                 .unwrap();
             PostgresBackend::expire_role_assignment_syncs_impl(
@@ -3344,14 +3330,14 @@ mod tests {
         provision_user(&state, &alice, "Alice").await;
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         let res = PostgresBackend::add_user_role_assignments(
             &arc_project,
             role,
             &[alice.clone(), alice.clone()],
-            t.transaction(),
+            &mut t,
         )
         .await
         .unwrap();
@@ -3371,26 +3357,26 @@ mod tests {
         provision_user(&state, &alice, "Alice").await;
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         PostgresBackend::add_user_role_assignments(
             &arc_project,
             role,
             std::slice::from_ref(&alice),
-            t.transaction(),
+            &mut t,
         )
         .await
         .unwrap();
         t.commit().await.unwrap();
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         let res = PostgresBackend::remove_user_role_assignments(
             role,
             &[alice.clone(), alice.clone()],
-            t.transaction(),
+            &mut t,
         )
         .await
         .unwrap();
@@ -3449,7 +3435,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        let affected = PostgresBackend::delete_user(user_id.clone(), t.transaction())
+        let affected = PostgresBackend::delete_user_impl(user_id.clone(), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -3468,10 +3454,8 @@ mod tests {
     }
 
     /// `remove_user_role_assignments_and_invalidate` evicts the user's cached
-    /// effective-roles entry, so a subsequent read on THIS replica reflects the
-    /// change immediately. (The cache is per-process moka; other replicas converge
-    /// only within the cache TTL — which is exactly why management read endpoints
-    /// bypass the cache and query the DB directly.)
+    /// effective-roles entry, so a subsequent read on this instance reflects the
+    /// change immediately.
     #[sqlx::test]
     async fn user_role_assignments_and_invalidate_evicts_cache(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -3534,14 +3518,14 @@ mod tests {
             let ident = Arc::new(RoleIdent::new_unchecked(reserved, "group"));
 
             // Role-members sync: the role's ident is a reserved provider.
-            let mut t = PostgresTransaction::begin_write(state.clone())
+            let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
                 .await
                 .unwrap();
             let err = PostgresBackend::sync_role_members_by_ident(
                 &project_id,
                 &make_role(&ident, "Group"),
                 &[make_user(&user_id, "Alice")],
-                t.transaction(),
+                &mut t,
             )
             .await
             .unwrap_err();
@@ -3552,7 +3536,7 @@ mod tests {
 
             // User-assignment sync: the provider scope is reserved.
             let provider = RoleProviderId::new_unchecked(reserved);
-            let mut t = PostgresTransaction::begin_write(state.clone())
+            let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
                 .await
                 .unwrap();
             let err = PostgresBackend::sync_user_role_assignments_by_provider(
@@ -3561,7 +3545,7 @@ mod tests {
                 &project_id,
                 &provider,
                 &[make_role(&ident, "Group")],
-                t.transaction(),
+                &mut t,
             )
             .await
             .unwrap_err();
@@ -3760,7 +3744,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresBackend::delete_user((*user_id).clone(), t.transaction())
+        PostgresBackend::delete_user_impl((*user_id).clone(), t.transaction())
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -4150,24 +4134,22 @@ mod tests {
         let project_id: ArcProjectId = Arc::new(project_id);
 
         // First add — the child is the actually-added member.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let first =
-            PostgresBackend::add_role_members(&project_id, parent, &[child], t.transaction())
-                .await
-                .unwrap();
+        let first = PostgresBackend::add_role_members(&project_id, parent, &[child], &mut t)
+            .await
+            .unwrap();
         t.commit().await.unwrap();
         assert_eq!(first.added, vec![child]);
 
         // Second add — a no-op: nothing was newly added, so the delta is empty.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let second =
-            PostgresBackend::add_role_members(&project_id, parent, &[child], t.transaction())
-                .await
-                .unwrap();
+        let second = PostgresBackend::add_role_members(&project_id, parent, &[child], &mut t)
+            .await
+            .unwrap();
         t.commit().await.unwrap();
         assert_eq!(second.added, Vec::<RoleId>::new());
 
@@ -4207,19 +4189,19 @@ mod tests {
         let project_id: ArcProjectId = Arc::new(project_id);
 
         // a -> b
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&project_id, a, &[b], t.transaction())
+        PostgresBackend::add_role_members(&project_id, a, &[b], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
 
         // b -> a must be rejected as a cycle.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err = PostgresBackend::add_role_members(&project_id, b, &[a], t.transaction())
+        let err = PostgresBackend::add_role_members(&project_id, b, &[a], &mut t)
             .await
             .unwrap_err();
         let AddRoleMembersError::RoleMembershipCycle(cycle) = err else {
@@ -4236,10 +4218,10 @@ mod tests {
         let a = create_managed_role(&state, &project_id, "a").await;
         let project_id: ArcProjectId = Arc::new(project_id);
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err = PostgresBackend::add_role_members(&project_id, a, &[a], t.transaction())
+        let err = PostgresBackend::add_role_members(&project_id, a, &[a], &mut t)
             .await
             .unwrap_err();
         let AddRoleMembersError::RoleMembershipCycle(cycle) = err else {
@@ -4259,22 +4241,22 @@ mod tests {
         let project_id: ArcProjectId = Arc::new(project_id);
 
         // a -> b, b -> c
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&project_id, a, &[b], t.transaction())
+        PostgresBackend::add_role_members(&project_id, a, &[b], &mut t)
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&project_id, b, &[c], t.transaction())
+        PostgresBackend::add_role_members(&project_id, b, &[c], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
 
         // c -> a closes a depth-3 cycle and must be rejected.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err = PostgresBackend::add_role_members(&project_id, c, &[a], t.transaction())
+        let err = PostgresBackend::add_role_members(&project_id, c, &[a], &mut t)
             .await
             .unwrap_err();
         let AddRoleMembersError::RoleMembershipCycle(cycle) = err else {
@@ -4481,33 +4463,23 @@ mod tests {
         let project_id: ArcProjectId = Arc::new(project_id);
 
         // r0 -> r1 -> ... -> r10 == 10 edges, exactly the default limit → all allowed.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         for i in 0..10 {
-            PostgresBackend::add_role_members(
-                &project_id,
-                roles[i],
-                &[roles[i + 1]],
-                t.transaction(),
-            )
-            .await
-            .unwrap();
+            PostgresBackend::add_role_members(&project_id, roles[i], &[roles[i + 1]], &mut t)
+                .await
+                .unwrap();
         }
         t.commit().await.unwrap();
 
         // r10 -> r11 would be the 11th edge → rejected by the default max of 10.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err = PostgresBackend::add_role_members(
-            &project_id,
-            roles[10],
-            &[roles[11]],
-            t.transaction(),
-        )
-        .await
-        .unwrap_err();
+        let err = PostgresBackend::add_role_members(&project_id, roles[10], &[roles[11]], &mut t)
+            .await
+            .unwrap_err();
         let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
             panic!("expected RoleMembershipDepthExceeded, got {err:?}");
         };
@@ -4557,13 +4529,13 @@ mod tests {
         let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
 
         // grandparent has member parent; parent has member leaf.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], &mut t)
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -4631,23 +4603,18 @@ mod tests {
         let sibling = create_managed_role(&state, &project_id, "sibling").await;
 
         // top -> {left, right}; left -> leaf; right -> leaf (diamond); right -> sibling.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, top, &[left, right], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, top, &[left, right], &mut t)
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, left, &[leaf], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, left, &[leaf], &mut t)
             .await
             .unwrap();
-        PostgresBackend::add_role_members(
-            &arc_project_id,
-            right,
-            &[leaf, sibling],
-            t.transaction(),
-        )
-        .await
-        .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, right, &[leaf, sibling], &mut t)
+            .await
+            .unwrap();
         t.commit().await.unwrap();
 
         let by_seed = list_role_ancestors(&[leaf, sibling], &pool).await.unwrap();
@@ -4684,10 +4651,10 @@ mod tests {
         let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
         let parent = create_managed_role(&state, &project_id, "parent").await;
         let leaf = create_managed_role(&state, &project_id, "leaf").await;
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -4722,13 +4689,13 @@ mod tests {
         // Membership edges (member -> parent):
         //   grandparent has member parent
         //   parent      has member leaf
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], &mut t)
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -4792,13 +4759,13 @@ mod tests {
         // Membership edges (member -> parent), all catalog-managed roles:
         //   grandparent has member parent
         //   parent      has member leaf
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], &mut t)
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -4851,20 +4818,20 @@ mod tests {
         let project_id: ArcProjectId = Arc::new(project_id);
 
         // Removing a non-existent edge is Ok (no-op): nothing was removed, so the delta is empty.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let noop = PostgresBackend::remove_role_members(parent, &[child], t.transaction())
+        let noop = PostgresBackend::remove_role_members(parent, &[child], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
         assert_eq!(noop.removed, Vec::<RoleId>::new());
 
         // Add the edge, then remove it.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&project_id, parent, &[child], t.transaction())
+        PostgresBackend::add_role_members(&project_id, parent, &[child], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -4884,10 +4851,10 @@ mod tests {
         );
 
         // Removing the present edge — the child is the actually-removed member.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let removed = PostgresBackend::remove_role_members(parent, &[child], t.transaction())
+        let removed = PostgresBackend::remove_role_members(parent, &[child], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -4909,10 +4876,10 @@ mod tests {
         );
 
         // Removing again is a no-op: the delta is empty.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let second = PostgresBackend::remove_role_members(parent, &[child], t.transaction())
+        let second = PostgresBackend::remove_role_members(parent, &[child], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -4929,17 +4896,12 @@ mod tests {
         let foreign_member = create_managed_role(&state, &project_b, "member").await;
         let project_a: ArcProjectId = Arc::new(project_a);
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err = PostgresBackend::add_role_members(
-            &project_a,
-            parent,
-            &[foreign_member],
-            t.transaction(),
-        )
-        .await
-        .unwrap_err();
+        let err = PostgresBackend::add_role_members(&project_a, parent, &[foreign_member], &mut t)
+            .await
+            .unwrap_err();
         let AddRoleMembersError::RoleIdNotFoundInProject(e) = err else {
             panic!("expected RoleIdNotFoundInProject, got {err:?}");
         };
@@ -4958,13 +4920,12 @@ mod tests {
         let external = create_external_role(&state, &project_id, "ldap", "ext-group").await;
         let project_id: ArcProjectId = Arc::new(project_id);
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err =
-            PostgresBackend::add_role_members(&project_id, parent, &[external], t.transaction())
-                .await
-                .unwrap_err();
+        let err = PostgresBackend::add_role_members(&project_id, parent, &[external], &mut t)
+            .await
+            .unwrap_err();
         let AddRoleMembersError::RoleNotManuallyAssignable(e) = err else {
             panic!("expected RoleNotManuallyAssignable, got {err:?}");
         };
@@ -4982,10 +4943,10 @@ mod tests {
         let project_id: ArcProjectId = Arc::new(project_id);
 
         // Batch containing a duplicate member id — deduped, each edge inserted once.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&project_id, parent, &[b, c, b], t.transaction())
+        PostgresBackend::add_role_members(&project_id, parent, &[b, c, b], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -5012,13 +4973,13 @@ mod tests {
         let member = create_managed_role(&state, &project_id, "member").await;
         let project_id: ArcProjectId = Arc::new(project_id);
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&project_id, parent1, &[member], t.transaction())
+        PostgresBackend::add_role_members(&project_id, parent1, &[member], &mut t)
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&project_id, parent2, &[member], t.transaction())
+        PostgresBackend::add_role_members(&project_id, parent2, &[member], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -5045,17 +5006,12 @@ mod tests {
         let missing_parent = RoleId::new_random();
         let project_id: ArcProjectId = Arc::new(project_id);
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err = PostgresBackend::add_role_members(
-            &project_id,
-            missing_parent,
-            &[member],
-            t.transaction(),
-        )
-        .await
-        .unwrap_err();
+        let err = PostgresBackend::add_role_members(&project_id, missing_parent, &[member], &mut t)
+            .await
+            .unwrap_err();
         let AddRoleMembersError::RoleIdNotFoundInProject(e) = err else {
             panic!("expected RoleIdNotFoundInProject, got {err:?}");
         };
@@ -5072,13 +5028,12 @@ mod tests {
 
         // An empty member list is a no-op, but the parent must still be validated:
         // an unknown parent is rejected, not silently accepted.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err =
-            PostgresBackend::add_role_members(&project_id, missing_parent, &[], t.transaction())
-                .await
-                .unwrap_err();
+        let err = PostgresBackend::add_role_members(&project_id, missing_parent, &[], &mut t)
+            .await
+            .unwrap_err();
         let AddRoleMembersError::RoleIdNotFoundInProject(e) = err else {
             panic!("expected RoleIdNotFoundInProject, got {err:?}");
         };
@@ -5092,13 +5047,13 @@ mod tests {
         let parent = create_managed_role(&state, &project_id, "parent").await;
         let project_id: ArcProjectId = Arc::new(project_id);
 
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        PostgresBackend::add_role_members(&project_id, parent, &[], t.transaction())
+        PostgresBackend::add_role_members(&project_id, parent, &[], &mut t)
             .await
             .unwrap();
-        PostgresBackend::remove_role_members(parent, &[], t.transaction())
+        PostgresBackend::remove_role_members(parent, &[], &mut t)
             .await
             .unwrap();
         t.commit().await.unwrap();
@@ -5284,13 +5239,12 @@ mod tests {
             .unwrap();
 
         // Concurrent add on a different connection: blocked → 3s timeout → typed error.
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let err =
-            PostgresBackend::add_role_members(&arc_project_id, parent, &[child], t.transaction())
-                .await
-                .unwrap_err();
+        let err = PostgresBackend::add_role_members(&arc_project_id, parent, &[child], &mut t)
+            .await
+            .unwrap_err();
         let AddRoleMembersError::RoleMembershipLockTimeout(e) = err else {
             panic!("expected RoleMembershipLockTimeout, got {err:?}");
         };
@@ -6714,117 +6668,115 @@ mod tests {
         );
     }
 
-    /// A user assigned to a member role while an edge removal is in flight, after the
-    /// removal read its affected users and before it commits, loses the removed
-    /// parent from the cache once the removal commits. The user's load in that window
-    /// still reads the edge; the removal reads its affected users again after the
-    /// commit and invalidates that user too.
+    /// A rebind that waits for an assignment to its role records the assigned user: it
+    /// reads the role's users after the lock it waited on.
     #[sqlx::test]
-    async fn an_edge_removal_invalidates_a_user_assigned_while_it_runs(pool: sqlx::PgPool) {
+    async fn a_rebind_records_a_user_assigned_while_it_waits(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let parent = create_managed_role(&state, &project_id, "edge-race-parent").await;
-        let member = create_managed_role(&state, &project_id, "edge-race-member").await;
-        let user_id = UserId::new_unchecked("oidc", "edge-race-0001");
-        provision_user(&state, &user_id, "Edge Race").await;
-        PostgresBackend::add_role_members_and_invalidate(
+        let role = create_managed_role(&state, &project_id, "rebind-wait").await;
+        let user_id = UserId::new_unchecked("oidc", "rebind-wait-0001");
+        provision_user(&state, &user_id, "Rebind Wait").await;
+
+        let mut assignment = WriteTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_user_role_assignments(
             &arc_project,
-            parent,
-            &[member],
-            state.clone(),
+            role,
+            std::slice::from_ref(&user_id),
+            &mut assignment,
         )
         .await
         .unwrap();
-
-        // The edge removal's commit waits for this gate, after its pre-commit read.
-        let gate = gate_commits(&pool, "role_membership", "DELETE").await;
-
-        let removal = tokio::spawn({
+        let rebind = tokio::spawn({
             let state = state.clone();
+            let pool = pool.clone();
+            let project_id = project_id.clone();
             async move {
-                PostgresBackend::remove_role_members_and_invalidate(parent, &[member], state).await
+                let mut t = WriteTransaction::<PostgresBackend>::begin(state)
+                    .await
+                    .unwrap();
+                PostgresBackend::set_role_source_system(
+                    &project_id,
+                    role,
+                    &lakekeeper::api::management::v1::role::UpdateRoleSourceSystemRequest {
+                        source_id: RoleSourceId::try_new("rebind-wait-new").unwrap(),
+                        provider_id: RoleProviderId::lakekeeper(),
+                    },
+                    &mut t,
+                )
+                .await
+                .unwrap();
+                crate::test_utils::committed_changes(t, &pool).await
             }
         });
         wait_for_lock_waiter(&pool).await;
+        assignment.commit().await.unwrap();
 
-        PostgresBackend::add_user_role_assignments_and_invalidate(
-            &arc_project,
-            member,
-            std::slice::from_ref(&user_id),
-            state.clone(),
-        )
-        .await
-        .unwrap();
-        let during = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
-            .await
-            .unwrap();
+        let old_ident = lakekeeper::service::cache_invalidation::CacheKey::RoleIdent {
+            project_id: project_id.clone(),
+            ident: RoleIdent::new_unchecked("lakekeeper", "rebind-wait"),
+        }
+        .encode();
+        let user_key =
+            lakekeeper::service::cache_invalidation::CacheKey::UserAssignments(user_id).encode();
         assert_eq!(
-            during
-                .roles
-                .iter()
-                .map(|r| r.role_id)
-                .collect::<HashSet<_>>(),
-            HashSet::from([member, parent]),
-            "the load reads the edge before the removal commits"
-        );
-
-        open_commit_gate(gate).await;
-        removal.await.unwrap().expect("the removal succeeds");
-
-        let served = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
-            .await
-            .unwrap();
-        assert_eq!(
-            served
-                .roles
-                .iter()
-                .map(|r| r.role_id)
-                .collect::<HashSet<_>>(),
-            HashSet::from([member]),
-            "the removed parent is not served after the removal"
+            rebind.await.unwrap(),
+            vec![
+                crate::test_utils::change("role", &[&role.to_string(), &old_ident]),
+                crate::test_utils::change("user_assignments", &[&user_key]),
+                crate::test_utils::change("role_ancestors", &[]),
+            ]
         );
     }
 
-    /// The advisory lock key [`gate_commits`] holds.
-    const COMMIT_GATE: i64 = 727_001;
+    /// A project delete that waits for a sync into the project records the synced user: it
+    /// reads the sync records after the lock it waited on.
+    #[sqlx::test]
+    async fn a_project_delete_records_a_user_synced_while_it_waits(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "project-delete-wait"));
 
-    /// Make every commit of a transaction that ran `operation` on `table` wait until
-    /// the returned connection releases [`COMMIT_GATE`].
-    async fn gate_commits(
-        pool: &sqlx::PgPool,
-        table: &str,
-        operation: &str,
-    ) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
-        sqlx::query(
-            "CREATE OR REPLACE FUNCTION test_commit_gate() RETURNS trigger LANGUAGE plpgsql AS \
-             $$ BEGIN PERFORM pg_advisory_xact_lock_shared(727001); RETURN NULL; END $$",
+        let mut sync = WriteTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::sync_user_role_assignments_by_provider(
+            make_user(&user_id, "Project Delete Wait"),
+            SyncFor::Caller,
+            &project_id,
+            &RoleProviderId::new_unchecked("ldap"),
+            &[],
+            &mut sync,
         )
-        .execute(pool)
         .await
         .unwrap();
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "CREATE CONSTRAINT TRIGGER test_commit_gate AFTER {operation} ON {table} \
-             DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_commit_gate()"
-        )))
-        .execute(pool)
-        .await
-        .unwrap();
-        let mut gate = pool.acquire().await.unwrap();
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(COMMIT_GATE)
-            .execute(&mut *gate)
-            .await
-            .unwrap();
-        gate
-    }
+        let delete = tokio::spawn({
+            let state = state.clone();
+            let pool = pool.clone();
+            let project_id = project_id.clone();
+            async move {
+                let mut t = WriteTransaction::<PostgresBackend>::begin(state)
+                    .await
+                    .unwrap();
+                PostgresBackend::delete_project(&project_id, &mut t)
+                    .await
+                    .unwrap();
+                crate::test_utils::committed_changes(t, &pool).await
+            }
+        });
+        wait_for_lock_waiter(&pool).await;
+        sync.commit().await.unwrap();
 
-    async fn open_commit_gate(mut gate: sqlx::pool::PoolConnection<sqlx::Postgres>) {
-        sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(COMMIT_GATE)
-            .execute(&mut *gate)
-            .await
-            .unwrap();
+        let user_key =
+            lakekeeper::service::cache_invalidation::CacheKey::UserAssignments((*user_id).clone())
+                .encode();
+        assert_eq!(
+            delete.await.unwrap(),
+            vec![crate::test_utils::change("user_assignments", &[&user_key])]
+        );
     }
 
     /// Make every commit of a transaction that ran `operation` on `table` fail.
@@ -6847,115 +6799,6 @@ mod tests {
 
     fn role_ids(result: &ListUserRoleAssignmentsResult) -> HashSet<RoleId> {
         result.roles.iter().map(|r| r.role_id).collect()
-    }
-
-    /// Which entry point adds the edge in [`edge_add_reaches_a_user_assigned_while_it_runs`].
-    enum EdgeAdd {
-        Members,
-        Mixed,
-    }
-
-    /// A user assigned below the member role while an edge add is in flight, after
-    /// the add read its affected users and before it commits, gains the new parent in
-    /// the cache once the add commits. The user's load in that window reads no edge;
-    /// the add reads its affected users again after the commit.
-    ///
-    /// The user is assigned to a role nested in the member: an assignment to the
-    /// member itself waits for the add's lock on the member row.
-    async fn edge_add_reaches_a_user_assigned_while_it_runs(pool: sqlx::PgPool, entry: EdgeAdd) {
-        let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = make_project(&state).await;
-        let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let parent = create_managed_role(&state, &project_id, "edge-add-parent").await;
-        let member = create_managed_role(&state, &project_id, "edge-add-member").await;
-        let nested = create_managed_role(&state, &project_id, "edge-add-nested").await;
-        let user_id = UserId::new_unchecked(
-            "oidc",
-            match entry {
-                EdgeAdd::Members => "edge-add-race-0001",
-                EdgeAdd::Mixed => "edge-add-race-0002",
-            },
-        );
-        provision_user(&state, &user_id, "Edge Add Race").await;
-        PostgresBackend::add_role_members_and_invalidate(
-            &arc_project,
-            member,
-            &[nested],
-            state.clone(),
-        )
-        .await
-        .unwrap();
-
-        let gate = gate_commits(&pool, "role_membership", "INSERT").await;
-        let add = tokio::spawn({
-            let state = state.clone();
-            let arc_project = Arc::clone(&arc_project);
-            async move {
-                match entry {
-                    EdgeAdd::Members => PostgresBackend::add_role_members_and_invalidate(
-                        &arc_project,
-                        parent,
-                        &[member],
-                        state,
-                    )
-                    .await
-                    .map(|_| ()),
-                    EdgeAdd::Mixed => PostgresBackend::add_role_members_mixed_and_invalidate(
-                        &arc_project,
-                        parent,
-                        &[],
-                        &[member],
-                        state,
-                    )
-                    .await
-                    .map(|_| ()),
-                }
-            }
-        });
-        wait_for_lock_waiter(&pool).await;
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            PostgresBackend::add_user_role_assignments_and_invalidate(
-                &arc_project,
-                nested,
-                std::slice::from_ref(&user_id),
-                state.clone(),
-            ),
-        )
-        .await
-        .expect("the assignment completes while the edge add waits")
-        .unwrap();
-        let during = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
-            .await
-            .unwrap();
-        assert_eq!(
-            role_ids(&during),
-            HashSet::from([nested, member]),
-            "the load reads no edge before the add commits"
-        );
-
-        open_commit_gate(gate).await;
-        add.await.unwrap().expect("the edge add succeeds");
-
-        let served = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
-            .await
-            .unwrap();
-        assert_eq!(
-            role_ids(&served),
-            HashSet::from([nested, member, parent]),
-            "the new parent is served after the add"
-        );
-    }
-
-    #[sqlx::test]
-    async fn an_edge_add_reaches_a_user_assigned_while_it_runs(pool: sqlx::PgPool) {
-        edge_add_reaches_a_user_assigned_while_it_runs(pool, EdgeAdd::Members).await;
-    }
-
-    #[sqlx::test]
-    async fn a_mixed_edge_add_reaches_a_user_assigned_while_it_runs(pool: sqlx::PgPool) {
-        edge_add_reaches_a_user_assigned_while_it_runs(pool, EdgeAdd::Mixed).await;
     }
 
     /// A sync whose commit fails removes the user's cached entry: a commit error can
@@ -7038,26 +6881,6 @@ mod tests {
         );
     }
 
-    /// The read after an edge change's commit gives up on a table lock it cannot get,
-    /// for example behind a pending `ALTER TABLE`.
-    #[sqlx::test]
-    async fn the_read_after_an_edge_commit_gives_up_on_a_held_table_lock(pool: sqlx::PgPool) {
-        let mut ddl = pool.begin().await.unwrap();
-        sqlx::query("LOCK TABLE role_assignment IN ACCESS EXCLUSIVE MODE")
-            .execute(&mut *ddl)
-            .await
-            .unwrap();
-
-        let read = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            affected_users_for_membership_edges_after_commit(&[Uuid::now_v7()], &pool),
-        )
-        .await
-        .expect("the read ends while the lock is held");
-        assert!(read.is_err(), "the read fails on the lock timeout");
-        ddl.rollback().await.unwrap();
-    }
-
     /// Direct assignments only: a role the user reaches through nesting is absent, and
     /// each row carries its project.
     #[sqlx::test]
@@ -7114,7 +6937,7 @@ mod tests {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresBackend::delete_user(user_id.clone(), t.transaction())
+        PostgresBackend::delete_user_impl(user_id.clone(), t.transaction())
             .await
             .unwrap()
             .expect("the user is active before the delete");
@@ -7257,13 +7080,13 @@ mod tests {
         members: &[UserId],
     ) {
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut t = PostgresTransaction::begin_write(state.clone())
+        let mut t = lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(project_id, role_id, t.transaction())
             .await
             .unwrap();
-        PostgresBackend::delete_role(&arc_project, role_id, t.transaction())
+        PostgresBackend::delete_role(&arc_project, role_id, &mut t)
             .await
             .unwrap();
         PostgresBackend::expire_role_assignment_syncs_impl(
@@ -7790,9 +7613,10 @@ mod tests {
         // uncommitted: the sync below still reads the record, then waits on the
         // assignment row it removes.
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             group_1_id,
@@ -7800,7 +7624,7 @@ mod tests {
         )
         .await
         .unwrap();
-        PostgresBackend::delete_role(&arc_project, group_1_id, delete_tx.transaction())
+        PostgresBackend::delete_role(&arc_project, group_1_id, &mut delete_tx)
             .await
             .unwrap();
         PostgresBackend::expire_role_assignment_syncs_impl(
@@ -7883,9 +7707,10 @@ mod tests {
         // uncommitted: the sync below still reads the record, then waits on the
         // assignment row it removes.
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             group_1_id,
@@ -7893,7 +7718,7 @@ mod tests {
         )
         .await
         .unwrap();
-        PostgresBackend::delete_role(&arc_project, group_1_id, delete_tx.transaction())
+        PostgresBackend::delete_role(&arc_project, group_1_id, &mut delete_tx)
             .await
             .unwrap();
         PostgresBackend::expire_role_assignment_syncs_impl(
@@ -7970,9 +7795,10 @@ mod tests {
         let before = sync_rows(&pool, &alice_id, &project_id).await;
 
         let arc_project: ArcProjectId = Arc::new(project_id.clone());
-        let mut delete_tx = PostgresTransaction::begin_write(state.clone())
-            .await
-            .unwrap();
+        let mut delete_tx =
+            lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
+                .await
+                .unwrap();
         PostgresBackend::lock_role_and_count_grants_impl(
             &project_id,
             deleted_role_id,
@@ -7993,7 +7819,7 @@ mod tests {
         );
         let delete = async {
             wait_for_lock_waiter(&pool).await;
-            PostgresBackend::delete_role(&arc_project, deleted_role_id, delete_tx.transaction())
+            PostgresBackend::delete_role(&arc_project, deleted_role_id, &mut delete_tx)
                 .await
                 .unwrap();
             PostgresBackend::expire_role_assignment_syncs_impl(
@@ -8052,7 +7878,7 @@ mod tests {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
                 .unwrap();
-            let affected = PostgresBackend::delete_user((*user_id).clone(), t.transaction())
+            let affected = PostgresBackend::delete_user_impl((*user_id).clone(), t.transaction())
                 .await
                 .unwrap();
             t.commit().await.unwrap();
@@ -8109,7 +7935,7 @@ mod tests {
         let mut delete_tx = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresBackend::delete_user((*user_id).clone(), delete_tx.transaction())
+        PostgresBackend::delete_user_impl((*user_id).clone(), delete_tx.transaction())
             .await
             .unwrap()
             .expect("the user is active");

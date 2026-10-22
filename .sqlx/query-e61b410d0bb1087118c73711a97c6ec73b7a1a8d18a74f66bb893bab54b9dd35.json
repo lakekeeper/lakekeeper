@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH deleted AS (\n            DELETE FROM cache_change_log\n            WHERE ctid = ANY(ARRAY(\n                SELECT ctid FROM cache_change_log\n                WHERE changed_at < now() - make_interval(secs => $1)\n                LIMIT $2))\n            RETURNING 1\n        )\n        SELECT count(*) AS \"rows!\" FROM deleted\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e61b410d0bb1087118c73711a97c6ec73b7a1a8d18a74f66bb893bab54b9dd35"
+}

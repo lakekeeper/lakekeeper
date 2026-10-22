@@ -35,31 +35,32 @@ use lakekeeper::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
-        DeleteRoleError, DeleteTagDefinitionError, DeletedUser, DropGenericTableError,
-        DropTabularError, EffectiveTagCandidate, EnsureWarehouseSpecMutableError,
-        GenericTableCreation, GenericTableId, GenericTableInfo, GenericTableListEntry,
-        GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError,
-        GetTaskDetailsError, ListCatalogRoleMembersPage, ListGenericTablesError,
-        ListGrantsStoreError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
-        ListRolesPage, ListRolesResponse, ListTabularsError, ListTagAttachmentsError,
-        ListTagAttachmentsResponse, ListTagDefinitionsError, ListTagDefinitionsResponse,
-        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
-        LoadViewError, ManagedBy, MarkTabularAsDeletedError, MovedNamespace, NamespaceDropInfo,
-        NamespaceId, NamespaceWithParent, ProjectId, RemoveRoleMembersError,
-        RemoveRoleMembersResult, RemoveTagError, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent,
-        RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
-        SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
-        SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncFor,
-        SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
-        TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
-        Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
-        UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
+        DeleteRoleError, DeleteTagDefinitionError, DeletedUser, DeletedWarehouse,
+        DropGenericTableError, DropTabularError, EffectiveTagCandidate,
+        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
+        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
+        GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
+        ListGenericTablesError, ListGrantsStoreError, ListNamespacesQuery, ListRoleMembersResult,
+        ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
+        ListTagAttachmentsError, ListTagAttachmentsResponse, ListTagDefinitionsError,
+        ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
+        LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
+        MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        ReboundRole, RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
+        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
+        RenamedWarehouse, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result,
+        RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent, RoleMemberKind,
+        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
+        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, SyncFor, SyncRoleMembersError, SyncRoleMembersResult,
+        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, TableCommit, TableCreation,
+        TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Tag,
+        TagAttachmentFilter, TagDefinition, TagDefinitionId, TagId, TagSource, TagTarget,
+        TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
+        UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
+        UpdateWarehouseStorageProfileError, UpdatedWarehouseStorage, UserMembershipEntry,
         UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
         WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
@@ -68,6 +69,7 @@ use lakekeeper::{
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
         },
+        cache_invalidation::{BoxedCacheChangeLog, ChangeSet},
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -85,6 +87,10 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
+    cache_change_log::{
+        PostgresCacheChangeLog, prune as prune_cache_change_log, record_cache_changes,
+    },
+    dbutils::DBErrorHandler,
     grant::{
         SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
         insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
@@ -163,6 +169,28 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn reopen_for_bootstrap(catalog_state: Self::State) -> Result<ServerId> {
         reopen_for_bootstrap(&catalog_state.write_pool()).await
+    }
+
+    async fn record_cache_changes_impl<'a>(
+        change_set: &ChangeSet,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CatalogBackendError> {
+        record_cache_changes(change_set, transaction)
+            .await
+            .map_err(DBErrorHandler::into_catalog_backend_error)
+    }
+
+    fn cache_change_log(catalog_state: Self::State) -> BoxedCacheChangeLog {
+        Box::new(PostgresCacheChangeLog::for_state(&catalog_state))
+    }
+
+    async fn prune_cache_change_log(
+        catalog_state: Self::State,
+        retention: std::time::Duration,
+    ) -> std::result::Result<Option<u64>, CatalogBackendError> {
+        prune_cache_change_log(&catalog_state.write_pool(), retention)
+            .await
+            .map_err(DBErrorHandler::into_catalog_backend_error)
     }
 
     async fn get_warehouse_by_name_impl(
@@ -411,7 +439,7 @@ impl CatalogStore for super::PostgresBackend {
         role_id: RoleId,
         request: &UpdateRoleSourceSystemRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Role, UpdateRoleError> {
+    ) -> Result<ReboundRole, UpdateRoleError> {
         update_role_source_system(project_id, role_id, request, &mut **transaction).await
     }
 
@@ -851,18 +879,6 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn affected_users_for_membership_edges_after_commit_impl(
-        member_role_ids: &[RoleId],
-        catalog_state: Self::State,
-    ) -> Result<Vec<UserId>, CatalogBackendError> {
-        let member_uuids: Vec<uuid::Uuid> = member_role_ids.iter().map(|r| **r).collect();
-        super::role_assignment::affected_users_for_membership_edges_after_commit(
-            &member_uuids,
-            &catalog_state.write_pool(),
-        )
-        .await
-    }
-
     async fn expire_role_assignment_syncs_impl<'a>(
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
@@ -1025,7 +1041,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn delete_user<'a>(
+    async fn delete_user_impl<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<DeletedUser>> {
@@ -1049,11 +1065,10 @@ impl CatalogStore for super::PostgresBackend {
         create_project(project_id, project_name, transaction).await
     }
 
-    /// Delete a project
-    async fn delete_project<'a>(
+    async fn delete_project_impl<'a>(
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> Result<Vec<UserId>> {
         delete_project(project_id, transaction).await
     }
 
@@ -1116,7 +1131,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError> {
+    ) -> std::result::Result<DeletedWarehouse, CatalogDeleteWarehouseError> {
         delete_warehouse(warehouse_id, query, transaction).await
     }
 
@@ -1124,7 +1139,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         new_name: &str,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<ResolvedWarehouse, CatalogRenameWarehouseError> {
+    ) -> std::result::Result<RenamedWarehouse, CatalogRenameWarehouseError> {
         rename_warehouse(warehouse_id, new_name, transaction).await
     }
 
@@ -1157,7 +1172,7 @@ impl CatalogStore for super::PostgresBackend {
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError> {
+    ) -> std::result::Result<UpdatedWarehouseStorage, UpdateWarehouseStorageProfileError> {
         update_storage_profile(
             warehouse_id,
             storage_profile,

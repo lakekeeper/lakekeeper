@@ -466,9 +466,25 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 
 Lakekeeper uses in-memory caches to speed up certain operations.
 
-Most cache entries' time-to-live is jittered downward by a small random fraction (up to 10%), so an entry lives 90–100% of the configured TTL. This desynchronizes expiry across replicas that warmed the same key at the same time, preventing a fleet-wide refresh stampede on the TTL boundary. The configured `..._TIME_TO_LIVE_SECS` remains the upper bound — jitter only ever shortens an entry's life, never extends it.
+Most cache entries' time-to-live is jittered downward by a small random fraction (up to 10%), so an entry lives 90–100% of the configured TTL. This desynchronizes expiry across instances that warmed the same key at the same time, preventing a fleet-wide refresh stampede on the TTL boundary. The configured `..._TIME_TO_LIVE_SECS` remains the upper bound — jitter only ever shortens an entry's life, never extends it.
 
-With a separate read replica (`LAKEKEEPER__PG_DATABASE_URL_READ`), an entry loaded right after a change can hold the replica's pre-change state, and it is served until it expires, for at most its TTL.
+**Cache Invalidation Across Instances**
+{: #cache-invalidation }
+
+When several Lakekeeper instances share one database, a change made through one instance reaches the caches of all instances within one poll interval, about a second with the default settings. This covers the warehouse, namespace, secrets, role, user assignments and role ancestors caches. The short-term credentials cache and the user cache are not covered: their entries stay until their time-to-live ends.
+
+The instance that makes a change removes the changed entries from its own caches at once. Every write that changes a cached entry also writes a change record to the database, in the same transaction. Each instance reads the new change records from the primary database every `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL` (default 1 second), through `LAKEKEEPER__PG_DATABASE_URL_WRITE`, and removes the changed entries. After `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE` (default 10 seconds), it removes them a second time: a read replica that is behind the primary can return old data, and the cache can store it again. If an instance cannot know which changes it missed, for example after a database failover, it empties all the caches listed above.
+
+If an instance cannot read the change records for a while, for example while it cannot reach the database, it removes the changed entries when it can read the change records again. Until then, an entry stays at most until its time-to-live ends. So the time-to-live, plus the delay of your read replicas, is the longest time a change needs to reach every instance. If a removed role assignment or role membership must not apply that long, lower `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` and `LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS` together, for example to `30`.
+
+| Configuration Key | Type | Default | Description |
+|-------------------|------|---------|-------------|
+| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__ENABLED`</nobr> | boolean | `true` | Read the change records and remove the entries that other instances changed. If `false`, this instance keeps entries that other instances changed until their time-to-live ends. |
+| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__RECORDING_ENABLED`</nobr> | boolean | `true` | Write a change record for every write that changes a cached entry. If `false`, other instances keep the entries this instance changed until their time-to-live ends. Set it to `false` only if writing the change records causes problems in the database. |
+| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL`</nobr> | ISO-8601 duration | `PT1S` | How often each instance reads the change records. A value outside 100 ms to 60 s is changed to the nearest limit, with a warning at startup. |
+| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE`</nobr> | ISO-8601 duration | `PT10S` | Time between the first and the second removal of a changed entry. Set it higher than the delay of your read replicas. A value above 60 s is lowered to 60 s, with a warning at startup. |
+
+See [Monitoring](./monitoring.md#cache-invalidation-metrics) for the metrics and [Production](./production.md) for database recommendations.
 
 **Short-Term Credentials (STC) Cache**
 
@@ -497,7 +513,7 @@ Caches warehouse metadata to reduce database queries for warehouse lookups.
 | `LAKEKEEPER__CACHE__WAREHOUSE__CAPACITY`          | integer | `1000`  | Maximum number of warehouses to cache. Default: `1000` |
 | `LAKEKEEPER__CACHE__WAREHOUSE__TIME_TO_LIVE_SECS` | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
 
-If the cache is enabled, changes to Storage Profile may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. Warehouse metadata is guaranteed to be fresh for load table & view operations also for multi-worker deployments.
+Warehouse metadata is guaranteed to be fresh for load table & view operations also when several instances run.
 
 _Metrics_: The Warehouse cache exposes Prometheus metrics for monitoring:
 
@@ -515,7 +531,7 @@ Caches namespace metadata and hierarchies to reduce database queries for namespa
 | `LAKEKEEPER__CACHE__NAMESPACE__CAPACITY`          | integer | `1000`  | Maximum number of namespaces to cache. Default: `1000` |
 | `LAKEKEEPER__CACHE__NAMESPACE__TIME_TO_LIVE_SECS` | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
 
-If the cache is enabled, changes to namespace properties may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. The namespace cache stores both individual namespaces and their parent hierarchies for efficient lookups.
+The namespace cache stores both individual namespaces and their parent hierarchies for efficient lookups.
 
 _Metrics_: The Namespace cache exposes Prometheus metrics for monitoring:
 
@@ -549,8 +565,6 @@ Caches role metadata to reduce database queries for role lookups. The role cache
 | `LAKEKEEPER__CACHE__ROLE__CAPACITY`          | integer | `10000` | Maximum number of roles to cache. Default: `10000` |
 | `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
 
-If the cache is enabled, changes to role metadata may take up to the configured TTL (default: 120 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the cache is always up to date. The cache is automatically invalidated when roles are updated or deleted.
-
 _Metrics_: The Role cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="role"}`: Current number of entries in the cache
@@ -567,11 +581,17 @@ Caches the set of roles assigned to each user (`UserId → role assignments`). O
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`; a larger value stops Lakekeeper at startup. Default: `120` (2 minutes) |
 
-Adding a user to a role or removing them, adding or removing a member role, deleting a role, rebinding a role's source system, and a role provider sync update the affected users' entries on the worker that handled the change. Other workers keep serving their entries until they expire, so the change reaches them within the TTL plus read-replica lag.
+These changes update the affected users' entries on all instances within one poll interval (default 1 second), see [Cache Invalidation Across Instances](#cache-invalidation):
 
-A **removed** assignment therefore keeps applying on other workers for up to the TTL. Even on the worker that handled the change, a read that starts just after the clear can still be served by a lagging read replica and cache what the replica saw. If that window is too wide for a multi-worker deployment, lower this TTL and `LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS` together, for example to `30`. To read from the database every time, set `ENABLED=false`; a TTL of `0` leaves the cache enabled with every entry already expired.
+- adding a user to a role or removing them
+- adding or removing a member role
+- deleting a role or rebinding its source system
+- deleting a user or a project
+- a role provider sync that changed a user's roles
 
-To remove a user's access on every worker at once, add a Cedar `forbid` policy for them, which applies on every worker within `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` (default 5 seconds), or restart the workers, which empties all caches. Cedar grants are not cached, so revoking a grant takes effect on every worker after read-replica lag.
+To read from the database every time, set `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__ENABLED=false`. A TTL of `0` leaves the cache enabled with every entry already expired.
+
+To remove a user's access on every instance without depending on cache invalidation, add a Cedar `forbid` policy for them, which applies on every instance within `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` (default 5 seconds), or restart the instances, which empties all caches. Cedar grants are not cached, so revoking a grant takes effect on every instance after read-replica lag.
 
 _Metrics_: The User Assignments cache exposes Prometheus metrics for monitoring:
 
@@ -602,9 +622,7 @@ Only authorizers that resolve role nesting from Lakekeeper's own role store use 
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. A value above `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` is lowered to it, with a warning at startup. Default: `120` (2 minutes) |
 
-Adding or removing a member role, deleting a role, or rebinding a role's source system clears every entry on the worker that handled the request — not only the role named, since one edge changes the ancestors of everything nested below it. Other workers wait for their entries to expire, so a change takes effect within the TTL rather than immediately.
-
-The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying for that long. Two things can extend that window even on the worker that handled the write. A read already in flight when the clear happens is discarded rather than cached, but a read that starts just after it can still be served by a lagging read replica and cache what the replica saw. Shorten the TTL together with `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` if the window is too wide, or set `ENABLED=false` to read from the database every time.
+Adding or removing a member role, deleting a role, or rebinding a role's source system empties this cache on all instances within one poll interval (default 1 second), see [Cache Invalidation Across Instances](#cache-invalidation). It empties every entry, not only the role named, since one membership change changes the ancestors of every role nested below it. To read from the database every time, set `LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED=false`.
 
 _Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
 
@@ -622,7 +640,7 @@ Caches each user's email (`UserId → email`). Read only when audit records carr
 | `LAKEKEEPER__CACHE__USER__CAPACITY`          | integer | `10000` | Maximum number of users held in memory. Default: `10000` |
 | `LAKEKEEPER__CACHE__USER__TIME_TO_LIVE_SECS` | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
 
-Creating, updating or deleting a user updates its entry on the worker that handled the change, including users written by first login and by role provider syncs. Other workers keep their entries until they expire, so an email set, changed or removed elsewhere reaches their audit records within the TTL.
+Creating, updating or deleting a user updates its entry on the instance that handled the change, including users written by first login and by role provider syncs. Other instances keep their entries until they expire, so an email set, changed or removed elsewhere reaches their audit records within the TTL.
 
 _Metrics_: The User cache exposes Prometheus metrics for monitoring:
 

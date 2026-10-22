@@ -28,7 +28,7 @@ use crate::{
     service::{
         CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTaskOps,
         NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
-        Transaction,
+        Transaction, WriteTransaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
             GrantResource, NamespaceParent, emit_bootstrap_grants_async, write_bootstrap_grants,
@@ -122,7 +122,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         return_uuids: true,
                         return_protection_status: true,
                     };
-                    Ok(C::list_namespaces(warehouse_id, &query, trx.transaction()).await?)
+                    Ok(C::list_namespaces(warehouse_id, &query, trx.committed_reads()).await?)
                 }
                 .boxed()
             },
@@ -584,7 +584,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let mut t = WriteTransaction::<C>::begin(state.v1_state.catalog).await?;
         let namespace_locations = if flags.recursive {
             // recursive drop commits its own transaction
             try_recursive_drop::<_, C>(
@@ -598,8 +598,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?
         } else {
-            let drop_info =
-                C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
+            let drop_info = C::drop_namespace(warehouse_id, namespace_id, flags, &mut t).await?;
             if let Some(ref key) = idempotency_key
                 && !C::try_insert_idempotency_key(
                     warehouse_id,
@@ -742,16 +741,12 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let namespace = &event_ctx.resolved().namespace;
         let namespace_id = namespace.namespace_id();
 
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let mut t = WriteTransaction::<C>::begin(state.v1_state.catalog).await?;
         let (updated_properties, r) =
             update_namespace_properties(namespace.properties().cloned(), updates, removals);
-        let updated_namespace = C::update_namespace_properties(
-            warehouse_id,
-            namespace_id,
-            updated_properties,
-            t.transaction(),
-        )
-        .await?;
+        let updated_namespace =
+            C::update_namespace_properties(warehouse_id, namespace_id, updated_properties, &mut t)
+                .await?;
 
         // Insert idempotency key in the same transaction.
         if let Some(ref key) = idempotency_key
@@ -789,7 +784,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     flags: NamespaceDropFlags,
     authorizer: A,
     warehouse: &ResolvedWarehouse,
-    mut t: <C as CatalogStore>::Transaction,
+    mut t: WriteTransaction<C>,
     namespace_id: NamespaceId,
     request_metadata: &RequestMetadata,
     idempotency_key: Option<&IdempotencyKey>,
@@ -804,7 +799,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
         ))
     {
         let drop_info =
-            C::drop_namespace(warehouse.warehouse_id, namespace_id, flags, t.transaction()).await?;
+            C::drop_namespace(warehouse.warehouse_id, namespace_id, flags, &mut t).await?;
 
         C::cancel_scheduled_tasks(
             None,

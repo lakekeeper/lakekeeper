@@ -29,8 +29,8 @@ pub(crate) const METRIC_CACHE_MISSES_TOTAL: &str = "lakekeeper_cache_misses_tota
 /// that count invalidations emit it.
 pub(crate) const METRIC_CACHE_FENCED_TOTAL: &str = "lakekeeper_cache_fenced_total";
 
-/// Histogram of how many users' cached role assignments are invalidated by a
-/// single role→role membership edge change, labelled by `operation`
+/// Histogram of how many users' cached role assignments a single role→role membership
+/// edge change records as changed, labelled by `operation`
 /// (`"add"`/`"remove"`). `USER_ASSIGNMENTS_CACHE` stores a fully-expanded
 /// transitive closure, so one edge change fans out to every affected user; this
 /// measures that fan-out distribution.
@@ -48,7 +48,7 @@ pub(crate) static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
     );
     metrics::describe_histogram!(
         METRIC_ROLE_MEMBERSHIP_EDGE_FANOUT_USERS,
-        "Number of users whose cached role assignments were invalidated by a single role-membership edge change"
+        "Number of users whose cached role assignments a single role-membership edge change records as changed"
     );
 });
 

@@ -29,8 +29,8 @@ mod warehouse_id {
                 },
             },
             service::{
-                ArcProjectId, CatalogStore, CatalogWarehouseOps, State, Transaction, UserId,
-                authn::Actor, authz::CatalogWarehouseAction,
+                ArcProjectId, CatalogWarehouseOps, State, UserId, WriteTransaction, authn::Actor,
+                authz::CatalogWarehouseAction,
             },
         };
         use lakekeeper_authz_openfga::{
@@ -161,15 +161,13 @@ mod warehouse_id {
             .unwrap();
 
             // Catalog-only delete: the row goes, the tuples stay.
-            let mut t = <PostgresBackend as CatalogStore>::Transaction::begin_write(
-                ctx.v1_state.catalog.clone(),
-            )
-            .await
-            .unwrap();
+            let mut t = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+                .await
+                .unwrap();
             PostgresBackend::delete_warehouse(
                 warehouse_id,
                 DeleteWarehouseQuery { force: false },
-                t.transaction(),
+                &mut t,
             )
             .await
             .unwrap();

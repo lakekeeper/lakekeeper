@@ -123,7 +123,9 @@ static SYSTEM_ROLE_REGISTRY: std::sync::OnceLock<Vec<SystemRoleSpec>> = std::syn
 ///    selects the rows by `(provider_id = "system", source_id = …)`.
 ///    The FK on `role_assignment` cascades, so grants referencing the
 ///    removed roles vanish with them. Do NOT write raw SQL — use the
-///    catalog trait method.
+///    catalog trait method. A migration run that applies anything marks
+///    every cache domain as changed, so all instances evict the deleted
+///    roles and their assignments.
 /// 2. Drop the spec from the binary's registry.
 ///
 /// Doing the deletion inside the migrator transaction (rather than at

@@ -13,9 +13,11 @@ use crate::{
         ArcProjectId, CachePolicy, CatalogBackendError, CatalogCreateRoleRequest, CatalogStore,
         InvalidPaginationToken, ProjectIdNotFoundError, ResultCountMismatch, RoleId, RoleIdent,
         RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec,
-        Transaction,
+        Transaction, UserId, WriteTransaction,
+        cache_invalidation::{CacheDomain, CacheKey},
         catalog_store::{
             define_version_newtype,
+            role_assignment::record_role_graph_change,
             role_cache::{
                 role_cache_get_by_id, role_cache_get_by_ident, role_cache_get_or_load,
                 role_cache_insert, role_ident_to_id_get_or_load,
@@ -31,6 +33,41 @@ define_version_newtype!(RoleVersion);
 
 /// Reference to [`Role`] that can be cheaply cloned and shared.
 pub type ArcRole = Arc<Role>;
+
+/// A role after [`CatalogStore::set_role_source_system_impl`] bound it to another source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReboundRole {
+    pub role: Role,
+    /// The ident the role had before the rebind.
+    pub previous_ident: RoleIdent,
+}
+
+/// The create requests that seed `specs` as system roles of the `system` provider.
+///
+/// # Errors
+/// Returns [`RoleSourceIdConflict`] if two specs share a source id.
+pub fn system_role_requests(
+    specs: &[SystemRoleSpec],
+) -> Result<Vec<CatalogCreateRoleRequest<'_>>, CreateRoleError> {
+    let mut seen = HashSet::with_capacity(specs.len());
+    for spec in specs {
+        if !seen.insert(&spec.source_id) {
+            return Err(RoleSourceIdConflict::new().into());
+        }
+    }
+    Ok(specs
+        .iter()
+        .map(|spec| {
+            CatalogCreateRoleRequest::builder()
+                .role_id(RoleId::new_random())
+                .role_name(spec.name)
+                .description(Some(spec.description))
+                .source_id(&spec.source_id)
+                .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+                .build()
+        })
+        .collect())
+}
 
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Role {
@@ -785,7 +822,8 @@ where
     /// only if they actually changed (the underlying SQL uses
     /// `IS DISTINCT FROM`). The returned `Vec` includes only rows that
     /// were inserted or updated; no-ops are omitted, so callers can
-    /// detect "nothing changed" by checking `Vec::is_empty()`.
+    /// detect "nothing changed" by checking `Vec::is_empty()`. The returned
+    /// roles are recorded as changed.
     ///
     /// Hard-codes `provider_id = "system"` and
     /// [`crate::service::OnRoleConflict::UpdateMetadata`] internally. The
@@ -793,64 +831,54 @@ where
     /// can mint one, so downstream binaries cannot reach this path
     /// except via the trusted entry points (`serve`,
     /// `run_post_migration_hooks`, `create_project`).
-    async fn upsert_system_roles<'a>(
+    async fn upsert_system_roles(
         project_id: &ProjectId,
         specs: &[SystemRoleSpec],
         _cap: SystemRoleSeederCap,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<Vec<ArcRole>, CreateRoleError> {
         if specs.is_empty() {
             return Ok(Vec::new());
         }
-        let mut seen = HashSet::with_capacity(specs.len());
-        for spec in specs {
-            if !seen.insert(&spec.source_id) {
-                return Err(RoleSourceIdConflict::new().into());
-            }
-        }
-        let requests: Vec<CatalogCreateRoleRequest<'_>> = specs
-            .iter()
-            .map(|spec| {
-                CatalogCreateRoleRequest::builder()
-                    .role_id(RoleId::new_random())
-                    .role_name(spec.name)
-                    .description(Some(spec.description))
-                    .source_id(&spec.source_id)
-                    .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
-                    .build()
-            })
-            .collect();
         let roles = Self::create_roles_impl(
             project_id,
-            requests,
+            system_role_requests(specs)?,
             crate::service::OnRoleConflict::UpdateMetadata,
-            transaction,
+            transaction.transaction(),
         )
-        .await?
-        .into_iter()
-        .map(Arc::new)
-        .collect::<Vec<_>>();
-        Ok(roles)
+        .await?;
+        for role in &roles {
+            transaction.record(CacheKey::Role(role.id));
+        }
+        Ok(roles.into_iter().map(Arc::new).collect())
     }
 
     /// **Customer-facing — system role rejection lives at the API layer.**
     /// See [`Self::create_role`] for the rationale. To delete catalog-managed
     /// system roles, use the capability-gated [`Self::delete_system_roles`].
-    async fn delete_role<'a>(
+    ///
+    /// Records the role, the users holding it and the ancestor sets. Returns the users who
+    /// held the role, directly or through a role nested in it. Lock the role row first
+    /// ([`CatalogStore::lock_role_and_count_grants_impl`]): an assignment to the role that
+    /// commits after this reads the holders is otherwise missing from the recorded users.
+    async fn delete_role(
         project_id: &ArcProjectId,
         role_id: RoleId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<(), DeleteRoleError> {
+        transaction: &mut WriteTransaction<Self>,
+    ) -> Result<Vec<UserId>, DeleteRoleError> {
         let role_ids = [role_id];
+        // Before the delete, which cascades to the assignments and edges this reads.
+        let holders = record_role_graph_change(&role_ids, transaction).await?;
         let filter = CatalogListRolesByIdFilter::builder()
             .role_ids(Some(&role_ids))
             .build();
-        let deleted_roles = Self::delete_roles_impl(Some(project_id), filter, transaction).await?;
+        let deleted_roles =
+            Self::delete_roles_impl(Some(project_id), filter, transaction.transaction()).await?;
         if deleted_roles.is_empty() {
-            Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into())
-        } else {
-            Ok(())
+            return Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into());
         }
+        transaction.record(CacheKey::Role(role_id));
+        Ok(holders)
     }
 
     /// Delete catalog-managed system roles for `project_id` matching
@@ -861,11 +889,14 @@ where
     ///
     /// Hard-codes `provider_id = "system"`. The
     /// [`SystemRoleSeederCap`] token gates this — see its docs.
-    async fn delete_system_roles<'a>(
+    ///
+    /// Records the deleted roles, every user's assignments and every ancestor set: the
+    /// delete reports only the deleted roles.
+    async fn delete_system_roles(
         project_id: &ProjectId,
         source_ids: &[&RoleSourceId],
         _cap: SystemRoleSeederCap,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<Vec<RoleId>, CatalogBackendError> {
         if source_ids.is_empty() {
             return Ok(Vec::new());
@@ -875,7 +906,17 @@ where
             .provider_ids(Some(&providers))
             .source_ids(Some(source_ids))
             .build();
-        Self::delete_roles_impl(Some(project_id), filter, transaction).await
+        let deleted =
+            Self::delete_roles_impl(Some(project_id), filter, transaction.transaction()).await?;
+        for role_id in &deleted {
+            transaction.record(CacheKey::Role(*role_id));
+        }
+        if !deleted.is_empty() {
+            transaction
+                .record_whole_domain(CacheDomain::UserAssignments)
+                .record_whole_domain(CacheDomain::RoleAncestors);
+        }
+        Ok(deleted)
     }
 
     /// If description is None, the description must be removed.
@@ -884,31 +925,55 @@ where
     /// See [`Self::create_role`] for the rationale. There is no cap-gated
     /// update analogue today — updating a system role means re-running
     /// the seeder with a refreshed spec via [`Self::upsert_system_roles`].
-    async fn update_role<'a>(
+    async fn update_role(
         project_id: &ProjectId,
         role_id: RoleId,
         role_name: &str,
         description: Option<&str>,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<ArcRole, UpdateRoleError> {
-        Self::update_role_impl(project_id, role_id, role_name, description, transaction)
-            .await
-            .map(Arc::new)
+        let role = Self::update_role_impl(
+            project_id,
+            role_id,
+            role_name,
+            description,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.record(CacheKey::Role(role_id));
+        Ok(Arc::new(role))
     }
 
-    /// Update the external ID of the role.
+    /// Update the external ID of the role. Records the role, the ident it had, the users
+    /// holding it and the ancestor sets, which carry its ident.
     ///
     /// **Customer-facing — system role rejection lives at the API layer.**
     /// See [`Self::create_role`] for the rationale.
-    async fn set_role_source_system<'a>(
+    async fn set_role_source_system(
         project_id: &ProjectId,
         role_id: RoleId,
         request: &UpdateRoleSourceSystemRequest,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> Result<ArcRole, UpdateRoleError> {
-        Self::set_role_source_system_impl(project_id, role_id, request, transaction)
-            .await
-            .map(Arc::new)
+        let ReboundRole {
+            role,
+            previous_ident,
+        } = Self::set_role_source_system_impl(
+            project_id,
+            role_id,
+            request,
+            transaction.transaction(),
+        )
+        .await?;
+        // After the rebind's row lock, which waits for in-flight assignments to the role.
+        record_role_graph_change(&[role_id], transaction).await?;
+        transaction
+            .record(CacheKey::Role(role_id))
+            .record(CacheKey::RoleIdent {
+                project_id: project_id.clone(),
+                ident: previous_ident,
+            });
+        Ok(Arc::new(role))
     }
 
     async fn list_roles(

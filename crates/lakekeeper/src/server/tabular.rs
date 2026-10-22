@@ -384,7 +384,7 @@ macro_rules! fetch_entities {
                         C::get_namespaces_by_id(
                             warehouse_id,
                             &requested_namespace_ids,
-                            trx.transaction(),
+                            trx.committed_reads(),
                         )
                         .await?,
                     )

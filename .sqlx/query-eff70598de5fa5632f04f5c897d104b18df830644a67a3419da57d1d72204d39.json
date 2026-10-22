@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT protected FROM warehouse WHERE warehouse_id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "protected",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "protected"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "eff70598de5fa5632f04f5c897d104b18df830644a67a3419da57d1d72204d39"
+}

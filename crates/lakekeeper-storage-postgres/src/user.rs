@@ -299,16 +299,15 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
 
 /// Soft-deletes a user (scrubs PII, sets `deleted_at`) **and** removes the
 /// user's role assignments (`role_assignment`) and provider sync log
-/// (`role_assignment_sync`), so a deleted user is no longer a member of any
-/// role. This matches the OpenFGA authorizer, whose `delete_user` drops all of
-/// the user's tuples — keeping the two backends consistent on delete.
+/// (`role_assignment_sync`), so a deleted user is not a member of any role. This
+/// matches the OpenFGA authorizer, whose `delete_user` drops all of the user's
+/// tuples — keeping the two backends consistent on delete.
 ///
 /// Only acts on an *active* row (`deleted_at IS NULL`). Returns `None` if no
 /// active user with this id exists — including re-deleting an already
 /// soft-deleted user, which is a no-op that preserves the original `deleted_at`
 /// (consistent with `get`/`list`, which hide soft-deleted users). Otherwise
-/// returns the (possibly empty) set of roles the user was assigned to. The caller
-/// evicts the user's effective-roles cache after commit.
+/// returns the (possibly empty) set of roles the user was assigned to.
 ///
 /// Takes its locks in separate statements, in the order of the role-assignment
 /// writers: the user row, then the user's assignments, then the user's sync
