@@ -51,7 +51,7 @@ The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe2
 | `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS` | `true` | `false` (direct system credential access disabled) | By default, when using AWS system credentials, users must specify an `assume-role-arn` for Lakekeeper to assume when accessing S3. Setting this option to `true` allows Lakekeeper to use system credentials directly without role assumption, meaning the system identity must have direct access to warehouse locations. |
 | `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | `true` | true (external ID required) | Controls whether an `external-id` is required when assuming a role with AWS system credentials. External IDs provide additional security when cross-account role assumption is used. |
 | `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` | `true` | `false` (Azure system credentials disabled) | Lakekeeper supports using Azure system identities (i.e. through `AZURE_*` environment variables or VM managed identities) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable Azure system identities, set `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`. |
-| `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` | `true` | `false` (GCP system credentials disabled) | Lakekeeper supports using GCP system identities (i.e. through `GOOGLE_APPLICATION_CREDENTIALS` environment variables or the Compute Engine Metadata Server) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable GCP system identities, set `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` to `true`. |
+| `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` | `true` | `false` (GCP system credentials disabled) | Lakekeeper supports using GCP system identities (the file named in the `GOOGLE_APPLICATION_CREDENTIALS` environment variable, the gcloud default credentials file, or the metadata server of Compute Engine and GKE) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable GCP system identities, set `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` to `true`. |
 
 ### Persistence Store
 
@@ -643,17 +643,18 @@ Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeepe
 
 Lakekeeper validates outbound TLS connections against two root stores combined:
 
-- **Mozilla root CAs** bundled into the binary via `webpki-roots` / `webpki-root-certs`. Public endpoints (AWS, GCS, Azure, OIDC providers) work out of the box, including on minimal images with no system CA bundle (scratch, `distroless`, `ubi-micro`).
+- **Mozilla root CAs** bundled into the binary via `webpki-roots` / `webpki-root-certs`. Public endpoints (AWS, Azure, OIDC providers) work out of the box, including on minimal images with no system CA bundle (scratch, `distroless`, `ubi-micro`).
 - **System / custom CAs** loaded via `rustls-native-certs`, which respects `SSL_CERT_FILE` and `SSL_CERT_DIR`. Point these at a PEM bundle or directory to trust self-signed certificates (e.g. for MinIO, internal IdPs). When unset, the standard host paths are consulted (`/etc/ssl/certs/...`, `/etc/pki/tls/certs/...`, etc.).
 
 The certificate presented by an endpoint cannot itself be a CA — it must be an end-entity certificate, otherwise TLS handshakes fail with `CaUsedAsEndEntity`.
 
-Two code paths do _not_ use the bundled webpki roots and therefore require a system CA bundle at `/etc/ssl/certs/ca-certificates.crt` (or one of the other standard locations):
+These code paths do _not_ use the bundled webpki roots and therefore require a system CA bundle at `/etc/ssl/certs/ca-certificates.crt` (or one of the other standard locations):
 
+- **Google Cloud Storage** (via Google's Rust SDK).
 - **Vault** integration (via `vaultrs` → `rustls-platform-verifier`). You can also pass a PEM bundle explicitly through the Vault client configuration.
 - **Kafka** integration (via `librdkafka` / OpenSSL).
 
-The official `distroless` and `ubi` images ship a CA bundle, so these work without extra configuration. If you roll your own minimal image and use Vault or Kafka, install `ca-certificates` or copy a bundle to `/etc/ssl/certs/ca-certificates.crt`.
+The official `distroless` and `ubi` images ship a CA bundle, so these work without extra configuration. If you roll your own minimal image and use Google Cloud Storage, Vault or Kafka, install `ca-certificates` or copy a bundle to `/etc/ssl/certs/ca-certificates.crt`.
 
 ### Request Limits
 
