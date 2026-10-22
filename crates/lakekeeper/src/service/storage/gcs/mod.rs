@@ -4,13 +4,10 @@ use std::{
     collections::HashMap,
     str::FromStr,
     sync::{Arc, LazyLock},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
-use google_cloud_auth::{
-    token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
-};
-use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
+use google_cloud_auth::token_source::TokenSource as GCloudAuthTokenSource;
 use iceberg_ext::configs::table::{TableProperties, creds, gcs};
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -169,22 +166,16 @@ impl From<GcsServiceKey> for CredentialsFile {
     }
 }
 
-pub(crate) enum TokenSource {
-    GAuth(Arc<dyn GCloudAuthTokenSource>),
-    Token(Arc<dyn GCloudTokenSource>),
-}
+pub(crate) struct TokenSource(Arc<dyn GCloudAuthTokenSource>);
 
 impl TokenSource {
-    pub(crate) async fn token(&self) -> Result<String, String> {
-        match self {
-            TokenSource::GAuth(ts) => ts
-                .token()
-                .await
-                .map(|t| t.access_token)
-                .map_err(|e| e.to_string()),
-            TokenSource::Token(ts) => ts.token().await.map_err(|e| e.to_string()),
-        }
-        .map(|t| t.trim_start_matches("Bearer ").to_string())
+    /// Returns the access token and its expiry, if known.
+    pub(crate) async fn token(&self) -> Result<(String, Option<SystemTime>), String> {
+        let token = self.0.token().await.map_err(|e| e.to_string())?;
+        Ok((
+            token.access_token.trim_start_matches("Bearer ").to_string(),
+            token.expiry.map(SystemTime::from),
+        ))
     }
 }
 
@@ -319,10 +310,7 @@ impl GcsProfile {
                         "Failed to create gcp token source from credentials".to_string(),
                     )
                 })?;
-                (
-                    TokenSource::GAuth(source.into()),
-                    Some(key.project_id.clone()),
-                )
+                (TokenSource(source.into()), Some(key.project_id.clone()))
             }
             GcsCredential::GcpSystemIdentity {} => {
                 if !CONFIG.enable_gcp_system_credentials {
@@ -331,7 +319,7 @@ impl GcsProfile {
                             .to_string(),
                     ));
                 }
-                let tsp = DefaultTokenSourceProvider::new(config).await.map_err(|e| {
+                let map_err = |e| {
                     tracing::error!(
                         "Failed to create gcp token source from system identity: {:?}",
                         e
@@ -339,8 +327,16 @@ impl GcsProfile {
                     CredentialsError::Misconfiguration(
                         "Failed to create gcp token source from system identity".to_string(),
                     )
-                })?;
-                (TokenSource::Token(tsp.token_source()), tsp.project_id)
+                };
+                // Not DefaultTokenSourceProvider: its token source drops the token expiry.
+                let project = google_cloud_auth::project::project()
+                    .await
+                    .map_err(map_err)?;
+                let source =
+                    google_cloud_auth::project::create_token_source_from_project(&project, config)
+                        .await
+                        .map_err(map_err)?;
+                (TokenSource(source.into()), project.project_id().cloned())
             }
         })
     }
@@ -376,28 +372,24 @@ impl GcsProfile {
         // The typed cache returns the `CachedSTSResponse` directly — no variant check.
         let response = get_or_load_stc(&GCS_STC_CACHE, cache_key, || async {
             let (source, project_id) = self.get_token_source(credential).await?;
-            let token = sts::downscope(source, &self.bucket, stc_request).await?;
+            let (token, source_expiry) = sts::downscope(source, &self.bucket, stc_request).await?;
 
-            let sts_validity_duration =
-                Duration::from_secs(token.expires_in.unwrap_or(3600) as u64);
-
+            let now = SystemTime::now();
             let expires_at_system_time =
-                std::time::SystemTime::now().checked_add(sts_validity_duration);
+                downscoped_token_expiry(now, token.expires_in, source_expiry);
             if expires_at_system_time.is_none() {
-                tracing::warn!(
-                    "Calculated expiry time for STS token overflowed. Valid duration: {sts_validity_duration:?}",
-                );
+                tracing::warn!("Unknown expiry for downscoped GCS token; not caching it");
             }
+            let valid_until = expires_at_system_time
+                .and_then(|t| t.duration_since(now).ok())
+                .and_then(|d| Instant::now().checked_add(d));
 
             let token = CachedSTSResponse {
                 token,
                 project_id,
                 expires_at_system_time,
             };
-            Ok::<_, TableConfigError>(CachedStc::new(
-                token,
-                Instant::now().checked_add(sts_validity_duration),
-            ))
+            Ok::<_, TableConfigError>(CachedStc::new(token, valid_until))
         })
         .await?;
 
@@ -547,6 +539,49 @@ impl TryFrom<GcsCredential> for GcsAuth {
             }
             GcsCredential::GcpSystemIdentity {} => GcsAuth::GcpSystemIdentity {},
         })
+    }
+}
+
+/// A downscoped token cannot outlive its source token, and STS omits `expires_in`
+/// for Credential Access Boundary exchanges.
+fn downscoped_token_expiry(
+    now: SystemTime,
+    sts_expires_in: Option<usize>,
+    source_expiry: Option<SystemTime>,
+) -> Option<SystemTime> {
+    let sts_expiry = sts_expires_in.and_then(|s| now.checked_add(Duration::from_secs(s as u64)));
+    match (sts_expiry, source_expiry) {
+        (Some(sts), Some(source)) => Some(sts.min(source)),
+        (sts, source) => sts.or(source),
+    }
+}
+
+#[cfg(test)]
+mod downscoped_token_expiry_tests {
+    use super::*;
+
+    #[test]
+    fn test_downscoped_token_expiry() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mins = |m: u64| now + Duration::from_secs(m * 60);
+        // STS omits expires_in: the source token's expiry wins (not a 3600s guess).
+        assert_eq!(
+            downscoped_token_expiry(now, None, Some(mins(19))),
+            Some(mins(19))
+        );
+        assert_eq!(
+            downscoped_token_expiry(now, Some(3600), Some(mins(19))),
+            Some(mins(19))
+        );
+        assert_eq!(
+            downscoped_token_expiry(now, Some(600), Some(mins(19))),
+            Some(mins(10))
+        );
+        assert_eq!(
+            downscoped_token_expiry(now, Some(600), None),
+            Some(mins(10))
+        );
+        assert_eq!(downscoped_token_expiry(now, None, None), None);
     }
 }
 
