@@ -53,7 +53,6 @@ figment = { workspace = true }
 flate2 = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true }
-google-cloud-token = { workspace = true }
 hmac = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
