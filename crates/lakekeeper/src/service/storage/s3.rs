@@ -122,6 +122,13 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default)]
     pub sts_session_tags: BTreeMap<String, String>, // HashMap is not Hash
+    /// Add `"Principal": "*"` to every statement of the STS session policy.
+    /// Some S3-compatible STS implementations, such as Yandex Object Storage, reject
+    /// session policies without a principal, while AWS and MinIO reject policies that
+    /// have one. Defaults to false.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub sts_session_policy_principal: Option<bool>,
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -366,6 +373,7 @@ impl S3Profile {
         self.normalize_assume_role_arn();
         self.normalize_sts_role_arn();
         self.normalize_kms_key_arn();
+        self.validate_sts_session_policy_principal(s3_credential)?;
 
         if let Some(S3Credential::CloudflareR2(cloudflare_r2_credential)) = s3_credential {
             self.normalize_r2(cloudflare_r2_credential)?;
@@ -387,6 +395,35 @@ impl S3Profile {
             }.into());
         }
 
+        Ok(())
+    }
+
+    /// `sts-session-policy-principal` applies to the session policy sent to an S3-compatible
+    /// STS. AWS rejects a session policy with a principal, and Cloudflare R2 and Alibaba Cloud
+    /// OSS vend credentials through their own APIs, so the flag is rejected for them.
+    fn validate_sts_session_policy_principal(
+        &self,
+        s3_credential: Option<&S3Credential>,
+    ) -> Result<(), ValidationError> {
+        if !self.sts_session_policy_principal.unwrap_or_default() {
+            return Ok(());
+        }
+        let unsupported = match s3_credential {
+            Some(S3Credential::CloudflareR2(_)) => Some("Cloudflare R2 credentials"),
+            Some(S3Credential::AliyunOss(_)) => Some("Alibaba Cloud OSS credentials"),
+            _ if matches!(self.flavor, S3Flavor::Aws) => Some("the AWS flavor"),
+            _ => None,
+        };
+        if let Some(unsupported) = unsupported {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: format!(
+                    "`sts-session-policy-principal` is only supported for the S3-compatible flavor and cannot be used with {unsupported}."
+                ),
+                entity: "sts-session-policy-principal".to_string(),
+            }
+            .into());
+        }
         Ok(())
     }
 
@@ -1351,6 +1388,12 @@ impl S3Profile {
                 "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
                 "Resource": kms_key_arn,
             }));
+        }
+
+        if self.sts_session_policy_principal.unwrap_or_default() {
+            for statement in &mut statements {
+                statement["Principal"] = json!("*");
+            }
         }
 
         let policy = json!({
@@ -4153,6 +4196,121 @@ pub(crate) mod test {
             )
             .unwrap();
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+    }
+
+    fn session_policy_statements(principal: Option<bool>) -> Vec<serde_json::Value> {
+        let mut profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("path/to/table".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        profile.sts_session_policy_principal = principal;
+        let policy = profile
+            .get_sts_policy_string(
+                &"s3://bucket-name/path/to/table".parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let policy = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+        policy["Statement"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn session_policy_has_no_principal_by_default() {
+        // AWS and MinIO reject a session policy that names a principal.
+        let statements = session_policy_statements(Some(false));
+        assert!(!statements.is_empty());
+        assert!(statements.iter().all(|s| s.get("Principal").is_none()));
+    }
+
+    #[test]
+    fn session_policy_principal_is_set_on_every_statement() {
+        // Yandex Object Storage rejects requests made with temporary credentials
+        // whose session policy statements carry no principal.
+        let statements = session_policy_statements(Some(true));
+        assert!(!statements.is_empty());
+        for statement in &statements {
+            assert_eq!(
+                statement["Principal"],
+                serde_json::json!("*"),
+                "{statement}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_policy_principal_defaults_to_false_when_omitted() {
+        let profile: S3Profile = serde_json::from_value(serde_json::json!({
+            "bucket": "bucket-name",
+            "region": "us-east-1",
+            "sts-enabled": true,
+        }))
+        .unwrap();
+        assert_eq!(profile.sts_session_policy_principal, None);
+        assert!(
+            session_policy_statements(None)
+                .iter()
+                .all(|s| s.get("Principal").is_none())
+        );
+    }
+
+    fn principal_profile(flavor: S3Flavor) -> S3Profile {
+        S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("us-east-1".to_string())
+            .endpoint("https://storage.example.com".parse().unwrap())
+            .assume_role_arn("arn:aws:iam::123456789012:role/role".to_string())
+            .flavor(flavor)
+            .sts_enabled(true)
+            .sts_session_policy_principal(true)
+            .build()
+    }
+
+    fn assert_principal_rejected(result: Result<(), ValidationError>) {
+        match result {
+            Err(ValidationError::InvalidProfile(e)) => {
+                assert_eq!(e.entity, "sts-session-policy-principal");
+            }
+            other => panic!("expected an invalid profile error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalize_accepts_session_policy_principal_for_s3_compat() {
+        let mut profile = principal_profile(S3Flavor::S3Compat);
+        profile.normalize(None).unwrap();
+        assert_eq!(profile.sts_session_policy_principal, Some(true));
+    }
+
+    #[test]
+    fn normalize_rejects_session_policy_principal_for_aws_flavor() {
+        let mut profile = principal_profile(S3Flavor::Aws);
+        assert_principal_rejected(profile.normalize(None));
+    }
+
+    #[test]
+    fn normalize_rejects_session_policy_principal_for_r2() {
+        let cred = S3Credential::CloudflareR2(S3CloudflareR2Credential {
+            access_key_id: "ak".to_string(),
+            secret_access_key: "sk".to_string(),
+            token: "token".to_string(),
+            account_id: "account".to_string(),
+        });
+        let mut profile = principal_profile(S3Flavor::S3Compat);
+        assert_principal_rejected(profile.normalize(Some(&cred)));
+    }
+
+    #[test]
+    fn normalize_rejects_session_policy_principal_for_aliyun_oss() {
+        let cred = S3Credential::AliyunOss(S3AccessKeyCredential {
+            access_key_id: "ak".to_string(),
+            secret_access_key: "sk".to_string(),
+            external_id: None,
+        });
+        let mut profile = principal_profile(S3Flavor::S3Compat);
+        assert_principal_rejected(profile.normalize(Some(&cred)));
     }
 
     #[test]
