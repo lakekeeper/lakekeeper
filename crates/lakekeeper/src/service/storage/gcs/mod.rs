@@ -336,7 +336,18 @@ impl GcsProfile {
                     google_cloud_auth::project::create_token_source_from_project(&project, config)
                         .await
                         .map_err(map_err)?;
-                (TokenSource(source.into()), project.project_id().cloned())
+                // Same project-id resolution as DefaultTokenSourceProvider.
+                let project_id = match &project {
+                    google_cloud_auth::project::Project::FromFile(cred) => cred
+                        .project_id
+                        .as_ref()
+                        .or(cred.quota_project_id.as_ref())
+                        .cloned(),
+                    google_cloud_auth::project::Project::FromMetadataServer(info) => {
+                        info.project_id.clone()
+                    }
+                };
+                (TokenSource(source.into()), project_id)
             }
         })
     }
