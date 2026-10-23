@@ -245,6 +245,7 @@ pub struct FileInfo {
     location: Location,
     size: Option<u64>,
     e_tag: Option<String>,
+    version: Option<String>,
 }
 
 impl FileInfo {
@@ -259,6 +260,7 @@ impl FileInfo {
             location,
             size,
             e_tag: None,
+            version: None,
         }
     }
 
@@ -266,6 +268,13 @@ impl FileInfo {
     #[must_use]
     pub fn with_e_tag(mut self, e_tag: Option<String>) -> Self {
         self.e_tag = e_tag;
+        self
+    }
+
+    /// Attach the version of this object the backend reported.
+    #[must_use]
+    pub fn with_version(mut self, version: Option<String>) -> Self {
+        self.version = version;
         self
     }
 
@@ -287,12 +296,130 @@ impl FileInfo {
         self.size
     }
 
-    /// The object's entity tag (`ETag`), if the backend surfaced one. `None`
-    /// for backends that don't expose an `ETag` (e.g. the in-memory backend).
+    /// The object's entity tag (`ETag`), if the backend surfaced one. An opaque
+    /// identity: it is not a content hash for multipart uploads or encrypted objects,
+    /// and on GCS it also changes when only the object's metadata changes.
     #[must_use]
     pub fn e_tag(&self) -> Option<&str> {
         self.e_tag.as_deref()
     }
+
+    /// The version of the object, if the backend reported one: the S3 version id or
+    /// the GCS generation. `None` for an S3 object written without a version id, which
+    /// [`LakekeeperStorage::list_versions`] reports as version `"null"`. S3 listings
+    /// carry no version, so entries from [`LakekeeperStorage::list`] have none there.
+    #[must_use]
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+}
+
+/// What a backend reported about the object a write created.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WriteOutcome {
+    /// The object's entity tag, as [`FileInfo::e_tag`].
+    pub e_tag: Option<String>,
+    /// The version the write created: the S3 version id or the GCS generation.
+    /// `None` where the backend reported none, as on an unversioned S3 bucket;
+    /// [`LakekeeperStorage::list_versions`] reports such an S3 object as version `"null"`.
+    pub version: Option<String>,
+}
+
+/// Tags of one object version, by key.
+pub type ObjectTags = std::collections::BTreeMap<String, String>;
+
+/// One entry of [`LakekeeperStorage::list_versions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ObjectVersionEntry {
+    Version(ObjectVersion),
+    DeleteMarker(DeleteMarker),
+}
+
+impl ObjectVersionEntry {
+    #[must_use]
+    pub fn location(&self) -> &Location {
+        match self {
+            Self::Version(v) => &v.location,
+            Self::DeleteMarker(m) => &m.location,
+        }
+    }
+
+    #[must_use]
+    pub fn version(&self) -> &str {
+        match self {
+            Self::Version(v) => &v.version,
+            Self::DeleteMarker(m) => &m.version,
+        }
+    }
+
+    #[must_use]
+    pub fn is_latest(&self) -> bool {
+        match self {
+            Self::Version(v) => v.is_latest,
+            Self::DeleteMarker(m) => m.is_latest,
+        }
+    }
+}
+
+/// A stored version of an object.
+#[derive(Debug, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
+#[non_exhaustive]
+pub struct ObjectVersion {
+    pub location: Location,
+    /// The S3 version id (`"null"` for an object written without one) or the GCS generation.
+    pub version: String,
+    #[builder(default)]
+    pub e_tag: Option<String>,
+    #[builder(default)]
+    pub size: Option<u64>,
+    #[builder(default)]
+    pub last_modified: Option<DateTime<Utc>>,
+    /// Whether this is the current version of its key.
+    pub is_latest: bool,
+}
+
+/// A delete marker: the version a delete on a versioned S3 bucket creates.
+#[derive(Debug, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
+#[non_exhaustive]
+pub struct DeleteMarker {
+    pub location: Location,
+    pub version: String,
+    #[builder(default)]
+    pub last_modified: Option<DateTime<Utc>>,
+    /// Whether the marker is the current version of its key, so the key reads as absent.
+    pub is_latest: bool,
+}
+
+/// A deleted GCS generation the bucket's soft-delete policy still keeps.
+#[derive(Debug, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
+#[non_exhaustive]
+pub struct SoftDeletedVersion {
+    pub location: Location,
+    /// The GCS generation.
+    pub version: String,
+    #[builder(default)]
+    pub e_tag: Option<String>,
+    #[builder(default)]
+    pub size: Option<u64>,
+    #[builder(default)]
+    pub last_modified: Option<DateTime<Utc>>,
+    /// When the generation was deleted.
+    #[builder(default)]
+    pub soft_delete_time: Option<DateTime<Utc>>,
+    /// When the generation is deleted permanently; it can be restored until then.
+    #[builder(default)]
+    pub hard_delete_time: Option<DateTime<Utc>>,
+}
+
+/// The error a backend returns for an operation it does not implement.
+pub(crate) fn unsupported(operation: &str, path: &str) -> IOError {
+    IOError::new(
+        ErrorKind::Unsupported,
+        format!("{operation} is not supported by this storage backend"),
+        path.to_string(),
+    )
 }
 
 /// The result of [`LakekeeperStorage::read`]: the object's bytes plus the
@@ -330,9 +457,9 @@ pub trait LakekeeperFileWrite: std::fmt::Debug + Send + Sync + 'static {
     /// only contact the backend once an internal threshold is reached.
     async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError>;
 
-    /// Finalise the file. Calling `close` on an already-closed writer
-    /// returns an error.
-    async fn close(&mut self) -> Result<(), WriteError>;
+    /// Finalise the file and return what the backend reported about it.
+    /// Calling `close` on an already-closed writer returns an error.
+    async fn close(&mut self) -> Result<WriteOutcome, WriteError>;
 }
 
 #[async_trait::async_trait]
@@ -359,8 +486,9 @@ where
     ///   - `Err(DeleteBatchError)` if any deletion failed.
     async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError>;
 
-    /// Write the provided data to the specified path.
-    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError>;
+    /// Write the provided data to the specified path and return what the backend
+    /// reported about the object it created.
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<WriteOutcome, WriteError>;
 
     /// Return a `LakekeeperFileWrite` that can be used to `write` a file chunk by chunk until
     /// it is `closed`.
@@ -478,6 +606,95 @@ where
     ) -> Result<RemoveEmptyDirectoryOutcome, DeleteError> {
         Ok(RemoveEmptyDirectoryOutcome::Unsupported)
     }
+
+    /// Read one version of the file at `path`, as [`LakekeeperStorage::read`] does for the
+    /// current one. `version` is a version as the backend reports it, for example in
+    /// [`WriteOutcome::version`].
+    ///
+    /// The default fails with [`ErrorKind::Unsupported`].
+    async fn read_version(&self, path: &str, _version: &str) -> Result<ObjectRead, ReadError> {
+        Err(unsupported("Reading an object version", path).into())
+    }
+
+    /// Retrieve metadata about one version of the file at `path`, as
+    /// [`LakekeeperStorage::metadata`] does for the current one.
+    ///
+    /// The default fails with [`ErrorKind::Unsupported`].
+    async fn metadata_version(&self, path: &str, _version: &str) -> Result<FileInfo, ReadError> {
+        Err(unsupported("Reading an object version", path).into())
+    }
+
+    /// Read a byte range of one version of the file at `path`, as
+    /// [`LakekeeperStorage::read_range`] does for the current one.
+    ///
+    /// The default fails with [`ErrorKind::Unsupported`].
+    async fn read_range_version(
+        &self,
+        path: &str,
+        _version: &str,
+        _range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        Err(unsupported("Reading an object version", path).into())
+    }
+
+    /// List every version and delete marker of every object under this prefix, in pages.
+    ///
+    /// Entries are ordered by key, and newest first within a key;
+    /// [`ObjectVersionEntry::is_latest`] marks the current version. On S3, a version and a
+    /// delete marker with the same modification time keep no defined order. A key that
+    /// [`Location`] cannot represent fails the listing. A trailing slash is added to
+    /// `path` as for [`LakekeeperStorage::list`]. Retries are handled internally.
+    ///
+    /// The default fails with [`ErrorKind::Unsupported`].
+    async fn list_versions(
+        &self,
+        path: &str,
+        _page_size: Option<usize>,
+    ) -> Result<BoxStream<'_, Result<Vec<ObjectVersionEntry>, IOError>>, ReadError> {
+        Err(unsupported("Listing object versions", path).into())
+    }
+
+    /// List the soft-deleted generations of every object under this prefix, in pages.
+    /// [`LakekeeperStorage::list_versions`] does not include them.
+    ///
+    /// Entries are ordered by key. A key that [`Location`] cannot represent fails the
+    /// listing. A trailing slash is added to `path` as for [`LakekeeperStorage::list`].
+    /// Retries are handled internally.
+    ///
+    /// The default fails with [`ErrorKind::Unsupported`].
+    async fn list_soft_deleted(
+        &self,
+        path: &str,
+        _page_size: Option<usize>,
+    ) -> Result<BoxStream<'_, Result<Vec<SoftDeletedVersion>, IOError>>, ReadError> {
+        Err(unsupported("Listing soft-deleted objects", path).into())
+    }
+
+    /// The tags of one version of the object at `path`.
+    ///
+    /// The default fails with [`ErrorKind::Unsupported`].
+    async fn get_tags(&self, path: &str, _version: &str) -> Result<ObjectTags, ReadError> {
+        Err(unsupported("Object tagging", path).into())
+    }
+
+    /// Replace the tags of one version of the object at `path` with `tags`.
+    ///
+    /// The default fails with [`ErrorKind::Unsupported`].
+    async fn put_tags(
+        &self,
+        path: &str,
+        _version: &str,
+        _tags: &ObjectTags,
+    ) -> Result<(), WriteError> {
+        Err(unsupported("Object tagging", path).into())
+    }
+
+    /// Remove all tags of one version of the object at `path`.
+    ///
+    /// The default fails with [`ErrorKind::Unsupported`].
+    async fn remove_tags(&self, path: &str, _version: &str) -> Result<(), WriteError> {
+        Err(unsupported("Object tagging", path).into())
+    }
 }
 
 #[async_trait::async_trait]
@@ -508,7 +725,7 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<WriteOutcome, WriteError> {
         match self {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.write(path, bytes).await,
@@ -643,6 +860,156 @@ impl LakekeeperStorage for StorageBackend {
             StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_empty_directory(path).await,
         }
     }
+
+    async fn read_version(&self, path: &str, version: &str) -> Result<ObjectRead, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.read_version(path, version).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.read_version(path, version).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.read_version(path, version).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.read_version(path, version).await,
+        }
+    }
+
+    async fn metadata_version(&self, path: &str, version: &str) -> Result<FileInfo, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.metadata_version(path, version).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.metadata_version(path, version).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => {
+                adls_storage.metadata_version(path, version).await
+            }
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.metadata_version(path, version).await,
+        }
+    }
+
+    async fn read_range_version(
+        &self,
+        path: &str,
+        version: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => {
+                s3_storage.read_range_version(path, version, range).await
+            }
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage
+                    .read_range_version(path, version, range)
+                    .await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => {
+                adls_storage.read_range_version(path, version, range).await
+            }
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => {
+                gcs_storage.read_range_version(path, version, range).await
+            }
+        }
+    }
+
+    async fn list_versions(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<BoxStream<'_, Result<Vec<ObjectVersionEntry>, IOError>>, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.list_versions(path, page_size).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.list_versions(path, page_size).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.list_versions(path, page_size).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.list_versions(path, page_size).await,
+        }
+    }
+
+    async fn list_soft_deleted(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<BoxStream<'_, Result<Vec<SoftDeletedVersion>, IOError>>, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.list_soft_deleted(path, page_size).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.list_soft_deleted(path, page_size).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => {
+                adls_storage.list_soft_deleted(path, page_size).await
+            }
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => {
+                gcs_storage.list_soft_deleted(path, page_size).await
+            }
+        }
+    }
+
+    async fn get_tags(&self, path: &str, version: &str) -> Result<ObjectTags, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.get_tags(path, version).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.get_tags(path, version).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.get_tags(path, version).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.get_tags(path, version).await,
+        }
+    }
+
+    async fn put_tags(
+        &self,
+        path: &str,
+        version: &str,
+        tags: &ObjectTags,
+    ) -> Result<(), WriteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.put_tags(path, version, tags).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.put_tags(path, version, tags).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.put_tags(path, version, tags).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.put_tags(path, version, tags).await,
+        }
+    }
+
+    async fn remove_tags(&self, path: &str, version: &str) -> Result<(), WriteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.remove_tags(path, version).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.remove_tags(path, version).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.remove_tags(path, version).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_tags(path, version).await,
+        }
+    }
 }
 
 // Delegating `LakekeeperStorage` impls for smart pointers.
@@ -681,7 +1048,11 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).delete_batch(paths).await
                 }
 
-                async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+                async fn write(
+                    &self,
+                    path: &str,
+                    bytes: Bytes,
+                ) -> Result<WriteOutcome, WriteError> {
                     (**self).write(path, bytes).await
                 }
 
@@ -738,6 +1109,74 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     path: &str,
                 ) -> Result<RemoveEmptyDirectoryOutcome, DeleteError> {
                     (**self).remove_empty_directory(path).await
+                }
+
+                async fn read_version(
+                    &self,
+                    path: &str,
+                    version: &str,
+                ) -> Result<ObjectRead, ReadError> {
+                    (**self).read_version(path, version).await
+                }
+
+                async fn metadata_version(
+                    &self,
+                    path: &str,
+                    version: &str,
+                ) -> Result<FileInfo, ReadError> {
+                    (**self).metadata_version(path, version).await
+                }
+
+                async fn read_range_version(
+                    &self,
+                    path: &str,
+                    version: &str,
+                    range: std::ops::Range<u64>,
+                ) -> Result<Bytes, ReadError> {
+                    (**self).read_range_version(path, version, range).await
+                }
+
+                async fn list_versions(
+                    &self,
+                    path: &str,
+                    page_size: Option<usize>,
+                ) -> Result<
+                    BoxStream<'_, Result<Vec<ObjectVersionEntry>, IOError>>,
+                    ReadError,
+                > {
+                    (**self).list_versions(path, page_size).await
+                }
+
+                async fn list_soft_deleted(
+                    &self,
+                    path: &str,
+                    page_size: Option<usize>,
+                ) -> Result<
+                    BoxStream<'_, Result<Vec<SoftDeletedVersion>, IOError>>,
+                    ReadError,
+                > {
+                    (**self).list_soft_deleted(path, page_size).await
+                }
+
+                async fn get_tags(
+                    &self,
+                    path: &str,
+                    version: &str,
+                ) -> Result<ObjectTags, ReadError> {
+                    (**self).get_tags(path, version).await
+                }
+
+                async fn put_tags(
+                    &self,
+                    path: &str,
+                    version: &str,
+                    tags: &ObjectTags,
+                ) -> Result<(), WriteError> {
+                    (**self).put_tags(path, version, tags).await
+                }
+
+                async fn remove_tags(&self, path: &str, version: &str) -> Result<(), WriteError> {
+                    (**self).remove_tags(path, version).await
                 }
             }
         )+

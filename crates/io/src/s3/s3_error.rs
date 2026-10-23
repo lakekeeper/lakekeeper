@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use aws_sdk_s3::{
-    error::SdkError,
+    error::{ProvideErrorMetadata, SdkError},
     operation::{
         complete_multipart_upload::CompleteMultipartUploadError,
         create_multipart_upload::CreateMultipartUploadError, delete_object::DeleteObjectError,
@@ -155,18 +155,23 @@ pub(crate) fn parse_head_object_error(
     err: SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>,
     location: &str,
 ) -> IOError {
+    let status = err
+        .raw_response()
+        .map(|response| response.status().as_u16());
     let e = err.into_service_error();
 
     // `HeadObjectError::NotFound` is a typed variant. S3 HEAD responses
-    // carry no body, so `e.meta().code()` is empty for 404s — fall through
-    // to the typed variant before consulting the error code map.
+    // carry no body, so `e.meta().code()` is empty — fall back to the
+    // typed variant and then to the HTTP status.
     let lakekeeper_kind = match &e {
         aws_sdk_s3::operation::head_object::HeadObjectError::NotFound(_) => ErrorKind::NotFound,
         _ => e
             .meta()
             .code()
             .and_then(|s| S3ErrorCode::from_str(s).ok())
-            .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind()),
+            .map(|kind| kind.as_lakekeeper_kind())
+            .or_else(|| status.and_then(head_status_kind))
+            .unwrap_or(ErrorKind::Unexpected),
     };
 
     let msg = e.meta().message().map_or_else(
@@ -175,6 +180,19 @@ pub(crate) fn parse_head_object_error(
     );
 
     IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+}
+
+/// The kind of a bodiless `HeadObject` error, by HTTP status.
+fn head_status_kind(status: u16) -> Option<ErrorKind> {
+    match status {
+        400 | 412 => Some(ErrorKind::ConditionNotMatch),
+        401 | 403 => Some(ErrorKind::PermissionDenied),
+        // S3 answers a request for a delete marker's version id with 405.
+        404 | 405 => Some(ErrorKind::NotFound),
+        429 => Some(ErrorKind::RateLimited),
+        503 => Some(ErrorKind::ServiceUnavailable),
+        _ => None,
+    }
 }
 
 pub(crate) fn parse_list_objects_v2_error(
@@ -220,6 +238,36 @@ pub(crate) fn parse_get_bucket_policy_error(
     Err(IOError::new(lakekeeper_kind, msg, format!("s3://{bucket}")).set_source(e))
 }
 
+/// Parse the error of an operation whose service errors carry no variant of their own
+/// worth mapping. `operation` names it in the message, for example "version listing".
+pub(crate) fn parse_s3_operation_error<E>(
+    err: SdkError<E>,
+    operation: &str,
+    location: &str,
+) -> IOError
+where
+    E: ProvideErrorMetadata
+        + aws_smithy_runtime_api::client::result::CreateUnhandledError
+        + std::error::Error
+        + Send
+        + Sync
+        + 'static,
+{
+    let e = err.into_service_error();
+
+    let lakekeeper_kind = e
+        .code()
+        .and_then(|s| S3ErrorCode::from_str(s).ok())
+        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+
+    let msg = e.message().map_or_else(
+        || format!("Unknown S3 error during {operation}: {e}"),
+        |m| format!("S3 {operation} failed: {m}"),
+    );
+
+    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+}
+
 pub(crate) fn parse_aws_sdk_error(err: &aws_sdk_s3::types::Error, location: &str) -> IOError {
     let lakekeeper_kind = err
         .code()
@@ -240,13 +288,19 @@ enum S3ErrorCode {
     AccessDenied,
     AllAccessDisabled,
     InvalidAccessKeyId,
+    InvalidArgument,
     InvalidBucketName,
+    InvalidTag,
     #[strum(serialize = "KMS.DisabledException")]
     KMSDisabledException,
     #[strum(serialize = "KMS.NotFoundException")]
     KMSNotFoundException,
+    MalformedXML,
+    MethodNotAllowed,
     NoSuchBucket,
     NoSuchKey,
+    NoSuchVersion,
+    NotImplemented,
     PreconditionFailed,
     #[strum(serialize = "503 SlowDown")]
     SlowDown503,
@@ -268,8 +322,16 @@ impl S3ErrorCode {
             | S3ErrorCode::InvalidBucketName
             | S3ErrorCode::KMSDisabledException
             | S3ErrorCode::KMSNotFoundException => ErrorKind::ConfigInvalid,
-            S3ErrorCode::NoSuchBucket | S3ErrorCode::NoSuchKey => ErrorKind::NotFound,
-            S3ErrorCode::PreconditionFailed => ErrorKind::ConditionNotMatch,
+            // S3 answers a request for a delete marker's version id with `MethodNotAllowed`.
+            S3ErrorCode::NoSuchBucket
+            | S3ErrorCode::NoSuchKey
+            | S3ErrorCode::NoSuchVersion
+            | S3ErrorCode::MethodNotAllowed => ErrorKind::NotFound,
+            S3ErrorCode::PreconditionFailed
+            | S3ErrorCode::InvalidArgument
+            | S3ErrorCode::InvalidTag
+            | S3ErrorCode::MalformedXML => ErrorKind::ConditionNotMatch,
+            S3ErrorCode::NotImplemented => ErrorKind::Unsupported,
             S3ErrorCode::TokenRefreshRequired => ErrorKind::CredentialsExpired,
             S3ErrorCode::RequestTimeout => ErrorKind::RequestTimeout,
             S3ErrorCode::ServiceUnavailable => ErrorKind::ServiceUnavailable,
@@ -291,11 +353,17 @@ mod tests {
             "AccessDenied",
             "AllAccessDisabled",
             "InvalidAccessKeyId",
+            "InvalidArgument",
             "InvalidBucketName",
+            "InvalidTag",
             "KMS.DisabledException",
             "KMS.NotFoundException",
+            "MalformedXML",
+            "MethodNotAllowed",
             "NoSuchBucket",
             "NoSuchKey",
+            "NoSuchVersion",
+            "NotImplemented",
             "PreconditionFailed",
             "503 SlowDown",
             "TokenRefreshRequired",

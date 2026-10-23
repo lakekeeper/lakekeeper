@@ -525,6 +525,8 @@ export LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN=arn:aws:iam::123456789012:role/role-
 
 # the values below should work with the default minio in our docker-compose
 export LAKEKEEPER_TEST__S3_BUCKET=tests
+# a bucket with versioning enabled, for the object version tests
+export LAKEKEEPER_TEST__S3_VERSIONED_BUCKET=tests-versioned
 export LAKEKEEPER_TEST__S3_REGION=local
 export LAKEKEEPER_TEST__S3_ACCESS_KEY=minio-root-user
 export LAKEKEEPER_TEST__S3_SECRET_KEY=minio-root-password
@@ -543,7 +545,7 @@ cargo nextest run --all-features --ignore-default-filter -E "test(::aws_integrat
 # see .config/nextest.toml for all filters
 ```
 
-To check a new S3-compatible store, point the `LAKEKEEPER_TEST__S3_*` variables at it and run the `s3_compat` profile, which selects exactly the tests that use those variables and nothing else:
+To check a new S3-compatible store, point the `LAKEKEEPER_TEST__S3_*` variables at it and run the `s3_compat` profile, which selects the tests that use those variables on the unversioned bucket and nothing else. The object version tests (`*_s3_versioned`) also need `LAKEKEEPER_TEST__S3_VERSIONED_BUCKET` and are not part of it:
 
 ```sh
 cargo nextest run --profile s3_compat --all-features --all-targets --workspace
