@@ -281,11 +281,12 @@ impl LakekeeperStorage for GcsStorage {
     async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let gcs_location = GcsLocation::try_from_str(path)?;
 
+        // GCS media downloads carry no object metadata, so the size and
+        // metadata come from a `HEAD`. The download is pinned to the generation
+        // the `HEAD` saw, so `bytes` and `info` describe the same version.
         let head_response = head(&self.client, &gcs_location).await?;
         let file_size = validate_file_size(head_response.size, gcs_location.as_str())?;
 
-        // The `head` above already carries the object metadata, so it is
-        // surfaced here; a second request is not needed.
         let info = FileInfo::new(
             head_response
                 .updated
@@ -300,7 +301,8 @@ impl LakekeeperStorage for GcsStorage {
             Bytes::new()
         } else if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
-            let request = build_get_object_request(&gcs_location);
+            let mut request = build_get_object_request(&gcs_location);
+            request.generation = Some(head_response.generation);
             fetch_range(&self.client, &request, None..None).await?
         } else {
             parallel_chunked_read_with_fixed_generation(
