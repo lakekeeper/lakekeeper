@@ -133,7 +133,10 @@ async fn maintenance_mode_toggle_end_to_end(pool: PgPool) {
     .unwrap();
     assert_eq!(resp.mode, MaintenanceMode::ReadOnly);
     assert_eq!(resp.startup_mode, MaintenanceMode::Off);
-    assert_eq!(resp.hostname, std::env::var("HOSTNAME").ok());
+    assert_eq!(
+        resp.hostname,
+        hostname::get().ok().and_then(|h| h.into_string().ok())
+    );
     assert!(MAINTENANCE.is_read_only());
 
     // Setting the current mode again succeeds.

@@ -471,7 +471,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mode = MAINTENANCE.set(request.mode).map_err(ErrorModel::from)?;
-        let hostname = std::env::var("HOSTNAME").ok();
+        let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
         tracing::warn!(
             maintenance_mode = ?mode,
             hostname = hostname.as_deref(),
