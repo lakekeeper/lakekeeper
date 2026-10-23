@@ -347,6 +347,7 @@ impl ErrorModel {
             | lakekeeper_io::ErrorKind::CredentialsExpired => {
                 StatusCode::PRECONDITION_FAILED.as_u16()
             }
+            lakekeeper_io::ErrorKind::Unsupported => StatusCode::NOT_IMPLEMENTED.as_u16(),
         };
 
         Self::from_io_error_with_code(io_error, code, detail)

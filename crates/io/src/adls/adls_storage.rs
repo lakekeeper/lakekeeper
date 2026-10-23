@@ -25,7 +25,7 @@ use futures::StreamExt as _;
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
     LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError,
-    RemoveEmptyDirectoryOutcome, WriteError,
+    RemoveEmptyDirectoryOutcome, WriteError, WriteOutcome,
     adls::{AdlsLocation, adls_error::parse_error},
     delete_limit::{DeleteEndpoint, DeleteLimit},
     delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
@@ -226,7 +226,7 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(())
     }
 
-    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<WriteOutcome, WriteError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
         let client = self.get_file_client(&adls_location)?;
@@ -316,16 +316,18 @@ impl LakekeeperStorage for AdlsStorage {
             }
         }
 
-        if let Err(e) = flush_close(&client, file_length, path).await {
-            delete_partial_file_logged_infallible(
-                &client,
-                path,
-                "flush_close failed after bulk write",
-            )
-            .await;
-            return Err(e);
+        match flush_close(&client, file_length, path).await {
+            Ok(outcome) => Ok(outcome),
+            Err(e) => {
+                delete_partial_file_logged_infallible(
+                    &client,
+                    path,
+                    "flush_close failed after bulk write",
+                )
+                .await;
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
@@ -801,13 +803,20 @@ async fn append_chunk(
     })
 }
 
-/// Finalise the file by flushing and closing it.
-async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Result<(), WriteError> {
+/// Finalise the file by flushing and closing it. ADLS reports no version.
+async fn flush_close(
+    client: &FileClient,
+    file_length: i64,
+    path: &str,
+) -> Result<WriteOutcome, WriteError> {
     client
         .flush(file_length)
         .close(true)
         .await
-        .map(|_| ())
+        .map(|response| WriteOutcome {
+            e_tag: response.etag,
+            version: None,
+        })
         .map_err(|e| {
             WriteError::IOError(parse_error(e, path).with_context(format!(
                 "Failed to flush and close ADLS file (length {file_length})"
@@ -982,7 +991,7 @@ impl LakekeeperFileWrite for AdlsFileWrite {
         Ok(())
     }
 
-    async fn close(&mut self) -> Result<(), WriteError> {
+    async fn close(&mut self) -> Result<WriteOutcome, WriteError> {
         let prev_state = std::mem::replace(&mut self.state, AdlsWriterState::Closed);
         match prev_state {
             AdlsWriterState::Closed | AdlsWriterState::Aborted | AdlsWriterState::AbortFailed => {
@@ -1019,16 +1028,18 @@ impl LakekeeperFileWrite for AdlsFileWrite {
             }
             self.offset += chunk_len;
         }
-        if let Err(e) = flush_close(&self.client, self.offset, &self.path).await {
-            delete_partial_file_logged_infallible(
-                &self.client,
-                &self.path,
-                "flush_close failed during close",
-            )
-            .await;
-            return Err(e);
+        match flush_close(&self.client, self.offset, &self.path).await {
+            Ok(outcome) => Ok(outcome),
+            Err(e) => {
+                delete_partial_file_logged_infallible(
+                    &self.client,
+                    &self.path,
+                    "flush_close failed during close",
+                )
+                .await;
+                Err(e)
+            }
         }
-        Ok(())
     }
 }
 

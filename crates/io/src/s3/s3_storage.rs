@@ -2,16 +2,16 @@ use std::{collections::HashMap, ops::Range, str::FromStr, sync::Arc, time::Durat
 
 use aws_sdk_s3::{
     operation::head_object::HeadObjectOutput,
-    types::{Object, ObjectIdentifier, ServerSideEncryption},
+    types::{Object, ObjectIdentifier, ServerSideEncryption, Tag, Tagging},
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream};
 
 use crate::{
-    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, RetryableError,
-    WriteError,
+    DeleteBatchError, DeleteError, DeleteMarker, ErrorKind, FileInfo, IOError,
+    InvalidLocationError, LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ObjectTags,
+    ObjectVersion, ObjectVersionEntry, ReadError, RetryableError, WriteError, WriteOutcome,
     delete_limit::{DeleteEndpoint, DeleteLimit, S3_DELETE_REQUESTS},
     execute_with_parallelism,
     s3::{
@@ -20,7 +20,7 @@ use crate::{
             parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
             parse_create_multipart_upload_error, parse_delete_error, parse_get_bucket_policy_error,
             parse_get_object_error, parse_head_object_error, parse_list_objects_v2_error,
-            parse_put_object_error, parse_upload_part_error,
+            parse_put_object_error, parse_s3_operation_error, parse_upload_part_error,
         },
     },
     safe_usize_to_i32, validate_file_size,
@@ -151,7 +151,7 @@ impl LakekeeperStorage for S3Storage {
         Ok(())
     }
 
-    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<WriteOutcome, WriteError> {
         let s3_location = S3Location::try_from_str(path, true)?;
 
         if bytes.len() < MAX_BYTES_PER_REQUEST {
@@ -235,19 +235,19 @@ impl LakekeeperStorage for S3Storage {
             .map(|(_, completed_part)| completed_part)
             .collect();
 
-        if let Err(e) =
-            complete_multipart(&self.client, &s3_location, &upload_id, completed_parts).await
-        {
-            abort_multipart_logged_infallible(
-                &self.client,
-                &s3_location,
-                &upload_id,
-                "complete_multipart failed after parallel write",
-            )
-            .await;
-            return Err(e);
+        match complete_multipart(&self.client, &s3_location, &upload_id, completed_parts).await {
+            Ok(outcome) => Ok(outcome),
+            Err(e) => {
+                abort_multipart_logged_infallible(
+                    &self.client,
+                    &s3_location,
+                    &upload_id,
+                    "complete_multipart failed after parallel write",
+                )
+                .await;
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
@@ -262,67 +262,158 @@ impl LakekeeperStorage for S3Storage {
 
     async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-        let head_response = head(&self.client, &s3_location).await?;
-        let content_length = head_response.content_length().unwrap_or(0);
-        let file_size = validate_file_size(content_length, path)?;
-
-        // The `head` above already carries the object metadata, so it is
-        // surfaced here; a second request is not needed.
-        let location_str = s3_location.to_string();
-        let info = FileInfo::new(
-            head_response.last_modified().and_then(parse_timestamp),
-            s3_location.location().clone(),
-            head_response
-                .content_length()
-                .and_then(|n| crate::size_to_u64(n, &location_str)),
-        )
-        .with_e_tag(head_response.e_tag().map(ToString::to_string));
-
-        let bytes = if file_size == 0 {
-            Bytes::new()
-        } else if file_size < MAX_BYTES_PER_REQUEST {
-            // If the file is small enough, read it in a single request
-            fetch_range(&self.client, &s3_location, 0..file_size as u64, None).await?
-        } else {
-            let etag = head_response.e_tag().map(ToString::to_string);
-            parallel_chunked_read(&self.client, &s3_location, 0, file_size, etag).await?
-        };
-
-        Ok(ObjectRead { bytes, info })
+        read_object(&self.client, &s3_location, None).await
     }
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-        if range.end < range.start {
-            return Err(ReadError::IOError(IOError::new(
+        read_object_range(&self.client, &s3_location, None, range).await
+    }
+
+    async fn read_version(&self, path: &str, version: &str) -> Result<ObjectRead, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        read_object(&self.client, &s3_location, Some(version)).await
+    }
+
+    async fn metadata_version(&self, path: &str, version: &str) -> Result<FileInfo, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        let head_response = head(&self.client, &s3_location, Some(version)).await?;
+        Ok(head_file_info(&s3_location, &head_response))
+    }
+
+    async fn read_range_version(
+        &self,
+        path: &str,
+        version: &str,
+        range: Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        read_object_range(&self.client, &s3_location, Some(version), range).await
+    }
+
+    async fn list_versions(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<futures::stream::BoxStream<'_, Result<Vec<ObjectVersionEntry>, IOError>>, ReadError>
+    {
+        let path = format!("{}/", path.trim_end_matches('/'));
+        let s3_location = S3Location::try_from_str(&path, true)?;
+        let base_location = s3_location.location().clone();
+        let s3_bucket = s3_location.bucket_name().to_string();
+
+        let mut request_template = self
+            .client
+            .list_object_versions()
+            .bucket(s3_bucket.clone())
+            .prefix(s3_key_to_str(&s3_location.key()));
+        if let Some(size) = page_size {
+            request_template = request_template.max_keys(i32::try_from(size).unwrap_or(i32::MAX));
+        }
+
+        // (key marker, version id marker, is_done)
+        let stream = stream::unfold(
+            (None::<String>, None::<String>, false),
+            move |(key_marker, version_id_marker, is_done)| {
+                let base_location = base_location.clone();
+                let markers = (key_marker.clone(), version_id_marker.clone());
+                let request = request_template
+                    .clone()
+                    .set_key_marker(key_marker)
+                    .set_version_id_marker(version_id_marker);
+                let s3_bucket = s3_bucket.clone();
+
+                async move {
+                    if is_done {
+                        return None;
+                    }
+                    let response = send_with_retry(|| async {
+                        request.clone().send().await.map_err(|e| {
+                            parse_s3_operation_error(e, "version listing", base_location.as_str())
+                        })
+                    })
+                    .await;
+                    match response.and_then(|response| {
+                        let entries = parse_version_page(&response, &base_location, &s3_bucket)?;
+                        let next_state = next_version_markers(&response, &markers, &base_location)?;
+                        Ok((entries, next_state))
+                    }) {
+                        Ok((entries, next_state)) => Some((Ok(entries), next_state)),
+                        Err(error) => Some((Err(error), (None, None, true))),
+                    }
+                }
+            },
+        );
+
+        Ok(stream.boxed())
+    }
+
+    async fn get_tags(&self, path: &str, version: &str) -> Result<ObjectTags, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        let response = self
+            .client
+            .get_object_tagging()
+            .bucket(s3_location.bucket_name())
+            .key(s3_key_to_str(&s3_location.key()))
+            .version_id(version)
+            .send()
+            .await
+            .map_err(|e| parse_s3_operation_error(e, "get object tagging", s3_location.as_str()))?;
+        Ok(response
+            .tag_set()
+            .iter()
+            .map(|tag| (tag.key().to_string(), tag.value().to_string()))
+            .collect())
+    }
+
+    async fn put_tags(
+        &self,
+        path: &str,
+        version: &str,
+        tags: &ObjectTags,
+    ) -> Result<(), WriteError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        let build_error = |e: aws_sdk_s3::error::BuildError| {
+            IOError::new(
                 ErrorKind::ConditionNotMatch,
-                format!(
-                    "Invalid range: start ({}) > end ({})",
-                    range.start, range.end
-                ),
+                format!("Could not build S3 tag set: {e}"),
                 s3_location.to_string(),
-            )));
-        }
-        if range.is_empty() {
-            return Ok(Bytes::new());
-        }
+            )
+        };
+        let tag_set = tags
+            .iter()
+            .map(|(key, value)| Tag::builder().key(key).value(value).build())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(build_error)?;
+        let tagging = Tagging::builder()
+            .set_tag_set(Some(tag_set))
+            .build()
+            .map_err(build_error)?;
+        self.client
+            .put_object_tagging()
+            .bucket(s3_location.bucket_name())
+            .key(s3_key_to_str(&s3_location.key()))
+            .version_id(version)
+            .tagging(tagging)
+            .send()
+            .await
+            .map_err(|e| parse_s3_operation_error(e, "put object tagging", s3_location.as_str()))?;
+        Ok(())
+    }
 
-        let range_size_u64 = range.end - range.start;
-        let range_size = usize::try_from(range_size_u64).map_err(|_| {
-            ReadError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                format!("Range size {range_size_u64} too large for this platform"),
-                s3_location.to_string(),
-            ))
-        })?;
-
-        if range_size <= MAX_BYTES_PER_REQUEST {
-            return fetch_range(&self.client, &s3_location, range, None).await;
-        }
-
-        let head_response = head(&self.client, &s3_location).await?;
-        let etag = head_response.e_tag().map(ToString::to_string);
-        parallel_chunked_read(&self.client, &s3_location, range.start, range_size, etag).await
+    async fn remove_tags(&self, path: &str, version: &str) -> Result<(), WriteError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        self.client
+            .delete_object_tagging()
+            .bucket(s3_location.bucket_name())
+            .key(s3_key_to_str(&s3_location.key()))
+            .version_id(version)
+            .send()
+            .await
+            .map_err(|e| {
+                parse_s3_operation_error(e, "delete object tagging", s3_location.as_str())
+            })?;
+        Ok(())
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -351,16 +442,8 @@ impl LakekeeperStorage for S3Storage {
 
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-        let head_response = head(&self.client, &s3_location).await?;
-        let location_str = s3_location.to_string();
-        let size = head_response
-            .content_length()
-            .and_then(|n| crate::size_to_u64(n, &location_str));
-        let last_modified = head_response.last_modified().and_then(parse_timestamp);
-        Ok(
-            FileInfo::new(last_modified, s3_location.location().clone(), size)
-                .with_e_tag(head_response.e_tag().map(ToString::to_string)),
-        )
+        let head_response = head(&self.client, &s3_location, None).await?;
+        Ok(head_file_info(&s3_location, &head_response))
     }
 
     async fn list(
@@ -403,26 +486,17 @@ impl LakekeeperStorage for S3Storage {
                             list_request.max_keys(i32::try_from(size).unwrap_or(i32::MAX));
                     }
 
-                    let result = tryhard::retry_fn(|| async {
-                        match list_request.clone().send().await {
-                            Ok(response) => Ok(Ok(response)),
-                            Err(e) => {
-                                let error = parse_list_objects_v2_error(e, base_location.as_str());
-                                if error.should_retry() {
-                                    Err(error)
-                                } else {
-                                    Ok(Err(error))
-                                }
-                            }
-                        }
+                    let result = send_with_retry(|| async {
+                        list_request
+                            .clone()
+                            .send()
+                            .await
+                            .map_err(|e| parse_list_objects_v2_error(e, base_location.as_str()))
                     })
-                    .retries(3)
-                    .exponential_backoff(std::time::Duration::from_millis(100))
-                    .max_delay(std::time::Duration::from_secs(10))
                     .await;
 
                     match result {
-                        Ok(Ok(response)) => {
+                        Ok(response) => {
                             let file_infos = response
                                 .contents()
                                 .iter()
@@ -437,9 +511,7 @@ impl LakekeeperStorage for S3Storage {
 
                             Some((Ok(file_infos), next_state))
                         }
-                        // First case: Retryable error occurred but retries didn't resolve it
-                        // Second case: Non-retryable error occurred
-                        Ok(Err(error)) | Err(error) => Some((Err(error), (None, true))),
+                        Err(error) => Some((Err(error), (None, true))),
                     }
                 }
             },
@@ -462,13 +534,272 @@ fn try_parse_file_info(
         let size = object
             .size()
             .and_then(|s| crate::size_to_u64(s, &full_path));
-        Some(FileInfo::new(last_modified, location, size))
+        Some(
+            FileInfo::new(last_modified, location, size)
+                .with_e_tag(object.e_tag().map(ToString::to_string)),
+        )
     }
+}
+
+/// Send a request, retrying errors that [`RetryableError::should_retry`] marks temporary.
+async fn send_with_retry<T, F, Fut>(send: F) -> Result<T, IOError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, IOError>>,
+{
+    let result = tryhard::retry_fn(|| async {
+        match send().await {
+            Ok(response) => Ok(Ok(response)),
+            Err(error) if error.should_retry() => Err(error),
+            Err(error) => Ok(Err(error)),
+        }
+    })
+    .retries(3)
+    .exponential_backoff(std::time::Duration::from_millis(100))
+    .max_delay(std::time::Duration::from_secs(10))
+    .await;
+    // The outer error is a temporary one the retries did not resolve.
+    result.and_then(|inner| inner)
+}
+
+/// The markers the next `ListObjectVersions` page starts after, and whether the listing
+/// is done. A truncated page without a key marker, or with the markers the page started
+/// after, would restart or repeat the listing, so it fails it.
+fn next_version_markers(
+    response: &aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput,
+    current: &(Option<String>, Option<String>),
+    base_location: &Location,
+) -> Result<(Option<String>, Option<String>, bool), IOError> {
+    if !response.is_truncated().unwrap_or(false) {
+        return Ok((None, None, true));
+    }
+    let non_empty = |marker: Option<&str>| marker.filter(|m| !m.is_empty()).map(String::from);
+    let next = (
+        non_empty(response.next_key_marker()),
+        non_empty(response.next_version_id_marker()),
+    );
+    if next.0.is_none() || &next == current {
+        return Err(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            "S3 version listing is truncated but returned no new key marker",
+            base_location.to_string(),
+        ));
+    }
+    Ok((next.0, next.1, false))
+}
+
+/// The entries of one `ListObjectVersions` page, ordered by key and newest first within a
+/// key. S3 returns versions and delete markers as two lists, each in that order, so a
+/// version and a delete marker with the same modification time keep no defined order.
+fn parse_version_page(
+    response: &aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput,
+    base_location: &Location,
+    s3_bucket: &str,
+) -> Result<Vec<ObjectVersionEntry>, IOError> {
+    let scheme = base_location.scheme();
+    let entry_location = |key: Option<&str>, version_id: Option<&str>| {
+        let (Some(key), Some(version_id)) = (key, version_id) else {
+            return Err(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "S3 version listing returned an entry without key or version id",
+                base_location.to_string(),
+            ));
+        };
+        let full_path = format!("{scheme}://{s3_bucket}/{key}");
+        let location = Location::from_str(&full_path).map_err(|e| {
+            IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Failed to parse S3 key returned from version listing: {e}"),
+                full_path.clone(),
+            )
+        })?;
+        Ok((location, version_id.to_string(), full_path))
+    };
+
+    let mut entries =
+        Vec::with_capacity(response.versions().len() + response.delete_markers().len());
+    for version in response.versions() {
+        let (location, version_id, full_path) =
+            entry_location(version.key(), version.version_id())?;
+        entries.push(ObjectVersionEntry::Version(
+            ObjectVersion::builder()
+                .location(location)
+                .version(version_id)
+                .e_tag(version.e_tag().map(ToString::to_string))
+                .size(
+                    version
+                        .size()
+                        .and_then(|s| crate::size_to_u64(s, &full_path)),
+                )
+                .last_modified(version.last_modified().and_then(parse_timestamp))
+                .is_latest(version.is_latest().unwrap_or(false))
+                .build(),
+        ));
+    }
+    for marker in response.delete_markers() {
+        let (location, version_id, _) = entry_location(marker.key(), marker.version_id())?;
+        entries.push(ObjectVersionEntry::DeleteMarker(
+            DeleteMarker::builder()
+                .location(location)
+                .version(version_id)
+                .last_modified(marker.last_modified().and_then(parse_timestamp))
+                .is_latest(marker.is_latest().unwrap_or(false))
+                .build(),
+        ));
+    }
+    // Merge the two lists: by key, then the current version, then newest first.
+    entries.sort_by(|a, b| {
+        let modified = |entry: &ObjectVersionEntry| match entry {
+            ObjectVersionEntry::Version(v) => v.last_modified,
+            ObjectVersionEntry::DeleteMarker(m) => m.last_modified,
+        };
+        a.location()
+            .as_str()
+            .cmp(b.location().as_str())
+            .then_with(|| b.is_latest().cmp(&a.is_latest()))
+            .then_with(|| modified(b).cmp(&modified(a)))
+    });
+    Ok(entries)
+}
+
+/// The [`FileInfo`] a `HeadObject` response describes.
+fn head_file_info(location: &S3Location, head_response: &HeadObjectOutput) -> FileInfo {
+    let location_str = location.to_string();
+    FileInfo::new(
+        head_response.last_modified().and_then(parse_timestamp),
+        location.location().clone(),
+        head_response
+            .content_length()
+            .and_then(|n| crate::size_to_u64(n, &location_str)),
+    )
+    .with_e_tag(head_response.e_tag().map(ToString::to_string))
+    .with_version(head_response.version_id().map(ToString::to_string))
+}
+
+/// Read the current object, or the object version `version`.
+async fn read_object(
+    client: &aws_sdk_s3::Client,
+    s3_location: &S3Location,
+    version: Option<&str>,
+) -> Result<ObjectRead, ReadError> {
+    let head_response = head(client, s3_location, version).await?;
+    let content_length = head_response.content_length().unwrap_or(0);
+    let file_size = validate_file_size(content_length, s3_location.as_str())?;
+
+    if file_size >= MAX_BYTES_PER_REQUEST {
+        // The chunks are pinned to the object the `head` describes, so its
+        // metadata describes the bytes.
+        let info = head_file_info(s3_location, &head_response);
+        let pin = chunk_pin(version, &head_response);
+        let bytes = parallel_chunked_read(client, s3_location, 0, file_size, pin).await?;
+        return Ok(ObjectRead { bytes, info });
+    }
+    // One request returns the bytes together with the metadata of the object
+    // they belong to, even if the object was replaced after the `head`.
+    get_object(client, s3_location, version).await
+}
+
+/// Read a byte range of the current object, or of the object version `version`.
+async fn read_object_range(
+    client: &aws_sdk_s3::Client,
+    s3_location: &S3Location,
+    version: Option<&str>,
+    range: Range<u64>,
+) -> Result<Bytes, ReadError> {
+    if range.end < range.start {
+        return Err(ReadError::IOError(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!(
+                "Invalid range: start ({}) > end ({})",
+                range.start, range.end
+            ),
+            s3_location.to_string(),
+        )));
+    }
+    if range.is_empty() {
+        return Ok(Bytes::new());
+    }
+
+    let range_size_u64 = range.end - range.start;
+    let range_size = usize::try_from(range_size_u64).map_err(|_| {
+        ReadError::IOError(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("Range size {range_size_u64} too large for this platform"),
+            s3_location.to_string(),
+        ))
+    })?;
+
+    if range_size <= MAX_BYTES_PER_REQUEST {
+        return fetch_range(client, s3_location, version, range, None).await;
+    }
+
+    let head_response = head(client, s3_location, version).await?;
+    let pin = chunk_pin(version, &head_response);
+    parallel_chunked_read(client, s3_location, range.start, range_size, pin).await
+}
+
+/// What keeps the chunks of one parallel read on the same object. Each chunk
+/// reads `version` if set, and sends `If-Match` with `e_tag` if set, so bytes
+/// replaced while the download is in flight fail the read. The `ETag` matters
+/// for a version too: some providers replace a version's bytes in place, and the
+/// `"null"` version is replaced by any write.
+#[derive(Debug, Clone)]
+struct ChunkPin {
+    version: Option<String>,
+    e_tag: Option<String>,
+}
+
+fn chunk_pin(version: Option<&str>, head_response: &HeadObjectOutput) -> ChunkPin {
+    ChunkPin {
+        version: version.map(ToString::to_string),
+        e_tag: head_response.e_tag().map(ToString::to_string),
+    }
+}
+
+/// Read a whole object, or the object version `version`, in one request.
+async fn get_object(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    version: Option<&str>,
+) -> Result<ObjectRead, ReadError> {
+    let response = client
+        .get_object()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()))
+        .set_version_id(version.map(ToString::to_string))
+        .send()
+        .await
+        .map_err(|e| parse_get_object_error(e, location))?;
+
+    let location_str = location.to_string();
+    let info = FileInfo::new(
+        response.last_modified().and_then(parse_timestamp),
+        location.location().clone(),
+        response
+            .content_length()
+            .and_then(|n| crate::size_to_u64(n, &location_str)),
+    )
+    .with_e_tag(response.e_tag().map(ToString::to_string))
+    .with_version(response.version_id().map(ToString::to_string));
+
+    let body = response.body.collect().await.map_err(|e| {
+        IOError::new(
+            ErrorKind::Unexpected,
+            format!("Error collecting S3 object bytestream: {e}"),
+            location.to_string(),
+        )
+        .set_source(anyhow::anyhow!(e))
+    })?;
+    Ok(ObjectRead {
+        bytes: body.into_bytes(),
+        info,
+    })
 }
 
 async fn fetch_range(
     client: &aws_sdk_s3::Client,
     location: &S3Location,
+    version: Option<&str>,
     range: std::ops::Range<u64>,
     if_match: Option<&str>,
 ) -> Result<Bytes, ReadError> {
@@ -476,6 +807,7 @@ async fn fetch_range(
         .get_object()
         .bucket(location.bucket_name())
         .key(s3_key_to_str(&location.key()))
+        .set_version_id(version.map(ToString::to_string))
         // range header for s3 client is inclusive
         .range(format!("bytes={}-{}", range.start, range.end - 1));
     if let Some(etag) = if_match {
@@ -500,11 +832,13 @@ async fn fetch_range(
 async fn head(
     client: &aws_sdk_s3::Client,
     location: &S3Location,
+    version: Option<&str>,
 ) -> Result<HeadObjectOutput, ReadError> {
     client
         .head_object()
         .bucket(location.bucket_name())
         .key(s3_key_to_str(&location.key()))
+        .set_version_id(version.map(ToString::to_string))
         .send()
         .await
         .map_err(|e| ReadError::IOError(parse_head_object_error(e, location)))
@@ -516,14 +850,14 @@ fn parse_timestamp(timestamp: &aws_smithy_types::DateTime) -> Option<DateTime<Ut
 
 /// Run a parallel-chunked download over `[range_start, range_start + range_size)`.
 ///
-/// Each chunk fetch sets `If-Match: <etag>` if present. If etag is set and
-/// file is overwritten while download in flight, a `ReadError` is returned.
+/// Each chunk fetch is pinned by `pin`: a file overwritten while the download is
+/// in flight returns a `ReadError` when `pin` carries an `ETag`.
 async fn parallel_chunked_read(
     client: &aws_sdk_s3::Client,
     s3_location: &S3Location,
     range_start: u64,
     range_size: usize,
-    if_match: Option<String>,
+    pin: ChunkPin,
 ) -> Result<Bytes, ReadError> {
     if range_size == 0 {
         return Ok(Bytes::new());
@@ -540,23 +874,26 @@ async fn parallel_chunked_read(
         move |rel_start, rel_end, chunk_index| {
             let client = client.clone();
             let location = location_for_chunks.clone();
-            let if_match = if_match.clone();
+            let pin = pin.clone();
             let abs_start = range_start + rel_start as u64;
             let abs_end = range_start + rel_end as u64 + 1;
             async move {
-                let chunk =
-                    fetch_range(&client, &location, abs_start..abs_end, if_match.as_deref())
-                        .await
-                        .map_err(|e| {
-                            match e {
-                        ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
-                            "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
-                        ))),
-                        invalid_location_error @ ReadError::InvalidLocation(_) => {
-                            invalid_location_error
-                        }
+                let chunk = fetch_range(
+                    &client,
+                    &location,
+                    pin.version.as_deref(),
+                    abs_start..abs_end,
+                    pin.e_tag.as_deref(),
+                )
+                .await
+                .map_err(|e| match e {
+                    ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                        "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                    ))),
+                    invalid_location_error @ ReadError::InvalidLocation(_) => {
+                        invalid_location_error
                     }
-                        })?;
+                })?;
                 Ok((chunk_index, chunk))
             }
         },
@@ -569,7 +906,7 @@ async fn put_object_single(
     location: &S3Location,
     kms_key_arn: Option<&str>,
     bytes: Bytes,
-) -> Result<(), WriteError> {
+) -> Result<WriteOutcome, WriteError> {
     let mut put = client
         .put_object()
         .bucket(location.bucket_name())
@@ -580,12 +917,16 @@ async fn put_object_single(
             .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
             .set_ssekms_key_id(Some(arn.to_string()));
     }
-    put.customize()
+    let output = put
+        .customize()
         .config_override(crate::s3::transfer_config_override())
         .send()
         .await
         .map_err(|e| WriteError::IOError(parse_put_object_error(e, location.as_str())))?;
-    Ok(())
+    Ok(WriteOutcome {
+        e_tag: output.e_tag().map(ToString::to_string),
+        version: output.version_id().map(ToString::to_string),
+    })
 }
 
 /// Initiate a multipart upload, returning the SDK-issued upload id.
@@ -666,11 +1007,11 @@ async fn complete_multipart(
     location: &S3Location,
     upload_id: &str,
     completed_parts: Vec<aws_sdk_s3::types::CompletedPart>,
-) -> Result<(), WriteError> {
+) -> Result<WriteOutcome, WriteError> {
     let multipart = aws_sdk_s3::types::CompletedMultipartUpload::builder()
         .set_parts(Some(completed_parts))
         .build();
-    client
+    let output = client
         .complete_multipart_upload()
         .bucket(location.bucket_name())
         .key(s3_key_to_str(&location.key()))
@@ -686,7 +1027,10 @@ async fn complete_multipart(
                     .with_context("Failed to complete multipart upload."),
             )
         })?;
-    Ok(())
+    Ok(WriteOutcome {
+        e_tag: output.e_tag().map(ToString::to_string),
+        version: output.version_id().map(ToString::to_string),
+    })
 }
 
 /// Best-effort multipart abort used on the streaming-writer error path.
@@ -857,7 +1201,7 @@ impl LakekeeperFileWrite for S3FileWrite {
     /// If an error occurred during closing, subsequent calls will only
     /// return generic error. Callers need to inspect `write` errors
     /// or first `close` error, if required.
-    async fn close(&mut self) -> Result<(), WriteError> {
+    async fn close(&mut self) -> Result<WriteOutcome, WriteError> {
         let state = std::mem::replace(&mut self.state, S3WriterState::Closed);
         match state {
             S3WriterState::Closed | S3WriterState::Aborted | S3WriterState::AbortFailed => {
@@ -921,20 +1265,21 @@ impl LakekeeperFileWrite for S3FileWrite {
                     // the the multipart upload.
                     completed_parts.push(part);
                 }
-                if let Err(e) =
-                    complete_multipart(&self.client, &self.location, &upload_id, completed_parts)
-                        .await
+                match complete_multipart(&self.client, &self.location, &upload_id, completed_parts)
+                    .await
                 {
-                    abort_multipart_logged_infallible(
-                        &self.client,
-                        &self.location,
-                        &upload_id,
-                        "complete_multipart failed during close",
-                    )
-                    .await;
-                    return Err(e);
+                    Ok(outcome) => Ok(outcome),
+                    Err(e) => {
+                        abort_multipart_logged_infallible(
+                            &self.client,
+                            &self.location,
+                            &upload_id,
+                            "complete_multipart failed during close",
+                        )
+                        .await;
+                        Err(e)
+                    }
                 }
-                Ok(())
             }
         }
     }
@@ -1523,6 +1868,144 @@ mod tests {
         );
     }
 
+    #[test]
+    fn version_page_interleaves_markers_by_key_and_recency() {
+        use aws_sdk_s3::{
+            operation::list_object_versions::ListObjectVersionsOutput,
+            types::{DeleteMarkerEntry, ObjectVersion as S3ObjectVersion},
+        };
+        let at = aws_smithy_types::DateTime::from_secs;
+        let version = |key: &str, id: &str, latest: bool, secs: i64| {
+            S3ObjectVersion::builder()
+                .key(key)
+                .version_id(id)
+                .is_latest(latest)
+                .last_modified(at(secs))
+                .e_tag(format!("\"{id}\""))
+                .size(3)
+                .build()
+        };
+        let output = ListObjectVersionsOutput::builder()
+            .versions(version("p/a", "a2", false, 20))
+            .versions(version("p/a", "a1", false, 10))
+            .versions(version("p/b", "b1", true, 5))
+            .delete_markers(
+                DeleteMarkerEntry::builder()
+                    .key("p/a")
+                    .version_id("m1")
+                    .is_latest(true)
+                    .last_modified(at(30))
+                    .build(),
+            )
+            .build();
+        let base = Location::from_str("s3://bucket/p/").unwrap();
+
+        let entries = parse_version_page(&output, &base, "bucket").unwrap();
+        let summary: Vec<(&str, &str, bool, bool)> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.location().as_str(),
+                    entry.version(),
+                    entry.is_latest(),
+                    matches!(entry, ObjectVersionEntry::DeleteMarker(_)),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("s3://bucket/p/a", "m1", true, true),
+                ("s3://bucket/p/a", "a2", false, false),
+                ("s3://bucket/p/a", "a1", false, false),
+                ("s3://bucket/p/b", "b1", true, false),
+            ]
+        );
+        let ObjectVersionEntry::Version(a2) = &entries[1] else {
+            panic!("expected a version, got {:?}", entries[1]);
+        };
+        assert_eq!(a2.e_tag.as_deref(), Some("\"a2\""));
+        assert_eq!(a2.size, Some(3));
+    }
+
+    #[test]
+    fn version_page_without_version_id_is_an_error() {
+        let output =
+            aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput::builder()
+                .versions(
+                    aws_sdk_s3::types::ObjectVersion::builder()
+                        .key("p/a")
+                        .build(),
+                )
+                .build();
+        let base = Location::from_str("s3://bucket/p/").unwrap();
+        let error = parse_version_page(&output, &base, "bucket").unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConditionNotMatch);
+    }
+
+    #[test]
+    fn version_markers_advance_or_fail_the_listing() {
+        use aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput;
+        let base = Location::from_str("s3://bucket/p/").unwrap();
+        let start = (None, None);
+
+        let last_page = ListObjectVersionsOutput::builder()
+            .is_truncated(false)
+            .build();
+        assert_eq!(
+            next_version_markers(&last_page, &start, &base).unwrap(),
+            (None, None, true)
+        );
+
+        let next = ListObjectVersionsOutput::builder()
+            .is_truncated(true)
+            .next_key_marker("p/a")
+            .next_version_id_marker("")
+            .build();
+        assert_eq!(
+            next_version_markers(&next, &start, &base).unwrap(),
+            (Some("p/a".to_string()), None, false)
+        );
+
+        // No key marker would restart the listing; the same markers would repeat it.
+        let without_marker = ListObjectVersionsOutput::builder()
+            .is_truncated(true)
+            .next_version_id_marker("v1")
+            .build();
+        let repeated = ListObjectVersionsOutput::builder()
+            .is_truncated(true)
+            .next_key_marker("p/a")
+            .next_version_id_marker("v1")
+            .build();
+        let current = (Some("p/a".to_string()), Some("v1".to_string()));
+        for (response, markers) in [(&without_marker, &start), (&repeated, &current)] {
+            let error = next_version_markers(response, markers, &base).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ConditionNotMatch, "{error}");
+        }
+    }
+
+    fn read_error_kind(error: &ReadError) -> Option<ErrorKind> {
+        match error {
+            ReadError::IOError(e) => Some(e.kind()),
+            ReadError::InvalidLocation(_) => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_version_that_is_a_delete_marker_is_not_found() {
+        // S3 answers a HEAD for a delete marker's version id with a bodiless 405.
+        let storage = storage_answering("405 Method Not Allowed", "").await;
+        let error = storage
+            .read_version("s3://my-bucket/key", "marker-id")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::NotFound),
+            "{error}"
+        );
+    }
+
     #[tokio::test]
     async fn a_single_delete_does_not_wait_for_the_delete_limit() {
         let endpoint =
@@ -1549,6 +2032,53 @@ mod tests {
     async fn the_service_scope_is_the_endpoint_origin() {
         let storage = storage_at("http://127.0.0.1:1").await;
         assert_eq!(storage.service_scope, "http://127.0.0.1:1");
+    }
+
+    #[tokio::test]
+    async fn a_refused_version_head_is_permission_denied() {
+        let storage = storage_answering("403 Forbidden", "").await;
+        let error = storage
+            .metadata_version("s3://my-bucket/key", "v1")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::PermissionDenied),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_tag_is_a_permanent_error() {
+        let storage = storage_answering(
+            "400 Bad Request",
+            "<Error><Code>InvalidTag</Code><Message>The TagValue you have provided is invalid</Message></Error>",
+        )
+        .await;
+        let error = storage
+            .put_tags("s3://my-bucket/key", "v1", &ObjectTags::new())
+            .await
+            .unwrap_err();
+        let WriteError::IOError(error) = error else {
+            panic!("expected an IO error, got {error:?}");
+        };
+        assert_eq!(error.kind(), ErrorKind::ConditionNotMatch, "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_provider_without_version_listing_is_unsupported() {
+        let storage = storage_answering(
+            "501 Not Implemented",
+            "<Error><Code>NotImplemented</Code><Message>A header you provided implies functionality that is not implemented</Message></Error>",
+        )
+        .await;
+        let mut pages = storage
+            .list_versions("s3://my-bucket/prefix", None)
+            .await
+            .unwrap();
+        let error = pages.next().await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{error}");
+        assert!(pages.next().await.is_none());
     }
 
     #[tokio::test]

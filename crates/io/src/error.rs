@@ -334,6 +334,8 @@ pub enum ErrorKind {
     RateLimited,
     ConditionNotMatch,
     CredentialsExpired,
+    /// The storage backend does not implement the operation.
+    Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum_macros::Display)]
