@@ -248,6 +248,17 @@ fn version_not_found(key: &str, version: &str) -> IOError {
     )
 }
 
+/// Fails unless `version` has the form of the version ids this backend issues.
+fn check_version_id(key: &str, version: &str) -> Result<(), IOError> {
+    uuid::Uuid::parse_str(version).map(|_| ()).map_err(|_| {
+        IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("`{version}` is not a memory storage version id"),
+            key.to_string(),
+        )
+    })
+}
+
 /// The object version `version` of `key`. A delete marker is not an object version, so
 /// its id is not found, as S3 refuses to read or tag one.
 fn find_version<'a>(
@@ -255,6 +266,7 @@ fn find_version<'a>(
     key: &str,
     version: &str,
 ) -> Result<&'a MemoryVersion, IOError> {
+    check_version_id(key, version)?;
     data.get(key)
         .and_then(|entries| {
             entries.iter().find_map(|entry| match entry {
@@ -270,6 +282,7 @@ fn find_version_mut<'a>(
     key: &str,
     version: &str,
 ) -> Result<&'a mut MemoryVersion, IOError> {
+    check_version_id(key, version)?;
     data.get_mut(key)
         .and_then(|entries| {
             entries.iter_mut().find_map(|entry| match entry {
@@ -299,12 +312,16 @@ fn object_read(key: &str, version: &MemoryVersion) -> Result<ObjectRead, IOError
     })
 }
 
-/// Pages of at most `page_size` items; S3 treats a page size of zero as its default.
+/// Most entries S3 returns in one listing page, and its page size for a requested size of
+/// zero.
+const MAX_PAGE_SIZE: usize = 1000;
+
+/// Pages of at most `page_size` items, as S3 pages a listing.
 fn pages<T: Clone>(items: &[T], page_size: Option<usize>) -> Vec<Vec<T>> {
-    items
-        .chunks(page_size.filter(|size| *size > 0).unwrap_or(1000))
-        .map(<[T]>::to_vec)
-        .collect()
+    let page_size = page_size
+        .filter(|size| *size > 0)
+        .map_or(MAX_PAGE_SIZE, |size| size.min(MAX_PAGE_SIZE));
+    items.chunks(page_size).map(<[T]>::to_vec).collect()
 }
 
 fn slice_range(key: &str, bytes: &Bytes, range: std::ops::Range<u64>) -> Result<Bytes, IOError> {
@@ -576,6 +593,7 @@ impl LakekeeperStorage for MemoryStorage {
         tags: &ObjectTags,
     ) -> Result<(), WriteError> {
         let key = normalize_memory_path(path)?;
+        crate::validate_tags(tags, &key)?;
         let mut data = self.data.write().await;
         find_version_mut(&mut data, &key, version)?.tags = tags.clone();
         Ok(())
@@ -639,7 +657,8 @@ mod tests {
 
     use crate::{
         ErrorKind, IOError, LakekeeperStorage, ObjectTags, ObjectVersionEntry, ReadError,
-        WriteError, memory::MemoryStorage,
+        WriteError,
+        memory::{MemoryStorage, pages},
     };
 
     async fn all_versions(storage: &MemoryStorage, prefix: &str) -> Vec<ObjectVersionEntry> {
@@ -985,8 +1004,12 @@ mod tests {
         assert_eq!(page[0].e_tag(), outcome.e_tag.as_deref());
         assert_eq!(page[0].version(), None);
 
+        let version = outcome
+            .version
+            .clone()
+            .expect("memory storage versions every write");
         let metadata = storage.metadata("memory://listing/a").await.unwrap();
-        assert_eq!(metadata.version(), outcome.version.as_deref());
+        assert_eq!(metadata.version(), Some(version.as_str()));
     }
 
     #[tokio::test]
@@ -996,9 +1019,13 @@ mod tests {
         let mut writer = storage.writer(path).await.unwrap();
         writer.write(Bytes::from("streamed")).await.unwrap();
         let outcome = writer.close().await.unwrap();
+        let version = outcome
+            .version
+            .clone()
+            .expect("memory storage versions every write");
 
         let read = storage.read(path).await.unwrap();
-        assert_eq!(read.info.version(), outcome.version.as_deref());
+        assert_eq!(read.info.version(), Some(version.as_str()));
         assert_eq!(read.info.e_tag(), outcome.e_tag.as_deref());
     }
 
@@ -1033,7 +1060,8 @@ mod tests {
             ObjectTags::new()
         );
 
-        let error = storage.put_tags(path, "missing", &tags).await.unwrap_err();
+        let unknown = uuid::Uuid::now_v7().to_string();
+        let error = storage.put_tags(path, &unknown, &tags).await.unwrap_err();
         assert!(
             matches!(&error, WriteError::IOError(e) if e.kind() == ErrorKind::NotFound),
             "{error}"
@@ -1072,6 +1100,69 @@ mod tests {
                 ("memory://tree/b", true),
                 ("memory://tree/b", false),
             ]
+        );
+    }
+
+    #[test]
+    fn listing_pages_hold_at_most_a_thousand_entries() {
+        let items: Vec<usize> = (0..2500).collect();
+        let sizes = |page_size| {
+            pages(&items, page_size)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sizes(Some(5000)), vec![1000, 1000, 500]);
+        assert_eq!(sizes(Some(0)), vec![1000, 1000, 500]);
+        assert_eq!(sizes(None), vec![1000, 1000, 500]);
+        assert_eq!(sizes(Some(1200)), vec![1000, 1000, 500]);
+        assert_eq!(sizes(Some(999)), vec![999, 999, 502]);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_version_id_is_refused() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://versions/obj";
+        storage.write(path, Bytes::from("data")).await.unwrap();
+        let Err(ReadError::IOError(error)) = storage.read_version(path, "not-a-version").await
+        else {
+            panic!("expected the version id to be refused");
+        };
+        assert_eq!(error.kind(), ErrorKind::ConditionNotMatch);
+        assert_eq!(
+            error.reason(),
+            "`not-a-version` is not a memory storage version id"
+        );
+        // A well-formed id the key does not have is not found.
+        let unknown = uuid::Uuid::now_v7().to_string();
+        let Err(ReadError::IOError(error)) = storage.read_version(path, &unknown).await else {
+            panic!("expected the version to be missing");
+        };
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn a_tag_set_beyond_the_limits_is_refused() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://tags/limits";
+        let version = storage
+            .write(path, Bytes::from("data"))
+            .await
+            .unwrap()
+            .version
+            .expect("memory storage versions every write");
+        let tags = ObjectTags::from([("aws:reserved".to_string(), "value".to_string())]);
+        let Err(WriteError::IOError(error)) = storage.put_tags(path, &version, &tags).await else {
+            panic!("expected the tag set to be refused");
+        };
+        assert_eq!(error.kind(), ErrorKind::ConditionNotMatch);
+        assert_eq!(
+            error.reason(),
+            "Tag key `aws:reserved` is in the reserved `aws:` namespace"
+        );
+        assert_eq!(
+            storage.get_tags(path, &version).await.unwrap(),
+            ObjectTags::new()
         );
     }
 }

@@ -533,6 +533,7 @@ export LAKEKEEPER_TEST__S3_SECRET_KEY=minio-root-password
 export LAKEKEEPER_TEST__S3_ENDPOINT=http://localhost:9000
 
 export LAKEKEEPER_TEST__GCS_CREDENTIAL='{"type": "service_account","project_id": "..", ...}'
+# both GCS buckets need a soft delete policy and object versioning turned off
 export LAKEKEEPER_TEST__GCS_BUCKET=name-of-gcs-bucket-without-hns
 export LAKEKEEPER_TEST__GCS_HNS_BUCKET=name-of-gcs-bucket-with-hns
 ```
@@ -545,7 +546,7 @@ cargo nextest run --all-features --ignore-default-filter -E "test(::aws_integrat
 # see .config/nextest.toml for all filters
 ```
 
-To check a new S3-compatible store, point the `LAKEKEEPER_TEST__S3_*` variables at it and run the `s3_compat` profile, which selects the tests that use those variables on the unversioned bucket and nothing else. The object version tests (`*_s3_versioned`) also need `LAKEKEEPER_TEST__S3_VERSIONED_BUCKET` and are not part of it:
+To check a new S3-compatible store, point the `LAKEKEEPER_TEST__S3_*` variables at it and run the `s3_compat` profile, which selects the tests that use those variables on the unversioned bucket and nothing else. Some of them list object versions and read the `null` version there, so the store needs `ListObjectVersions`. The tests on a versioned bucket (`*_s3_versioned`) also need `LAKEKEEPER_TEST__S3_VERSIONED_BUCKET` and are not part of the profile:
 
 ```sh
 cargo nextest run --profile s3_compat --all-features --all-targets --workspace

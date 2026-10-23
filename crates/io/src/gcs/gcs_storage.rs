@@ -502,9 +502,15 @@ fn reads_in_one_request(object: &Object, file_size: usize) -> bool {
     file_size < MAX_BYTES_PER_READ || object.content_encoding.eq_ignore_ascii_case("gzip")
 }
 
+/// When the generation was created, as S3 reports `LastModified` for a version. The update
+/// time also moves with metadata changes, such as a storage class change by lifecycle, so
+/// it serves only where the creation time is missing.
 fn last_modified(object: &Object) -> Option<chrono::DateTime<chrono::Utc>> {
-    let update_time = object.update_time.as_ref()?;
-    utc(update_time.seconds(), update_time.nanos())
+    let time = object
+        .finalize_time
+        .as_ref()
+        .or(object.update_time.as_ref())?;
+    utc(time.seconds(), time.nanos())
 }
 
 fn utc(seconds: i64, nanos: i32) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -516,7 +522,27 @@ fn file_info(object: &Object, location: Location) -> FileInfo {
     let size = crate::size_to_u64(object.size, location.as_str());
     FileInfo::new(last_modified(object), location, size)
         .with_e_tag(object_e_tag(object))
-        .with_version(Some(object.generation.to_string()))
+        .with_version(generation_version(object.generation))
+}
+
+/// The version of a generation. GCS numbers generations from 1; a response without one,
+/// as an emulator may send, reports generation 0, which is no version.
+fn generation_version(generation: i64) -> Option<String> {
+    (generation > 0).then(|| generation.to_string())
+}
+
+/// The version of an object a listing returned, which always has a generation.
+fn listed_version(object: &Object, location: &Location) -> Result<String, IOError> {
+    generation_version(object.generation).ok_or_else(|| {
+        IOError::new(
+            ErrorKind::Unexpected,
+            format!(
+                "GCS listed an object without a generation (generation {})",
+                object.generation
+            ),
+            location.to_string(),
+        )
+    })
 }
 
 fn try_parse_file_info(bucket_name: &str, object: &Object) -> Result<FileInfo, IOError> {
@@ -541,10 +567,10 @@ fn object_e_tag(object: &Object) -> Option<String> {
 }
 
 pub(crate) fn write_outcome(object: &Object) -> WriteOutcome {
-    WriteOutcome {
-        e_tag: object_e_tag(object),
-        version: Some(object.generation.to_string()),
-    }
+    WriteOutcome::builder()
+        .e_tag(object_e_tag(object))
+        .version(generation_version(object.generation))
+        .build()
 }
 
 /// Generations are positive. The API reads generation 0 as the live object, so it is
@@ -562,11 +588,12 @@ fn parse_generation(version: &str, location: &GcsLocation) -> Result<i64, IOErro
 
 fn version_entry(bucket_name: &str, object: &Object) -> Result<ObjectVersionEntry, IOError> {
     let location = listed_location(bucket_name, object)?;
+    let version = listed_version(object, &location)?;
     Ok(ObjectVersionEntry::Version(
         ObjectVersion::builder()
             .size(crate::size_to_u64(object.size, location.as_str()))
             .location(location)
-            .version(object.generation.to_string())
+            .version(version)
             .e_tag(object_e_tag(object))
             .last_modified(last_modified(object))
             // A noncurrent generation carries the time it stopped being live.
@@ -577,22 +604,24 @@ fn version_entry(bucket_name: &str, object: &Object) -> Result<ObjectVersionEntr
 
 fn soft_deleted_version(bucket_name: &str, object: &Object) -> Result<SoftDeletedVersion, IOError> {
     let location = listed_location(bucket_name, object)?;
+    let version = listed_version(object, &location)?;
     let soft_delete_time = object.soft_delete_time.as_ref();
     let hard_delete_time = object.hard_delete_time.as_ref();
     Ok(SoftDeletedVersion::builder()
         .size(crate::size_to_u64(object.size, location.as_str()))
         .location(location)
-        .version(object.generation.to_string())
+        .version(version)
         .e_tag(object_e_tag(object))
         .last_modified(last_modified(object))
         .soft_delete_time(soft_delete_time.and_then(|t| utc(t.seconds(), t.nanos())))
         .hard_delete_time(hard_delete_time.and_then(|t| utc(t.seconds(), t.nanos())))
+        .restore_token(object.restore_token.clone())
         .build())
 }
 
-/// Reorders pages of generations, which GCS lists oldest first within a key, to newest
-/// first. The generations of the last key of a page are held back until the next page,
-/// which may continue that key.
+/// Reorders pages of generations to newest first within each key. GCS lists the keys in
+/// order but documents no order for the generations of a key. The generations of the last
+/// key of a page are held back until the next page, which may continue that key.
 fn newest_first(
     pages: impl futures::Stream<Item = Result<Vec<ObjectVersionEntry>, IOError>> + Send + 'static,
 ) -> futures::stream::BoxStream<'static, Result<Vec<ObjectVersionEntry>, IOError>> {
@@ -617,13 +646,13 @@ fn newest_first(
                         held = rest;
                         continue;
                     }
-                    let ready = reverse_within_keys(std::mem::replace(&mut held, rest));
+                    let ready = newest_within_keys(std::mem::replace(&mut held, rest));
                     return Some((Ok(ready), (pages, held, false)));
                 }
                 Some(Err(error)) => return Some((Err(error), (pages, Vec::new(), true))),
                 None if held.is_empty() => return None,
                 None => {
-                    let ready = reverse_within_keys(std::mem::take(&mut held));
+                    let ready = newest_within_keys(std::mem::take(&mut held));
                     return Some((Ok(ready), (pages, held, true)));
                 }
             }
@@ -632,8 +661,9 @@ fn newest_first(
     .boxed()
 }
 
-/// Reverses each run of entries that share a key, keeping the order of the keys.
-fn reverse_within_keys(mut entries: Vec<ObjectVersionEntry>) -> Vec<ObjectVersionEntry> {
+/// Sorts each run of entries that share a key by generation, newest first, keeping the order
+/// of the keys.
+fn newest_within_keys(mut entries: Vec<ObjectVersionEntry>) -> Vec<ObjectVersionEntry> {
     let mut start = 0;
     while start < entries.len() {
         let key = entries[start].location().clone();
@@ -641,7 +671,10 @@ fn reverse_within_keys(mut entries: Vec<ObjectVersionEntry>) -> Vec<ObjectVersio
             .iter()
             .position(|entry| entry.location() != &key)
             .map_or(entries.len(), |offset| start + offset);
-        entries[start..end].reverse();
+        // `version_entry` builds every entry from a positive generation.
+        entries[start..end].sort_by_key(|entry| {
+            std::cmp::Reverse(entry.version().parse::<i64>().unwrap_or_default())
+        });
         start = end;
     }
     entries
@@ -895,14 +928,15 @@ mod tests {
 
     #[tokio::test]
     async fn newest_first_holds_a_key_back_across_page_breaks() {
+        // The generations of a key arrive in no particular order.
         let pages = vec![
             Ok(vec![
                 generation("a", 1, false),
                 generation("a", 2, true),
                 generation("b", 3, false),
             ]),
-            Ok(vec![generation("b", 4, false)]),
-            Ok(vec![generation("b", 5, true), generation("c", 6, true)]),
+            Ok(vec![generation("b", 5, true)]),
+            Ok(vec![generation("b", 4, false), generation("c", 6, true)]),
             Ok(vec![]),
         ];
         let out: Vec<Vec<ObjectVersionEntry>> = newest_first(futures::stream::iter(pages))
@@ -940,6 +974,51 @@ mod tests {
             vec![vec![("gs://bucket/p/a".to_string(), "1".to_string())]]
         );
         assert_eq!(out[1].as_ref().unwrap_err().kind(), ErrorKind::Unexpected);
+    }
+
+    #[test]
+    fn an_object_without_a_generation_has_no_version() {
+        let location = Location::from_str("gs://bucket/p/a").unwrap();
+        let object = Object::new().set_name("p/a");
+        assert_eq!(file_info(&object, location).version(), None);
+        assert_eq!(write_outcome(&object), WriteOutcome::default());
+        let error = version_entry("bucket", &object).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unexpected);
+        assert_eq!(
+            error.reason(),
+            "GCS listed an object without a generation (generation 0)"
+        );
+    }
+
+    #[test]
+    fn a_generation_is_dated_by_its_creation() {
+        let object = |json| serde_json::from_value::<Object>(json).unwrap();
+        let created = "2026-10-01T00:00:00Z".parse().unwrap();
+        let updated = "2026-10-20T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            last_modified(&object(serde_json::json!({
+                "finalizeTime": "2026-10-01T00:00:00Z",
+                "updateTime": "2026-10-20T00:00:00Z",
+            }))),
+            Some(created)
+        );
+        assert_eq!(
+            last_modified(&object(serde_json::json!({
+                "updateTime": "2026-10-20T00:00:00Z",
+            }))),
+            Some(updated)
+        );
+    }
+
+    #[test]
+    fn a_soft_deleted_generation_keeps_its_restore_token() {
+        let object = Object::new()
+            .set_name("p/a")
+            .set_generation(7)
+            .set_restore_token("token");
+        let entry = soft_deleted_version("bucket", &object).unwrap();
+        assert_eq!(entry.version, "7");
+        assert_eq!(entry.restore_token.as_deref(), Some("token"));
     }
 
     #[test]

@@ -304,10 +304,11 @@ impl FileInfo {
         self.e_tag.as_deref()
     }
 
-    /// The version of the object, if the backend reported one: the S3 version id or
-    /// the GCS generation. `None` for an S3 object written without a version id, which
-    /// [`LakekeeperStorage::list_versions`] reports as version `"null"`. S3 listings
-    /// carry no version, so entries from [`LakekeeperStorage::list`] have none there.
+    /// The version of the object: the S3 version id or the GCS generation. `None` where
+    /// the backend reported none, and for S3's `"null"` version, which the next write to
+    /// the key replaces; [`LakekeeperStorage::list_versions`] lists that version as
+    /// `"null"`. S3 listings carry no version, so entries from [`LakekeeperStorage::list`]
+    /// have none there.
     #[must_use]
     pub fn version(&self) -> Option<&str> {
         self.version.as_deref()
@@ -315,19 +316,70 @@ impl FileInfo {
 }
 
 /// What a backend reported about the object a write created.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, typed_builder::TypedBuilder)]
 #[non_exhaustive]
 pub struct WriteOutcome {
     /// The object's entity tag, as [`FileInfo::e_tag`].
+    #[builder(default)]
     pub e_tag: Option<String>,
-    /// The version the write created: the S3 version id or the GCS generation.
-    /// `None` where the backend reported none, as on an unversioned S3 bucket;
-    /// [`LakekeeperStorage::list_versions`] reports such an S3 object as version `"null"`.
+    /// The version the write created, as [`FileInfo::version`]: `None` on an unversioned
+    /// or versioning-suspended S3 bucket.
+    #[builder(default)]
     pub version: Option<String>,
 }
 
 /// Tags of one object version, by key.
 pub type ObjectTags = std::collections::BTreeMap<String, String>;
+
+/// Most tags one object version can carry.
+pub const MAX_OBJECT_TAGS: usize = 10;
+/// Longest tag key, in characters.
+pub const MAX_TAG_KEY_CHARS: usize = 128;
+/// Longest tag value, in characters.
+pub const MAX_TAG_VALUE_CHARS: usize = 256;
+
+/// Check `tags` against the limits S3 applies to the tags of one object version: at most
+/// [`MAX_OBJECT_TAGS`] tags, non-empty keys of at most [`MAX_TAG_KEY_CHARS`] characters,
+/// values of at most [`MAX_TAG_VALUE_CHARS`] characters, and no key in the reserved
+/// `aws:` namespace. The characters S3 allows differ between providers and are left to
+/// the provider.
+///
+/// # Errors
+/// [`ErrorKind::ConditionNotMatch`] naming the first violation.
+pub fn validate_tags(tags: &ObjectTags, location: &str) -> Result<(), IOError> {
+    let invalid = |reason: String| {
+        Err(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            reason,
+            location.to_string(),
+        ))
+    };
+    if tags.len() > MAX_OBJECT_TAGS {
+        return invalid(format!(
+            "An object version carries at most {MAX_OBJECT_TAGS} tags, got {}",
+            tags.len()
+        ));
+    }
+    for (key, value) in tags {
+        let key_chars = key.chars().count();
+        if key_chars == 0 || key_chars > MAX_TAG_KEY_CHARS {
+            return invalid(format!(
+                "Tag key `{key}` must have 1 to {MAX_TAG_KEY_CHARS} characters"
+            ));
+        }
+        if key.starts_with("aws:") {
+            return invalid(format!(
+                "Tag key `{key}` is in the reserved `aws:` namespace"
+            ));
+        }
+        if value.chars().count() > MAX_TAG_VALUE_CHARS {
+            return invalid(format!(
+                "The value of tag `{key}` has more than {MAX_TAG_VALUE_CHARS} characters"
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// One entry of [`LakekeeperStorage::list_versions`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,7 +420,9 @@ impl ObjectVersionEntry {
 #[non_exhaustive]
 pub struct ObjectVersion {
     pub location: Location,
-    /// The S3 version id (`"null"` for an object written without one) or the GCS generation.
+    /// The S3 version id or the GCS generation. S3 lists an object written while
+    /// versioning was off or suspended as `"null"`: that version can be read, but the
+    /// next such write to the key replaces it.
     pub version: String,
     #[builder(default)]
     pub e_tag: Option<String>,
@@ -411,6 +465,10 @@ pub struct SoftDeletedVersion {
     /// When the generation is deleted permanently; it can be restored until then.
     #[builder(default)]
     pub hard_delete_time: Option<DateTime<Utc>>,
+    /// Tells apart soft-deleted objects of an HNS bucket that share a name and a
+    /// generation. GCS sets it only on HNS buckets.
+    #[builder(default)]
+    pub restore_token: Option<String>,
 }
 
 /// The error a backend returns for an operation it does not implement.
@@ -611,21 +669,28 @@ where
     /// current one. `version` is a version as the backend reports it, for example in
     /// [`WriteOutcome::version`].
     ///
+    /// A version the key does not have, or a delete marker, fails with
+    /// [`ErrorKind::NotFound`]; a value the backend cannot take as a version id fails with
+    /// [`ErrorKind::ConditionNotMatch`], as does a response for a version other than the
+    /// requested one.
+    ///
     /// The default fails with [`ErrorKind::Unsupported`].
     async fn read_version(&self, path: &str, _version: &str) -> Result<ObjectRead, ReadError> {
         Err(unsupported("Reading an object version", path).into())
     }
 
     /// Retrieve metadata about one version of the file at `path`, as
-    /// [`LakekeeperStorage::metadata`] does for the current one.
+    /// [`LakekeeperStorage::metadata`] does for the current one. Errors as for
+    /// [`LakekeeperStorage::read_version`].
     ///
     /// The default fails with [`ErrorKind::Unsupported`].
     async fn metadata_version(&self, path: &str, _version: &str) -> Result<FileInfo, ReadError> {
-        Err(unsupported("Reading an object version", path).into())
+        Err(unsupported("Reading object version metadata", path).into())
     }
 
     /// Read a byte range of one version of the file at `path`, as
-    /// [`LakekeeperStorage::read_range`] does for the current one.
+    /// [`LakekeeperStorage::read_range`] does for the current one. Errors as for
+    /// [`LakekeeperStorage::read_version`].
     ///
     /// The default fails with [`ErrorKind::Unsupported`].
     async fn read_range_version(
@@ -677,7 +742,9 @@ where
         Err(unsupported("Object tagging", path).into())
     }
 
-    /// Replace the tags of one version of the object at `path` with `tags`.
+    /// Replace the tags of one version of the object at `path` with `tags`. A tag set
+    /// outside the limits [`validate_tags`] checks fails with
+    /// [`ErrorKind::ConditionNotMatch`].
     ///
     /// The default fails with [`ErrorKind::Unsupported`].
     async fn put_tags(
