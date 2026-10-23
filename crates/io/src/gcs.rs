@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-pub use gcs_access_token::{GcsAccessToken, TokenEndpointError};
+pub use gcs_access_token::{GcsAccessToken, TOKEN_HTTP_CLIENT, TokenEndpointError};
 pub use gcs_auth::{
     GcsAccessTokenError, GcsAuth, GcsBearerTokenAuth, GcsServiceAccountKey,
     system_identity_project_id,
@@ -40,6 +40,10 @@ const RETRY_TIME_LIMIT: Duration = Duration::from_mins(3);
 /// Retries of an upload stop after this time. One retry budget covers all chunks of a
 /// resumable upload, so it is time-based.
 pub(crate) const UPLOAD_RETRY_TIME_LIMIT: Duration = Duration::from_mins(30);
+/// Limit for a resumable upload of data in memory, and for each wait of a streaming writer on
+/// its upload. It is longer than [`UPLOAD_RETRY_TIME_LIMIT`], so retries end first.
+pub(crate) const UPLOAD_TIMEOUT: Duration =
+    UPLOAD_RETRY_TIME_LIMIT.saturating_add(Duration::from_mins(1));
 /// Limit for a whole request, including its retries and the download of the response. The
 /// SDK has no connect timeout, and waiting for a free gRPC stream is not part of its attempt
 /// timeout.
@@ -48,13 +52,12 @@ pub(crate) const REQUEST_TIMEOUT: Duration =
 /// Time limit of one attempt of a metadata request (get, list, delete).
 const CONTROL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Clients are rebuilt after this time, so credentials that start failing or a rotated
-/// credentials file are picked up. It is below the idle timeout of Cloud NAT (20 min): the
-/// gRPC connection has no keepalive, so a connection dropped by a NAT would not be noticed.
+/// credentials file are picked up.
 const CLIENT_MAX_AGE: Duration = Duration::from_mins(15);
-/// A metadata client that was not used for this time is replaced, so its gRPC connection,
-/// which a NAT may have dropped, is not reused. It covers [`GcsStorage`] values that callers
-/// hold for longer than [`CLIENT_MAX_AGE`].
-const CONTROL_MAX_IDLE: Duration = Duration::from_mins(10);
+/// A metadata client that was not used for this time is replaced. Its gRPC connection has no
+/// keepalive, so a connection that a NAT gateway dropped would not be noticed. The limit is
+/// below the idle timeouts of common NAT gateways (Azure 4 min, AWS 350 s, Cloud NAT 20 min).
+const CONTROL_MAX_IDLE: Duration = Duration::from_mins(3);
 const MAX_CACHED_CLIENTS: u64 = 1000;
 
 /// Clients per credential. Each client keeps connection pools and a background task that

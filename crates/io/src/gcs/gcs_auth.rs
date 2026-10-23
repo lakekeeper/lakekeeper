@@ -69,12 +69,34 @@ pub struct GcsBearerTokenAuth {
 ///     }
 /// ```
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(from = "serde_json::Value", into = "serde_json::Value")]
 pub struct GcsServiceAccountKey(serde_json::Value);
+
+impl From<serde_json::Value> for GcsServiceAccountKey {
+    fn from(json: serde_json::Value) -> Self {
+        Self::new(json)
+    }
+}
+
+impl From<GcsServiceAccountKey> for serde_json::Value {
+    fn from(key: GcsServiceAccountKey) -> Self {
+        key.0
+    }
+}
 
 impl GcsServiceAccountKey {
     #[must_use]
-    pub fn new(json: serde_json::Value) -> Self {
+    pub fn new(mut json: serde_json::Value) -> Self {
+        // An empty `universe_domain` means the default. The SDK would take it as another
+        // universe and refuse to build a client.
+        if let Some(object) = json.as_object_mut()
+            && object
+                .get("universe_domain")
+                .and_then(serde_json::Value::as_str)
+                == Some("")
+        {
+            object.remove("universe_domain");
+        }
         Self(json)
     }
 
@@ -89,6 +111,17 @@ impl GcsServiceAccountKey {
 
     pub(crate) fn json(&self) -> &serde_json::Value {
         &self.0
+    }
+
+    /// The SDK reads only keys in PKCS#8 format, the format of keys that Google creates.
+    pub(crate) fn check_format(&self) -> Result<(), &'static str> {
+        if self
+            .str_field("private_key")
+            .is_some_and(|private_key| private_key.contains("RSA PRIVATE KEY"))
+        {
+            return Err(PKCS1_KEY_UNSUPPORTED);
+        }
+        Ok(())
     }
 }
 
@@ -148,19 +181,25 @@ impl GcsAuth {
     /// Credentials for the GCS clients.
     pub(crate) fn credentials(&self) -> Result<Credentials, InitializeClientError> {
         match self {
-            GcsAuth::ServiceAccountKey { key } => service_account::Builder::new(key.0.clone())
-                .build()
-                .map_err(|e| InitializeClientError {
-                    reason: "Failed to load the GCS service account key".to_string(),
-                    source: Some(Box::new(e)),
-                }),
-            GcsAuth::GcpSystemIdentity {} => credentials::Builder::default()
-                .with_scopes([CLOUD_PLATFORM_SCOPE])
-                .build()
-                .map_err(|e| InitializeClientError {
-                    reason: "Failed to load the GCP system identity".to_string(),
-                    source: Some(Box::new(e)),
-                }),
+            GcsAuth::ServiceAccountKey { key } => {
+                key.check_format().map_err(invalid_configuration)?;
+                service_account::Builder::new(key.0.clone())
+                    .build()
+                    .map_err(|e| InitializeClientError {
+                        reason: "Failed to load the GCS service account key".to_string(),
+                        source: Some(Box::new(e)),
+                    })
+            }
+            GcsAuth::GcpSystemIdentity {} => {
+                adc_environment().map_err(invalid_configuration)?;
+                credentials::Builder::default()
+                    .with_scopes([CLOUD_PLATFORM_SCOPE])
+                    .build()
+                    .map_err(|e| InitializeClientError {
+                        reason: "Failed to load the GCP system identity".to_string(),
+                        source: Some(Box::new(e)),
+                    })
+            }
             GcsAuth::BearerToken(GcsBearerTokenAuth { access_token }) => {
                 StaticBearerCredentials::new(access_token).map(Credentials::from)
             }
@@ -181,13 +220,16 @@ impl GcsAuth {
     pub async fn access_token(&self) -> Result<GcsAccessToken, GcsAccessTokenError> {
         match self {
             GcsAuth::ServiceAccountKey { key } => service_account_access_token(key).await,
-            GcsAuth::GcpSystemIdentity {} => match read_adc_file().await? {
-                Some(json) if is_service_account_key(&json) => {
-                    service_account_access_token(&GcsServiceAccountKey::new(json)).await
+            GcsAuth::GcpSystemIdentity {} => {
+                adc_environment().map_err(|reason| GcsAccessTokenError::permanent(reason, None))?;
+                match read_adc_file().await? {
+                    Some(json) if is_service_account_key(&json) => {
+                        service_account_access_token(&GcsServiceAccountKey::new(json)).await
+                    }
+                    Some(_) => adc_file_access_token().await,
+                    None => metadata_server_token(&metadata_host(), SystemTime::now()).await,
                 }
-                Some(_) => adc_file_access_token().await,
-                None => metadata_server_token(&metadata_host(), SystemTime::now()).await,
-            },
+            }
             GcsAuth::BearerToken(GcsBearerTokenAuth { access_token }) => Ok(GcsAccessToken {
                 token: access_token.clone(),
                 expires_at: None,
@@ -199,6 +241,8 @@ impl GcsAuth {
 async fn service_account_access_token(
     key: &GcsServiceAccountKey,
 ) -> Result<GcsAccessToken, GcsAccessTokenError> {
+    key.check_format()
+        .map_err(|reason| GcsAccessTokenError::permanent(reason, None))?;
     exchange_service_account_key(key, token_endpoint(key)?, SystemTime::now()).await
 }
 
@@ -229,6 +273,30 @@ async fn adc_file_access_token() -> Result<GcsAccessToken, GcsAccessTokenError> 
 
 fn metadata_host() -> String {
     std::env::var(METADATA_HOST_ENV_VAR).unwrap_or_else(|_| DEFAULT_METADATA_HOST.to_string())
+}
+
+const PKCS1_KEY_UNSUPPORTED: &str = "service account keys in PKCS#1 format (BEGIN RSA PRIVATE KEY) are not supported, convert the key to PKCS#8 (BEGIN PRIVATE KEY)";
+const CREDENTIALS_JSON_ENV_VAR: &str = "GOOGLE_APPLICATION_CREDENTIALS_JSON";
+const CREDENTIALS_JSON_UNSUPPORTED: &str = "GOOGLE_APPLICATION_CREDENTIALS_JSON is not supported, write the key to a file and set GOOGLE_APPLICATION_CREDENTIALS to its path";
+
+fn invalid_configuration(reason: &'static str) -> InitializeClientError {
+    InitializeClientError {
+        reason: reason.to_string(),
+        source: None,
+    }
+}
+
+/// Application Default Credentials ignore `GOOGLE_APPLICATION_CREDENTIALS_JSON`. Without this
+/// check, an identity from another source would be used where the variable names a key.
+fn adc_environment() -> Result<(), &'static str> {
+    check_adc_environment(std::env::var_os(CREDENTIALS_JSON_ENV_VAR).is_some())
+}
+
+fn check_adc_environment(credentials_json_set: bool) -> Result<(), &'static str> {
+    if credentials_json_set {
+        return Err(CREDENTIALS_JSON_UNSUPPORTED);
+    }
+    Ok(())
 }
 
 fn is_service_account_key(json: &serde_json::Value) -> bool {
@@ -299,8 +367,11 @@ fn adc_file_path() -> Option<PathBuf> {
 fn project_id_from_adc_json(json: &serde_json::Value) -> Option<String> {
     ["project_id", "quota_project_id"]
         .iter()
-        .find_map(|key| json.get(key).and_then(serde_json::Value::as_str))
-        .filter(|project_id| !project_id.is_empty())
+        .find_map(|key| {
+            json.get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|project_id| !project_id.is_empty())
+        })
         .map(ToString::to_string)
 }
 
@@ -415,6 +486,58 @@ mod tests {
         assert_eq!(key.project_id(), Some("p1"));
     }
 
+    #[test]
+    fn empty_universe_domain_is_the_default() {
+        let json = serde_json::json!({"type": "service_account", "universe_domain": ""});
+        let deserialized: GcsServiceAccountKey = serde_json::from_value(json.clone()).unwrap();
+        for key in [GcsServiceAccountKey::new(json), deserialized] {
+            assert_eq!(key.json(), &serde_json::json!({"type": "service_account"}));
+        }
+    }
+
+    fn pkcs1_key() -> GcsServiceAccountKey {
+        let mut json = sample_key().json().clone();
+        json["private_key"] = format!(
+            "-----BEGIN {0}-----\ntest\n-----END {0}-----\n",
+            "RSA PRIVATE KEY"
+        )
+        .into();
+        GcsServiceAccountKey::new(json)
+    }
+
+    #[test]
+    fn pkcs1_key_credentials_name_the_format() {
+        assert_eq!(
+            GcsAuth::ServiceAccountKey { key: pkcs1_key() }
+                .credentials()
+                .unwrap_err()
+                .reason,
+            PKCS1_KEY_UNSUPPORTED
+        );
+    }
+
+    #[tokio::test]
+    async fn pkcs1_key_access_token_names_the_format() {
+        let err = GcsAuth::ServiceAccountKey { key: pkcs1_key() }
+            .access_token()
+            .await
+            .unwrap_err();
+        assert!(!err.is_transient());
+        assert_eq!(
+            err.to_string(),
+            format!("Failed to obtain a GCS access token: {PKCS1_KEY_UNSUPPORTED}")
+        );
+    }
+
+    #[test]
+    fn credentials_json_variable_is_rejected() {
+        assert_eq!(
+            check_adc_environment(true),
+            Err(CREDENTIALS_JSON_UNSUPPORTED)
+        );
+        assert_eq!(check_adc_environment(false), Ok(()));
+    }
+
     #[tokio::test]
     async fn bearer_credentials_header() {
         let credentials = bearer("tok").credentials().unwrap();
@@ -499,6 +622,12 @@ mod tests {
         assert_eq!(
             project_id_from_adc_json(&serde_json::json!({"project_id": ""})),
             None
+        );
+        assert_eq!(
+            project_id_from_adc_json(
+                &serde_json::json!({"project_id": "", "quota_project_id": "q1"})
+            ),
+            Some("q1".to_string())
         );
         assert_eq!(project_id_from_adc_json(&serde_json::json!({})), None);
     }

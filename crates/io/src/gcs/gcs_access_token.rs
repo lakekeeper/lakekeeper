@@ -27,8 +27,9 @@ const ASSERTION_LIFETIME: Duration = Duration::from_secs(3600);
 const CLOCK_SKEW: Duration = Duration::from_secs(10);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Client for the token endpoint and the metadata server.
-pub(crate) static TOKEN_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+/// Client for Google's token endpoints (OAuth 2.0 and STS) and the metadata server. Requests
+/// carry credentials, so it follows no redirects.
+pub static TOKEN_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .connect_timeout(crate::CONNECT_TIMEOUT)
         .timeout(TOKEN_REQUEST_TIMEOUT)
@@ -536,7 +537,10 @@ mod tests {
             token: "ya29.secret-token-value".to_string(),
             expires_at: None,
         };
-        assert!(!format!("{token:?}").contains("secret-token"));
+        assert_eq!(
+            format!("{token:?}"),
+            r#"GcsAccessToken { token: "ya2*.******-*****-**lue", expires_at: None }"#
+        );
     }
 
     fn key_with(fields: serde_json::Value) -> GcsServiceAccountKey {

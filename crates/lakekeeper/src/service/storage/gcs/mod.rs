@@ -3,7 +3,6 @@
 use std::{
     collections::HashMap,
     str::FromStr,
-    sync::LazyLock,
     time::{Duration, Instant},
 };
 
@@ -17,7 +16,6 @@ use lakekeeper_io::{
 };
 use serde::{Deserialize, Serialize};
 pub(super) use sts::STSResponse;
-use url::Url;
 use veil::Redact;
 
 use crate::{
@@ -42,23 +40,7 @@ use crate::{
 
 mod sts;
 
-const STS_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .connect_timeout(lakekeeper_io::CONNECT_TIMEOUT)
-        .timeout(STS_REQUEST_TIMEOUT)
-        .build()
-        // Only fails if the TLS backend or system DNS config can't be
-        // initialized — `reqwest::Client::new()` panics on the same condition.
-        .expect("Failed to build GCS credential HTTP client")
-});
-const STS_URL_STR: &str = "https://sts.googleapis.com/v1/token";
-static STS_URL: LazyLock<Url> = LazyLock::new(|| {
-    STS_URL_STR
-        .parse::<Url>()
-        .expect("failed to parse a constant to a url")
-});
+const STS_URL: &str = "https://sts.googleapis.com/v1/token";
 
 #[derive(Debug, Hash, Eq, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]

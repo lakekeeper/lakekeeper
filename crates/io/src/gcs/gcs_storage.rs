@@ -26,7 +26,7 @@ use crate::{
     delete_not_found_is_ok, execute_with_parallelism,
     gcs::{
         CHUNK_SIZE, ControlClient, GcsLocation, REQUEST_TIMEOUT, RESUMABLE_UPLOAD_THRESHOLD,
-        UPLOAD_RETRY_TIME_LIMIT, gcs_error::parse_error, gcs_writer::GcsFileWrite,
+        UPLOAD_RETRY_TIME_LIMIT, UPLOAD_TIMEOUT, gcs_error::parse_error, gcs_writer::GcsFileWrite,
     },
     safe_usize_to_i32, validate_file_size,
 };
@@ -44,7 +44,7 @@ pub(crate) fn bucket_resource(location: &GcsLocation) -> String {
 }
 
 /// Fails `operation` with [`ErrorKind::RequestTimeout`] if it does not finish within `limit`.
-async fn within<T>(
+pub(crate) async fn within<T>(
     limit: Duration,
     location: &GcsLocation,
     operation: impl Future<Output = Result<T, IOError>>,
@@ -221,7 +221,7 @@ impl LakekeeperStorage for GcsStorage {
 
         let bytes = if file_size == 0 {
             Bytes::new()
-        } else if file_size < MAX_BYTES_PER_READ {
+        } else if reads_in_one_request(&object, file_size) {
             fetch_range(
                 &self.storage,
                 &gcs_location,
@@ -350,7 +350,8 @@ impl LakekeeperStorage for GcsStorage {
 }
 
 /// Uploads `bytes` as one object. Below [`RESUMABLE_UPLOAD_THRESHOLD`] this is a single
-/// request, above it a resumable upload.
+/// request limited to [`REQUEST_TIMEOUT`], above it a resumable upload limited to
+/// [`UPLOAD_TIMEOUT`].
 pub(crate) async fn upload_bytes(
     storage: &Storage,
     location: &GcsLocation,
@@ -361,17 +362,28 @@ pub(crate) async fn upload_bytes(
         .write_object(bucket_resource(location), location.object_name(), bytes)
         // Objects are written to unique paths, so repeating an upload is safe.
         .with_idempotency(true);
+    let mut limit = REQUEST_TIMEOUT;
     if resumable {
         // All chunks of a resumable upload share one retry budget, so it is time-based.
         request =
             request.with_retry_policy(RetryableErrors.with_time_limit(UPLOAD_RETRY_TIME_LIMIT));
+        limit = UPLOAD_TIMEOUT;
     }
-    let upload = request.send_unbuffered();
-    Box::pin(upload).await.map(|_| ()).map_err(|e| {
-        parse_error(e, location.as_str())
-            .with_context("Failed to upload object.")
-            .into()
+    within(limit, location, async {
+        Box::pin(request.send_unbuffered())
+            .await
+            .map(|_| ())
+            .map_err(|e| parse_error(e, location.as_str()))
     })
+    .await
+    .map_err(|e| e.with_context("Failed to upload object.").into())
+}
+
+/// Small objects are read in one request, large ones in parallel ranges. Objects stored with
+/// `Content-Encoding: gzip` are always read in one request: only a whole read returns them
+/// decompressed.
+fn reads_in_one_request(object: &Object, file_size: usize) -> bool {
+    file_size < MAX_BYTES_PER_READ || object.content_encoding.eq_ignore_ascii_case("gzip")
 }
 
 fn last_modified(object: &Object) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -521,4 +533,99 @@ async fn parallel_chunked_read_with_fixed_generation(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use google_cloud_auth::credentials::anonymous;
+
+    use super::*;
+    use crate::gcs::{UPLOAD_TIMEOUT, build_clients};
+
+    const PATH: &str = "gs://test-bucket/object";
+
+    /// Storage whose endpoint accepts requests and never answers them.
+    async fn unresponsive_storage() -> GcsStorage {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new().fallback(std::future::pending::<()>);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        build_clients(anonymous::Builder::new().build(), Some(&endpoint))
+            .await
+            .unwrap()
+    }
+
+    /// Asserts that `operation` fails with a timeout after `limit`.
+    async fn assert_times_out(
+        limit: Duration,
+        operation: impl Future<Output = Result<(), WriteError>>,
+    ) {
+        let result = tokio::time::timeout(Duration::from_hours(2), operation)
+            .await
+            .expect("the operation must not hang");
+        let Err(WriteError::IOError(error)) = result else {
+            panic!("expected a timeout, got {result:?}");
+        };
+        assert_eq!(error.kind(), ErrorKind::RequestTimeout, "{error:?}");
+        assert_eq!(
+            error.reason(),
+            format!("GCS request did not finish within {limit:?}")
+        );
+    }
+
+    #[test]
+    fn gzip_encoded_objects_are_read_in_one_request() {
+        let large = MAX_BYTES_PER_READ;
+        assert!(reads_in_one_request(&Object::new(), large - 1));
+        assert!(!reads_in_one_request(&Object::new(), large));
+        assert!(reads_in_one_request(
+            &Object::new().set_content_encoding("gzip"),
+            large
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn single_request_upload_times_out() {
+        let storage = unresponsive_storage().await;
+        assert_times_out(
+            REQUEST_TIMEOUT,
+            storage.write(PATH, Bytes::from_static(b"data")),
+        )
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resumable_upload_times_out() {
+        let storage = unresponsive_storage().await;
+        let bytes = Bytes::from(vec![0; RESUMABLE_UPLOAD_THRESHOLD]);
+        assert_times_out(UPLOAD_TIMEOUT, storage.write(PATH, bytes)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn streaming_write_times_out_when_upload_stalls() {
+        let storage = unresponsive_storage().await;
+        let mut writer = storage.writer(PATH).await.unwrap();
+        writer
+            .write(Bytes::from(vec![0; RESUMABLE_UPLOAD_THRESHOLD]))
+            .await
+            .unwrap();
+        assert_times_out(UPLOAD_TIMEOUT, async {
+            // The stalled upload stops taking data, so a write waits for room.
+            loop {
+                writer.write(Bytes::from_static(b"data")).await?;
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn streaming_close_times_out_when_upload_stalls() {
+        let storage = unresponsive_storage().await;
+        let mut writer = storage.writer(PATH).await.unwrap();
+        writer
+            .write(Bytes::from(vec![0; RESUMABLE_UPLOAD_THRESHOLD]))
+            .await
+            .unwrap();
+        assert_times_out(UPLOAD_TIMEOUT, writer.close()).await;
+    }
 }

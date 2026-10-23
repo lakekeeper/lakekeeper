@@ -1,5 +1,13 @@
+use std::time::Duration;
+
 use bytes::{Bytes, BytesMut};
-use google_cloud_gax::retry_policy::RetryPolicyExt as _;
+use google_cloud_gax::{
+    error::Error,
+    retry_policy::{LimitedAttemptCount, RetryPolicy, RetryPolicyExt as _},
+    retry_result::RetryResult,
+    retry_state::RetryState,
+    throttle_result::ThrottleResult,
+};
 use google_cloud_storage::{
     client::Storage, retry_policy::RetryableErrors, streaming_source::StreamingSource,
 };
@@ -9,14 +17,50 @@ use tracing::Instrument as _;
 use crate::{
     ErrorKind, IOError, LakekeeperFileWrite, WriteError,
     gcs::{
-        GcsLocation, RESUMABLE_UPLOAD_THRESHOLD, UPLOAD_RETRY_TIME_LIMIT,
+        GcsLocation, RESUMABLE_UPLOAD_THRESHOLD, UPLOAD_TIMEOUT,
         gcs_error::parse_error,
-        gcs_storage::{bucket_resource, upload_bytes},
+        gcs_storage::{bucket_resource, upload_bytes, within},
     },
 };
 
 /// Messages queued between the upload task and the writer.
 const CHANNEL_CAPACITY: usize = 4;
+/// Attempts of a streaming upload, including the first one. One budget covers all chunks.
+/// It counts attempts: the upload waits for the producer, so its duration says nothing about
+/// its retries.
+const STREAMING_UPLOAD_ATTEMPTS: u32 = 10;
+
+/// Retry policy of a streaming upload.
+///
+/// When the SDK retries a streaming upload after an error that came before an HTTP response,
+/// such as a reset connection or a failed token refresh, it drops the chunk that was not
+/// confirmed and finalizes the object without it. Such errors therefore end the upload.
+/// Errors with an HTTP status are retried.
+#[derive(Debug)]
+struct StreamingUploadRetry(LimitedAttemptCount<RetryableErrors>);
+
+impl StreamingUploadRetry {
+    fn new() -> Self {
+        Self(RetryableErrors.with_attempt_limit(STREAMING_UPLOAD_ATTEMPTS))
+    }
+}
+
+impl RetryPolicy for StreamingUploadRetry {
+    fn on_error(&self, state: &RetryState, error: Error) -> RetryResult {
+        if error.http_status_code().is_none() {
+            return RetryResult::Permanent(error);
+        }
+        self.0.on_error(state, error)
+    }
+
+    fn on_throttle(&self, state: &RetryState, error: Error) -> ThrottleResult {
+        self.0.on_throttle(state, error)
+    }
+
+    fn remaining_time(&self, state: &RetryState) -> Option<Duration> {
+        self.0.remaining_time(state)
+    }
+}
 
 enum WriterMessage {
     Data(Bytes),
@@ -30,9 +74,11 @@ struct WriterNotClosed;
 
 /// Upload source fed by a [`GcsFileWrite`].
 ///
-/// It ends only after [`WriterMessage::Finish`]. A writer that goes away without finishing
-/// closes the channel, which yields an error, so the SDK never finalizes a truncated object.
+/// It yields `first`, then the data of the channel. It ends only after
+/// [`WriterMessage::Finish`]. A writer that goes away without finishing closes the channel,
+/// which yields an error, so the SDK never finalizes a truncated object.
 struct ChannelSource {
+    first: Option<Bytes>,
     receiver: mpsc::Receiver<WriterMessage>,
     finished: bool,
 }
@@ -41,6 +87,9 @@ impl StreamingSource for ChannelSource {
     type Error = WriterNotClosed;
 
     async fn next(&mut self) -> Option<Result<Bytes, Self::Error>> {
+        if let Some(first) = self.first.take() {
+            return Some(Ok(first));
+        }
         if self.finished {
             return None;
         }
@@ -118,10 +167,8 @@ impl GcsFileWrite {
         JoinHandle<Result<(), WriteError>>,
     ) {
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
-        sender
-            .try_send(WriterMessage::Data(first))
-            .expect("a new channel has room for one message");
         let source = ChannelSource {
+            first: Some(first),
             receiver,
             finished: false,
         };
@@ -132,7 +179,7 @@ impl GcsFileWrite {
                 self.location.object_name(),
                 source,
             )
-            .with_retry_policy(RetryableErrors.with_time_limit(UPLOAD_RETRY_TIME_LIMIT));
+            .with_retry_policy(StreamingUploadRetry::new());
         let location = self.location.clone();
         let upload = tokio::spawn(
             async move {
@@ -151,44 +198,49 @@ impl GcsFileWrite {
     }
 
     /// Hands `message` to the upload task. If the task has stopped, the writer is aborted
-    /// and the upload error is returned.
+    /// and the upload error is returned. If the task takes no data for [`UPLOAD_TIMEOUT`],
+    /// the writer is aborted with a timeout.
     async fn send(&mut self, message: WriterMessage) -> Result<(), WriteError> {
-        let GcsWriterState::Streaming { sender, .. } = &self.state else {
+        let GcsWriterState::Streaming { sender, upload } = &mut self.state else {
             return Ok(());
         };
-        if sender.send(message).await.is_ok() {
-            return Ok(());
-        }
-        let GcsWriterState::Streaming { mut upload, .. } =
-            std::mem::replace(&mut self.state, GcsWriterState::Aborted)
-        else {
-            unreachable!("state was checked above");
-        };
-        Err(self
-            .upload_result(&mut upload)
-            .await
-            .err()
-            .unwrap_or_else(|| {
-                WriteError::IOError(IOError::new(
-                    ErrorKind::Unexpected,
-                    "GCS upload stopped before all data was sent",
-                    self.location.to_string(),
-                ))
-            }))
-    }
-
-    async fn upload_result(
-        &self,
-        upload: &mut JoinHandle<Result<(), WriteError>>,
-    ) -> Result<(), WriteError> {
-        upload.await.unwrap_or_else(|join_error| {
-            Err(WriteError::IOError(IOError::new(
-                ErrorKind::Unexpected,
-                format!("GCS upload task failed: {join_error}"),
-                self.location.to_string(),
-            )))
+        let sent = within(UPLOAD_TIMEOUT, &self.location, async {
+            Ok(sender.send(message).await.is_ok())
         })
+        .await;
+        let error = match sent {
+            Ok(true) => return Ok(()),
+            Ok(false) => upload_result(upload, &self.location)
+                .await
+                .err()
+                .unwrap_or_else(|| {
+                    WriteError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        "GCS upload stopped before all data was sent",
+                        self.location.to_string(),
+                    ))
+                }),
+            Err(timeout) => {
+                upload.abort();
+                timeout.into()
+            }
+        };
+        self.state = GcsWriterState::Aborted;
+        Err(error)
     }
+}
+
+async fn upload_result(
+    upload: &mut JoinHandle<Result<(), WriteError>>,
+    location: &GcsLocation,
+) -> Result<(), WriteError> {
+    upload.await.unwrap_or_else(|join_error| {
+        Err(WriteError::IOError(IOError::new(
+            ErrorKind::Unexpected,
+            format!("GCS upload task failed: {join_error}"),
+            location.to_string(),
+        )))
+    })
 }
 
 #[async_trait::async_trait]
@@ -236,9 +288,12 @@ impl LakekeeperFileWrite for GcsFileWrite {
             }
             GcsWriterState::Streaming { sender, upload } => {
                 drop(sender);
-                // A cancelled `close` aborts the upload.
+                // A cancelled or timed out `close` aborts the upload.
                 let mut upload = AbortOnDrop(upload);
-                self.upload_result(&mut upload.0).await
+                within(UPLOAD_TIMEOUT, &self.location, async {
+                    Ok(upload_result(&mut upload.0, &self.location).await)
+                })
+                .await?
             }
         }
     }
@@ -265,56 +320,169 @@ impl Drop for GcsFileWrite {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use axum::{
         Router,
-        http::{HeaderMap, Method, StatusCode},
+        http::{Extensions, HeaderMap, Method, StatusCode},
         response::IntoResponse,
     };
-    use google_cloud_auth::credentials::anonymous;
+    use google_cloud_auth::{
+        credentials::{CacheableResource, Credentials, CredentialsProvider, EntityTag, anonymous},
+        errors::CredentialsError,
+    };
 
     use super::*;
     use crate::gcs::CHUNK_SIZE;
 
-    /// Resumable upload endpoint that records the `Content-Range` of every chunk.
-    async fn mock_resumable_endpoint() -> (String, mpsc::UnboundedReceiver<String>) {
+    /// Resumable upload endpoint that records the `Content-Range` of every chunk. The flag is
+    /// set once it has confirmed a chunk.
+    async fn mock_resumable_endpoint() -> (String, mpsc::UnboundedReceiver<String>, Arc<AtomicBool>)
+    {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (ranges, received) = mpsc::unbounded_channel();
+        let confirmed = Arc::new(AtomicBool::new(false));
         let session = format!("{base}/upload-session");
-        let app = Router::new().fallback(move |method: Method, headers: HeaderMap| {
-            let ranges = ranges.clone();
-            let session = session.clone();
-            async move {
-                if method == Method::POST {
-                    return (StatusCode::OK, [("location", session)]).into_response();
+        let app = Router::new().fallback({
+            let confirmed = confirmed.clone();
+            move |method: Method, headers: HeaderMap| {
+                let ranges = ranges.clone();
+                let session = session.clone();
+                let confirmed = confirmed.clone();
+                async move {
+                    if method == Method::POST {
+                        return (StatusCode::OK, [("location", session)]).into_response();
+                    }
+                    let content_range = headers["content-range"].to_str().unwrap().to_string();
+                    ranges.send(content_range.clone()).unwrap();
+                    if !content_range.ends_with("/*") {
+                        // The request names the total size: the upload is finalized.
+                        return (StatusCode::OK, "{}").into_response();
+                    }
+                    // "bytes S-E/*": the server confirms bytes up to E.
+                    let end = content_range.split(['-', '/']).nth(1).unwrap().to_string();
+                    confirmed.store(true, Ordering::SeqCst);
+                    (
+                        StatusCode::PERMANENT_REDIRECT,
+                        [("range", format!("bytes=0-{end}"))],
+                    )
+                        .into_response()
                 }
-                let content_range = headers["content-range"].to_str().unwrap().to_string();
-                ranges.send(content_range.clone()).unwrap();
-                if !content_range.ends_with("/*") {
-                    // The request names the total size: the upload is finalized.
-                    return (StatusCode::OK, "{}").into_response();
-                }
-                // "bytes 0-N/*": the server confirms bytes up to N.
-                let end = content_range
-                    .trim_start_matches("bytes 0-")
-                    .split('/')
-                    .next()
-                    .unwrap()
-                    .to_string();
-                (
-                    StatusCode::PERMANENT_REDIRECT,
-                    [("range", format!("bytes=0-{end}"))],
-                )
-                    .into_response()
             }
         });
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (base, received)
+        (base, received, confirmed)
+    }
+
+    fn received(ranges: &mut mpsc::UnboundedReceiver<String>) -> Vec<String> {
+        let mut sent = Vec::new();
+        while let Ok(range) = ranges.try_recv() {
+            sent.push(range);
+        }
+        sent
+    }
+
+    /// Anonymous credentials that fail once, transiently, after `after` is set.
+    #[derive(Debug)]
+    struct FailOnceAfter {
+        after: Arc<AtomicBool>,
+        failed: AtomicBool,
+    }
+
+    impl CredentialsProvider for FailOnceAfter {
+        fn headers(
+            &self,
+            _extensions: Extensions,
+        ) -> impl Future<Output = Result<CacheableResource<HeaderMap>, CredentialsError>> + Send
+        {
+            let result =
+                if self.after.load(Ordering::SeqCst) && !self.failed.swap(true, Ordering::SeqCst) {
+                    Err(CredentialsError::from_msg(true, "token refresh failed"))
+                } else {
+                    Ok(CacheableResource::New {
+                        entity_tag: EntityTag::default(),
+                        data: HeaderMap::new(),
+                    })
+                };
+            std::future::ready(result)
+        }
+
+        fn universe_domain(&self) -> impl Future<Output = Option<String>> + Send {
+            std::future::ready(None)
+        }
+    }
+
+    // The SDK drops the unconfirmed chunk when it retries a streaming upload after an error
+    // without an HTTP response, and then finalizes the object without that chunk.
+    #[tokio::test]
+    async fn chunk_failing_before_a_response_ends_the_upload() {
+        let (base, mut ranges, confirmed) = mock_resumable_endpoint().await;
+        let storage = Storage::builder()
+            .with_endpoint(base)
+            .with_credentials(Credentials::from(FailOnceAfter {
+                after: confirmed,
+                failed: AtomicBool::new(false),
+            }))
+            .with_resumable_upload_buffer_size(CHUNK_SIZE)
+            .build()
+            .await
+            .unwrap();
+        let location = GcsLocation::try_from_str("gs://test-bucket/object").unwrap();
+        let mut writer = GcsFileWrite::new(storage, location);
+
+        writer
+            .write(Bytes::from(vec![0; RESUMABLE_UPLOAD_THRESHOLD]))
+            .await
+            .unwrap();
+        // Writes may fail once the upload has stopped.
+        for _ in 0..4 {
+            if writer
+                .write(Bytes::from(vec![1; CHUNK_SIZE]))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        writer.close().await.unwrap_err();
+
+        // Only the first chunk was sent; a resumed upload would continue at its end.
+        assert_eq!(
+            received(&mut ranges),
+            vec![format!("bytes 0-{}/*", CHUNK_SIZE - 1)]
+        );
+    }
+
+    #[test]
+    fn streaming_upload_retries_only_errors_with_http_status() {
+        let policy = StreamingUploadRetry::new();
+        let mut state = RetryState::new(true);
+        let unavailable = || Error::http(503, HeaderMap::new(), Bytes::new());
+        assert!(policy.on_error(&state, unavailable()).is_continue());
+        assert!(
+            policy
+                .on_error(&state, Error::io("connection reset"))
+                .is_permanent()
+        );
+        assert!(
+            policy
+                .on_error(
+                    &state,
+                    Error::authentication(CredentialsError::from_msg(true, "token"))
+                )
+                .is_permanent()
+        );
+        state.attempt_count = STREAMING_UPLOAD_ATTEMPTS;
+        assert!(policy.on_error(&state, unavailable()).is_exhausted());
     }
 
     #[tokio::test]
     async fn upload_without_finish_is_never_finalized() {
-        let (base, mut ranges) = mock_resumable_endpoint().await;
+        let (base, mut ranges, _) = mock_resumable_endpoint().await;
         let storage = Storage::builder()
             .with_endpoint(base)
             .with_credentials(anonymous::Builder::new().build())
@@ -330,6 +498,7 @@ mod tests {
             .unwrap();
         drop(sender);
         let source = ChannelSource {
+            first: None,
             receiver,
             finished: false,
         };
@@ -340,12 +509,11 @@ mod tests {
         let err = Box::pin(upload).await.unwrap_err();
         assert!(err.is_serialization(), "{err:?}");
 
-        let mut sent = Vec::new();
-        while let Ok(range) = ranges.try_recv() {
-            sent.push(range);
-        }
         // Only the full first chunk was sent; a finalizing request names the total size.
-        assert_eq!(sent, vec![format!("bytes 0-{}/*", CHUNK_SIZE - 1)]);
+        assert_eq!(
+            received(&mut ranges),
+            vec![format!("bytes 0-{}/*", CHUNK_SIZE - 1)]
+        );
     }
 
     fn source() -> (mpsc::Sender<WriterMessage>, ChannelSource) {
@@ -353,6 +521,7 @@ mod tests {
         (
             sender,
             ChannelSource {
+                first: None,
                 receiver,
                 finished: false,
             },

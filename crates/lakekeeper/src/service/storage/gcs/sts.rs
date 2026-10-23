@@ -1,7 +1,7 @@
-use lakekeeper_io::Location;
+use lakekeeper_io::{Location, gcs::TOKEN_HTTP_CLIENT};
 use serde::{Deserialize, Serialize};
 
-use super::{HTTP_CLIENT, STS_URL};
+use super::STS_URL;
 use crate::service::storage::{
     ShortTermCredentialsRequest, StoragePermissions, error::TableConfigError,
 };
@@ -20,9 +20,8 @@ pub(crate) async fn downscope(
         )?,
     )?;
 
-    let response = HTTP_CLIENT
-        .clone()
-        .post(STS_URL.clone())
+    let response = TOKEN_HTTP_CLIENT
+        .post(STS_URL)
         .json(&gcs_sts_request)
         .send()
         .await
