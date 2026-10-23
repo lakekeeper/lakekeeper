@@ -33,6 +33,7 @@ If configuration is done via environment variables, the following settings are a
 | `LAKEKEEPER_CLIENT_SECRET`  | `abcd`                                                              | Client Secret for the Client ID. |
 | `LAKEKEEPER_SCOPE`          | `lakekeeper`                                                        | Scopes to request from the IdP. Defaults to `lakekeeper`. Please check the [Authentication Guide](./authentication.md) for setup. |
 | `LAKEKEEPER_MAX_BATCH_CHECK_SIZE` | `1000`                                                       | Maximum number of checks per `batch-check` HTTP request. Larger values mean fewer HTTP calls but more load on the authorization backend. Default: `1000` |
+| `LAKEKEEPER_LIST_EVERYTHING_GRANTS_TABULAR_METADATA` | `false` | Set to `false` to check each table and view, even for users who may list everything. See [Shortcut for broad access](#shortcut-for-broad-access). Default: `true` |
 
 ### Catalog Mapping
 
@@ -161,6 +162,12 @@ When the number of checks exceeds the configured batch size, the bridge automati
 System schemas (`information_schema`, `schema_discovery`, `system`) and metadata tables (e.g., `foo$snapshots`) within managed catalogs are excluded from this batch optimization: they are not included in the `batch-check` request and are instead evaluated per-resource by the OPA policies. These per-resource evaluations may still trigger Lakekeeper calls (for example, catalog-level `get_config` checks), but they do not participate in the batched table/schema authorization request.
 
 This optimization is transparent — it produces the same results as per-resource evaluation but with significantly fewer HTTP round-trips to Lakekeeper for non-system resources.
+
+### Shortcut for broad access
+
+If a user may list everything in a warehouse or namespace (`list_everything`), Trino shows that user all schemas, tables and views inside it, including their columns. The bridge checks `list_everything` on the warehouse. If the warehouse check does not allow it, the bridge checks each namespace that the request contains. It does not check each table and view. This keeps queries such as `information_schema.columns` fast.
+
+If `list_everything` should not show the columns and names of every table and view, set `LAKEKEEPER_LIST_EVERYTHING_GRANTS_TABULAR_METADATA` to `false` (or `list_everything_grants_tabular_metadata` in `configuration.rego`). The bridge then checks `get_metadata` on each table and view. It sends these checks to Lakekeeper in batches, but listing the columns of many tables still needs more calls to Lakekeeper than the shortcut. Schemas always use the shortcut.
 
 ## Context Forwarding
 

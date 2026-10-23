@@ -1367,7 +1367,7 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `ListDeletedTabulars` | `list_deleted_tabulars` | `WarehouseDescribeActions` | List soft-deleted tables and views |
 | `GetTaskQueueConfig` | `get_task_queue_config` | `WarehouseDescribeActions` | View task queue configuration |
 | `GetAllTasks` | `get_all_tasks` | `WarehouseDescribeActions` | List all background tasks in the warehouse |
-| `ListEverythingInWarehouse` | `list_everything` | `WarehouseDescribeActions` | List everything under the warehouse; the per-item `Include…InList` checks are skipped |
+| `ListEverythingInWarehouse` | `list_everything` | `WarehouseDescribeActions` | List everything in warehouse-wide listings without the per-item `Include…InList` checks: top-level namespaces, the table and view search, soft-deleted tables and views, and background tasks. Listings inside a namespace need `ListEverythingInNamespace` |
 | `GetWarehouseEndpointStatistics` | `get_endpoint_statistics` | `WarehouseDescribeActions` | View API usage statistics for the warehouse |
 | `CreateNamespaceInWarehouse` | `create_namespace` | `WarehouseCreateActions` | Create a namespace directly in the warehouse |
 | `DeleteWarehouse` | `delete` | `WarehouseModifyActions` | Delete the warehouse |
@@ -1388,7 +1388,7 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 
 | Action | Audit log `action_name` | Group | Description |
 |---|---|---|---|
-| `ListEverythingInNamespace` | `list_everything` | `NamespaceDescribeActions` | List everything under the namespace; the per-item `Include…InList` checks are skipped |
+| `ListEverythingInNamespace` | `list_everything` | `NamespaceDescribeActions` | List everything directly in the namespace without the per-item `Include…InList` checks: tables, views, generic tables and child namespaces. Allow it on `resource in Lakekeeper::Warehouse::"<id>"` to cover every namespace of a warehouse |
 | `GetNamespaceMetadata` | `get_metadata` | `NamespaceDescribeActions` | View namespace properties and configuration |
 | `IncludeNamespaceInList` | `include_in_list` | `NamespaceDescribeActions` | Include the namespace in namespace listings |
 | `ListTables` | `list_tables` | `NamespaceDescribeActions` | List tables in the namespace |
