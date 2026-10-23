@@ -712,7 +712,7 @@ The bound is applied to the raw list the client sent, before Lakekeeper decides 
 
 While `read-only`:
 
-- Mutating requests (anything other than `GET`/`HEAD`/`OPTIONS`) on `/catalog/v1` and `/management/v1` return `503` with `Retry-After: 60` and `error.type = "MaintenanceModeError"`, except `POST /management/v1/server/maintenance-mode`, so read-only can be switched off again. `/health` is unaffected.
+- Mutating requests (anything other than `GET`/`HEAD`/`OPTIONS`) on `/catalog/v1` and `/management/v1` return `503` with `Retry-After: 60` and `error.type = "MaintenanceModeError"`. Two exceptions: `POST /management/v1/server/maintenance-mode`, so read-only can be switched off again, and the `POST` requests below that only read. `/health` is unaffected.
 - Requests that only read keep working, even when they are sent as `POST`: searches, task listings, permission checks, endpoint statistics, table metrics reports and S3 request signing.
 - No new background tasks start. Tasks already running finish. With `LAKEKEEPER__MAINTENANCE_MODE=read-only`, built-in task queue workers are not started at all.
 - `GET /v1/config` skips user auto-registration.
