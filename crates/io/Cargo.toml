@@ -15,8 +15,9 @@ Lakekeeper IO
 ignored = [
     # used via strum_macros derives which require strum at runtime
     "strum",
-    # needed to activate jwt-aws-lc-rs feature for gcloud-auth transitive dep
-    "google-cloud-auth",
+    # activates `tls-aws-lc` so tonic's TLS (used by the GCS SDK) picks aws-lc-rs while rustls
+    # is built with both ring and aws-lc-rs
+    "tonic",
 ]
 
 [features]
@@ -41,13 +42,15 @@ storage-adls = [
     "dep:time",
 ]
 storage-gcs = [
-    "dep:google-cloud-storage",
-    "dep:iceberg",
-    "dep:reqwest-middleware",
-    "dep:reqwest-retry",
+    "dep:base64",
     "dep:google-cloud-auth",
-    "dep:google-cloud-token",
-    "dep:time",
+    "dep:google-cloud-gax",
+    "dep:google-cloud-storage",
+    "dep:http",
+    "dep:iceberg",
+    "dep:moka",
+    "dep:serde_json",
+    "dep:tonic",
 ]
 storage-in-memory = ["dep:iceberg"]
 # Bridges a `LakekeeperStorage` to `object_store::ObjectStore` (and, via
@@ -77,27 +80,29 @@ azure_identity = { workspace = true, optional = true }
 azure_storage = { workspace = true, optional = true }
 azure_storage_blobs = { workspace = true, optional = true }
 azure_storage_datalake = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
-google-cloud-storage = { workspace = true, features = [], optional = true }
-google-cloud-token = { workspace = true, optional = true }
+google-cloud-gax = { workspace = true, optional = true }
+google-cloud-storage = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
 iceberg = { workspace = true, optional = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 reqwest = { workspace = true }
-reqwest-middleware = { workspace = true, optional = true }
-reqwest-retry = { workspace = true, optional = true }
 serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, optional = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs", "sync"] }
+tonic = { workspace = true, optional = true, features = ["tls-aws-lc"] }
 tracing = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
@@ -110,10 +115,12 @@ webpki-root-certs = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+aws-lc-rs = { workspace = true }
+axum = { workspace = true }
 fastrand = { workspace = true }
 futures = { workspace = true }
 pastey = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 uuid = { workspace = true }

@@ -3,22 +3,19 @@
 use std::{
     collections::HashMap,
     str::FromStr,
-    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
-use google_cloud_auth::{
-    token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
-};
-use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
 use iceberg_ext::configs::table::{TableProperties, creds, gcs};
 use lakekeeper_io::{
     InvalidLocationError, Location,
-    gcs::{CredentialsFile, GCSSettings, GcsAuth, GcsStorage, validate_bucket_name},
+    gcs::{
+        GCSSettings, GcsAccessToken, GcsAuth, GcsServiceAccountKey, GcsStorage,
+        system_identity_project_id, validate_bucket_name,
+    },
 };
 use serde::{Deserialize, Serialize};
 pub(super) use sts::STSResponse;
-use url::Url;
 use veil::Redact;
 
 use crate::{
@@ -43,21 +40,7 @@ use crate::{
 
 mod sts;
 
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .connect_timeout(lakekeeper_io::CONNECT_TIMEOUT)
-        .build()
-        // Only fails if the TLS backend or system DNS config can't be
-        // initialized — `reqwest::Client::new()` panics on the same condition.
-        .expect("Failed to build GCS credential HTTP client")
-});
-const STS_URL_STR: &str = "https://sts.googleapis.com/v1/token";
-static STS_URL: LazyLock<Url> = LazyLock::new(|| {
-    STS_URL_STR
-        .parse::<Url>()
-        .expect("failed to parse a constant to a url")
-});
-const GOOGLE_CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
+const STS_URL: &str = "https://sts.googleapis.com/v1/token";
 
 #[derive(Debug, Hash, Eq, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -135,8 +118,8 @@ pub struct GcsServiceKey {
     pub universe_domain: String,
 }
 
-impl From<GcsServiceKey> for CredentialsFile {
-    fn from(key: GcsServiceKey) -> Self {
+impl From<&GcsServiceKey> for GcsServiceAccountKey {
+    fn from(key: &GcsServiceKey) -> Self {
         let GcsServiceKey {
             r#type,
             project_id,
@@ -146,52 +129,24 @@ impl From<GcsServiceKey> for CredentialsFile {
             client_id,
             auth_uri,
             token_uri,
-            auth_provider_x509_cert_url: _,
-            client_x509_cert_url: _,
-            universe_domain: _,
+            auth_provider_x509_cert_url,
+            client_x509_cert_url,
+            universe_domain,
         } = key;
 
-        CredentialsFile {
-            tp: r#type,
-            client_email: Some(client_email),
-            private_key_id: Some(private_key_id),
-            private_key: Some(private_key),
-            auth_uri: Some(auth_uri),
-            token_uri: Some(token_uri),
-            project_id: Some(project_id),
-            client_secret: None,
-            client_id: Some(client_id),
-            refresh_token: None,
-            audience: None,
-            subject_token_type: None,
-            token_url_external: None,
-            token_info_url: None,
-            service_account_impersonation_url: None,
-            service_account_impersonation: None,
-            delegates: None,
-            credential_source: None,
-            quota_project_id: None,
-            workforce_pool_user_project: None,
-        }
-    }
-}
-
-pub(crate) enum TokenSource {
-    GAuth(Arc<dyn GCloudAuthTokenSource>),
-    Token(Arc<dyn GCloudTokenSource>),
-}
-
-impl TokenSource {
-    pub(crate) async fn token(&self) -> Result<String, String> {
-        match self {
-            TokenSource::GAuth(ts) => ts
-                .token()
-                .await
-                .map(|t| t.access_token)
-                .map_err(|e| e.to_string()),
-            TokenSource::Token(ts) => ts.token().await.map_err(|e| e.to_string()),
-        }
-        .map(|t| t.trim_start_matches("Bearer ").to_string())
+        GcsServiceAccountKey::new(serde_json::json!({
+            "type": r#type,
+            "project_id": project_id,
+            "private_key_id": private_key_id,
+            "private_key": private_key,
+            "client_email": client_email,
+            "client_id": client_id,
+            "auth_uri": auth_uri,
+            "token_uri": token_uri,
+            "auth_provider_x509_cert_url": auth_provider_x509_cert_url,
+            "client_x509_cert_url": client_x509_cert_url,
+            "universe_domain": universe_domain,
+        }))
     }
 }
 
@@ -303,53 +258,21 @@ impl GcsProfile {
             })
     }
 
-    async fn get_token_source(
-        &self,
+    /// Access token of `credential`, used as the subject token of the STS downscoping,
+    /// and the project it belongs to.
+    async fn get_subject_token(
         credential: &GcsCredential,
-    ) -> Result<(TokenSource, Option<String>), CredentialsError> {
-        let config = google_cloud_auth::project::Config::default()
-            .with_scopes(&[GOOGLE_CLOUD_PLATFORM_SCOPE]);
-
-        Ok(match credential {
-            GcsCredential::ServiceAccountKey { key } => {
-                let source = google_cloud_auth::project::create_token_source_from_credentials(
-                    &key.into(),
-                    &config,
-                )
-                .await
-                .map_err(|e| {
-                    tracing::error!(
-                        "Failed to create gcp token source from credentials: {:?}",
-                        e
-                    );
-                    CredentialsError::Misconfiguration(
-                        "Failed to create gcp token source from credentials".to_string(),
-                    )
-                })?;
-                (
-                    TokenSource::GAuth(source.into()),
-                    Some(key.project_id.clone()),
-                )
-            }
-            GcsCredential::GcpSystemIdentity {} => {
-                if !CONFIG.enable_gcp_system_credentials {
-                    return Err(CredentialsError::Misconfiguration(
-                        "GCP System identity credentials are disabled in this Lakekeeper deployment."
-                            .to_string(),
-                    ));
-                }
-                let tsp = DefaultTokenSourceProvider::new(config).await.map_err(|e| {
-                    tracing::error!(
-                        "Failed to create gcp token source from system identity: {:?}",
-                        e
-                    );
-                    CredentialsError::Misconfiguration(
-                        "Failed to create gcp token source from system identity".to_string(),
-                    )
-                })?;
-                (TokenSource::Token(tsp.token_source()), tsp.project_id)
-            }
-        })
+    ) -> Result<(GcsAccessToken, Option<String>), TableConfigError> {
+        let auth = GcsAuth::try_from(credential.clone())?;
+        let token = auth.access_token().await.map_err(|e| {
+            tracing::error!("Failed to get a gcp access token: {e:?}");
+            subject_token_error(e.is_transient())
+        })?;
+        let project_id = match credential {
+            GcsCredential::ServiceAccountKey { key } => Some(key.project_id.clone()),
+            GcsCredential::GcpSystemIdentity {} => system_identity_project_id().await,
+        };
+        Ok((token, project_id))
     }
 
     /// Generate the table configuration for GCS.
@@ -383,11 +306,14 @@ impl GcsProfile {
         // one STS downscope (the most expensive miss in the system) per cache key.
         // The typed cache returns the `CachedSTSResponse` directly — no variant check.
         let response = get_or_load_stc(&GCS_STC_CACHE, cache_key, || async {
-            let (source, project_id) = self.get_token_source(credential).await?;
-            let token = sts::downscope(source, &self.bucket, stc_request).await?;
+            let (subject_token, project_id) = Self::get_subject_token(credential).await?;
+            let token = sts::downscope(&subject_token.token, &self.bucket, stc_request).await?;
 
-            let sts_validity_duration =
-                Duration::from_secs(token.expires_in.unwrap_or(3600) as u64);
+            let sts_validity_duration = vended_token_validity(
+                token.expires_in,
+                subject_token.expires_at,
+                std::time::SystemTime::now(),
+            );
 
             let expires_at_system_time =
                 std::time::SystemTime::now().checked_add(sts_validity_duration);
@@ -517,6 +443,35 @@ impl GcsProfile {
     }
 }
 
+/// Validity assumed for a downscoped token when neither STS nor the subject token name one.
+const DEFAULT_VENDED_TOKEN_VALIDITY: Duration = Duration::from_secs(3600);
+
+/// How long a downscoped token is valid. STS omits the expiry when the subject token is an
+/// access token: the downscoped token then expires with the subject token.
+fn vended_token_validity(
+    sts_expires_in: Option<usize>,
+    subject_expires_at: Option<std::time::SystemTime>,
+    now: std::time::SystemTime,
+) -> Duration {
+    let from_sts = sts_expires_in.map(|secs| Duration::from_secs(secs as u64));
+    let from_subject =
+        subject_expires_at.map(|expires_at| expires_at.duration_since(now).unwrap_or_default());
+    match (from_sts, from_subject) {
+        (Some(sts), Some(subject)) => sts.min(subject),
+        (Some(validity), None) | (None, Some(validity)) => validity,
+        (None, None) => DEFAULT_VENDED_TOKEN_VALIDITY,
+    }
+}
+
+/// Failures that may pass, such as an unavailable token endpoint, are a failed dependency.
+fn subject_token_error(transient: bool) -> TableConfigError {
+    if transient {
+        TableConfigError::FailedDependency("Failed to get a gcp access token".to_string())
+    } else {
+        CredentialsError::Misconfiguration("Failed to get a gcp access token".to_string()).into()
+    }
+}
+
 /// Build a `GcsStorage` client from vended-credentials properties.
 ///
 /// Reads the downscoped `OAuth2` access token from the iceberg-format
@@ -552,7 +507,7 @@ impl TryFrom<GcsCredential> for GcsAuth {
 
         Ok(match credential {
             GcsCredential::ServiceAccountKey { key } => {
-                GcsAuth::CredentialsFile { file: key.into() }
+                GcsAuth::ServiceAccountKey { key: (&key).into() }
             }
             GcsCredential::GcpSystemIdentity {} => GcsAuth::GcpSystemIdentity {},
         })
@@ -758,5 +713,150 @@ mod is_overlapping_location_tests {
         let profile4 = create_profile("bucket1", Some("prefix/sub"));
 
         assert!(profile3.is_overlapping_location(&profile4));
+    }
+}
+
+#[cfg(test)]
+mod stored_credential_tests {
+    use super::*;
+    use crate::service::storage::StorageCredential;
+
+    // Shape of a GCS credential as stored by released versions.
+    const STORED_SERVICE_ACCOUNT_KEY: &str = r#"{
+        "type": "gcs",
+        "credential-type": "service-account-key",
+        "key": {
+            "type": "service_account",
+            "project_id": "example-project-0000",
+            "private_key_id": "test-key-id",
+            "private_key": "test-private-key",
+            "client_email": "example-sa@example-project-0000.iam.gserviceaccount.com",
+            "client_id": "000000000000000000000",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/example-sa%40example-project-0000.iam.gserviceaccount.com",
+            "universe_domain": "googleapis.com"
+        }
+    }"#;
+
+    #[test]
+    fn stored_service_account_key_still_deserializes() {
+        let credential: StorageCredential =
+            serde_json::from_str(STORED_SERVICE_ACCOUNT_KEY).unwrap();
+        let StorageCredential::Gcs(credential) = credential else {
+            panic!("expected a GCS credential, got {credential:?}");
+        };
+        let GcsCredential::ServiceAccountKey { key } = &credential else {
+            panic!("expected a service account key, got {credential:?}");
+        };
+        assert_eq!(key.project_id, "example-project-0000");
+        assert_eq!(
+            key.client_email,
+            "example-sa@example-project-0000.iam.gserviceaccount.com"
+        );
+
+        let auth = GcsAuth::try_from(credential).unwrap();
+        let GcsAuth::ServiceAccountKey { key } = auth else {
+            panic!("expected a service account key auth, got {auth:?}");
+        };
+        assert_eq!(key.project_id(), Some("example-project-0000"));
+    }
+
+    #[test]
+    fn service_key_to_account_key_roundtrip() {
+        let key = GcsServiceKey {
+            r#type: "service_account".to_string(),
+            project_id: "example-project-0000".to_string(),
+            private_key_id: "0000".to_string(),
+            private_key: "test-private-key".to_string(),
+            client_email: "example-sa@example-project-0000.iam.gserviceaccount.com".to_string(),
+            client_id: "000000000000000000000".to_string(),
+            auth_uri: "https://accounts.google.com/o/oauth2/auth".to_string(),
+            token_uri: "https://oauth2.googleapis.com/token".to_string(),
+            auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs".to_string(),
+            client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/example-sa"
+                .to_string(),
+            universe_domain: "googleapis.com".to_string(),
+        };
+        let account_key = GcsServiceAccountKey::from(&key);
+        assert_eq!(account_key.project_id(), Some("example-project-0000"));
+
+        let json = serde_json::to_value(&account_key).unwrap();
+        assert_eq!(json, serde_json::to_value(&key).unwrap());
+    }
+
+    #[tokio::test]
+    async fn permanent_access_token_error_is_misconfiguration() {
+        let mut key: GcsServiceKey = serde_json::from_value(
+            serde_json::from_str::<serde_json::Value>(STORED_SERVICE_ACCOUNT_KEY).unwrap()["key"]
+                .clone(),
+        )
+        .unwrap();
+        key.universe_domain = "example.com".to_string();
+
+        let err = GcsProfile::get_subject_token(&GcsCredential::ServiceAccountKey { key })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TableConfigError::Credentials(CredentialsError::Misconfiguration(_))
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn subject_token_error_by_transience() {
+        assert!(matches!(
+            subject_token_error(true),
+            TableConfigError::FailedDependency(_)
+        ));
+        assert!(matches!(
+            subject_token_error(false),
+            TableConfigError::Credentials(CredentialsError::Misconfiguration(_))
+        ));
+    }
+
+    #[test]
+    fn vended_token_validity_takes_shortest_known() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let in_secs = |secs| Some(now + Duration::from_secs(secs));
+        assert_eq!(
+            vended_token_validity(Some(3600), in_secs(300), now),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            vended_token_validity(Some(600), in_secs(3599), now),
+            Duration::from_secs(600)
+        );
+        assert_eq!(
+            vended_token_validity(None, in_secs(1800), now),
+            Duration::from_mins(30)
+        );
+        assert_eq!(
+            vended_token_validity(Some(900), None, now),
+            Duration::from_mins(15)
+        );
+        assert_eq!(
+            vended_token_validity(None, None, now),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            vended_token_validity(None, Some(now - Duration::from_secs(1)), now),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn stored_system_identity_still_deserializes() {
+        let credential: StorageCredential =
+            serde_json::from_str(r#"{"type": "gcs", "credential-type": "gcp-system-identity"}"#)
+                .unwrap();
+        assert_eq!(
+            credential,
+            StorageCredential::Gcs(GcsCredential::GcpSystemIdentity {})
+        );
     }
 }
