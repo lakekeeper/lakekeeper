@@ -438,7 +438,8 @@ pub trait TaskConfig:
     /// What follows a failed attempt: a retry after a delay, for example with a larger resource
     /// demand after the attempt ran out of memory, or giving up. After [`Self::max_retries`]
     /// attempts a retry is ignored and the task fails. Default: a retry after
-    /// [`default_retry_backoff`] with the attempt's resource demand.
+    /// [`default_retry_backoff`] with the attempt's resource demand. A worker that reports a
+    /// failure can decide itself with [`SpecializedTask::record_failure_with_decision`].
     #[must_use]
     fn retry_decision(failed: &FailedAttempt<'_>) -> RetryDecision {
         RetryDecision::retry(default_retry_backoff(failed))
@@ -1398,8 +1399,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         Ok(state)
     }
 
-    /// Records an failure for a task in the catalog, updating its status and retry count.
-    /// [`TaskConfig::retry_decision`] decides whether and how it is retried.
+    /// Records a failed attempt of the task. [`TaskConfig::retry_decision`] decides whether and how
+    /// it is retried; after [`TaskConfig::max_retries`] attempts a retry is ignored and the task
+    /// fails.
     ///
     /// Does not return an error, but logs it.
     pub async fn record_failure<C: CatalogStore>(&self, catalog_state: C::State, error: &str) {
@@ -1412,10 +1414,26 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             resource_demand: self.task_metadata.resource_demand(),
             execution_details: None,
         };
+        let decision = RetryPolicy::of::<Q>().decide(&failed);
+        self.record_failure_with_decision::<C>(catalog_state, error, decision)
+            .await;
+    }
+
+    /// Records a failure like [`Self::record_failure`], but `decision` says whether and how it is
+    /// retried, and [`TaskConfig::retry_decision`] is not asked. After [`TaskConfig::max_retries`]
+    /// attempts a retry is ignored and the task fails.
+    ///
+    /// Does not return an error, but logs it.
+    pub async fn record_failure_with_decision<C: CatalogStore>(
+        &self,
+        catalog_state: C::State,
+        error: &str,
+        decision: RetryDecision,
+    ) {
         let status = Status::Failure {
             details: error,
             max_retries: Q::max_retries(),
-            retry_decision: RetryPolicy::of::<Q>().decide(&failed),
+            retry_decision: decision,
         };
 
         for attempt in 1..=5 {
