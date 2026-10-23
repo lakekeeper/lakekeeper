@@ -1,7 +1,11 @@
 use lakekeeper::{
     api::ErrorModel,
-    service::{CatalogBackendError, CatalogBackendErrorType},
+    service::{CatalogBackendError, CatalogBackendErrorType, DatabaseIntegrityError, UserId},
 };
+
+pub(crate) fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
+    UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
+}
 
 pub(crate) trait DBErrorHandler
 where

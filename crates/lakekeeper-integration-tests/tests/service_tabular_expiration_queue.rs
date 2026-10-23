@@ -6,7 +6,7 @@ use lakekeeper::{
     service::{
         CatalogGenericTableOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         GenericTableCreation, GenericTableFormat, GenericTableId, Location, NamedEntity, TabularId,
-        TabularListFlags, Transaction, WarehouseStatus,
+        TabularListFlags, Transaction, WarehouseStatus, WriteTransaction,
         authz::AllowAllAuthorizer,
         storage::MemoryProfile,
         tasks::{
@@ -361,10 +361,9 @@ async fn test_expiration_queue_drops_table_in_inactive_warehouse(pool: PgPool) {
     )
     .await;
 
-    let mut trx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(catalog_state.clone())
-            .await
-            .unwrap();
+    let mut trx = WriteTransaction::<PostgresBackend>::begin(catalog_state.clone())
+        .await
+        .unwrap();
     TabularExpirationTask::schedule_task::<PostgresBackend>(
         ScheduleTaskMetadata {
             resource_demand: None,
@@ -392,13 +391,9 @@ async fn test_expiration_queue_drops_table_in_inactive_warehouse(pool: PgPool) {
     )
     .await
     .unwrap();
-    PostgresBackend::set_warehouse_status(
-        warehouse_id,
-        WarehouseStatus::Inactive,
-        trx.transaction(),
-    )
-    .await
-    .unwrap();
+    PostgresBackend::set_warehouse_status(warehouse_id, WarehouseStatus::Inactive, &mut trx)
+        .await
+        .unwrap();
     trx.commit().await.unwrap();
 
     // Listings hide the tables of an inactive warehouse, so read the rows directly.

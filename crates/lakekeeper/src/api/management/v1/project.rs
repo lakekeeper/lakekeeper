@@ -27,7 +27,8 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        ArcProjectId, CatalogStore, CatalogWarehouseOps, State, Transaction,
+        ArcProjectId, CatalogProjectOps, CatalogStore, CatalogWarehouseOps, State, Transaction,
+        WriteTransaction,
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogServerAction, CatalogWarehouseAction, GrantResource,
@@ -271,10 +272,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-
-        C::delete_project(&project_id, transaction.transaction()).await?;
-        transaction.commit().await?;
+        let mut t = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
+        C::delete_project(&project_id, &mut t).await?;
+        t.commit().await?;
 
         // Post-commit: best-effort authz cleanup. A leftover edge points at the
         // now-deleted project (unreachable), and `create_project`'s

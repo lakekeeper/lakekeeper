@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pg_try_advisory_xact_lock(\n               hashtextextended(to_regclass('cache_change_log')::oid::text, $1)\n           ) AS \"locked!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "locked!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d6883dc52bbbf150a25b94fb801dba789f379ccac0ec4cea12669a257e45dd84"
+}

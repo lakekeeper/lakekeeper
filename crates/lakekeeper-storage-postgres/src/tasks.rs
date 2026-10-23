@@ -635,33 +635,41 @@ pub(crate) async fn pick_task_with_retry_policy(
     let x = sqlx::query!(
         r#"
         WITH picked_task AS (
-            SELECT t.*, tc.config
-            FROM task t
+            -- The oldest due task of each queue name, then the oldest of those: each name reads
+            -- `task_queue_name_status_idx` in order and stops at its first match, where
+            -- `queue_name = ANY($1)` would sort the whole due backlog. The pick locks at most one
+            -- row per name until it commits.
+            SELECT c.task_id, c.attempt, c.warehouse_id, c.project_id
+            FROM unnest($1::text[]) AS q(queue_name)
+            CROSS JOIN LATERAL (
+                SELECT t.task_id, t.attempt, t.warehouse_id, t.project_id, t.scheduled_for
+                FROM task t
+                WHERE t.queue_name = q.queue_name AND t.scheduled_for <= now() AND t.status = 'scheduled'
+                    -- A task without a resource demand counts as 0.
+                    AND ($3::bigint IS NULL OR COALESCE(t.resource_demand, 0) > $3)
+                    AND ($4::bigint IS NULL OR COALESCE(t.resource_demand, 0) <= $4)
+                -- task_id breaks ties of scheduled_for.
+                ORDER BY t.scheduled_for, t.task_id
+                -- Skips rows other pickers hold before LIMIT counts them, so a held row never
+                -- hides the due rows behind it.
+                FOR UPDATE OF t SKIP LOCKED
+                LIMIT 1
+            ) c
+            ORDER BY c.scheduled_for, c.task_id
+            LIMIT 1
+        ),
+        picked_config AS (
             -- Config belongs to the queue, not to a row's (possibly legacy)
             -- name. Prefer the canonical queue's config ($2) and fall back to a
             -- legacy-named config row only when the canonical one is unset, so a
             -- row enqueued under an old name still loads the right config.
-            LEFT JOIN LATERAL (
-                SELECT cfg.config
-                FROM task_config cfg
-                WHERE cfg.queue_name = ANY($1)
-                    AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))
-                    AND cfg.project_id = t.project_id
-                ORDER BY (cfg.queue_name = $2) DESC
-                LIMIT 1
-            ) tc ON true
-            WHERE t.queue_name = ANY($1) AND scheduled_for <= now() AND status = 'scheduled'
-                -- A task without a resource demand counts as 0.
-                AND ($3::bigint IS NULL OR COALESCE(t.resource_demand, 0) > $3)
-                AND ($4::bigint IS NULL OR COALESCE(t.resource_demand, 0) <= $4)
-            -- Oldest-due first, then task_id as a unique tiebreaker so pickup
-            -- order is fully deterministic when scheduled_for ties (the queue
-            -- match is a set via `= ANY`, so row order is otherwise at the
-            -- planner's discretion).
-            ORDER BY scheduled_for, task_id
-            -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
-            -- transactions locked
-            FOR UPDATE OF t SKIP LOCKED
+            SELECT cfg.config
+            FROM picked_task p
+            JOIN task_config cfg
+                ON cfg.queue_name = ANY($1)
+                AND ((cfg.warehouse_id IS NULL AND p.warehouse_id IS NULL) OR (cfg.warehouse_id = p.warehouse_id))
+                AND cfg.project_id = p.project_id
+            ORDER BY (cfg.queue_name = $2) DESC
             LIMIT 1
         )
         UPDATE task
@@ -686,7 +694,7 @@ pub(crate) async fn pick_task_with_retry_policy(
             task.attempt,
             task.parent_task_id,
             task.queue_name,
-            (select config from picked_task),
+            (select config from picked_config),
             task.project_id,
             task.resource_demand
             "#,
@@ -2020,6 +2028,154 @@ mod test {
         .unwrap();
         assert_eq!(task.task_id(), id);
         assert_eq!(&task.queue_name, &legacy_name);
+    }
+
+    /// Queues a task of `queue_name` for a new table, due at `scheduled_for`.
+    async fn queue_due(
+        pool: &PgPool,
+        queue_name: &TaskQueueName,
+        warehouse_id: WarehouseId,
+        project_id: &ArcProjectId,
+        scheduled_for: DateTime<Utc>,
+    ) -> TaskId {
+        let mut conn = pool.acquire().await.unwrap();
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        queue_task(
+            &mut conn,
+            queue_name,
+            None,
+            project_id.clone(),
+            Some(scheduled_for),
+            None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap()
+    }
+
+    /// Picks tasks of `queue_name` and `legacy_name` until none is left.
+    async fn pick_until_none(
+        pool: &PgPool,
+        queue_name: &TaskQueueName,
+        legacy_name: &TaskQueueName,
+    ) -> Vec<TaskId> {
+        let mut picked = Vec::new();
+        while let Some(task) = pick_task(
+            pool,
+            queue_name,
+            &[legacy_name],
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+        )
+        .await
+        .unwrap()
+        {
+            picked.push(task.task_id());
+        }
+        picked
+    }
+
+    #[sqlx::test]
+    async fn test_pick_takes_the_oldest_due_task_across_queue_names(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let current = generate_tq_name();
+        let legacy = generate_tq_name();
+        let now = Utc::now();
+        let ago = |minutes| now - chrono::Duration::minutes(minutes);
+        let current_3 = queue_due(&pool, &current, warehouse_id, &project_id, ago(3)).await;
+        let current_1 = queue_due(&pool, &current, warehouse_id, &project_id, ago(1)).await;
+        let legacy_2 = queue_due(&pool, &legacy, warehouse_id, &project_id, ago(2)).await;
+        let legacy_1 = queue_due(&pool, &legacy, warehouse_id, &project_id, ago(1)).await;
+        queue_due(&pool, &legacy, warehouse_id, &project_id, ago(-60)).await;
+
+        // task_id breaks the tie of the two tasks due a minute ago.
+        let mut tied = [current_1, legacy_1];
+        tied.sort_by_key(|id| **id);
+        assert_eq!(
+            pick_until_none(&pool, &current, &legacy).await,
+            vec![current_3, legacy_2, tied[0], tied[1]]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_pick_skips_the_tasks_another_picker_holds(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let current = generate_tq_name();
+        let legacy = generate_tq_name();
+        let now = Utc::now();
+        let ago = |minutes| now - chrono::Duration::minutes(minutes);
+        let current_3 = queue_due(&pool, &current, warehouse_id, &project_id, ago(3)).await;
+        let current_1 = queue_due(&pool, &current, warehouse_id, &project_id, ago(1)).await;
+        let legacy_2 = queue_due(&pool, &legacy, warehouse_id, &project_id, ago(2)).await;
+
+        // Another picker holds the oldest task of each name.
+        let mut holder = pool.begin().await.unwrap();
+        sqlx::query("SELECT task_id FROM task WHERE task_id = ANY($1) FOR UPDATE")
+            .bind(vec![*current_3, *legacy_2])
+            .fetch_all(&mut *holder)
+            .await
+            .unwrap();
+        let picked = pick_task(
+            &pool,
+            &current,
+            &[&legacy],
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(picked.task_id(), current_1);
+
+        holder.rollback().await.unwrap();
+        assert_eq!(
+            pick_until_none(&pool, &current, &legacy).await,
+            vec![current_3, legacy_2]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_concurrent_pickers_pick_each_task_once(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let current = generate_tq_name();
+        let legacy = generate_tq_name();
+        let now = Utc::now();
+        let mut queued = Vec::new();
+        for i in 0..50 {
+            let queue_name = if i % 2 == 0 { &current } else { &legacy };
+            // Five distinct due times, so the pickers also race over ties.
+            let scheduled_for = now - chrono::Duration::minutes(i % 5);
+            queued
+                .push(queue_due(&pool, queue_name, warehouse_id, &project_id, scheduled_for).await);
+        }
+
+        let pickers = (0..8)
+            .map(|_| {
+                let (pool, current, legacy) = (pool.clone(), current.clone(), legacy.clone());
+                tokio::spawn(async move { pick_until_none(&pool, &current, &legacy).await })
+            })
+            .collect::<Vec<_>>();
+        let mut picked = Vec::new();
+        for picker in pickers {
+            picked.extend(picker.await.unwrap());
+        }
+
+        picked.sort_by_key(|id| **id);
+        queued.sort_by_key(|id| **id);
+        assert_eq!(picked, queued);
+        let once: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM task WHERE task_id = ANY($1) AND status = 'running' AND attempt = 1",
+        )
+        .bind(queued.iter().map(|id| **id).collect::<Vec<_>>())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(once, 50);
     }
 
     #[sqlx::test]

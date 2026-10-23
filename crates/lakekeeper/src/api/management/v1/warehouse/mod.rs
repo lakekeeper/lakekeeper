@@ -40,7 +40,8 @@ use crate::{
         AllowedFormatVersions, ArcProjectId, ArcResolvedWarehouse, CachePolicy,
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps,
         EnsureWarehouseSpecMutableError, NamespaceId, State, TabularId, TabularListFlags,
-        Transaction, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy, WarehouseSpecLocked,
+        Transaction, UpdatedWarehouseStorage, ViewOrTableDeletionInfo,
+        WarehouseFormatVersionPolicy, WarehouseSpecLocked, WriteTransaction,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
@@ -65,7 +66,6 @@ use crate::{
             CancelTasksFilter, RegisteredTaskQueues, TaskQueueName,
             tabular_expiration_queue::TabularExpirationTask,
         },
-        warehouse_cache::warehouse_cache_invalidate,
     },
 };
 
@@ -552,7 +552,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         let secret_id = if let Some(storage_credential) = storage_credential {
             Some(
                 context
@@ -592,7 +592,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .format_version_policy(format_version_policy)
                     .managed_by(managed_by)
                     .build(),
-                transaction.transaction(),
+                &mut transaction,
             )
             .await?;
             authorizer
@@ -686,16 +686,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 return Err(create_error);
             }
         };
-
-        // Drop any entry this replica still holds for the id before the create
-        // event repopulates it. Every other warehouse write invalidates; create
-        // could skip it while ids were always fresh, because there was nothing to
-        // displace. A caller-supplied id can name a warehouse this replica cached
-        // before it was deleted, and `warehouse_cache_insert` refuses to overwrite
-        // a higher `version` — a recreated warehouse starts back at 0, so without
-        // this the replica would keep serving the previous warehouse's project and
-        // storage profile under an id that now belongs to a different one.
-        warehouse_cache_invalidate(resolved_warehouse.warehouse_id).await;
 
         // Held across the create event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
@@ -1235,7 +1225,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         // Delete schedules before the warehouse row is locked: the materializer holds a schedule
         // row while its task insert waits for the warehouse row.
         C::delete_warehouse_task_schedules(warehouse_id, transaction.transaction()).await?;
@@ -1260,10 +1250,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // The secret comes from the row the delete removed, inside this
         // transaction, so it cannot name a credential a concurrent rotation
         // replaced between an earlier read and the delete.
-        let storage_secret_id =
-            C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
+        let storage_secret_id = C::delete_warehouse(warehouse_id, query, &mut transaction).await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         // Post-commit: best-effort authz cleanup (see `delete_project`).
         authorizer
@@ -1345,7 +1333,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         tracing::debug!("Setting protection for warehouse {warehouse_id} to {protection}");
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1358,9 +1346,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
         let resolved_warehouse =
-            C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
+            C::set_warehouse_protected(warehouse_id, protection, &mut transaction).await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_protection_set(protection, resolved_warehouse.clone());
 
@@ -1399,15 +1386,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let updated_warehouse = C::set_warehouse_managed_by(
-            warehouse_id,
-            request.managed_by,
-            transaction.transaction(),
-        )
-        .await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
+        let updated_warehouse =
+            C::set_warehouse_managed_by(warehouse_id, request.managed_by, &mut transaction).await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_managed_by_set(request.managed_by, updated_warehouse.clone());
 
@@ -1455,7 +1437,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         validate_warehouse_name(&request.new_name)?;
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1468,10 +1450,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
 
         let updated_warehouse =
-            C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
+            C::rename_warehouse(warehouse_id, &request.new_name, &mut transaction).await?;
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_renamed(Arc::new(request), updated_warehouse.clone());
 
@@ -1513,7 +1494,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1527,11 +1508,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let updated_warehouse = C::set_warehouse_deletion_profile(
             warehouse_id,
             &request.delete_profile,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx
             .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
@@ -1584,7 +1564,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1595,14 +1575,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
-        let updated_warehouse = C::set_warehouse_format_version_policy(
-            warehouse_id,
-            &policy,
-            transaction.transaction(),
-        )
-        .await?;
+        let updated_warehouse =
+            C::set_warehouse_format_version_policy(warehouse_id, &policy, &mut transaction).await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_format_version_policy_updated(
             Arc::new(request),
@@ -1650,7 +1625,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
 
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1663,15 +1638,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
 
-        C::set_warehouse_status(
-            warehouse_id,
-            WarehouseStatus::Inactive,
-            transaction.transaction(),
-        )
-        .await?;
+        C::set_warehouse_status(warehouse_id, WarehouseStatus::Inactive, &mut transaction).await?;
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         Ok(())
     }
@@ -1709,7 +1678,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
 
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1722,15 +1691,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
 
-        C::set_warehouse_status(
-            warehouse_id,
-            WarehouseStatus::Active,
-            transaction.transaction(),
-        )
-        .await?;
+        C::set_warehouse_status(warehouse_id, WarehouseStatus::Active, &mut transaction).await?;
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         Ok(())
     }
@@ -1787,7 +1750,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1802,7 +1765,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .storage_profile
             .clone()
             .update_with(storage_profile)?;
-        let old_secret_id = warehouse.storage_secret_id;
 
         let secret_id = if let Some(storage_credential) = storage_credential {
             Some(
@@ -1816,16 +1778,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let updated_warehouse = C::update_storage_profile(
-            warehouse_id,
-            storage_profile,
-            secret_id,
-            transaction.transaction(),
-        )
-        .await?;
+        let UpdatedWarehouseStorage {
+            warehouse: updated_warehouse,
+            previous_secret_id: old_secret_id,
+        } = C::update_storage_profile(warehouse_id, storage_profile, secret_id, &mut transaction)
+            .await?;
+        let updated_warehouse = Arc::new(updated_warehouse);
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_storage_updated(request_for_event, updated_warehouse.clone());
 
@@ -1900,7 +1860,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         ))
         .await?;
 
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1911,7 +1871,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
-        let old_secret_id = warehouse.storage_secret_id;
 
         let secret_id = if let Some(new_storage_credential) = new_storage_credential {
             Some(
@@ -1925,16 +1884,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let updated_warehouse = C::update_storage_profile(
+        let UpdatedWarehouseStorage {
+            warehouse: updated_warehouse,
+            previous_secret_id: old_secret_id,
+        } = C::update_storage_profile(
             warehouse_id,
             warehouse.storage_profile.clone(),
             secret_id,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await?;
+        let updated_warehouse = Arc::new(updated_warehouse);
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_storage_credential_updated(
             request_for_event,
@@ -2129,7 +2091,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                     .iter()
                                     .map(ViewOrTableDeletionInfo::namespace_id)
                                     .collect_vec(),
-                                t.transaction(),
+                                t.committed_reads(),
                             )
                             .await?,
                         )
@@ -2402,7 +2364,7 @@ where
 async fn cancel_tasks_on_warehouse_delete<C: CatalogStore>(
     task_queues: &RegisteredTaskQueues,
     warehouse_id: WarehouseId,
-    transaction: &mut C::Transaction,
+    transaction: &mut WriteTransaction<C>,
 ) -> Result<()> {
     for (queue_name, legacy_names) in task_queues.queues_cancelled_on_warehouse_delete().await {
         C::cancel_scheduled_tasks(

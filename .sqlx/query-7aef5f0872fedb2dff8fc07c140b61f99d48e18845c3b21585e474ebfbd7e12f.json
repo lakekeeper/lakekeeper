@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO cache_change_log (domain, keys)\n        SELECT r.domain, COALESCE(k.keys, '{}')\n        FROM unnest($1::text[]) WITH ORDINALITY AS r(domain, row_no)\n        LEFT JOIN (\n            SELECT row_no, array_agg(key ORDER BY position) AS keys\n            FROM unnest($2::bigint[], $3::text[]) WITH ORDINALITY AS k(row_no, key, position)\n            GROUP BY row_no\n        ) k USING (row_no)\n        ORDER BY r.row_no",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Int8Array",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7aef5f0872fedb2dff8fc07c140b61f99d48e18845c3b21585e474ebfbd7e12f"
+}
