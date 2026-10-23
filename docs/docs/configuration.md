@@ -708,7 +708,7 @@ The bound is applied to the raw list the client sent, before Lakekeeper decides 
 
 ### Maintenance Mode
 
-`LAKEKEEPER__MAINTENANCE_MODE` sets the mode when Lakekeeper starts. An instance admin can also switch a running Lakekeeper process into or out of read-only with `POST /management/v1/server/maintenance-mode` and a body of `{"mode": "read-only"}` or `{"mode": "off"}`. The call changes only the process that serves it, so call each pod on its own address, not through the Service. The response names the pod in `hostname`. A restarted process starts in the mode the variable sets again. Pods that serve no API (`LAKEKEEPER__SERVE_HTTP_API=false`) cannot be switched this way: scale them down or restart them with `LAKEKEEPER__MAINTENANCE_MODE=read-only`.
+`LAKEKEEPER__MAINTENANCE_MODE` sets the mode when Lakekeeper starts. An instance admin can also switch a running Lakekeeper process into or out of read-only with `POST /management/v1/server/maintenance-mode` and a body of `{"mode": "read-only"}` or `{"mode": "off"}`. Switching back to `off` works only when `LAKEKEEPER__MAINTENANCE_MODE` is not `read-only` at startup. The call changes only the process that serves it, so call each pod on its own address, not through the Service. The response names the pod in `hostname`. A restarted process starts in the mode the variable sets again. Pods that serve no API (`LAKEKEEPER__SERVE_HTTP_API=false`) cannot be switched this way: scale them down or restart them with `LAKEKEEPER__MAINTENANCE_MODE=read-only`.
 
 While `read-only`:
 
@@ -720,7 +720,7 @@ While `read-only`:
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
-| `LAKEKEEPER__MAINTENANCE_MODE` | `read-only` | — | `off` (default) or `read-only`. Applies from startup; `read-only` cannot be switched off at runtime. |
+| `LAKEKEEPER__MAINTENANCE_MODE` | `read-only` | `off` | `off` or `read-only`. Applies from startup. |
 
 ### Idempotency
 
