@@ -4342,6 +4342,7 @@ dependencies = [
  "bytes",
  "chrono",
  "futures",
+ "hostname",
  "http 1.4.1",
  "http-body-util",
  "iceberg",

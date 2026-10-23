@@ -19,6 +19,7 @@ use crate::{
     service::{
         ArcProjectId, CatalogBackendError, CatalogStore, CatalogTaskOps, Transaction,
         define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
+        maintenance_mode::{MAINTENANCE, WaitOutcome, wait_until_writable},
     },
 };
 
@@ -455,6 +456,13 @@ pub async fn task_schedule_materializer<C: CatalogStore>(
     let period = materializer_period(poll_interval);
     tracing::info!("Starting task schedule materializer with a period of {period:?}");
     loop {
+        // Materializes nothing while this process is in read-only maintenance mode.
+        if wait_until_writable(&MAINTENANCE, period, &cancellation_token).await
+            == WaitOutcome::Cancelled
+        {
+            tracing::info!("Graceful shutdown: exiting task schedule materializer");
+            return;
+        }
         match materialize_due_task_schedules::<C>(catalog_state.clone()).await {
             Ok(ticks) => {
                 for tick in &ticks {

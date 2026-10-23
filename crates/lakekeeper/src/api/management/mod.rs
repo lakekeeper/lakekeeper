@@ -70,7 +70,10 @@ pub mod v1 {
         ListRoleMembershipsResponse, ListRolesPageQuery, RoleMemberType, Service as _,
     };
     use serde::{Deserialize, Serialize};
-    use server::{BootstrapRequest, ServerInfo, Service as _};
+    use server::{
+        BootstrapRequest, MaintenanceModeResponse, ServerInfo, Service as _,
+        SetMaintenanceModeRequest,
+    };
     use table::TableManagementService as _;
     use tabular::TabularManagementService as _;
     use tag::{
@@ -249,6 +252,35 @@ pub mod v1 {
     ) -> Result<StatusCode> {
         ApiServer::<C, A, S>::bootstrap(api_context, metadata, request).await?;
         Ok(StatusCode::NO_CONTENT)
+    }
+
+    /// Set Maintenance Mode
+    ///
+    /// Switches the Lakekeeper process that serves this request into or out of
+    /// read-only maintenance mode. While read-only, the process rejects mutating
+    /// requests with `503` and starts no new background tasks. The mode is held
+    /// per process: call each replica on its own address, not through a load
+    /// balancer. A restart returns the process to the mode set by
+    /// `LAKEKEEPER__MAINTENANCE_MODE`, and `off` is rejected with `409` while
+    /// that variable sets `read-only`. Requires instance-admin privilege.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "server",
+        path = ManagementV1Endpoint::SetMaintenanceMode.path(),
+        request_body = SetMaintenanceModeRequest,
+        responses(
+            (status = 200, description = "Maintenance mode of the serving process", body = MaintenanceModeResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_maintenance_mode<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetMaintenanceModeRequest>,
+    ) -> Result<(StatusCode, Json<MaintenanceModeResponse>)> {
+        ApiServer::<C, A, S>::set_maintenance_mode(request, api_context, metadata)
+            .await
+            .map(|response| (StatusCode::OK, Json(response)))
     }
 
     /// Provision User
@@ -4544,17 +4576,24 @@ pub mod v1 {
     }
 
     impl<C: CatalogStore, A: Authorizer, S: SecretStore> ApiServer<C, A, S> {
-        #[allow(clippy::too_many_lines)]
-        pub fn new_v1_router(authorizer: &A) -> Router<ApiContext<State<A, C, S>>> {
+        fn new_v1_server_router() -> Router<ApiContext<State<A, C, S>>> {
             Router::new()
-                // Server
                 .route("/info", get(get_server_info))
                 .route("/bootstrap", post(bootstrap))
+                .route(
+                    ManagementV1Endpoint::SetMaintenanceMode.path_in_management_v1(),
+                    post(set_maintenance_mode),
+                )
                 .route(
                     ManagementV1Endpoint::GetServerActions.path_in_management_v1(),
                     get(get_server_actions),
                 )
                 .route("/endpoint-statistics", post(get_endpoint_statistics))
+        }
+
+        #[allow(clippy::too_many_lines)]
+        pub fn new_v1_router(authorizer: &A) -> Router<ApiContext<State<A, C, S>>> {
+            Self::new_v1_server_router()
                 // Role management
                 .route("/role", get(list_roles).post(create_role))
                 .route(

@@ -217,6 +217,7 @@ generate_endpoints! {
         ServerInfo(GET, "/management/v1/info"),
         GetServerActions(GET, "/management/v1/server/actions"),
         Bootstrap(POST, "/management/v1/bootstrap"),
+        SetMaintenanceMode(POST, "/management/v1/server/maintenance-mode"),
         CreateUser(POST, "/management/v1/user"),
         SearchUser(POST, "/management/v1/search/user"),
         GetUser(GET, "/management/v1/user/{user_id}"),
@@ -1094,6 +1095,7 @@ mod test {
         "management-v1-revoke-namespace-subtree-grants",
         "management-v1-list-warehouse-subtree-grants",
         "management-v1-revoke-warehouse-subtree-grants",
+        "management-v1-set-maintenance-mode",
     ];
 
     #[test]
