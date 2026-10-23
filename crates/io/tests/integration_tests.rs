@@ -428,6 +428,14 @@ test_all_storages!(
 );
 test_versioned_storages!(test_version_history, test_version_history_impl);
 test_versioned_storages!(
+    test_old_version_reads_its_own_bytes,
+    test_old_version_reads_its_own_bytes_impl
+);
+test_versioned_storages!(
+    test_version_listing_pages_across_keys,
+    test_version_listing_pages_across_keys_impl
+);
+test_versioned_storages!(
     test_tags_address_one_version,
     test_tags_address_one_version_impl
 );
@@ -2567,12 +2575,12 @@ async fn test_write_outcome_identifies_the_object_impl(
             // S3 listings carry the ETag and no version.
             assert_eq!(listed[0].e_tag(), outcome.e_tag.as_deref());
             assert_eq!(listed[0].version(), None);
-            // The bucket decides whether the write gets a version id; version listing
-            // reports an object written without one as version "null".
-            let expected = outcome.version.as_deref().unwrap_or("null");
+            // The `_s3` and `_oss` buckets are unversioned: the write gets no version id,
+            // and version listing reports the object as version "null".
+            assert_eq!(outcome.version, None);
             let versions = all_versions(storage, &dir).await?;
             assert_eq!(versions.len(), 1);
-            assert_eq!(versions[0].version(), expected);
+            assert_eq!(versions[0].version(), "null");
             assert!(versions[0].is_latest());
             assert_unsupported_read(storage.list_soft_deleted(&dir, None).await.map(|_| ()));
         }
@@ -2605,10 +2613,15 @@ async fn test_soft_deleted_versions_impl(
     for (path, _) in &written {
         storage.delete(path).await?;
     }
+    // A deleted sibling whose name extends the prefix's last segment.
+    let sibling = format!("{}-sibling/c.bin", dir.trim_end_matches('/'));
+    storage.write(&sibling, Bytes::from("outside")).await?;
+    storage.delete(&sibling).await?;
 
-    // Paging continues after the last entry of each page.
+    // Paging continues after the last entry of each page, and the listing stays inside
+    // the prefix, given with or without its trailing slash.
     let pages: Vec<Result<Vec<SoftDeletedVersion>, IOError>> = storage
-        .list_soft_deleted(&dir, Some(1))
+        .list_soft_deleted(dir.trim_end_matches('/'), Some(1))
         .await?
         .collect()
         .await;
@@ -2703,7 +2716,14 @@ async fn test_version_history_impl(
     assert_read_not_found(storage.read(&path).await);
     // A delete marker is a version id with no object behind it.
     assert_read_not_found(storage.read_version(&path, &marker.version).await);
+    assert_read_not_found(storage.metadata_version(&path, &marker.version).await);
     assert_read_not_found(storage.get_tags(&path, &marker.version).await);
+    // A value that is no version id of the store is refused, not looked up.
+    let refused = storage.read_version(&path, "not-a-version").await;
+    assert!(
+        matches!(&refused, Err(ReadError::IOError(e)) if e.kind() == ErrorKind::ConditionNotMatch),
+        "expected ConditionNotMatch, got {refused:?}"
+    );
 
     let read = storage.read_version(&path, &first_version).await?;
     assert_eq!(read.bytes, Bytes::from("first"));
@@ -2727,6 +2747,94 @@ async fn test_version_history_impl(
             .await?,
         Bytes::from("irs")
     );
+    Ok(())
+}
+
+/// An old version reads back its own bytes while a newer version is current, also when the
+/// read is split into parallel chunks.
+#[cfg(any(feature = "storage-in-memory", feature = "storage-s3"))]
+async fn test_old_version_reads_its_own_bytes_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("overwritten.bin");
+    // Larger than one request, so the reads below are split into chunks.
+    let old_bytes = generate_test_data(30);
+    let new_bytes = Bytes::from(
+        old_bytes
+            .iter()
+            .map(|b| b.wrapping_add(1))
+            .collect::<Vec<_>>(),
+    );
+    let old = storage
+        .write(&path, old_bytes.clone())
+        .await?
+        .version
+        .expect("versioned write");
+    let new = storage
+        .write(&path, new_bytes.clone())
+        .await?
+        .version
+        .expect("versioned write");
+
+    let read = storage.read_version(&path, &old).await?;
+    assert_eq!(read.bytes, old_bytes);
+    assert_eq!(read.info.version(), Some(old.as_str()));
+    let range = 1..29 * 1024 * 1024;
+    assert_eq!(
+        storage
+            .read_range_version(&path, &old, range.clone())
+            .await?,
+        old_bytes.slice(range.start as usize..range.end as usize)
+    );
+    let current = storage.read(&path).await?;
+    assert_eq!(current.bytes, new_bytes);
+    assert_eq!(current.info.version(), Some(new.as_str()));
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Version listing pages split the versions of several keys; the pages hold every version
+/// once, and the listing stays inside its prefix.
+#[cfg(any(feature = "storage-in-memory", feature = "storage-s3"))]
+async fn test_version_listing_pages_across_keys_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let base = config.test_dir_path("paging");
+    let dir = format!("{base}dir/");
+    let mut expected = Vec::new();
+    for key in ["a", "b", "c"] {
+        let path = format!("{dir}{key}");
+        let mut written = Vec::new();
+        for content in ["one", "two"] {
+            let outcome = storage.write(&path, Bytes::from(content)).await?;
+            written.push(outcome.version.expect("versioned write"));
+        }
+        written.reverse();
+        expected.extend(written.into_iter().map(|version| (path.clone(), version)));
+    }
+    // A sibling whose name extends the prefix's last segment.
+    storage
+        .write(&format!("{base}dirty/a"), Bytes::from("outside"))
+        .await?;
+
+    let summary = |entries: &[ObjectVersionEntry]| {
+        entries
+            .iter()
+            .map(|entry| (entry.location().to_string(), entry.version().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let without_slash = dir.trim_end_matches('/');
+    assert_eq!(
+        summary(&all_versions(storage, without_slash).await?),
+        expected
+    );
+    let pages: Vec<Result<Vec<ObjectVersionEntry>, IOError>> =
+        storage.list_versions(&dir, Some(4)).await?.collect().await;
+    let pages = pages.into_iter().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), vec![4, 2]);
+    assert_eq!(summary(&pages.concat()), expected);
     Ok(())
 }
 
@@ -2755,6 +2863,11 @@ async fn test_tags_address_one_version_impl(
     storage.put_tags(&path, &first, &tags).await?;
     assert_eq!(storage.get_tags(&path, &first).await?, tags);
     assert_eq!(storage.get_tags(&path, &second).await?, ObjectTags::new());
+
+    // A put replaces the whole tag set.
+    let replacement = ObjectTags::from([("state".to_string(), "kept".to_string())]);
+    storage.put_tags(&path, &first, &replacement).await?;
+    assert_eq!(storage.get_tags(&path, &first).await?, replacement);
 
     storage.remove_tags(&path, &first).await?;
     assert_eq!(storage.get_tags(&path, &first).await?, ObjectTags::new());

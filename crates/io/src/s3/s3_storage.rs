@@ -1,6 +1,7 @@
 use std::{collections::HashMap, ops::Range, str::FromStr, sync::Arc, time::Duration};
 
 use aws_sdk_s3::{
+    error::SdkError,
     operation::head_object::HeadObjectOutput,
     types::{Object, ObjectIdentifier, ServerSideEncryption, Tag, Tagging},
 };
@@ -17,13 +18,14 @@ use crate::{
     s3::{
         S3Location,
         s3_error::{
-            parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
-            parse_create_multipart_upload_error, parse_delete_error, parse_get_bucket_policy_error,
-            parse_get_object_error, parse_head_object_error, parse_list_objects_v2_error,
-            parse_put_object_error, parse_s3_operation_error, parse_upload_part_error,
+            is_method_not_allowed, parse_aws_sdk_error, parse_batch_delete_error,
+            parse_complete_multipart_upload_error, parse_create_multipart_upload_error,
+            parse_delete_error, parse_get_bucket_policy_error, parse_get_object_error,
+            parse_head_object_error, parse_list_objects_v2_error, parse_put_object_error,
+            parse_s3_operation_error, parse_upload_part_error,
         },
     },
-    safe_usize_to_i32, validate_file_size,
+    safe_usize_to_i32, validate_file_size, validate_tags,
 };
 
 // Convert MB constants to bytes - these will always be safe conversions from u16
@@ -350,15 +352,20 @@ impl LakekeeperStorage for S3Storage {
 
     async fn get_tags(&self, path: &str, version: &str) -> Result<ObjectTags, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-        let response = self
+        let request = self
             .client
             .get_object_tagging()
             .bucket(s3_location.bucket_name())
             .key(s3_key_to_str(&s3_location.key()))
-            .version_id(version)
-            .send()
-            .await
-            .map_err(|e| parse_s3_operation_error(e, "get object tagging", s3_location.as_str()))?;
+            .version_id(version);
+        let response = send_with_retry(|| async {
+            request.clone().send().await.map_err(|e| {
+                version_error(e, Some(version), s3_location.as_str(), |e, location| {
+                    parse_s3_operation_error(e, "get object tagging", location)
+                })
+            })
+        })
+        .await?;
         Ok(response
             .tag_set()
             .iter()
@@ -373,6 +380,7 @@ impl LakekeeperStorage for S3Storage {
         tags: &ObjectTags,
     ) -> Result<(), WriteError> {
         let s3_location = S3Location::try_from_str(path, true)?;
+        validate_tags(tags, s3_location.as_str())?;
         let build_error = |e: aws_sdk_s3::error::BuildError| {
             IOError::new(
                 ErrorKind::ConditionNotMatch,
@@ -389,30 +397,40 @@ impl LakekeeperStorage for S3Storage {
             .set_tag_set(Some(tag_set))
             .build()
             .map_err(build_error)?;
-        self.client
+        let request = self
+            .client
             .put_object_tagging()
             .bucket(s3_location.bucket_name())
             .key(s3_key_to_str(&s3_location.key()))
             .version_id(version)
-            .tagging(tagging)
-            .send()
-            .await
-            .map_err(|e| parse_s3_operation_error(e, "put object tagging", s3_location.as_str()))?;
+            .tagging(tagging);
+        send_with_retry(|| async {
+            request.clone().send().await.map_err(|e| {
+                version_error(e, Some(version), s3_location.as_str(), |e, location| {
+                    parse_s3_operation_error(e, "put object tagging", location)
+                })
+            })
+        })
+        .await?;
         Ok(())
     }
 
     async fn remove_tags(&self, path: &str, version: &str) -> Result<(), WriteError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-        self.client
+        let request = self
+            .client
             .delete_object_tagging()
             .bucket(s3_location.bucket_name())
             .key(s3_key_to_str(&s3_location.key()))
-            .version_id(version)
-            .send()
-            .await
-            .map_err(|e| {
-                parse_s3_operation_error(e, "delete object tagging", s3_location.as_str())
-            })?;
+            .version_id(version);
+        send_with_retry(|| async {
+            request.clone().send().await.map_err(|e| {
+                version_error(e, Some(version), s3_location.as_str(), |e, location| {
+                    parse_s3_operation_error(e, "delete object tagging", location)
+                })
+            })
+        })
+        .await?;
         Ok(())
     }
 
@@ -563,8 +581,9 @@ where
 }
 
 /// The markers the next `ListObjectVersions` page starts after, and whether the listing
-/// is done. A truncated page without a key marker, or with the markers the page started
-/// after, would restart or repeat the listing, so it fails it.
+/// is done. A truncated page needs both markers: without the key marker the listing would
+/// restart, without the version id marker it would skip the rest of that key's versions,
+/// and the markers the page started after would repeat it. Such a page fails the listing.
 fn next_version_markers(
     response: &aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput,
     current: &(Option<String>, Option<String>),
@@ -578,10 +597,10 @@ fn next_version_markers(
         non_empty(response.next_key_marker()),
         non_empty(response.next_version_id_marker()),
     );
-    if next.0.is_none() || &next == current {
+    if next.0.is_none() || next.1.is_none() || &next == current {
         return Err(IOError::new(
             ErrorKind::ConditionNotMatch,
-            "S3 version listing is truncated but returned no new key marker",
+            "S3 version listing is truncated but returned no new key and version id markers",
             base_location.to_string(),
         ));
     }
@@ -673,7 +692,7 @@ fn head_file_info(location: &S3Location, head_response: &HeadObjectOutput) -> Fi
             .and_then(|n| crate::size_to_u64(n, &location_str)),
     )
     .with_e_tag(head_response.e_tag().map(ToString::to_string))
-    .with_version(head_response.version_id().map(ToString::to_string))
+    .with_version(reported_version(head_response.version_id()))
 }
 
 /// Read the current object, or the object version `version`.
@@ -769,7 +788,8 @@ async fn get_object(
         .set_version_id(version.map(ToString::to_string))
         .send()
         .await
-        .map_err(|e| parse_get_object_error(e, location))?;
+        .map_err(|e| version_error(e, version, location.as_str(), parse_get_object_error))?;
+    check_version(version, response.version_id(), location)?;
 
     let location_str = location.to_string();
     let info = FileInfo::new(
@@ -780,7 +800,7 @@ async fn get_object(
             .and_then(|n| crate::size_to_u64(n, &location_str)),
     )
     .with_e_tag(response.e_tag().map(ToString::to_string))
-    .with_version(response.version_id().map(ToString::to_string));
+    .with_version(reported_version(response.version_id()));
 
     let body = response.body.collect().await.map_err(|e| {
         IOError::new(
@@ -816,7 +836,8 @@ async fn fetch_range(
     let response = request
         .send()
         .await
-        .map_err(|e| parse_get_object_error(e, location))?;
+        .map_err(|e| version_error(e, version, location.as_str(), parse_get_object_error))?;
+    check_version(version, response.version_id(), location)?;
 
     let body = response.body.collect().await.map_err(|e| {
         IOError::new(
@@ -834,14 +855,66 @@ async fn head(
     location: &S3Location,
     version: Option<&str>,
 ) -> Result<HeadObjectOutput, ReadError> {
-    client
+    let response = client
         .head_object()
         .bucket(location.bucket_name())
         .key(s3_key_to_str(&location.key()))
         .set_version_id(version.map(ToString::to_string))
         .send()
         .await
-        .map_err(|e| ReadError::IOError(parse_head_object_error(e, location)))
+        .map_err(|e| version_error(e, version, location.as_str(), parse_head_object_error))?;
+    check_version(version, response.version_id(), location)?;
+    Ok(response)
+}
+
+/// S3's version id for an object written while versioning was off or suspended. The next
+/// such write to the key replaces that version.
+const NULL_VERSION: &str = "null";
+
+/// The version S3 reported, as [`FileInfo::version`] and [`WriteOutcome::version`] carry it.
+fn reported_version(version_id: Option<&str>) -> Option<String> {
+    version_id
+        .filter(|version| *version != NULL_VERSION)
+        .map(ToString::to_string)
+}
+
+/// Fails unless a response for `requested` is for that version: a store that ignores the
+/// version id serves the current object.
+fn check_version(
+    requested: Option<&str>,
+    returned: Option<&str>,
+    location: &S3Location,
+) -> Result<(), IOError> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    // S3 may omit the version id of the "null" version.
+    if returned == Some(requested) || (requested == NULL_VERSION && returned.is_none()) {
+        return Ok(());
+    }
+    Err(IOError::new(
+        ErrorKind::ConditionNotMatch,
+        format!("S3 answered a request for version `{requested}` with version {returned:?}"),
+        location.to_string(),
+    ))
+}
+
+/// The error of a request that names `version`, if it names one. S3 refuses a request for
+/// a delete marker's version id with 405, which means the version holds no object.
+fn version_error<E>(
+    error: SdkError<E>,
+    version: Option<&str>,
+    location: &str,
+    parse: impl FnOnce(SdkError<E>, &str) -> IOError,
+) -> IOError {
+    match version {
+        Some(version) if is_method_not_allowed(&error) => IOError::new(
+            ErrorKind::NotFound,
+            format!("Version `{version}` is a delete marker"),
+            location.to_string(),
+        ),
+        _ => parse(error, location),
+    }
 }
 
 fn parse_timestamp(timestamp: &aws_smithy_types::DateTime) -> Option<DateTime<Utc>> {
@@ -925,7 +998,7 @@ async fn put_object_single(
         .map_err(|e| WriteError::IOError(parse_put_object_error(e, location.as_str())))?;
     Ok(WriteOutcome {
         e_tag: output.e_tag().map(ToString::to_string),
-        version: output.version_id().map(ToString::to_string),
+        version: reported_version(output.version_id()),
     })
 }
 
@@ -1029,7 +1102,7 @@ async fn complete_multipart(
         })?;
     Ok(WriteOutcome {
         e_tag: output.e_tag().map(ToString::to_string),
-        version: output.version_id().map(ToString::to_string),
+        version: reported_version(output.version_id()),
     })
 }
 
@@ -1514,6 +1587,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::MAX_OBJECT_TAGS;
 
     #[test]
     fn test_s3_key_to_str() {
@@ -1526,6 +1600,16 @@ mod tests {
 
     /// Storage whose endpoint answers every request with `status` and `body`.
     async fn storage_answering(status: &'static str, body: &'static str) -> S3Storage {
+        storage_answering_with(status, "", body).await
+    }
+
+    /// Storage whose endpoint answers every request with `status`, the extra `headers`
+    /// (each ending in `\r\n`) and `body`.
+    async fn storage_answering_with(
+        status: &'static str,
+        headers: &'static str,
+        body: &'static str,
+    ) -> S3Storage {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1535,7 +1619,7 @@ mod tests {
                 let mut request = [0; 4096];
                 let _ = socket.read(&mut request).await;
                 let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/xml\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = socket.write_all(response.as_bytes()).await;
@@ -1960,17 +2044,24 @@ mod tests {
         let next = ListObjectVersionsOutput::builder()
             .is_truncated(true)
             .next_key_marker("p/a")
-            .next_version_id_marker("")
+            .next_version_id_marker("v1")
             .build();
         assert_eq!(
             next_version_markers(&next, &start, &base).unwrap(),
-            (Some("p/a".to_string()), None, false)
+            (Some("p/a".to_string()), Some("v1".to_string()), false)
         );
 
-        // No key marker would restart the listing; the same markers would repeat it.
-        let without_marker = ListObjectVersionsOutput::builder()
+        // No key marker would restart the listing, no version id marker would skip the
+        // rest of the key, and the same markers would repeat the page. An empty marker
+        // element counts as missing.
+        let without_key_marker = ListObjectVersionsOutput::builder()
             .is_truncated(true)
             .next_version_id_marker("v1")
+            .build();
+        let without_version_marker = ListObjectVersionsOutput::builder()
+            .is_truncated(true)
+            .next_key_marker("p/a")
+            .next_version_id_marker("")
             .build();
         let repeated = ListObjectVersionsOutput::builder()
             .is_truncated(true)
@@ -1978,7 +2069,11 @@ mod tests {
             .next_version_id_marker("v1")
             .build();
         let current = (Some("p/a".to_string()), Some("v1".to_string()));
-        for (response, markers) in [(&without_marker, &start), (&repeated, &current)] {
+        for (response, markers) in [
+            (&without_key_marker, &start),
+            (&without_version_marker, &start),
+            (&repeated, &current),
+        ] {
             let error = next_version_markers(response, markers, &base).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::ConditionNotMatch, "{error}");
         }
@@ -2032,6 +2127,138 @@ mod tests {
     async fn the_service_scope_is_the_endpoint_origin() {
         let storage = storage_at("http://127.0.0.1:1").await;
         assert_eq!(storage.service_scope, "http://127.0.0.1:1");
+    }
+
+    #[tokio::test]
+    async fn a_refused_head_without_a_version_is_unsupported() {
+        // Only a request that names a version can hit a delete marker.
+        let storage = storage_answering("405 Method Not Allowed", "").await;
+        let error = storage.metadata("s3://my-bucket/key").await.unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::Unsupported),
+            "{error}"
+        );
+        let error = storage.exists("s3://my-bucket/key").await.unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::Unsupported),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_response_for_another_version_fails_the_read() {
+        // A store that ignores the version id serves the current object.
+        let storage = storage_answering_with(
+            "200 OK",
+            "x-amz-version-id: current\r\nETag: \"e\"\r\n",
+            "body",
+        )
+        .await;
+        let head = storage
+            .metadata_version("s3://my-bucket/key", "old")
+            .await
+            .unwrap_err();
+        let get = storage
+            .read_range_version("s3://my-bucket/key", "old", 0..4)
+            .await
+            .unwrap_err();
+        for error in [head, get] {
+            let ReadError::IOError(error) = error else {
+                panic!("expected an IO error, got {error:?}");
+            };
+            assert_eq!(error.kind(), ErrorKind::ConditionNotMatch);
+            assert_eq!(
+                error.reason(),
+                "S3 answered a request for version `old` with version Some(\"current\")"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_null_version_is_no_version() {
+        // A versioning-suspended bucket reports the "null" version, which the next
+        // write replaces.
+        let storage =
+            storage_answering_with("200 OK", "x-amz-version-id: null\r\nETag: \"e\"\r\n", "").await;
+        let outcome = storage
+            .write("s3://my-bucket/key", Bytes::from_static(b"data"))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            WriteOutcome::builder()
+                .e_tag(Some("\"e\"".to_string()))
+                .build()
+        );
+        let info = storage.metadata("s3://my-bucket/key").await.unwrap();
+        assert_eq!(info.version(), None);
+        // The "null" version can still be read by its id, with or without a version
+        // header in the response.
+        let info = storage
+            .metadata_version("s3://my-bucket/key", "null")
+            .await
+            .unwrap();
+        assert_eq!(info.version(), None);
+        let storage = storage_answering_with("200 OK", "ETag: \"e\"\r\n", "").await;
+        let info = storage
+            .metadata_version("s3://my-bucket/key", "null")
+            .await
+            .unwrap();
+        assert_eq!(info.version(), None);
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_version_id_is_a_permanent_error() {
+        // S3 answers a version id it cannot parse with 400, which a HEAD carries no body for.
+        let storage = storage_answering("400 Bad Request", "").await;
+        let error = storage
+            .read_version("s3://my-bucket/key", "not-a-version")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::ConditionNotMatch),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_set_beyond_the_limits_is_refused_before_sending() {
+        // The endpoint would accept anything; the limits are checked first.
+        let storage = storage_answering("200 OK", "").await;
+        let tags: ObjectTags = (0..=MAX_OBJECT_TAGS)
+            .map(|i| (format!("key-{i}"), "value".to_string()))
+            .collect();
+        let Err(WriteError::IOError(error)) =
+            storage.put_tags("s3://my-bucket/key", "v1", &tags).await
+        else {
+            panic!("expected the tag set to be refused");
+        };
+        assert_eq!(error.kind(), ErrorKind::ConditionNotMatch);
+        assert_eq!(
+            error.reason(),
+            "An object version carries at most 10 tags, got 11"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_request_is_a_permanent_error() {
+        let storage = storage_answering(
+            "400 Bad Request",
+            "<Error><Code>BadRequest</Code><Message>Object tags cannot be greater than 10</Message></Error>",
+        )
+        .await;
+        let error = storage
+            .get_tags("s3://my-bucket/key", "v1")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::ConditionNotMatch),
+            "{error}"
+        );
     }
 
     #[tokio::test]

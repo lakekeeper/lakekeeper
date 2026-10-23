@@ -250,8 +250,8 @@ fn head_status_kind(status: u16) -> Option<ErrorKind> {
     match status {
         400 | 412 => Some(ErrorKind::ConditionNotMatch),
         401 | 403 => Some(ErrorKind::PermissionDenied),
-        // S3 answers a request for a delete marker's version id with 405.
-        404 | 405 => Some(ErrorKind::NotFound),
+        404 => Some(ErrorKind::NotFound),
+        405 => Some(ErrorKind::Unsupported),
         429 => Some(ErrorKind::RateLimited),
         503 => Some(ErrorKind::ServiceUnavailable),
         _ => None,
@@ -349,6 +349,13 @@ where
     .set_source(e)
 }
 
+/// Whether S3 refused the request's method (405). S3 answers a request that names a delete
+/// marker's version id this way.
+pub(crate) fn is_method_not_allowed<E>(err: &SdkError<E>) -> bool {
+    err.raw_response()
+        .is_some_and(|response| response.status().as_u16() == 405)
+}
+
 pub(crate) fn parse_aws_sdk_error(err: &aws_sdk_s3::types::Error, location: &str) -> IOError {
     let lakekeeper_kind = err
         .code()
@@ -368,6 +375,7 @@ enum S3ErrorCode {
     SlowDown,
     AccessDenied,
     AllAccessDisabled,
+    BadRequest,
     InvalidAccessKeyId,
     InvalidArgument,
     InvalidBucketName,
@@ -403,16 +411,15 @@ impl S3ErrorCode {
             | S3ErrorCode::InvalidBucketName
             | S3ErrorCode::KMSDisabledException
             | S3ErrorCode::KMSNotFoundException => ErrorKind::ConfigInvalid,
-            // S3 answers a request for a delete marker's version id with `MethodNotAllowed`.
-            S3ErrorCode::NoSuchBucket
-            | S3ErrorCode::NoSuchKey
-            | S3ErrorCode::NoSuchVersion
-            | S3ErrorCode::MethodNotAllowed => ErrorKind::NotFound,
+            S3ErrorCode::NoSuchBucket | S3ErrorCode::NoSuchKey | S3ErrorCode::NoSuchVersion => {
+                ErrorKind::NotFound
+            }
             S3ErrorCode::PreconditionFailed
+            | S3ErrorCode::BadRequest
             | S3ErrorCode::InvalidArgument
             | S3ErrorCode::InvalidTag
             | S3ErrorCode::MalformedXML => ErrorKind::ConditionNotMatch,
-            S3ErrorCode::NotImplemented => ErrorKind::Unsupported,
+            S3ErrorCode::NotImplemented | S3ErrorCode::MethodNotAllowed => ErrorKind::Unsupported,
             S3ErrorCode::TokenRefreshRequired => ErrorKind::CredentialsExpired,
             S3ErrorCode::RequestTimeout => ErrorKind::RequestTimeout,
             S3ErrorCode::ServiceUnavailable => ErrorKind::ServiceUnavailable,
@@ -435,6 +442,7 @@ mod tests {
             "SlowDown",
             "AccessDenied",
             "AllAccessDisabled",
+            "BadRequest",
             "InvalidAccessKeyId",
             "InvalidArgument",
             "InvalidBucketName",

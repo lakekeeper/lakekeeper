@@ -324,6 +324,7 @@ impl RetryableError for IOError {
 
 /// `ErrorKind` is all kinds of Error of opendal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum_macros::Display)]
+#[non_exhaustive]
 pub enum ErrorKind {
     Unexpected,
     RequestTimeout,

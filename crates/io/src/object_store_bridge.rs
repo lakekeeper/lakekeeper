@@ -159,16 +159,21 @@ fn file_info_to_meta(base: &str, info: &FileInfo) -> object_store::Result<Object
 }
 
 fn read_err_to_os(path: &str, err: ReadError) -> object_store::Error {
-    if matches!(&err, ReadError::IOError(e) if e.kind() == ErrorKind::NotFound) {
-        object_store::Error::NotFound {
+    match &err {
+        ReadError::IOError(e) if e.kind() == ErrorKind::NotFound => object_store::Error::NotFound {
             path: path.to_string(),
             source: Box::new(err),
+        },
+        ReadError::IOError(e) if e.kind() == ErrorKind::Unsupported => {
+            object_store::Error::NotImplemented {
+                operation: e.reason().to_string(),
+                implementer: STORE.to_string(),
+            }
         }
-    } else {
-        object_store::Error::Generic {
+        _ => object_store::Error::Generic {
             store: STORE,
             source: Box::new(err),
-        }
+        },
     }
 }
 
@@ -299,7 +304,9 @@ impl ObjectStore for ObjectStoreBridge {
                     store: STORE,
                     source: Box::new(e),
                 })?;
-            let bytes = match version {
+            // The range is read from the version the metadata names, so the metadata
+            // describes the bytes even if the object is replaced in between.
+            let bytes = match version.or(info.version()) {
                 Some(version) => {
                     self.lakekeeper_io
                         .read_range_version(&path, version, range.clone())
@@ -840,8 +847,130 @@ mod tests {
         assert_eq!(head.meta.version.as_deref(), Some(first_version.as_str()));
 
         let current = store.head(&path).await.unwrap();
-        assert_eq!(current.version, second.version);
+        let second_version = second.version.clone().unwrap();
+        assert_eq!(current.version.as_deref(), Some(second_version.as_str()));
         assert_eq!(current.e_tag, second.e_tag);
+    }
+
+    /// Memory storage that overwrites the object after every `metadata` call, as a
+    /// concurrent writer could.
+    #[derive(Debug)]
+    struct OverwrittenAfterMetadata(MemoryStorage);
+
+    #[async_trait::async_trait]
+    impl LakekeeperStorage for OverwrittenAfterMetadata {
+        async fn delete(&self, path: &str) -> Result<(), crate::DeleteError> {
+            self.0.delete(path).await
+        }
+
+        async fn delete_batch(&self, paths: &[String]) -> Result<(), crate::DeleteBatchError> {
+            self.0.delete_batch(paths).await
+        }
+
+        async fn write(&self, path: &str, bytes: Bytes) -> Result<WriteOutcome, WriteError> {
+            self.0.write(path, bytes).await
+        }
+
+        async fn writer(
+            &self,
+            path: &str,
+        ) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError> {
+            self.0.writer(path).await
+        }
+
+        async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
+            self.0.read(path).await
+        }
+
+        async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
+            self.0.read_single(path).await
+        }
+
+        async fn read_range(
+            &self,
+            path: &str,
+            range: std::ops::Range<u64>,
+        ) -> Result<Bytes, ReadError> {
+            self.0.read_range(path, range).await
+        }
+
+        async fn read_range_version(
+            &self,
+            path: &str,
+            version: &str,
+            range: std::ops::Range<u64>,
+        ) -> Result<Bytes, ReadError> {
+            self.0.read_range_version(path, version, range).await
+        }
+
+        async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+            let info = self.0.metadata(path).await?;
+            self.0
+                .write(path, Bytes::from_static(b"replaced"))
+                .await
+                .unwrap();
+            Ok(info)
+        }
+
+        async fn list(
+            &self,
+            path: &str,
+            page_size: Option<usize>,
+        ) -> Result<
+            futures::stream::BoxStream<'_, Result<Vec<FileInfo>, crate::IOError>>,
+            crate::InvalidLocationError,
+        > {
+            self.0.list(path, page_size).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_ranged_get_reads_the_version_its_metadata_names() {
+        let io: Arc<dyn LakekeeperStorage> =
+            Arc::new(OverwrittenAfterMetadata(MemoryStorage::new_isolated()));
+        let store = ObjectStoreBridge::new(io, &Location::from_str("memory://bucket").unwrap());
+        let path = Path::from("object.bin");
+        let original = store
+            .put(&path, PutPayload::from(Bytes::from_static(b"original")))
+            .await
+            .unwrap();
+
+        let ranged = store
+            .get_opts(
+                &path,
+                GetOptions {
+                    range: Some(GetRange::Bounded(0..4)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ranged.meta.version, original.version);
+        assert_eq!(&ranged.bytes().await.unwrap()[..], b"orig");
+    }
+
+    #[test]
+    fn an_unsupported_read_is_not_implemented() {
+        let error = read_err_to_os(
+            "object.bin",
+            ReadError::IOError(crate::IOError::new(
+                ErrorKind::Unsupported,
+                "Reading an object version is not supported by this storage backend",
+                "memory://bucket/object.bin".to_string(),
+            )),
+        );
+        let object_store::Error::NotImplemented {
+            operation,
+            implementer,
+        } = error
+        else {
+            panic!("expected NotImplemented, got {error:?}");
+        };
+        assert_eq!(
+            operation,
+            "Reading an object version is not supported by this storage backend"
+        );
+        assert_eq!(implementer, STORE);
     }
 
     #[tokio::test]
