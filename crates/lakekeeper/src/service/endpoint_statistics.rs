@@ -18,7 +18,10 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
-    WarehouseId, api::endpoints::Endpoint, request_metadata::RequestMetadata, service::ArcProjectId,
+    WarehouseId,
+    api::endpoints::{Endpoint, SET_MAINTENANCE_MODE_PATH},
+    request_metadata::RequestMetadata,
+    service::ArcProjectId,
 };
 
 #[cfg(feature = "router")]
@@ -268,6 +271,9 @@ impl EndpointStatisticsTracker {
             tracing::trace!("No path matched.");
             return;
         };
+        if matched_path == SET_MAINTENANCE_MODE_PATH {
+            return;
+        }
 
         let Some(uri) =
             Endpoint::from_method_and_matched_path(request_metadata.request_method(), matched_path)

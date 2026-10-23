@@ -176,6 +176,7 @@ use crate::{
         super::set_view_protection,
         super::set_view_tag,
         super::set_warehouse_protection,
+        super::set_maintenance_mode,
         super::set_warehouse_managed_by,
         super::set_warehouse_tag,
         super::undrop_tabulars,

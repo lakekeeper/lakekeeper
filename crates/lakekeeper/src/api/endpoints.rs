@@ -364,6 +364,11 @@ generate_endpoints! {
     }
 }
 
+/// Path of the route that switches maintenance mode. The route has no [`Endpoint`]
+/// variant: endpoint statistics store endpoint names in the `api_endpoints` database enum,
+/// and a new value needs a migration. Endpoint statistics skip this route.
+pub(crate) const SET_MAINTENANCE_MODE_PATH: &str = "/management/v1/server/maintenance-mode";
+
 impl ManagementV1Endpoint {
     #[must_use]
     pub fn path_in_management_v1(self) -> &'static str {
@@ -620,6 +625,8 @@ mod test {
             // We remove the parameterized endpoints with {queue_name} and expand them using actually
             // registered queues
             .filter(|(_method, path)| !exempt_config_paths.contains(&path.as_str()))
+            // Served without an endpoint variant, see `SET_MAINTENANCE_MODE_PATH`
+            .filter(|(_method, path)| path != SET_MAINTENANCE_MODE_PATH.trim_start_matches('/'))
             .collect::<Vec<_>>();
 
         if !missing_endpoints.is_empty() {
