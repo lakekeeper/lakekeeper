@@ -2,7 +2,7 @@ use anyhow::Context;
 
 use crate::service::{
     CatalogNamespaceOps, CatalogRoleOps, CatalogStore, CatalogTabularOps, SystemRoleSeederCap,
-    SystemRoleSpec, Transaction, install_system_role_registry, registered_system_roles,
+    SystemRoleSpec, WriteTransaction, install_system_role_registry, registered_system_roles,
     tasks::task_log_cleanup_queue,
 };
 
@@ -102,10 +102,10 @@ pub async fn run_post_migration_hooks<C: CatalogStore>(
 /// repairing from the data, because that is what makes re-pinning it to a later migration enough to
 /// re-run it if another write path is ever found to store a caller-cased path.
 async fn repair_namespace_path_casing<C: CatalogStore>(state: C::State) -> anyhow::Result<()> {
-    let mut t = C::Transaction::begin_write(state)
+    let mut t = WriteTransaction::<C>::begin(state)
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Failed to begin write transaction"))?;
-    let repaired = C::repair_namespace_path_casing(t.transaction())
+    let repaired = C::repair_namespace_path_casing(&mut t)
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Failed to repair namespace path prefix casing"))?;
     let repaired_tabulars = C::repair_tabular_namespace_path_casing(t.transaction())
@@ -166,7 +166,7 @@ pub async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
         roles.len()
     );
 
-    let mut t = C::Transaction::begin_write(state)
+    let mut t = WriteTransaction::<C>::begin(state)
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Failed to begin write transaction"))?;
 
@@ -178,7 +178,7 @@ pub async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
     let mut total_upserted = 0usize;
 
     for project in &projects {
-        let upserted = C::upsert_system_roles(&project.project_id, roles, cap, t.transaction())
+        let upserted = C::upsert_system_roles(&project.project_id, roles, cap, &mut t)
             .await
             .map_err(|e| {
                 anyhow::anyhow!(e).context(format!(

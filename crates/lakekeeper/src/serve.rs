@@ -184,6 +184,10 @@ pub struct ServeConfiguration<
     /// `run_post_migration_hooks` so both subcommands agree.
     #[builder(default)]
     pub system_roles: Vec<crate::service::SystemRoleSpec>,
+    /// Receivers of the cache change-log rows of the cache domains that extensions own.
+    /// They are called while `cache.invalidation.enabled` is on.
+    #[builder(default)]
+    pub cache_change_receivers: Vec<crate::service::cache_invalidation::ArcCacheChangeReceiver>,
 }
 
 /// Starts the service with the provided configuration.
@@ -191,6 +195,7 @@ pub struct ServeConfiguration<
 /// # Errors
 /// - If the service cannot bind to the specified address.
 /// - If the terms of service have not been accepted during bootstrap.
+/// - If a cache change receiver names a domain of Lakekeeper, or two name the same domain.
 #[allow(clippy::too_many_lines)]
 pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     mut config: ServeConfiguration<C, S, A, N>,
@@ -374,7 +379,10 @@ async fn serve_inner<
         license_status,
         build_info,
         system_roles: _,
+        cache_change_receivers,
     } = config;
+    let cache_change_receivers =
+        crate::service::cache_invalidation::CacheChangeReceivers::new(cache_change_receivers)?;
 
     let license_status = license_status.unwrap_or(&APACHE_LICENSE_STATUS);
     let build_info = build_info.unwrap_or(&DEFAULT_BUILD_INFO);
@@ -624,6 +632,21 @@ async fn serve_inner<
         tracker_abort_handle.id(),
         "Endpoint Statistics Tracker".to_string(),
     );
+
+    // Cache invalidation: reading and pruning the change log.
+    for (service_name, task) in crate::service::cache_invalidation::background_tasks::<C>(
+        state.v1_state.catalog.clone(),
+        cache_change_receivers,
+        &cancellation_token,
+    )
+    .await
+    {
+        let abort_handle = service_futures.spawn(async move {
+            task.await;
+            Ok(())
+        });
+        service_ids.insert(abort_handle.id(), service_name.to_string());
+    }
 
     // Execute additional background services:
     for additional_service_register_fn in additional_background_services {

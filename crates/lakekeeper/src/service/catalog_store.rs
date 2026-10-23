@@ -9,6 +9,7 @@ use moka::{
     future::Cache,
     ops::compute::{CompResult, Op},
 };
+use tracing::Instrument;
 
 use super::{
     GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, TagDefinitionId, TagId,
@@ -42,6 +43,9 @@ use crate::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
+        },
+        cache_invalidation::{
+            BoxedCacheChangeLog, CacheDomain, CacheKey, ChangeSet, evict_locally,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -236,6 +240,191 @@ pub trait StateOrTransaction<S, T>: Send {
     /// Takes &mut self to allow multiple uses (State will be cloned, Transaction will be borrowed)
     /// The returned enum cannot outlive the borrow lifetime 'b
     fn as_enum_mut(&mut self) -> StateOrTransactionEnum<'_, S, T>;
+
+    /// Whether every read through `self` sees only committed data, so its results may fill
+    /// the shared caches: true for a `State` and for [`CommittedReads`].
+    fn reads_committed_only(&mut self) -> bool {
+        matches!(self.as_enum_mut(), StateOrTransactionEnum::State(_))
+    }
+}
+
+/// The handle of a [`ReadTransaction`]. Its reads see only committed data.
+#[derive(Debug)]
+pub struct CommittedReads<T>(T);
+
+impl<T> CommittedReads<T> {
+    pub(crate) fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<S, T: Send> StateOrTransaction<S, T> for CommittedReads<T> {
+    fn as_enum_mut(&mut self) -> StateOrTransactionEnum<'_, S, T> {
+        StateOrTransactionEnum::Transaction(&mut self.0)
+    }
+
+    fn reads_committed_only(&mut self) -> bool {
+        true
+    }
+}
+
+/// Run `step` on a task of its own, in the caller's tracing span, and wait for it.
+/// A caller dropped while it waits leaves the task running, so a cancelled request
+/// cannot separate a commit from the cache updates and events that follow it.
+pub(crate) async fn run_to_completion<T: Send + 'static>(
+    step: impl std::future::Future<Output = T> + Send + 'static,
+) -> T {
+    match tokio::spawn(step.in_current_span()).await {
+        Ok(output) => output,
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            // Only a runtime shutdown cancels the task, and it drops this caller too.
+            Err(error) => panic!("post-commit step did not finish: {error}"),
+        },
+    }
+}
+
+/// A transaction started with [`Transaction::begin_read`]. It cannot write, so at the default
+/// isolation level each of its statements sees only committed data.
+pub struct ReadTransaction<C: CatalogStore>(C::Transaction);
+
+impl<C: CatalogStore> std::fmt::Debug for ReadTransaction<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ReadTransaction").finish_non_exhaustive()
+    }
+}
+
+impl<C: CatalogStore> ReadTransaction<C> {
+    /// # Errors
+    /// Returns an error if the transaction cannot be started.
+    pub async fn begin(db_state: C::State) -> Result<Self> {
+        C::Transaction::begin_read(db_state).await.map(Self)
+    }
+
+    /// # Errors
+    /// Returns an error if the commit fails.
+    pub async fn commit(self) -> Result<()> {
+        self.0.commit().await
+    }
+
+    /// The handle for calls that take a transaction.
+    pub fn transaction(&mut self) -> <C::Transaction as Transaction<C::State>>::Transaction<'_> {
+        self.0.transaction()
+    }
+
+    /// The handle for reads whose results may fill the shared caches.
+    pub fn committed_reads(
+        &mut self,
+    ) -> CommittedReads<<C::Transaction as Transaction<C::State>>::Transaction<'_>> {
+        CommittedReads(self.0.transaction())
+    }
+}
+
+/// A transaction started with [`Transaction::begin_write`] that collects the cache keys its
+/// writes change. Committing it records them in the change log, from which every instance
+/// evicts them, and evicts them from this instance's caches.
+pub struct WriteTransaction<C: CatalogStore> {
+    transaction: C::Transaction,
+    changes: ChangeSet,
+    kept_locally: Vec<CacheKey>,
+}
+
+impl<C: CatalogStore> std::fmt::Debug for WriteTransaction<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteTransaction")
+            .field("changes", &self.changes)
+            .field("kept_locally", &self.kept_locally)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<C: CatalogStore> WriteTransaction<C> {
+    /// # Errors
+    /// Returns an error if the transaction cannot be started.
+    pub async fn begin(db_state: C::State) -> Result<Self> {
+        Ok(Self {
+            transaction: C::Transaction::begin_write(db_state).await?,
+            changes: ChangeSet::new(),
+            kept_locally: Vec::new(),
+        })
+    }
+
+    /// The handle for calls that take a transaction.
+    pub fn transaction(&mut self) -> <C::Transaction as Transaction<C::State>>::Transaction<'_> {
+        self.transaction.transaction()
+    }
+
+    /// Record that this transaction changes the cache entry `key`.
+    pub fn record(&mut self, key: CacheKey) -> &mut Self {
+        self.changes.insert(key);
+        self
+    }
+
+    /// Record that this transaction changes every entry of `domain`.
+    pub fn record_whole_domain(&mut self, domain: CacheDomain) -> &mut Self {
+        self.changes.insert_whole_domain(domain);
+        self
+    }
+
+    /// Leave the recorded entry `key` in this instance's caches when the commit succeeds,
+    /// until this instance reads the change from the log: the caller refreshes it from the
+    /// state it wrote.
+    pub(crate) fn skip_local_eviction(&mut self, key: CacheKey) -> &mut Self {
+        self.kept_locally.push(key);
+        self
+    }
+
+    /// Record the changed keys, commit, and evict the keys from this instance's caches,
+    /// also if recording or the commit fails. A successful commit keeps the keys passed to
+    /// `skip_local_eviction`. Runs to completion if the caller is dropped.
+    ///
+    /// # Errors
+    /// Returns an error if recording the keys or the commit fails.
+    pub async fn commit(self) -> Result<()> {
+        let Self {
+            mut transaction,
+            changes,
+            kept_locally,
+        } = self;
+        run_to_completion(async move {
+            let committed = async {
+                C::record_cache_changes_impl(&changes, transaction.transaction())
+                    .await
+                    .map_err(ErrorModel::from)?;
+                transaction.commit().await
+            }
+            .await;
+            let kept: &[CacheKey] = if committed.is_ok() {
+                &kept_locally
+            } else {
+                &[]
+            };
+            evict_locally(&changes, kept).await;
+            committed
+        })
+        .await
+    }
+
+    /// Record the changed keys and commit, as another instance does: this instance keeps
+    /// its cached entries until its poller reads the change log.
+    ///
+    /// # Errors
+    /// Returns an error if recording the keys or the commit fails.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn commit_as_another_instance(mut self) -> Result<()> {
+        C::record_cache_changes_impl(&self.changes, self.transaction.transaction())
+            .await
+            .map_err(ErrorModel::from)?;
+        self.transaction.commit().await
+    }
+
+    /// Roll back. Nothing changed, so nothing is recorded or evicted.
+    ///
+    /// # Errors
+    /// Returns an error if the rollback fails.
+    pub async fn rollback(self) -> Result<()> {
+        self.transaction.rollback().await
+    }
 }
 
 #[async_trait::async_trait]
@@ -360,6 +549,25 @@ where
     /// the call is a no-op.
     async fn reopen_for_bootstrap(catalog_state: Self::State) -> Result<ServerId>;
 
+    // ---------------- Cache Invalidation ----------------
+    /// Record in `transaction` that it changes the cache entries in `change_set`. An empty
+    /// set records nothing, and so does every set while
+    /// [`recording_enabled`](crate::service::cache_invalidation::recording_enabled) is off.
+    async fn record_cache_changes_impl<'a>(
+        change_set: &ChangeSet,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CatalogBackendError>;
+
+    /// The change log as the cache poller reads it, from the primary.
+    fn cache_change_log(catalog_state: Self::State) -> BoxedCacheChangeLog;
+
+    /// Delete change-log rows older than `retention`. Returns the number of rows deleted,
+    /// or `None` when another instance is pruning.
+    async fn prune_cache_change_log(
+        catalog_state: Self::State,
+        retention: std::time::Duration,
+    ) -> std::result::Result<Option<u64>, CatalogBackendError>;
+
     // ---------------- Project Management ----------------
     /// Create a project
     async fn create_project<'a>(
@@ -368,11 +576,12 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
 
-    /// Delete a project
-    async fn delete_project<'a>(
+    /// Delete a project. Returns the users whose role-provider sync records the delete
+    /// removed. Use [`CatalogProjectOps::delete_project`], which records them.
+    async fn delete_project_impl<'a>(
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
+    ) -> Result<Vec<UserId>>;
 
     /// Get the project metadata
     async fn get_project<'a>(
@@ -413,14 +622,14 @@ where
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError>;
+    ) -> std::result::Result<DeletedWarehouse, CatalogDeleteWarehouseError>;
 
     /// Rename a warehouse.
     async fn rename_warehouse_impl<'a>(
         warehouse_id: WarehouseId,
         new_name: &str,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<ResolvedWarehouse, CatalogRenameWarehouseError>;
+    ) -> std::result::Result<RenamedWarehouse, CatalogRenameWarehouseError>;
 
     /// Return a list of all warehouse in a project
     async fn list_warehouses_impl(
@@ -473,7 +682,7 @@ where
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError>;
+    ) -> std::result::Result<UpdatedWarehouseStorage, UpdateWarehouseStorageProfileError>;
 
     async fn set_warehouse_protected_impl(
         warehouse_id: WarehouseId,
@@ -826,7 +1035,7 @@ where
         role_id: RoleId,
         request: &UpdateRoleSourceSystemRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Role, UpdateRoleError>;
+    ) -> Result<ReboundRole, UpdateRoleError>;
 
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
@@ -1227,20 +1436,10 @@ where
     /// endpoints `member_role_ids` are added or removed: every user assigned to any
     /// of those members or to any role in their combined descendant closure. The
     /// whole set is walked in a single query (no per-member fan-out). Runs on the
-    /// caller's transaction; see `membership_edge_affected_users` for what a read
-    /// before the commit misses.
+    /// caller's transaction.
     async fn affected_users_for_membership_edges_impl<'a>(
         member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Vec<UserId>, CatalogBackendError>;
-
-    /// [`Self::affected_users_for_membership_edges_impl`], read after the edge change
-    /// committed, in a read-only transaction of its own on the write pool. A lock wait
-    /// of more than a few seconds fails the read, so a pending `ALTER TABLE` on a role
-    /// table cannot hold its connection.
-    async fn affected_users_for_membership_edges_after_commit_impl(
-        member_role_ids: &[RoleId],
-        catalog_state: Self::State,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
 
     /// Delete the role-provider sync records of `user_ids` for `provider_id` in
@@ -1369,12 +1568,12 @@ where
         catalog_state: Self::State,
     ) -> Result<ListUsersResponse>;
 
-    /// Soft-deletes the user and removes their role assignments + provider sync
-    /// log (so a deleted user is no member of any role, matching the OpenFGA
-    /// authorizer). Returns `None` if absent, else the row as it was before the
-    /// delete and the roles the user was assigned to. The caller evicts the user's
-    /// effective-roles cache after commit.
-    async fn delete_user<'a>(
+    /// Soft-deletes the user and removes their role assignments and provider sync
+    /// records (so a deleted user is not a member of any role, matching the OpenFGA
+    /// authorizer). Returns `None` if no active user has this id, else the row as it
+    /// was before the delete and the roles the user was assigned to. Use
+    /// [`CatalogUserOps::delete_user`], which records the user's assignments.
+    async fn delete_user_impl<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<DeletedUser>>;

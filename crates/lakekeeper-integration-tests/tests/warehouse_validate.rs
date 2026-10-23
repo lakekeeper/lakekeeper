@@ -14,8 +14,7 @@ use lakekeeper::{
         },
     },
     service::{
-        CatalogCreateWarehouseRequest, CatalogStore, CatalogWarehouseOps, Transaction,
-        WarehouseStatus,
+        CatalogCreateWarehouseRequest, CatalogWarehouseOps, WarehouseStatus, WriteTransaction,
         authz::{AllowAllAuthorizer, CatalogWarehouseAction, tests::HidingAuthorizer},
         storage::{MemoryProfile, S3Flavor, S3Profile, StorageProfile},
     },
@@ -384,10 +383,9 @@ async fn test_validate_warehouse_reports_a_location_overlap(pool: PgPool) {
         .into();
 
     let project_id = ProjectId::from(Uuid::nil());
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::create_warehouse(
         &project_id,
         CatalogCreateWarehouseRequest::builder()
@@ -395,7 +393,7 @@ async fn test_validate_warehouse_reports_a_location_overlap(pool: PgPool) {
             .storage_profile(profile.clone())
             .delete_profile(TabularDeleteProfile::Hard {})
             .build(),
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();

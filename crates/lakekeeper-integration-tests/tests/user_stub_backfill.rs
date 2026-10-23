@@ -17,7 +17,7 @@ use lakekeeper::{
     server::CatalogServer,
     service::{
         CatalogRoleAssignmentOps, CatalogStore, CatalogUserRoleAssignmentUser, RoleProviderId,
-        SyncFor, Transaction, UserId, UserUpsertMode, authz::AllowAllAuthorizer,
+        SyncFor, Transaction, UserId, UserUpsertMode, WriteTransaction, authz::AllowAllAuthorizer,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
@@ -77,10 +77,9 @@ async fn seed_null_stub(
 ) {
     let user_id = std::sync::Arc::new(user_id.clone());
     let provider = RoleProviderId::new_unchecked("ldap");
-    let mut tx =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut tx = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::sync_user_role_assignments_by_provider(
         CatalogUserRoleAssignmentUser {
             user_id: &user_id,
@@ -93,7 +92,7 @@ async fn seed_null_stub(
         project_id,
         &provider,
         &[],
-        tx.transaction(),
+        &mut tx,
     )
     .await
     .unwrap();

@@ -43,7 +43,7 @@ use lakekeeper::{
     },
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, NamespaceId, SecretStore, State,
-        TableId, TabularListFlags, Transaction as _, UserId,
+        TableId, TabularListFlags, UserId, WriteTransaction,
         authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
     },
 };
@@ -2803,18 +2803,17 @@ async fn test_rename_table_into_a_namespace_that_took_the_name_from_another(pool
             .unwrap()
             .namespace_id();
 
-    // Another replica's writes: the storage layer emits no events, so this process's cache
-    // keeps mapping `after` to the namespace that has since been renamed away.
-    let mut t =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    // Another replica's writes: they are recorded, and this process's cache keeps mapping
+    // `after` to the namespace that has since been renamed away until its poller evicts it.
+    let mut t = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::move_namespace(
         warehouse_id,
         vacating_id,
         &NamespaceIdent::new("elsewhere".to_string()),
         false,
-        t.transaction(),
+        &mut t,
     )
     .await
     .unwrap();
@@ -2830,7 +2829,7 @@ async fn test_rename_table_into_a_namespace_that_took_the_name_from_another(pool
     .await
     .unwrap()
     .namespace_id();
-    t.commit().await.unwrap();
+    t.commit_as_another_instance().await.unwrap();
     assert_ne!(taker_id, vacating_id);
 
     // The premise of the test. Were the cached mapping to be repaired by something else, the

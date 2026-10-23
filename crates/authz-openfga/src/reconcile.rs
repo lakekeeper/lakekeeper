@@ -70,7 +70,7 @@ use lakekeeper::{
     service::{
         ArcProjectId, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
         CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableId, NamespaceId,
-        ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
+        ReadTransaction, ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
         authz::NamespaceParent, maintenance::MaintenanceLockGuard,
     },
 };
@@ -395,7 +395,7 @@ impl CatalogIndex {
     {
         let mut page_token = PageToken::Empty;
         loop {
-            let mut tx = C::Transaction::begin_read(state.clone())
+            let mut tx = ReadTransaction::<C>::begin(state.clone())
                 .await
                 .map_err(|e| anyhow::anyhow!("reconcile: begin_read for namespaces: {e}"))?;
             let query = ListNamespacesQuery {
@@ -405,7 +405,7 @@ impl CatalogIndex {
                 return_uuids: true,
                 return_protection_status: false,
             };
-            let response = C::list_namespaces(warehouse_id, &query, tx.transaction())
+            let response = C::list_namespaces(warehouse_id, &query, tx.committed_reads())
                 .await
                 .map_err(|e| anyhow::anyhow!("reconcile: list_namespaces: {e}"))?;
             tx.commit()

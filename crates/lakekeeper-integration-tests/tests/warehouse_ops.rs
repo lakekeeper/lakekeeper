@@ -14,12 +14,12 @@ use lakekeeper::{
     },
     service::{
         CachePolicy, CatalogCreateWarehouseRequest, CatalogStore, CatalogWarehouseOps, ManagedBy,
-        Transaction, UserId, WarehouseStatus, authz::AllowAllAuthorizer,
+        Transaction, UserId, WarehouseStatus, WriteTransaction, authz::AllowAllAuthorizer,
         warehouse_cache::WAREHOUSE_CACHE,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
-use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::{CatalogState, PostgresBackend};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -37,10 +37,9 @@ async fn test_create_warehouse(pool: PgPool) {
         .await;
 
     let project_id = ProjectId::from(Uuid::nil());
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
 
     // Create warehouse
     let warehouse = PostgresBackend::create_warehouse(
@@ -50,7 +49,7 @@ async fn test_create_warehouse(pool: PgPool) {
             .storage_profile(storage_profile.clone())
             .delete_profile(TabularDeleteProfile::Hard {})
             .build(),
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
@@ -83,10 +82,9 @@ async fn test_create_warehouse_with_secret(pool: PgPool) {
 
     let project_id = ProjectId::from(Uuid::nil());
     let secret_id = SecretId::from(Uuid::now_v7());
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
 
     // Create warehouse with secret
     let warehouse = PostgresBackend::create_warehouse(
@@ -99,7 +97,7 @@ async fn test_create_warehouse_with_secret(pool: PgPool) {
                 expiration_seconds: chrono::TimeDelta::seconds(86400),
             })
             .build(),
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
@@ -127,10 +125,9 @@ async fn test_create_warehouse_duplicate_name(pool: PgPool) {
         .await;
 
     let project_id = ProjectId::from(Uuid::nil());
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
 
     // Try to create warehouse with same name
     let result = PostgresBackend::create_warehouse(
@@ -140,7 +137,7 @@ async fn test_create_warehouse_duplicate_name(pool: PgPool) {
             .storage_profile(storage_profile.clone())
             .delete_profile(TabularDeleteProfile::Hard {})
             .build(),
-        transaction.transaction(),
+        &mut transaction,
     )
     .await;
 
@@ -350,14 +347,13 @@ async fn test_list_warehouses_include_inactive(pool: PgPool) {
     let project_id = ProjectId::from(Uuid::nil());
 
     // Set one warehouse to inactive
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     PostgresBackend::set_warehouse_status(
         warehouse_resp.warehouse_id,
         WarehouseStatus::Inactive,
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
@@ -401,15 +397,13 @@ async fn test_rename_warehouse_not_found(pool: PgPool) {
         .await;
 
     let non_existent_id = WarehouseId::new_random();
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
 
     // Try to rename non-existent warehouse
     let result =
-        PostgresBackend::rename_warehouse(non_existent_id, "new-name", transaction.transaction())
-            .await;
+        PostgresBackend::rename_warehouse(non_existent_id, "new-name", &mut transaction).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -431,16 +425,15 @@ async fn test_set_warehouse_status(pool: PgPool) {
         .setup()
         .await;
 
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
 
     // Set warehouse to inactive
     let updated_warehouse = PostgresBackend::set_warehouse_status(
         warehouse_resp.warehouse_id,
         WarehouseStatus::Inactive,
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
@@ -514,14 +507,13 @@ async fn test_set_warehouse_status_reactivate(pool: PgPool) {
         .await;
 
     // Set to inactive
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let inactive_warehouse = PostgresBackend::set_warehouse_status(
         warehouse_resp.warehouse_id,
         WarehouseStatus::Inactive,
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
@@ -529,14 +521,13 @@ async fn test_set_warehouse_status_reactivate(pool: PgPool) {
     let version = inactive_warehouse.version;
 
     // Set back to active
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let updated_warehouse = PostgresBackend::set_warehouse_status(
         warehouse_resp.warehouse_id,
         WarehouseStatus::Active,
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
@@ -624,24 +615,26 @@ async fn test_update_storage_profile(pool: PgPool) {
         .await;
 
     let new_secret_id = SecretId::from(Uuid::now_v7());
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
 
     // Update storage profile with a secret
     let updated_warehouse = PostgresBackend::update_storage_profile(
         warehouse_resp.warehouse_id,
         storage_profile.clone(),
         Some(new_secret_id),
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
 
     transaction.commit().await.unwrap();
 
-    assert_eq!(updated_warehouse.storage_secret_id, Some(new_secret_id));
+    assert_eq!(
+        updated_warehouse.warehouse.storage_secret_id,
+        Some(new_secret_id)
+    );
 
     // Verify the update persisted
     let warehouse = PostgresBackend::get_warehouse_by_id_cache_aware(
@@ -728,53 +721,48 @@ async fn test_operations_on_nonexistent_warehouse(pool: PgPool) {
     let non_existent_id = WarehouseId::new_random();
 
     // Test set_warehouse_status
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let result = PostgresBackend::set_warehouse_status(
         non_existent_id,
         WarehouseStatus::Inactive,
-        transaction.transaction(),
+        &mut transaction,
     )
     .await;
     assert!(result.is_err());
 
     // Test set_warehouse_deletion_profile
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let result = PostgresBackend::set_warehouse_deletion_profile(
         non_existent_id,
         &TabularDeleteProfile::Hard {},
-        transaction.transaction(),
+        &mut transaction,
     )
     .await;
     assert!(result.is_err());
 
     // Test update_storage_profile
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let result = PostgresBackend::update_storage_profile(
         non_existent_id,
         storage_profile.clone(),
         None,
-        transaction.transaction(),
+        &mut transaction,
     )
     .await;
     assert!(result.is_err());
 
     // Test set_warehouse_protected
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let result =
-        PostgresBackend::set_warehouse_protected(non_existent_id, true, transaction.transaction())
-            .await;
+        PostgresBackend::set_warehouse_protected(non_existent_id, true, &mut transaction).await;
     assert!(result.is_err());
 }
 
@@ -893,22 +881,15 @@ async fn test_cache_respects_min_version(pool: PgPool) {
 
     let original_version = *warehouse1.version;
 
-    // Update warehouse (this increments version)
-    // Because we are using the DB method, this does not update the cache
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    PostgresBackend::set_warehouse_deletion_profile(
+    // Another instance updates the warehouse, which increments its version.
+    set_delete_profile_on_another_instance(
+        ctx.v1_state.catalog.clone(),
         warehouse_resp.warehouse_id,
         &TabularDeleteProfile::Soft {
             expiration_seconds: chrono::TimeDelta::seconds(7200),
         },
-        transaction.transaction(),
     )
-    .await
-    .unwrap();
-    transaction.commit().await.unwrap();
+    .await;
 
     // Get warehouse using the cache, should return stale data
     let warehouse_cached = PostgresBackend::get_warehouse_by_id_cache_aware(
@@ -944,6 +925,22 @@ async fn test_cache_respects_min_version(pool: PgPool) {
     );
 }
 
+/// Change the delete profile as another instance does: the change is recorded, and this
+/// instance keeps its cached entry until its poller evicts it.
+async fn set_delete_profile_on_another_instance(
+    catalog: CatalogState,
+    warehouse_id: WarehouseId,
+    profile: &TabularDeleteProfile,
+) {
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(catalog)
+        .await
+        .unwrap();
+    PostgresBackend::set_warehouse_deletion_profile(warehouse_id, profile, &mut transaction)
+        .await
+        .unwrap();
+    transaction.commit_as_another_instance().await.unwrap();
+}
+
 #[sqlx::test]
 async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     let storage_profile = memory_io_profile();
@@ -966,22 +963,15 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     .unwrap()
     .unwrap();
 
-    // Update warehouse directly (simulating external update)
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
     let updated_deletion_profile = TabularDeleteProfile::Soft {
         expiration_seconds: chrono::TimeDelta::seconds(7200),
     };
-    PostgresBackend::set_warehouse_deletion_profile(
+    set_delete_profile_on_another_instance(
+        ctx.v1_state.catalog.clone(),
         warehouse_resp.warehouse_id,
         &updated_deletion_profile,
-        transaction.transaction(),
     )
-    .await
-    .unwrap();
-    transaction.commit().await.unwrap();
+    .await;
 
     let cached_warehouse = PostgresBackend::get_warehouse_by_id_cache_aware(
         warehouse_resp.warehouse_id,
@@ -1036,21 +1026,14 @@ async fn test_get_by_name_uses_cache(pool: PgPool) {
 
     assert_eq!(warehouse1.status, WarehouseStatus::Active);
 
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
-    let updated_deletion_profile = TabularDeleteProfile::Soft {
-        expiration_seconds: chrono::TimeDelta::seconds(7200),
-    };
-    PostgresBackend::set_warehouse_deletion_profile(
+    set_delete_profile_on_another_instance(
+        ctx.v1_state.catalog.clone(),
         warehouse_resp.warehouse_id,
-        &updated_deletion_profile,
-        transaction.transaction(),
+        &TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::TimeDelta::seconds(7200),
+        },
     )
-    .await
-    .unwrap();
-    transaction.commit().await.unwrap();
+    .await;
 
     // Get by name - should return STALE cached data
     let warehouse2 = PostgresBackend::get_warehouse_by_name(
@@ -1096,22 +1079,21 @@ async fn test_version_not_updated_if_nothing_changed(pool: PgPool) {
     let original_version = *warehouse_before.version;
 
     // Update storage profile with the same values
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let updated_warehouse = PostgresBackend::update_storage_profile(
         warehouse_resp.warehouse_id,
         storage_profile.clone(),
         None,
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();
     transaction.commit().await.unwrap();
 
     // Version should remain unchanged
-    assert_eq!(*updated_warehouse.version, original_version);
+    assert_eq!(*updated_warehouse.warehouse.version, original_version);
 
     // Verify from cache
     let warehouse_after = PostgresBackend::get_warehouse_by_id_cache_aware(
@@ -2015,10 +1997,9 @@ async fn test_delete_warehouse_deletes_its_storage_secret(pool: PgPool) {
         .unwrap();
 
     let project_id = ProjectId::from(Uuid::nil());
-    let mut transaction =
-        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
-            .await
-            .unwrap();
+    let mut transaction = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
     let warehouse = PostgresBackend::create_warehouse(
         &project_id,
         CatalogCreateWarehouseRequest::builder()
@@ -2027,7 +2008,7 @@ async fn test_delete_warehouse_deletes_its_storage_secret(pool: PgPool) {
             .storage_secret_id(Some(secret_id))
             .delete_profile(TabularDeleteProfile::Hard {})
             .build(),
-        transaction.transaction(),
+        &mut transaction,
     )
     .await
     .unwrap();

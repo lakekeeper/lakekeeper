@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT user_id FROM role_assignment_sync WHERE project_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "role_assignment_sync",
+            "name": "user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "75e6a7e1796a7d44225085f0e7aaf58ec2292420911641496200cd9555639c49"
+}

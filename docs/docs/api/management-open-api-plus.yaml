@@ -17154,6 +17154,15 @@ components:
             Optional role ARN to assume for sts vended-credentials.
             If not provided, `assume_role_arn` is used.
             Either `assume_role_arn` or `sts_role_arn` must be provided if `sts_enabled` is true.
+        sts-session-policy-principal:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Add `"Principal": "*"` to every statement of the STS session policy.
+            Some S3-compatible STS implementations, such as Yandex Object Storage, reject
+            session policies without a principal, while AWS and MinIO reject policies that
+            have one. Defaults to false.
         sts-session-tags:
           type: object
           description: Optional session tags for STS assume role operations.

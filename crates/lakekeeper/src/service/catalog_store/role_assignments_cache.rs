@@ -14,7 +14,6 @@ use moka::{
     future::Cache,
     ops::compute::{CompResult, Op},
 };
-use tracing::Instrument;
 
 use crate::{
     CONFIG,
@@ -65,23 +64,9 @@ impl Invalidations {
         self.stripe(key).fetch_add(1, Ordering::AcqRel);
     }
 
-    #[cfg(test)]
-    fn snapshot(&self) -> Vec<u64> {
-        self.0
-            .iter()
-            .map(|stripe| stripe.load(Ordering::Acquire))
-            .collect()
-    }
-
-    /// Bump each stripe that holds one of `keys`, once.
-    fn bump_many<K: Hash>(&self, keys: &[K]) {
-        let mut bumped = [false; STRIPES];
-        for key in keys {
-            let index = Self::stripe_index(key);
-            if !bumped[index] {
-                bumped[index] = true;
-                self.0[index].fetch_add(1, Ordering::AcqRel);
-            }
+    fn bump_all(&self) {
+        for stripe in &self.0 {
+            stripe.fetch_add(1, Ordering::AcqRel);
         }
     }
 }
@@ -271,18 +256,15 @@ where
         }
     }
 
-    /// [`Self::invalidate`] for every key in `keys`, bumping each distinct stripe
-    /// once.
-    async fn invalidate_many(&self, keys: &[K]) {
-        if !self.enabled || keys.is_empty() {
-            return;
+    /// Count an invalidation of every key, then drop every entry. A sync or a load that
+    /// read its count before leaves its result uncached.
+    pub(super) fn invalidate_all(&self) {
+        if self.enabled {
+            tracing::debug!("Invalidating all {} from cache", self.noun.1);
+            self.invalidations.bump_all();
+            self.cache.invalidate_all();
+            self.update_size_metric();
         }
-        self.invalidations.bump_many(keys);
-        for key in keys {
-            tracing::debug!("Invalidating {} for {key} from cache", self.noun.1);
-            self.remove(key).await;
-        }
-        self.update_size_metric();
     }
 
     async fn remove(&self, key: &K) {
@@ -396,22 +378,6 @@ where
     }
 }
 
-/// Run `step` on a task of its own, in the caller's tracing span, and wait for it.
-/// A caller dropped while it waits leaves the task running, so a cancelled request
-/// cannot separate a commit from the cache updates and events that follow it.
-pub(crate) async fn run_to_completion<T: Send + 'static>(
-    step: impl std::future::Future<Output = T> + Send + 'static,
-) -> T {
-    match tokio::spawn(step.in_current_span()).await {
-        Ok(output) => output,
-        Err(error) => match error.try_into_panic() {
-            Ok(panic) => std::panic::resume_unwind(panic),
-            // Only a runtime shutdown cancels the task, and it drops this caller too.
-            Err(error) => panic!("post-commit step did not finish: {error}"),
-        },
-    }
-}
-
 // ============================================================================
 // User assignments cache  (UserId → Arc<ListUserRoleAssignmentsResult>)
 // ============================================================================
@@ -440,18 +406,13 @@ pub(super) static USER_ASSIGNMENTS_CACHE: std::sync::LazyLock<
     )
 });
 
-#[allow(dead_code)] // Not required for all features
 pub(crate) async fn user_assignments_cache_invalidate(user_id: &UserId) {
     USER_ASSIGNMENTS_CACHE.invalidate(user_id).await;
 }
 
-/// Invalidate the user-assignments cache entry for every user in `user_ids`.
-///
-/// Convenience over calling [`user_assignments_cache_invalidate`] in a loop —
-/// used when a single mutation (e.g. a `role_membership` edge change) makes the
-/// effective-role list of a whole set of users stale at once.
-pub(crate) async fn user_assignments_cache_invalidate_many(user_ids: &[UserId]) {
-    USER_ASSIGNMENTS_CACHE.invalidate_many(user_ids).await;
+/// Drop the assignments of every user from this replica's cache.
+pub(crate) fn user_assignments_cache_invalidate_all() {
+    USER_ASSIGNMENTS_CACHE.invalidate_all();
 }
 
 // ============================================================================
@@ -601,6 +562,15 @@ async fn role_ancestors_cache_get(role_id: RoleId) -> Option<Arc<Vec<AssignedRol
     }
 }
 
+/// Bumped on every clear, so a load that started before it cannot cache what it read.
+///
+/// `invalidate_all` stamps a validity time and removes nothing, so an insert with a later
+/// timestamp survives the clear -- and a bare invalidate is a different moka lock domain
+/// from the loader, so no per-key lock orders the two. `Op::Remove` through the compute
+/// lock is how the user-assignments cache solves this; it does not compose with a batched
+/// loader, which would make the batch the unit of locking and serialise unrelated roles.
+static ROLE_ANCESTORS_EPOCH: AtomicU64 = AtomicU64::new(0);
+
 /// Drop every entry, because a single membership edge changes the ancestor set of the
 /// member *and* of everything nested beneath it.
 ///
@@ -608,22 +578,13 @@ async fn role_ancestors_cache_get(role_id: RoleId) -> Option<Arc<Vec<AssignedRol
 /// descendant closure — a second recursive query on a write path that already runs one to
 /// find affected users — and clearing more than necessary is never wrong, only wasteful.
 /// Role-membership edits are rare administrative writes, so the lost hit rate is a
-/// worthwhile trade for not having a second closure walk to keep correct. Call it wherever
-/// the membership graph, or the identity of any role in it, changes.
+/// worthwhile trade for not having a second closure walk to keep correct. A write that
+/// changes the membership graph, or the identity of any role in it, records the whole
+/// domain, and every instance calls this when it evicts that change.
 ///
-/// Local to this process. Other replicas keep serving their own entries until TTL, and the
-/// staleness is not symmetric: a *removed* edge stays visible, so a policy written against
-/// the parent role keeps applying to the former member for up to one TTL. That direction is
-/// permissive, which is why the TTL is short rather than generous.
-/// Bumped on every clear, so a load that started before it cannot cache what it read.
-///
-/// `invalidate_all` stamps a validity time rather than removing, so an insert with a later
-/// timestamp survives the clear -- and a bare invalidate is a different moka lock domain
-/// from the loader, so no per-key lock orders the two. `Op::Remove` through the compute
-/// lock is how the user-assignments cache solves this; it does not compose with a batched
-/// loader, which would make the batch the unit of locking and serialise unrelated roles.
-static ROLE_ANCESTORS_EPOCH: AtomicU64 = AtomicU64::new(0);
-
+/// Until then the staleness is not symmetric: a *removed* edge stays visible, so a policy
+/// written against the parent role keeps applying to the former member, for up to one TTL
+/// if the eviction is missed. That direction is permissive, which is why the TTL is short.
 pub(crate) fn role_ancestors_cache_invalidate_all() {
     if CONFIG.cache.role_ancestors.enabled {
         tracing::debug!("Invalidating all role ancestors from cache");
@@ -732,6 +693,11 @@ mod tests {
 
     type UaCache = CountedCache<UserId, Arc<ListUserRoleAssignmentsResult>>;
 
+    /// Held by every test that uses the process-wide role-ancestors cache, so one test's
+    /// clear cannot remove the entry another test just inserted.
+    static ROLE_ANCESTORS_CACHE_TEST_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
+
     /// A user-assignments cache of the calling test's own, so other tests' entries and
     /// invalidations cannot reach it.
     fn ua_cache() -> Arc<UaCache> {
@@ -759,7 +725,7 @@ mod tests {
         let invalidations_before = cache.invalidations(key);
         let cache = Arc::clone(cache);
         let key = key.clone();
-        run_to_completion(async move {
+        crate::service::run_to_completion(async move {
             let committed = commit.await;
             if committed.is_ok() {
                 cache
@@ -1204,36 +1170,22 @@ mod tests {
         assert!(Arc::ptr_eq(&entry, &synced));
     }
 
-    /// `invalidate_many` bumps the stripe of each of its keys once, so a sync of any of
-    /// them that overlaps it removes its entry.
+    /// Invalidating all drops every entry and fences a sync that read its count before.
     #[tokio::test]
-    async fn invalidate_many_bumps_each_key_and_an_overlapping_sync_removes() {
+    async fn invalidate_all_drops_every_entry_and_fences_an_overlapping_sync() {
         let cache = ua_cache();
-        let first = test_user_id("invalidate-many-first");
-        let second = test_user_id("invalidate-many-second");
-        let first_before = cache.invalidations(&first).0;
-        let second_before = cache.invalidations(&second);
+        let cached = test_user_id("invalidate-all-cached");
+        let syncing = test_user_id("invalidate-all-syncing");
+        insert_for_test(&cache, &cached, empty_user_result()).await;
+        let syncing_before = cache.invalidations(&syncing);
 
-        cache
-            .invalidate_many(&[first.clone(), first.clone(), second.clone()])
-            .await;
-        assert!(cache.invalidations(&first).0 > first_before);
-        assert!(cache.invalidations(&second).0 > second_before.0);
-        let first_after = cache.invalidations(&first).0;
-        cache.invalidate_many(&[first.clone(), first.clone()]).await;
-        assert_eq!(
-            cache.invalidations(&first).0,
-            first_after + 1,
-            "a stripe is bumped once per call"
-        );
+        cache.invalidate_all();
 
+        assert!(cache.get(&cached).await.is_none());
         cache
-            .cache_after_commit(&second, empty_user_result(), second_before)
+            .cache_after_commit(&syncing, empty_user_result(), syncing_before)
             .await;
-        assert!(
-            cache.get(&second).await.is_none(),
-            "the overlapping sync removes its entry"
-        );
+        assert!(cache.get(&syncing).await.is_none());
     }
 
     /// The production functions count in the process's caches: each invalidation
@@ -1245,11 +1197,6 @@ mod tests {
         let before = USER_ASSIGNMENTS_CACHE.invalidations(&user_id).0;
         user_assignments_cache_invalidate(&user_id).await;
         assert!(USER_ASSIGNMENTS_CACHE.invalidations(&user_id).0 > before);
-
-        let other = test_user_id("process-counters-many");
-        let before = USER_ASSIGNMENTS_CACHE.invalidations(&other).0;
-        user_assignments_cache_invalidate_many(std::slice::from_ref(&other)).await;
-        assert!(USER_ASSIGNMENTS_CACHE.invalidations(&other).0 > before);
     }
 
     /// An invalidation of a key in another stripe leaves an overlapping sync's write.
@@ -1308,25 +1255,6 @@ mod tests {
             cache.get(&user_id).await.is_none(),
             "the sync removes its entry and the next read loads"
         );
-    }
-
-    /// An empty `invalidate_many` bumps nothing, so an overlapping sync still caches.
-    #[tokio::test]
-    async fn an_empty_invalidate_many_bumps_nothing() {
-        let cache = ua_cache();
-        let user_id = test_user_id("invalidate-many-empty");
-        let before = cache.invalidations.snapshot();
-        let invalidations_before = cache.invalidations(&user_id);
-
-        cache.invalidate_many(&[]).await;
-        assert_eq!(cache.invalidations.snapshot(), before);
-
-        let synced = empty_user_result();
-        cache
-            .cache_after_commit(&user_id, Arc::clone(&synced), invalidations_before)
-            .await;
-        let cached = cache.get(&user_id).await.expect("cached");
-        assert!(Arc::ptr_eq(&cached, &synced));
     }
 
     /// An invalidation that counts during a load leaves no entry, also when its
@@ -1405,11 +1333,10 @@ mod tests {
         assert!(Arc::ptr_eq(&result, &cached));
     }
 
-    /// A result with `provider_sync_times` populated but no roles must survive
-    /// a cache round-trip intact — this is the "synced but no assignments" shape.
     /// A batch that is partly cached loads only what it missed, and answers for all of it.
     #[tokio::test]
     async fn a_partly_cached_batch_loads_only_the_misses() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let cached = RoleId::new_random();
         let missed = RoleId::new_random();
         let parent = Arc::new(vec![AssignedRole {
@@ -1441,6 +1368,8 @@ mod tests {
         assert_eq!(resolved[&missed].len(), 0);
     }
 
+    /// A result with `provider_sync_times` populated but no roles must survive
+    /// a cache round-trip intact — this is the "synced but no assignments" shape.
     #[tokio::test]
     async fn test_user_assignments_sync_without_roles() {
         let cache = ua_cache();
@@ -1479,6 +1408,7 @@ mod tests {
     /// permissive direction: the member keeps the parent's privileges after the edge is gone.
     #[tokio::test]
     async fn a_clear_during_a_load_is_not_undone_by_it() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let nested = RoleId::new_random();
         let stale = Arc::new(vec![AssignedRole {
             role_id: RoleId::new_random(),
@@ -1513,6 +1443,7 @@ mod tests {
     /// trigger another clear.
     #[tokio::test]
     async fn a_stale_load_does_not_overwrite_a_fresh_entry() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let nested = RoleId::new_random();
         let stale = Arc::new(vec![AssignedRole {
             role_id: RoleId::new_random(),
@@ -1560,14 +1491,6 @@ mod tests {
 
     // ── Role ancestors ────────────────────────────────────────────────────────
 
-    /// The whole-cache clear is what bounds this cache's staleness, so it has to clear
-    /// every key, not the one whose role was named.
-    ///
-    /// One membership edge changes the ancestor set of the member and of everything nested
-    /// beneath it, and the write path does not know which roles those are without a second
-    /// closure walk — which is exactly why the clear is blunt. A clear that only removed
-    /// some keys would leave a removed edge visible, and a policy written against the
-    /// former parent still applying.
     /// A loader that omits a role it was asked about is a backend error, not an answer.
     ///
     /// The two are indistinguishable downstream — an empty closure and an unread one look
@@ -1575,6 +1498,7 @@ mod tests {
     /// parent role silently stops applying. So the read-through refuses to cache a gap.
     #[tokio::test]
     async fn a_loader_that_skips_a_requested_role_errors() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let asked = RoleId::new_random();
         let skipped = RoleId::new_random();
 
@@ -1595,8 +1519,17 @@ mod tests {
         );
     }
 
+    /// The whole-cache clear is what bounds this cache's staleness, so it has to clear
+    /// every key, not the one whose role was named.
+    ///
+    /// One membership edge changes the ancestor set of the member and of everything nested
+    /// beneath it, and the write path does not know which roles those are without a second
+    /// closure walk — which is exactly why the clear is blunt. A clear that only removed
+    /// some keys would leave a removed edge visible, and a policy written against the
+    /// former parent still applying.
     #[tokio::test]
     async fn role_ancestors_invalidate_all_clears_every_entry() {
+        let _cache = ROLE_ANCESTORS_CACHE_TEST_LOCK.lock().await;
         let nested = RoleId::new_random();
         let unrelated = RoleId::new_random();
         let ancestors = Arc::new(vec![AssignedRole {
