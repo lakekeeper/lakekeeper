@@ -3462,6 +3462,145 @@ mod test {
         assert_eq!(ranges, vec![]);
     }
 
+    /// A failure recorded with a decision follows it, whatever the queue's
+    /// [`TaskConfig::retry_decision`] says; [`TaskConfig::max_retries`] still caps retries.
+    #[sqlx::test]
+    async fn test_a_failure_recorded_with_a_decision_overrides_the_queues_retry_decision(
+        pool: PgPool,
+    ) {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct Config {}
+        impl TaskConfig for Config {
+            fn queue_name() -> &'static TaskQueueName {
+                &QUEUE_NAME
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(3600)
+            }
+            fn max_retries() -> i32 {
+                2
+            }
+            // The queue retries at once and keeps the demand.
+            fn retry_decision(_: &FailedAttempt<'_>) -> RetryDecision {
+                RetryDecision::retry(chrono::Duration::zero())
+            }
+        }
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct Empty {}
+        impl TaskData for Empty {}
+        impl TaskExecutionDetails for Empty {}
+        static QUEUE_NAME: LazyLock<TaskQueueName> =
+            LazyLock::new(|| "test-failure-with-decision".into());
+        type Specialized = SpecializedTask<Config, Empty, Empty>;
+
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let given_up =
+            queue_with_demand(&pool, &QUEUE_NAME, warehouse_id, &project_id, Some(7), 2).await;
+        let retried =
+            queue_with_demand(&pool, &QUEUE_NAME, warehouse_id, &project_id, Some(7), 1).await;
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let pick = || async {
+            Specialized::pick_new_task::<PostgresBackend>(state.clone())
+                .await
+                .unwrap()
+        };
+
+        // Giving up ends the task as failed with the reason.
+        let task = pick().await.unwrap();
+        assert_eq!(
+            task.id(),
+            TaskAttemptId {
+                task_id: given_up,
+                attempt: 1
+            }
+        );
+        task.record_failure_with_decision::<PostgresBackend>(
+            state.clone(),
+            "boom",
+            RetryDecision::give_up("stopped at its time limit"),
+        )
+        .await;
+        assert_eq!(
+            attempt_log(&pool, given_up).await,
+            vec![(
+                1,
+                TaskOutcome::Failed,
+                Some("boom\nNot retried: stopped at its time limit".to_string())
+            )]
+        );
+        assert_eq!(demands(&pool, given_up).await, (vec![], vec![(1, Some(7))]));
+
+        // A retry is scheduled with the given backoff and resource demand.
+        let task = pick().await.unwrap();
+        assert_eq!(
+            task.id(),
+            TaskAttemptId {
+                task_id: retried,
+                attempt: 1
+            }
+        );
+        task.record_failure_with_decision::<PostgresBackend>(
+            state.clone(),
+            "boom",
+            RetryDecision::retry(chrono::Duration::minutes(10)).with_resource_demand(9),
+        )
+        .await;
+        assert_eq!(
+            attempt_log(&pool, retried).await,
+            vec![(1, TaskOutcome::Failed, Some("boom".to_string()))]
+        );
+        let (status, attempt): (TaskIntermediateStatus, i32) =
+            sqlx::query_as("SELECT status, attempt FROM task WHERE task_id = $1")
+                .bind(*retried)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((status, attempt), (TaskIntermediateStatus::Scheduled, 1));
+        assert_eq!(
+            demands(&pool, retried).await,
+            (vec![Some(9)], vec![(1, Some(7))])
+        );
+        let delay = retry_delay(&pool, retried, 1).await;
+        assert_eq!(
+            (delay.months, delay.days, delay.microseconds),
+            (0, 0, 600_000_000)
+        );
+        assert!(pick().await.is_none());
+
+        // After `max_retries` attempts a retry is ignored and the task fails.
+        sqlx::query("UPDATE task SET scheduled_for = now() WHERE task_id = $1")
+            .bind(*retried)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let task = pick().await.unwrap();
+        assert_eq!(
+            task.id(),
+            TaskAttemptId {
+                task_id: retried,
+                attempt: 2
+            }
+        );
+        task.record_failure_with_decision::<PostgresBackend>(
+            state.clone(),
+            "boom",
+            RetryDecision::retry(chrono::Duration::zero()),
+        )
+        .await;
+        assert_eq!(
+            attempt_log(&pool, retried).await,
+            vec![
+                (1, TaskOutcome::Failed, Some("boom".to_string())),
+                (2, TaskOutcome::Failed, Some("boom".to_string()))
+            ]
+        );
+        assert_eq!(
+            demands(&pool, retried).await,
+            (vec![], vec![(1, Some(7)), (2, Some(9))])
+        );
+    }
+
     #[sqlx::test]
     async fn test_a_negative_resource_demand_counts_as_zero(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
