@@ -1501,7 +1501,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bulk_deletes_are_limited_per_service_of_the_endpoint() {
+    async fn the_service_scope_is_the_endpoint_origin() {
         let storage = storage_at("http://127.0.0.1:1").await;
         assert_eq!(storage.service_scope, "http://127.0.0.1:1");
     }

@@ -43,6 +43,8 @@ const DEFAULT_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
 /// future is dropped on elapse; we still log the timeout so a partial file
 /// left behind is observable.
 const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
+/// Host suffix of `OneLake` locations.
+const ONELAKE_ENDPOINT_SUFFIX: &str = "fabric.microsoft.com";
 
 impl AdlsStorage {
     /// Returns a [`FileSystemClient`] for the Azure Storage account.
@@ -151,9 +153,13 @@ impl LakekeeperStorage for AdlsStorage {
                 continue; // Skip empty groups
             }
             let filesystem_client = self.get_filesystem_client(&paths[0])?;
+            // Azure throttles per account; OneLake serves all workspaces from one endpoint.
             let limit = DeleteLimit::of(&DeleteEndpoint::Adls {
                 endpoint: endpoint.as_str(),
-                filesystem: &filesystem,
+                workspace: paths[0]
+                    .endpoint_suffix()
+                    .ends_with(ONELAKE_ENDPOINT_SUFFIX)
+                    .then_some(filesystem.as_str()),
             });
 
             for path in paths {
@@ -1113,11 +1119,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_delete_waits_for_the_delete_limit() {
+    async fn batch_delete_waits_for_the_delete_limit_of_its_account() {
         let (storage, endpoint, requests) = counted_storage("limitaccount").await;
         let held = DeleteLimit::of(&DeleteEndpoint::Adls {
             endpoint: &endpoint,
-            filesystem: "filesystem",
+            workspace: None,
         })
         .hold_all()
         .await;
@@ -1142,7 +1148,7 @@ mod tests {
         let (storage, endpoint, requests) = counted_storage("onelake").await;
         let _held = DeleteLimit::of(&DeleteEndpoint::Adls {
             endpoint: &endpoint,
-            filesystem: "workspace-a",
+            workspace: Some("workspace-a"),
         })
         .hold_all()
         .await;

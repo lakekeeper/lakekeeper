@@ -19,8 +19,9 @@ use crate::{
 
 const QN_STR: &str = "tabular_purge";
 /// How often a running purge renews its heartbeat. A purge of a large table can run longer than
-/// [`PurgeQueueConfig::max_time_since_last_heartbeat`].
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
+/// [`PurgeQueueConfig::max_time_since_last_heartbeat`]; the interval covers limits above one
+/// minute.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_mins(1);
 pub static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 #[cfg(feature = "open-api")]
 pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =

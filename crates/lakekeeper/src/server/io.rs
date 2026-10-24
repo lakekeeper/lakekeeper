@@ -7,7 +7,10 @@ use lakekeeper_io::{
 use serde::Serialize;
 
 use super::compression_codec::CompressionCodec;
-use crate::api::{ErrorModel, Result};
+use crate::{
+    CONFIG,
+    api::{ErrorModel, Result},
+};
 
 pub(crate) async fn write_file(
     io: &impl LakekeeperStorage,
@@ -34,11 +37,40 @@ pub(crate) async fn delete_file(
 /// How long a request waits for its best-effort cleanup before it responds.
 const CLEANUP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Runs a best-effort `cleanup` and waits for it at most [`CLEANUP_WAIT`]. A cleanup that takes
-/// longer continues in the background, so a slow or retried delete does not decide the response.
-pub(crate) async fn cleanup_in_background(cleanup: impl Future<Output = ()> + Send + 'static) {
+/// Runs a best-effort `cleanup` of a request that arrived at `received_at`, and waits for it at
+/// most until [`cleanup_deadline`] with [`CLEANUP_WAIT`]. A cleanup that takes longer continues in
+/// the background, so a slow or retried delete does not decide the response.
+pub(crate) async fn cleanup_in_background(
+    received_at: tokio::time::Instant,
+    cleanup: impl Future<Output = ()> + Send + 'static,
+) {
+    let deadline = cleanup_deadline(
+        tokio::time::Instant::now(),
+        CLEANUP_WAIT,
+        received_at,
+        CONFIG.max_request_time,
+    );
     let cleanup = tracing::Instrument::in_current_span(cleanup);
-    let _ = tokio::time::timeout(CLEANUP_WAIT, tokio::spawn(cleanup)).await;
+    let _ = tokio::time::timeout_at(deadline, tokio::spawn(cleanup)).await;
+}
+
+/// `wait` from `now`, ending by five sixths of the request limit from the request's arrival so
+/// that a slow backend cannot time out the response of a committed change.
+pub(crate) fn cleanup_deadline(
+    now: tokio::time::Instant,
+    wait: std::time::Duration,
+    received_at: tokio::time::Instant,
+    request_limit: std::time::Duration,
+) -> tokio::time::Instant {
+    // Divided first so that an effectively unbounded limit cannot overflow.
+    [
+        now.checked_add(wait),
+        received_at.checked_add(request_limit / 6 * 5),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or_else(crate::service::storage::validation::far_future)
 }
 
 pub(crate) async fn read_file(
@@ -203,11 +235,28 @@ mod tests {
     use super::*;
     use crate::service::storage::{StorageCredential, StorageProfile};
 
+    #[test]
+    fn the_cleanup_deadline_fits_the_request_limit() {
+        let limit = Duration::from_secs(30);
+        let received_at = tokio::time::Instant::now();
+        let at = |secs| received_at + Duration::from_secs(secs);
+        let wait = Duration::from_secs(10);
+        // Early in the request the cleanup gets its wait.
+        assert_eq!(cleanup_deadline(at(1), wait, received_at, limit), at(11));
+        // Late in the request it ends at five sixths of the limit.
+        assert_eq!(cleanup_deadline(at(20), wait, received_at, limit), at(25));
+        // An unbounded limit does not overflow, and the wait applies.
+        assert_eq!(
+            cleanup_deadline(at(0), wait, received_at, Duration::MAX),
+            at(10)
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_slow_cleanup_finishes_after_the_request_stops_waiting() {
         let done = Arc::new(AtomicBool::new(false));
         let start = tokio::time::Instant::now();
-        cleanup_in_background({
+        cleanup_in_background(start, {
             let done = done.clone();
             async move {
                 tokio::time::sleep(Duration::from_secs(20)).await;
@@ -223,9 +272,21 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_cleanup_late_in_the_request_stops_waiting_before_the_request_limit() {
+        let start = tokio::time::Instant::now();
+        // Five sixths of the request limit end 2 s from now.
+        let received_at = (start + Duration::from_secs(2))
+            .checked_sub(CONFIG.max_request_time / 6 * 5)
+            .unwrap();
+        cleanup_in_background(received_at, tokio::time::sleep(Duration::from_secs(20))).await;
+
+        assert_eq!(start.elapsed(), Duration::from_secs(2));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_fast_cleanup_finishes_before_the_request_responds() {
         let done = Arc::new(AtomicBool::new(false));
-        cleanup_in_background({
+        cleanup_in_background(tokio::time::Instant::now(), {
             let done = done.clone();
             async move {
                 tokio::time::sleep(Duration::from_secs(1)).await;

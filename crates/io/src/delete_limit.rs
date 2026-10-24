@@ -21,7 +21,7 @@ pub(crate) const S3_DELETE_REQUESTS: usize = 4;
 /// Concurrent deletes per GCS bucket. A new bucket accepts about 1,000 writes per second.
 #[cfg(feature = "storage-gcs")]
 const GCS_DELETE_REQUESTS: usize = 32;
-/// Concurrent deletes per ADLS filesystem. Each holds one connection.
+/// Concurrent deletes per ADLS account, or per `OneLake` workspace. Each holds one connection.
 #[cfg(feature = "storage-adls")]
 const ADLS_DELETE_REQUESTS: usize = 64;
 
@@ -39,12 +39,12 @@ pub(crate) enum DeleteEndpoint<'a> {
     S3 { scope: &'a str, bucket: &'a str },
     #[cfg(feature = "storage-gcs")]
     Gcs { bucket: &'a str },
-    /// A filesystem of an ADLS endpoint. On `OneLake`, a filesystem is a workspace: all
-    /// workspaces share one endpoint.
+    /// An ADLS endpoint, which names one account. `OneLake` serves all workspaces from one
+    /// endpoint, so a `OneLake` limit also names the workspace.
     #[cfg(feature = "storage-adls")]
     Adls {
         endpoint: &'a str,
-        filesystem: &'a str,
+        workspace: Option<&'a str>,
     },
 }
 
@@ -58,8 +58,12 @@ impl DeleteEndpoint<'_> {
             #[cfg(feature = "storage-adls")]
             DeleteEndpoint::Adls {
                 endpoint,
-                filesystem,
-            } => format!("adls:{endpoint}:{filesystem}"),
+                workspace: None,
+            } => format!("adls:{endpoint}"),
+            DeleteEndpoint::Adls {
+                endpoint,
+                workspace: Some(workspace),
+            } => format!("adls:{endpoint}:{workspace}"),
         }
     }
 
@@ -147,16 +151,16 @@ mod tests {
     #[test]
     fn dropped_limits_leave_the_registry() {
         drop(DeleteLimit::of(&DeleteEndpoint::Adls {
-            endpoint: "https://limit.dfs.core.windows.net/",
-            filesystem: "dropped",
+            endpoint: "https://dropped.dfs.core.windows.net/",
+            workspace: None,
         }));
         let _other = DeleteLimit::of(&DeleteEndpoint::Adls {
-            endpoint: "https://limit.dfs.core.windows.net/",
-            filesystem: "other",
+            endpoint: "https://other.dfs.core.windows.net/",
+            workspace: None,
         });
         let limits = LIMITS.lock().unwrap_or_else(PoisonError::into_inner);
-        assert!(!limits.contains_key("adls:https://limit.dfs.core.windows.net/:dropped"));
-        assert!(limits.contains_key("adls:https://limit.dfs.core.windows.net/:other"));
+        assert!(!limits.contains_key("adls:https://dropped.dfs.core.windows.net/"));
+        assert!(limits.contains_key("adls:https://other.dfs.core.windows.net/"));
     }
 
     #[cfg(feature = "storage-s3")]

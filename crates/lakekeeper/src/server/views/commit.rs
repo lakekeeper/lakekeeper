@@ -23,7 +23,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::{cleanup_in_background, remove_all, write_file},
+        io::{cleanup_in_background, delete_file, remove_all, write_file},
         require_warehouse_id,
         tables::{
             MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
@@ -325,7 +325,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             })
             .ok();
         // Best-effort cleanup: delete the metadata file we wrote before rollback.
-        let _ = remove_all(&file_io, &new_view.metadata_location)
+        let _ = delete_file(&file_io, &new_view.metadata_location)
             .await
             .inspect_err(|e| {
                 tracing::warn!(
@@ -340,10 +340,10 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     t.commit().await?;
 
     if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {
-        cleanup_in_background(remove_old_view_location(
-            file_io,
-            before_update_view_location.clone(),
-        ))
+        cleanup_in_background(
+            request_metadata.received_at(),
+            remove_old_view_location(file_io, before_update_view_location.clone()),
+        )
         .await;
     }
 

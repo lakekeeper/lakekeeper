@@ -332,8 +332,9 @@ impl ErrorModel {
         // We use PRECONDITION_FAILED (412) for most delegation/dependency errors
         // to avoid leaking internal architecture details or confusing clients about
         // where auth/permission issues occurred. Transient storage failures are
-        // SERVICE_UNAVAILABLE (503): clients retry a request that carries an
-        // idempotency key, and treat a commit's state as unknown.
+        // SERVICE_UNAVAILABLE (503). Iceberg clients may retry a 503, older ones even
+        // a commit without an idempotency key, so a storage error must only be
+        // returned before the catalog commit.
         let code = match io_error.kind() {
             lakekeeper_io::ErrorKind::Unexpected => StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             lakekeeper_io::ErrorKind::NotFound => StatusCode::BAD_REQUEST.as_u16(),

@@ -1859,25 +1859,24 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     }
     .await;
 
-    // After a failed transaction, remove the metadata files written above.
+    // After a failed transaction, remove the metadata files written above. Nothing refers to
+    // them, so the error returns without waiting.
     if let Err(e) = transaction_result {
         let written = commits
             .iter()
             .map(|commit| commit.new_metadata_location.clone())
             .collect();
-        cleanup_in_background(delete_files(
+        tokio::spawn(tracing::Instrument::in_current_span(delete_files(
             file_io,
             written,
             "metadata file after failed commit",
-        ))
-        .await;
+        )));
         return Err(e);
     }
-    cleanup_in_background(delete_files(
-        file_io,
-        expired_metadata_files,
-        "expired metadata file",
-    ))
+    cleanup_in_background(
+        event_ctx.request_metadata().received_at(),
+        delete_files(file_io, expired_metadata_files, "expired metadata file"),
+    )
     .await;
 
     Ok(Arc::new(commits))
