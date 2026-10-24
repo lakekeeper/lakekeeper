@@ -1830,7 +1830,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         }))
         .await
         .into_iter()
-        .collect::<Result<Vec<()>, _>>()?;
+        .collect::<Result<(), _>>()?;
 
         let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
         C::commit_table_transaction(

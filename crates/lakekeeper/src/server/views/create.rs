@@ -22,8 +22,8 @@ use crate::{
         views::{commit::validate_trusted_engine_properties_on_create, validate_view_properties},
     },
     service::{
-        CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
-        Transaction, ViewId,
+        COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogStore, CatalogViewOps, Result,
+        SecretStore, State, TabularId, Transaction, ViewId,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
             emit_bootstrap_grants_async, write_bootstrap_grants,
@@ -182,19 +182,33 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-        let bootstrap_grants = write_bootstrap_grants::<C, A>(
-            authorizer,
-            &request_metadata,
-            &GrantResource::View {
-                warehouse_id,
-                view_id,
-            },
-            t.transaction(),
-        )
-        .await?;
-
-        t.commit().await?;
-        Ok((config, bootstrap_grants))
+        let committed: Result<_> = async {
+            let bootstrap_grants = write_bootstrap_grants::<C, A>(
+                authorizer,
+                &request_metadata,
+                &GrantResource::View {
+                    warehouse_id,
+                    view_id,
+                },
+                t.transaction(),
+            )
+            .await?;
+            t.commit().await?;
+            Ok(bootstrap_grants)
+        }
+        .await;
+        // The view entry outlives a rolled-back transaction; keep it if the commit may have
+        // been applied.
+        if let Err(e) = &committed
+            && e.error.r#type != COMMIT_STATE_UNKNOWN_ERROR_TYPE
+            && let Err(e) = authorizer.delete_view(warehouse_id, view_id).await
+        {
+            tracing::warn!(
+                %view_id,
+                "Failed to remove the authorizer entry of a view that was not created: {e}"
+            );
+        }
+        Ok((config, committed?))
     })
     .await?;
 

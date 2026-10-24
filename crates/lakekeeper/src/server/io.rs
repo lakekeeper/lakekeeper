@@ -45,7 +45,7 @@ pub(crate) async fn delete_on_failure<T>(
     if let Err(e) = &result {
         if e.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
             tracing::warn!(
-                ?locations,
+                locations = ?locations.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
                 "Commit may have been applied, keeping its new metadata files"
             );
         } else {

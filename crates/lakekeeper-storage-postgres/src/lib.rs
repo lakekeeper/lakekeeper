@@ -516,7 +516,9 @@ mod transaction_tests {
             ("P0001", "DatabaseError"),
             ("08006", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
             ("40003", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
+            ("53200", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
             ("57014", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
+            ("58030", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
             ("XX000", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
         ] {
             sqlx::raw_sql(AssertSqlSafe(format!(

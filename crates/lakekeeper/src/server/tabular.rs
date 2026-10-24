@@ -212,12 +212,12 @@ where
 /// full ordering contract. Consumes the transaction: nothing may run between the detach and
 /// the commit.
 ///
-/// Three residual windows, all requiring reconciliation rather than a retry:
+/// Three residual windows:
 ///
 /// * An **ambiguous commit** — the connection dies after Postgres commits but before the
 ///   ack — surfaces as an error of type [`COMMIT_STATE_UNKNOWN_ERROR_TYPE`]. Neither edge is
-///   attached then, so the tabular is parentless until an additive reconcile restores the
-///   edge the catalog implies.
+///   attached then. If the commit did not apply, a retry repairs it; otherwise an additive
+///   reconcile restores the edge the catalog implies.
 /// * A **failed post-commit attach** leaves the tabular parentless, and no retry repairs
 ///   it. With an idempotency key the replay short-circuits before reaching this function,
 ///   because the key was inserted in the committed transaction; without one the storage
@@ -254,9 +254,10 @@ pub(crate) async fn commit_rename_with_reparent<C: CatalogStore, A: Authorizer>(
         // additive reconcile.
         if reparented && err.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
             tracing::error!(
-                "Rename of {} {tabular_id} may have been committed; it has no parent in the \
-                 authorizer until it is reconciled",
-                tabular_id.typ_str()
+                %warehouse_id,
+                %tabular_id,
+                "Rename may have been committed; the parent edge in the authorizer may be \
+                 missing until it is reconciled"
             );
         } else if reparented {
             authorizer

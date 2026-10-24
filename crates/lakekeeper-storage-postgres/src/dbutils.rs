@@ -8,9 +8,9 @@ pub(crate) fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError>
     UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
 }
 
-/// Whether a transaction whose `COMMIT` failed with `error` may have been committed. Only an ERROR
-/// reply proves a rollback, and only outside SQLSTATE 40003 and the classes 08, 53, 57, 58 and
-/// XX. A FATAL idle-in-transaction timeout (25P03) ends the session before `COMMIT` is read.
+/// Whether a transaction whose `COMMIT` failed with `error` may have been committed. A rollback is
+/// proven only by an ERROR outside SQLSTATE 40003 and the classes 08, 53, 57, 58 and XX, or by
+/// the FATAL idle-in-transaction timeout (25P03), which ends the session before `COMMIT` runs.
 pub(crate) fn commit_state_unknown(error: &sqlx::Error) -> bool {
     let Some(db) = error
         .as_database_error()

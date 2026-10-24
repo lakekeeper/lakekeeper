@@ -477,17 +477,17 @@ async fn clean_up_failed_warehouse_creation<A: Authorizer, S: SecretStore>(
     error: &IcebergErrorResponse,
 ) {
     if error.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
-        tracing::warn!(
+        tracing::error!(
             %warehouse_id,
             ?secret_id,
-            "Creation of the warehouse may have been committed, skipping cleanup"
+            "Creation of the warehouse may have been committed, skipping cleanup; if the \
+             warehouse does not exist, its id cannot be used again and the secret is orphaned"
         );
         return;
     }
-    // Relations written for a warehouse that then failed to commit
-    // would outlive it, and `create_warehouse` refuses an id that
-    // still carries any — so leaving them behind makes this id
-    // permanently unusable, including for the caller's own retry.
+    // Relations written for a warehouse that then failed to commit would outlive it, and
+    // `create_warehouse` refuses an id that still carries any — so leaving them behind makes
+    // this id permanently unusable, including for the caller's own retry.
     if authz_relations_written {
         authorizer
             .delete_warehouse(request_metadata, warehouse_id)
@@ -504,9 +504,8 @@ async fn clean_up_failed_warehouse_creation<A: Authorizer, S: SecretStore>(
             })
             .ok();
     }
-    // Best-effort, and the creation error is what the caller gets: a
-    // failure to clean up leaves the credential orphaned exactly as
-    // before, which must not mask why the create failed.
+    // Best effort, and the caller gets the creation error: a failed cleanup orphans the
+    // credential, which must not mask why the create failed.
     if let Some(secret_id) = secret_id {
         secrets
             .delete_secret(&secret_id)
@@ -681,7 +680,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // and discarded — the create error is what the caller needs, and the
         // transaction is abandoned either way. A commit that fails has already
         // ended the transaction, so there is nothing left to roll back, but its
-        // secret still needs cleaning up, which is why both funnel into one arm.
+        // secret still needs cleaning up, which is why both funnel into one arm
+        // (unless the commit outcome is unknown).
         let settled = match staged {
             Ok(staged) => transaction.commit().await.map(|()| staged),
             Err(create_error) => {

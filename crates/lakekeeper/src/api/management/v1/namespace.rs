@@ -485,9 +485,10 @@ where
             // by an additive reconcile.
             if reparented && err.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
                 tracing::error!(
+                    %warehouse_id,
                     %namespace_id,
-                    "Move of the namespace may have been committed; it has no parent in the \
-                     authorizer until it is reconciled"
+                    "Namespace move may have been committed; the parent edge in the authorizer \
+                     may be missing until it is reconciled"
                 );
             } else if reparented {
                 authorizer
