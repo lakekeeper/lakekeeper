@@ -58,12 +58,11 @@ impl DeleteEndpoint<'_> {
             #[cfg(feature = "storage-adls")]
             DeleteEndpoint::Adls {
                 endpoint,
-                workspace: None,
-            } => format!("adls:{endpoint}"),
-            DeleteEndpoint::Adls {
-                endpoint,
-                workspace: Some(workspace),
-            } => format!("adls:{endpoint}:{workspace}"),
+                workspace,
+            } => match workspace {
+                None => format!("adls:{endpoint}"),
+                Some(workspace) => format!("adls:{endpoint}:{workspace}"),
+            },
         }
     }
 

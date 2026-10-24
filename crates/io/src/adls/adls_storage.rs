@@ -44,7 +44,7 @@ const DEFAULT_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
 /// left behind is observable.
 const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
 /// Host suffix of `OneLake` locations.
-const ONELAKE_ENDPOINT_SUFFIX: &str = "fabric.microsoft.com";
+const ONELAKE_ENDPOINT_SUFFIX: &str = ".fabric.microsoft.com";
 
 impl AdlsStorage {
     /// Returns a [`FileSystemClient`] for the Azure Storage account.
@@ -1146,9 +1146,15 @@ mod tests {
     #[tokio::test]
     async fn workspaces_of_one_endpoint_have_separate_delete_limits() {
         let (storage, endpoint, requests) = counted_storage("onelake").await;
-        let _held = DeleteLimit::of(&DeleteEndpoint::Adls {
+        let _held_workspace = DeleteLimit::of(&DeleteEndpoint::Adls {
             endpoint: &endpoint,
             workspace: Some("workspace-a"),
+        })
+        .hold_all()
+        .await;
+        let _held_endpoint = DeleteLimit::of(&DeleteEndpoint::Adls {
+            endpoint: &endpoint,
+            workspace: None,
         })
         .hold_all()
         .await;
