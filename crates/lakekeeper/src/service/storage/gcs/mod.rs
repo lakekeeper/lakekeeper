@@ -28,7 +28,7 @@ use crate::{
         BasicTabularInfo,
         storage::{
             ShortTermCredentialsRequest, TableConfig,
-            cache::{CachedStc, GCS_STC_CACHE, STCCacheKey, get_or_load_stc},
+            cache::{CachedStc, CredentialCacheType, GCS_STC_CACHE, STCCacheKey, get_or_load_stc},
             error::{
                 CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
                 ValidationError,
@@ -389,27 +389,33 @@ impl GcsProfile {
         // Single-flight read-through: concurrent identical requests coalesce onto
         // one STS downscope (the most expensive miss in the system) per cache key.
         // The typed cache returns the `CachedSTSResponse` directly — no variant check.
-        let response = get_or_load_stc(&GCS_STC_CACHE, cache_key, || async {
-            let (source, project_id) = self.get_token_source(credential).await?;
-            let (token, source_expiry) = sts::downscope(source, &self.bucket, stc_request).await?;
+        let response = get_or_load_stc(
+            &GCS_STC_CACHE,
+            CredentialCacheType::ShortTermCredentials,
+            cache_key,
+            || async {
+                let (source, project_id) = self.get_token_source(credential).await?;
+                let (token, source_expiry) =
+                    sts::downscope(source, &self.bucket, stc_request).await?;
 
-            let now = SystemTime::now();
-            let expires_at_system_time =
-                downscoped_token_expiry(now, token.expires_in, source_expiry);
-            if expires_at_system_time.is_none() {
-                tracing::warn!("Unknown expiry for downscoped GCS token; not caching it");
-            }
-            let valid_until = expires_at_system_time
-                .and_then(|t| t.duration_since(now).ok())
-                .and_then(|d| Instant::now().checked_add(d));
+                let now = SystemTime::now();
+                let expires_at_system_time =
+                    downscoped_token_expiry(now, token.expires_in, source_expiry);
+                if expires_at_system_time.is_none() {
+                    tracing::warn!("Unknown expiry for downscoped GCS token; not caching it");
+                }
+                let valid_until = expires_at_system_time
+                    .and_then(|t| t.duration_since(now).ok())
+                    .and_then(|d| Instant::now().checked_add(d));
 
-            let token = CachedSTSResponse {
-                token,
-                project_id,
-                expires_at_system_time,
-            };
-            Ok::<_, TableConfigError>(CachedStc::new(token, valid_until))
-        })
+                let token = CachedSTSResponse {
+                    token,
+                    project_id,
+                    expires_at_system_time,
+                };
+                Ok::<_, TableConfigError>(CachedStc::new(token, valid_until))
+            },
+        )
         .await?;
 
         table_properties.insert(&gcs::Token(response.token.access_token));
