@@ -1466,6 +1466,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn uploads_keep_the_connect_timeout_and_connector_pool() {
+        let transfer = &*crate::s3::TRANSFER_TIMEOUT_CONFIG;
+        let default = &*crate::s3::TIMEOUT_CONFIG;
+        assert_eq!(transfer.connect_timeout(), default.connect_timeout());
+        assert_eq!(transfer.read_timeout(), default.read_timeout());
+        assert_eq!(
+            transfer.operation_attempt_timeout(),
+            Some(Duration::from_mins(15))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_delete_does_not_wait_for_the_delete_limit() {
+        let endpoint =
+            serve(axum::Router::new().fallback(|| async { axum::http::StatusCode::NO_CONTENT }))
+                .await;
+        let storage = storage_at(&endpoint).await;
+        let _held = DeleteLimit::of(&DeleteEndpoint::S3 {
+            scope: &storage.service_scope,
+            bucket: "single-delete",
+        })
+        .hold_all()
+        .await;
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            storage.delete("s3://single-delete/key"),
+        )
+        .await
+        .expect("a single delete waited for the bulk-delete limit")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn bulk_deletes_are_limited_per_service_of_the_endpoint() {
+        let storage = storage_at("http://127.0.0.1:1").await;
+        assert_eq!(storage.service_scope, "http://127.0.0.1:1");
+    }
+
     #[tokio::test]
     async fn a_bucket_without_a_policy_has_none() {
         let storage = storage_answering(

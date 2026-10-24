@@ -31,6 +31,16 @@ pub(crate) async fn delete_file(
     io.delete(location.as_str()).await.map_err(Into::into)
 }
 
+/// How long a request waits for its best-effort cleanup before it responds.
+const CLEANUP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Runs a best-effort `cleanup` and waits for it at most [`CLEANUP_WAIT`]. A cleanup that takes
+/// longer continues in the background, so a slow or retried delete does not decide the response.
+pub(crate) async fn cleanup_in_background(cleanup: impl Future<Output = ()> + Send + 'static) {
+    let cleanup = tracing::Instrument::in_current_span(cleanup);
+    let _ = tokio::time::timeout(CLEANUP_WAIT, tokio::spawn(cleanup)).await;
+}
+
 pub(crate) async fn read_file(
     io: &impl LakekeeperStorage,
     file: &Location,
@@ -180,10 +190,52 @@ impl From<IOErrorExt> for IcebergErrorResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
     use futures::StreamExt;
 
     use super::*;
     use crate::service::storage::{StorageCredential, StorageProfile};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_cleanup_finishes_after_the_request_stops_waiting() {
+        let done = Arc::new(AtomicBool::new(false));
+        let start = tokio::time::Instant::now();
+        cleanup_in_background({
+            let done = done.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                done.store(true, Ordering::SeqCst);
+            }
+        })
+        .await;
+
+        assert_eq!(start.elapsed(), CLEANUP_WAIT);
+        assert!(!done.load(Ordering::SeqCst));
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fast_cleanup_finishes_before_the_request_responds() {
+        let done = Arc::new(AtomicBool::new(false));
+        cleanup_in_background({
+            let done = done.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                done.store(true, Ordering::SeqCst);
+            }
+        })
+        .await;
+
+        assert!(done.load(Ordering::SeqCst));
+    }
 
     async fn test_list_and_remove_all(cred: StorageCredential, profile: StorageProfile) {
         async fn list_simple(io: &impl LakekeeperStorage, location: &Location) -> Vec<Location> {

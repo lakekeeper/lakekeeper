@@ -10,7 +10,7 @@ use azure_core::{
     headers::{ETAG, HeaderName},
     request_options::IfMatchCondition,
 };
-use azure_storage::CloudLocation;
+use azure_storage::{CloudLocation, clients::ServiceType};
 use azure_storage_datalake::{
     clients::PathClient as _,
     prelude::{
@@ -138,19 +138,23 @@ impl LakekeeperStorage for AdlsStorage {
         // Group paths by account and filesystem
         let grouped_paths = group_paths_by_container(paths)?;
 
-        // One account per storage: `get_filesystem_client` rejects paths of other accounts.
-        let limit = DeleteLimit::of(&DeleteEndpoint::Adls {
-            account: self.cloud_location.account(),
-        });
+        let endpoint = self
+            .cloud_location
+            .url(ServiceType::DataLake)
+            .map_err(|e| parse_error(e, self.cloud_location.account()))?;
         // Create futures for parallel deletion
         let mut delete_futures = Vec::new();
 
         // Create delete operations for each path
-        for ((_account, _filesystem), paths) in grouped_paths {
+        for ((_account, filesystem), paths) in grouped_paths {
             if paths.is_empty() {
                 continue; // Skip empty groups
             }
             let filesystem_client = self.get_filesystem_client(&paths[0])?;
+            let limit = DeleteLimit::of(&DeleteEndpoint::Adls {
+                endpoint: endpoint.as_str(),
+                filesystem: &filesystem,
+            });
 
             for path in paths {
                 let file_client = filesystem_client.get_file_client(path.blob_name());
@@ -1081,8 +1085,8 @@ mod tests {
     };
 
     /// Storage of account `account` whose endpoint answers every request with `200 OK` and
-    /// counts the requests.
-    async fn counted_storage(account: &str) -> (AdlsStorage, Arc<AtomicUsize>) {
+    /// counts the requests. Returns the endpoint's URL as well.
+    async fn counted_storage(account: &str) -> (AdlsStorage, String, Arc<AtomicUsize>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(AtomicUsize::new(0));
@@ -1097,7 +1101,7 @@ mod tests {
         let storage = AzureSettings::builder()
             .cloud_location(CloudLocation::Custom {
                 account: account.to_string(),
-                uri: endpoint,
+                uri: endpoint.clone(),
             })
             .build()
             .get_storage_client(&AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth {
@@ -1105,14 +1109,15 @@ mod tests {
             }))
             .await
             .unwrap();
-        (storage, requests)
+        (storage, format!("{endpoint}/"), requests)
     }
 
     #[tokio::test]
     async fn batch_delete_waits_for_the_delete_limit() {
-        let (storage, requests) = counted_storage("limitaccount").await;
+        let (storage, endpoint, requests) = counted_storage("limitaccount").await;
         let held = DeleteLimit::of(&DeleteEndpoint::Adls {
-            account: "limitaccount",
+            endpoint: &endpoint,
+            filesystem: "filesystem",
         })
         .hold_all()
         .await;
@@ -1129,6 +1134,25 @@ mod tests {
 
         drop(held);
         delete.await.unwrap().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn workspaces_of_one_endpoint_have_separate_delete_limits() {
+        let (storage, endpoint, requests) = counted_storage("onelake").await;
+        let _held = DeleteLimit::of(&DeleteEndpoint::Adls {
+            endpoint: &endpoint,
+            filesystem: "workspace-a",
+        })
+        .hold_all()
+        .await;
+
+        let paths = ["abfss://workspace-b@onelake.dfs.fabric.microsoft.com/lh/key".to_string()];
+        let delete = storage.delete_batch(&paths);
+        tokio::time::timeout(Duration::from_secs(5), delete)
+            .await
+            .expect("the delete waited for the limit of another workspace")
+            .unwrap();
         assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 }

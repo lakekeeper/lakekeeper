@@ -23,7 +23,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::{remove_all, write_file},
+        io::{cleanup_in_background, remove_all, write_file},
         require_warehouse_id,
         tables::{
             MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
@@ -339,19 +339,22 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     // Commit transaction
     t.commit().await?;
 
-    // Handle file cleanup after transaction is committed
     if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {
-        tracing::debug!("Deleting old view location at: '{before_update_view_location}'");
-        let _ = remove_all(&file_io, before_update_view_location)
-            .await
-            .inspect(|()| {
-                tracing::debug!("Deleted old view location {before_update_view_location}");
-            })
-            .inspect_err(|e| {
-                tracing::error!(
-                    "Failed to delete old view location '{before_update_view_location}': {e:?}"
-                );
-            });
+        let before_update_view_location = before_update_view_location.clone();
+        cleanup_in_background(async move {
+            tracing::debug!("Deleting old view location at: '{before_update_view_location}'");
+            let _ = remove_all(&file_io, &before_update_view_location)
+                .await
+                .inspect(|()| {
+                    tracing::debug!("Deleted old view location {before_update_view_location}");
+                })
+                .inspect_err(|e| {
+                    tracing::error!(
+                        "Failed to delete old view location '{before_update_view_location}': {e:?}"
+                    );
+                });
+        })
+        .await;
     }
 
     Ok((

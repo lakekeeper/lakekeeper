@@ -4,8 +4,8 @@
 //! for example a table purge and a cleanup of orphan files, add up. Storage services throttle
 //! above a request rate per bucket or account, and every request needs a connection. All bulk
 //! deletes of the process therefore share one limit per storage endpoint. Single deletes take
-//! no permit, so a request that waits for one, such as a table commit, never queues behind a
-//! bulk delete.
+//! no permit, so a request that waits for one, such as a table commit, does not queue for the
+//! limit. On S3 and GCS, `remove_all` lists the files and deletes them as a bulk delete.
 
 use std::{
     collections::HashMap,
@@ -21,7 +21,7 @@ pub(crate) const S3_DELETE_REQUESTS: usize = 4;
 /// Concurrent deletes per GCS bucket. A new bucket accepts about 1,000 writes per second.
 #[cfg(feature = "storage-gcs")]
 const GCS_DELETE_REQUESTS: usize = 32;
-/// Concurrent deletes per ADLS account. Each holds one connection.
+/// Concurrent deletes per ADLS filesystem. Each holds one connection.
 #[cfg(feature = "storage-adls")]
 const ADLS_DELETE_REQUESTS: usize = 64;
 
@@ -39,8 +39,13 @@ pub(crate) enum DeleteEndpoint<'a> {
     S3 { scope: &'a str, bucket: &'a str },
     #[cfg(feature = "storage-gcs")]
     Gcs { bucket: &'a str },
+    /// A filesystem of an ADLS endpoint. On `OneLake`, a filesystem is a workspace: all
+    /// workspaces share one endpoint.
     #[cfg(feature = "storage-adls")]
-    Adls { account: &'a str },
+    Adls {
+        endpoint: &'a str,
+        filesystem: &'a str,
+    },
 }
 
 impl DeleteEndpoint<'_> {
@@ -51,7 +56,10 @@ impl DeleteEndpoint<'_> {
             #[cfg(feature = "storage-gcs")]
             DeleteEndpoint::Gcs { bucket } => format!("gcs:{bucket}"),
             #[cfg(feature = "storage-adls")]
-            DeleteEndpoint::Adls { account } => format!("adls:{account}"),
+            DeleteEndpoint::Adls {
+                endpoint,
+                filesystem,
+            } => format!("adls:{endpoint}:{filesystem}"),
         }
     }
 
@@ -139,14 +147,16 @@ mod tests {
     #[test]
     fn dropped_limits_leave_the_registry() {
         drop(DeleteLimit::of(&DeleteEndpoint::Adls {
-            account: "limit-dropped",
+            endpoint: "https://limit.dfs.core.windows.net/",
+            filesystem: "dropped",
         }));
         let _other = DeleteLimit::of(&DeleteEndpoint::Adls {
-            account: "limit-other",
+            endpoint: "https://limit.dfs.core.windows.net/",
+            filesystem: "other",
         });
         let limits = LIMITS.lock().unwrap_or_else(PoisonError::into_inner);
-        assert!(!limits.contains_key("adls:limit-dropped"));
-        assert!(limits.contains_key("adls:limit-other"));
+        assert!(!limits.contains_key("adls:https://limit.dfs.core.windows.net/:dropped"));
+        assert!(limits.contains_key("adls:https://limit.dfs.core.windows.net/:other"));
     }
 
     #[cfg(feature = "storage-s3")]

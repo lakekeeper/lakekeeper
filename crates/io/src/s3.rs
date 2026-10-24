@@ -84,6 +84,8 @@ static TIMEOUT_CONFIG: LazyLock<TimeoutConfig> = LazyLock::new(|| {
         .operation_attempt_timeout(ATTEMPT_TIMEOUT)
         .build()
 });
+// A config override replaces the whole `TimeoutConfig`, so uploads repeat the connect timeout:
+// they keep its limit and the connector pool of all other requests.
 static TRANSFER_TIMEOUT_CONFIG: LazyLock<TimeoutConfig> = LazyLock::new(|| {
     TimeoutConfig::builder()
         .connect_timeout(crate::CONNECT_TIMEOUT)
