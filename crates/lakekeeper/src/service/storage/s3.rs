@@ -1268,10 +1268,11 @@ impl S3Profile {
             key,
             || async {
                 let identity = self.load_signing_identity(s3_auth.as_ref()).await?;
-                let valid_until = identity
-                    .expiration()
-                    .and_then(|expiration| expiration.duration_since(SystemTime::now()).ok())
-                    .and_then(|valid_for| Instant::now().checked_add(valid_for));
+                let valid_until = signing_identity_valid_until(
+                    identity.expiration(),
+                    SystemTime::now(),
+                    Instant::now(),
+                );
                 Ok::<_, ErrorModel>(CachedStc::new(identity, valid_until))
             },
         )
@@ -1663,6 +1664,27 @@ fn escape_iam_glob_literal(value: &str) -> String {
     }
     out
 }
+
+/// Until when the cache treats a signing identity as valid. Static keys of the system identity,
+/// for example from the environment, carry no expiry and count as valid for
+/// [`STATIC_SIGNING_IDENTITY_VALIDITY`], so the cache serves them for half of it and picks up a
+/// rotated key within that time.
+fn signing_identity_valid_until(
+    expiration: Option<SystemTime>,
+    system_now: SystemTime,
+    now: Instant,
+) -> Option<Instant> {
+    match expiration {
+        Some(expiration) => expiration
+            .duration_since(system_now)
+            .ok()
+            .and_then(|valid_for| now.checked_add(valid_for)),
+        None => now.checked_add(STATIC_SIGNING_IDENTITY_VALIDITY),
+    }
+}
+
+/// Validity the cache assumes for a signing identity without an expiry.
+const STATIC_SIGNING_IDENTITY_VALIDITY: Duration = Duration::from_mins(10);
 
 fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
     S3Settings {
@@ -2917,13 +2939,48 @@ pub(crate) mod test {
         let credential = access_key("external-id-1");
 
         for _ in 0..3 {
-            profile
+            let identity = profile
                 .get_signing_identity(Some(&credential))
                 .await
                 .unwrap();
+            let credentials = identity
+                .data::<aws_credential_types::Credentials>()
+                .unwrap();
+            assert_eq!(credentials.access_key_id(), "test-access-key");
         }
 
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn signing_identities_are_cached_until_their_expiry() {
+        let now = Instant::now();
+        let system_now = SystemTime::now();
+        assert_eq!(
+            signing_identity_valid_until(
+                Some(system_now + Duration::from_hours(1)),
+                system_now,
+                now
+            ),
+            Some(now + Duration::from_hours(1))
+        );
+        assert_eq!(
+            signing_identity_valid_until(
+                Some(system_now - Duration::from_secs(1)),
+                system_now,
+                now
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn static_signing_identities_are_cached_for_ten_minutes() {
+        let now = Instant::now();
+        assert_eq!(
+            signing_identity_valid_until(None, SystemTime::now(), now),
+            Some(now + Duration::from_mins(10))
+        );
     }
 
     #[tokio::test]

@@ -27,7 +27,7 @@ Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs
 
 ### Cache Metrics
 
-Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Ancestors, and Users. All caches share three metric names, differentiated by the `cache_type` label:
+Lakekeeper maintains in-memory caches for Short-Term Credentials, S3 Signing Identities, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Ancestors, and Users. All caches share three metric names, differentiated by the `cache_type` label:
 
 | Metric                                                             | Type    | Labels       | Description |
 |--------------------------------------------------------------------|---------|--------------|-----|
