@@ -40,7 +40,10 @@ use crate::{
     service::{
         Actor, ArcRoleIdent, UserId,
         authn::InternalActor,
-        events::backends::audit::{AuditOperation, AuditOutcome},
+        events::{
+            EventDispatcher,
+            backends::audit::{AuditOperation, AuditOutcome},
+        },
     },
 };
 
@@ -367,15 +370,25 @@ pub struct AdmissionContext<'a> {
     /// Who triggered the evaluation, for audit records and logs. Not an input
     /// to the decision.
     pub triggered_by: AdmissionTrigger<'a>,
+    /// Where a gate dispatches the operation records it writes about its own
+    /// enforcement, with [`OperationRecord::dispatch`](crate::audit::OperationRecord::dispatch).
+    /// Not an input to the decision.
+    pub events: &'a EventDispatcher,
 }
 
 impl<'a> AdmissionContext<'a> {
-    /// Evaluate admission of `user_id`, attributed to `triggered_by`.
+    /// Evaluate admission of `user_id`, attributed to `triggered_by`, with operation records
+    /// dispatched to `events`.
     #[must_use]
-    pub fn new(user_id: &'a UserId, triggered_by: AdmissionTrigger<'a>) -> Self {
+    pub fn new(
+        user_id: &'a UserId,
+        triggered_by: AdmissionTrigger<'a>,
+        events: &'a EventDispatcher,
+    ) -> Self {
         Self {
             user_id,
             triggered_by,
+            events,
         }
     }
 }
@@ -513,7 +526,7 @@ impl AdmissionGates {
                     // `AdmissionRejection::into_error` decides, per kind, whether
                     // the generic error-response line is suppressed.
                     //
-                    // Gated here as well as inside `emit()`: the context is
+                    // Gated here as well as inside `dispatch()`: the context is
                     // serialized when attached, so asking first makes a rejection
                     // free when the audit trail is off.
                     if crate::audit::enabled() {
@@ -531,7 +544,8 @@ impl AdmissionGates {
                             error_id: rejection.error_id.to_string(),
                         })
                         .message("Request rejected by admission gate")
-                        .emit();
+                        .dispatch(ctx.events)
+                        .await;
                     }
                     // A gate failing closed is an outage of a dependency, not a
                     // decision about the caller, so it needs a level that
@@ -696,9 +710,16 @@ mod tests {
     static TEST_USER: LazyLock<UserId> =
         LazyLock::new(|| UserId::new_unchecked("oidc", "test-user-one"));
 
+    /// A dispatcher holding the audit listener, so a rejection record reaches the log.
+    static TEST_EVENTS: LazyLock<EventDispatcher> = LazyLock::new(|| {
+        EventDispatcher::new(vec![Arc::new(
+            crate::service::events::backends::audit::AuditEventListener::new(),
+        )])
+    });
+
     /// Admission of the test user, triggered by `md`'s request.
     fn context_for(md: &RequestMetadata) -> AdmissionContext<'_> {
-        AdmissionContext::new(&TEST_USER, AdmissionTrigger::from_request(md))
+        AdmissionContext::new(&TEST_USER, AdmissionTrigger::from_request(md), &TEST_EVENTS)
     }
 
     /// A gate scoped to principals it does not cover: it adjudicates nothing.
@@ -870,7 +891,7 @@ mod tests {
 
         let lines = capture_json(|| {
             futures::executor::block_on(gates(vec![Arc::new(DenyGate)]).admit(
-                AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md)),
+                AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md), &TEST_EVENTS),
             ))
             .expect_err("gate rejects");
         });
@@ -901,7 +922,7 @@ mod tests {
         let project_id = assumed_role.project_id().to_string();
         let rendered = format!(
             "{:?}",
-            AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md))
+            AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md), &TEST_EVENTS)
         );
         assert!(!rendered.contains(&project_id), "{rendered}");
         assert!(rendered.contains("Role"), "{rendered}");

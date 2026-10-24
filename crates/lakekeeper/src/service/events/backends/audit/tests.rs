@@ -1437,11 +1437,13 @@ fn emit_admission_rejection(
 ) -> serde_json::Value {
     let metadata = fixture_admission_metadata(actor);
     let user_id = metadata.user_id().expect("the fixture actor is a user");
+    let dispatcher = EventDispatcher::new(vec![Arc::new(AuditEventListener::new())]);
     let records = emit_and_capture(|| async {
         AdmissionGates::new(vec![Arc::new(FixtureGate { rejection })])
             .admit(AdmissionContext::new(
                 user_id,
                 AdmissionTrigger::from_request(&metadata),
+                &dispatcher,
             ))
             .await
             .expect_err("the fixture gate rejects");
@@ -1459,6 +1461,43 @@ fn emit_admission_rejection(
         "expected exactly one audit record from the admission path: {audit:#?}"
     );
     contract_fields(audit.pop().expect("length asserted above"))
+}
+
+/// A rejection reaches a listener other than the audit listener, naming the request that was
+/// refused.
+#[test]
+fn an_admission_rejection_reaches_every_listener() {
+    let capture = Arc::new(CapturingListener::default());
+    let dispatcher = EventDispatcher::new(vec![capture.clone()]);
+    let metadata = fixture_admission_metadata(Actor::Principal(
+        UserId::try_from("oidc~alice").expect("valid test user id"),
+    ));
+    let user_id = metadata.user_id().expect("the fixture actor is a user");
+
+    emit_and_capture(|| async {
+        AdmissionGates::new(vec![Arc::new(FixtureGate {
+            rejection: || AdmissionRejection::forbidden("Not admitted", "ExternalEnforceForbidden"),
+        })])
+        .admit(AdmissionContext::new(
+            user_id,
+            AdmissionTrigger::from_request(&metadata),
+            &dispatcher,
+        ))
+        .await
+        .expect_err("the fixture gate rejects");
+        Ok(())
+    });
+
+    let operations = capture.operations.lock().expect("capture poisoned");
+    let [event] = operations.as_slice() else {
+        panic!("expected exactly one operation record, got {operations:?}");
+    };
+    assert_eq!(event.record.operation, "admission_decided");
+    assert_eq!(event.record.outcome, "forbidden");
+    assert_eq!(
+        event.record.request_id.as_ref().map(ToString::to_string),
+        Some(FIXTURE_REQUEST_ID.to_string())
+    );
 }
 
 /// An authoritative denial, for a caller acting through an assumed role.
