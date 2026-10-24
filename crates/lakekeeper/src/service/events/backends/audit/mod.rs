@@ -38,7 +38,7 @@ use crate::{
         authz::UserOrRoleId,
         events::{
             AuthorizationFailedEvent, AuthorizationSucceededEvent, EventCatalog, EventListener,
-            GrantsChangedEvent, IdempotentReplayEvent,
+            GrantsChangedEvent, IdempotentReplayEvent, OperationRecordedEvent,
         },
     },
 };
@@ -365,6 +365,15 @@ impl EventListener for AuditEventListener {
         let named = assemble::NamedPrincipals::of(&event.actions, &[]);
         let enrichment = self.enrichment(&event.request_metadata, &named).await;
         assemble::replay(&event, &enrichment).emit("Idempotent replay served");
+        Ok(())
+    }
+
+    /// An operation record, written as it was built: it needs no enrichment.
+    async fn operation_recorded(&self, event: OperationRecordedEvent) -> anyhow::Result<()> {
+        if !enabled() {
+            return Ok(());
+        }
+        shapes::write_operation_record(event);
         Ok(())
     }
 }

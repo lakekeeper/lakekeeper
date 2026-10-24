@@ -26,7 +26,10 @@ use crate::{
     request_metadata::{PrivilegeSource, RequestId, RequestMetadata},
     service::{
         admission::AdmissionTrigger,
-        events::{AuthorizationFailureReason, OperationRecordData, OperationRecordedEvent},
+        events::{
+            AuthorizationFailureReason, EventDispatcher, OperationRecordData,
+            OperationRecordedEvent,
+        },
     },
 };
 
@@ -213,6 +216,18 @@ impl<E: AuditEmitter> OperationRecord<E> {
     /// Write the record.
     pub fn emit(self) {
         write_operation_record(self.into_event());
+    }
+
+    /// Hand the record to every listener of `events`, the audit listener among them, which
+    /// writes it to the log.
+    ///
+    /// Does nothing while the audit trail is disabled (see [`crate::audit::enabled`]). Await
+    /// it, or spawn it to keep the listeners off the caller's path.
+    pub async fn dispatch(self, events: &EventDispatcher) {
+        if !crate::audit::enabled() {
+            return;
+        }
+        events.operation_recorded(self.into_event()).await;
     }
 
     /// The record with its emitter and vocabulary types erased, stamped with `E`.

@@ -24,7 +24,7 @@ use crate::{
             SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
         },
         events::{
-            Authorization,
+            Authorization, EventDispatcher,
             context::{
                 APIEventActions as _, EntityDescriptor, EntityType, EventEntities,
                 FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
@@ -1556,8 +1556,8 @@ fn the_capture_helper_omits_envelope_keys_production_omits() {
 
 /// The context-free form of an operation record.
 ///
-/// Nothing in this repository emits an operation record without context, so this covers
-/// the `None` path of `OperationRecord::emit`, and pins that the field is omitted, not
+/// Nothing in this repository dispatches an operation record without context, so this covers
+/// the `None` path through the audit listener, and pins that the field is omitted, not
 /// written as null.
 #[test]
 fn an_operational_audit_record_without_context_omits_the_context_key() {
@@ -1579,6 +1579,7 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
     let user_id =
         crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id");
 
+    let dispatcher = EventDispatcher::new(vec![Arc::new(AuditEventListener::new())]);
     let record = emit_and_capture_one(|| async {
         crate::audit::OperationRecord::new(
             OperationProbe::ProbeOperation.as_wire(),
@@ -1588,7 +1589,8 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
             OutcomeProbe::Success.as_wire(),
         )
         .message("probe")
-        .emit();
+        .dispatch(&dispatcher)
+        .await;
         Ok(())
     });
 
@@ -1605,6 +1607,84 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
     );
     assert_eq!(record["actor"]["principal"], "oidc~alice");
     assert_eq!(record["outcome"], "success");
+}
+
+/// A listener other than the audit listener, as an extension that forwards the audit trail
+/// registers one. Keeps every operation record it receives.
+#[derive(Debug, Default)]
+struct CapturingListener {
+    operations: Mutex<Vec<OperationRecordedEvent>>,
+}
+
+impl Display for CapturingListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CapturingListener")
+    }
+}
+
+#[async_trait::async_trait]
+impl EventListener for CapturingListener {
+    async fn operation_recorded(&self, event: OperationRecordedEvent) -> anyhow::Result<()> {
+        self.operations
+            .lock()
+            .expect("capture poisoned")
+            .push(event);
+        Ok(())
+    }
+}
+
+/// An operation record built without a request, as background work such as a role sync
+/// writes one.
+fn record_without_request() -> OperationRecord<crate::Lakekeeper> {
+    let user_id = UserId::try_from("oidc~alice").expect("valid test user id");
+    OperationRecord::new(
+        AuditOperation::AdmissionDecided.as_wire(),
+        RecordOrigin::without_request(ActorRecord::principal(&user_id)),
+        AuditOutcome::Forbidden.as_wire(),
+    )
+}
+
+/// A dispatched operation record reaches a listener other than the audit listener, with the
+/// record's own operation and outcome, and without a request id when no request triggered it.
+#[test]
+fn a_dispatched_operation_record_reaches_every_listener() {
+    let capture = Arc::new(CapturingListener::default());
+    let dispatcher = EventDispatcher::new(vec![capture.clone()]);
+
+    emit_and_capture(|| async {
+        record_without_request().dispatch(&dispatcher).await;
+        Ok(())
+    });
+
+    let operations = capture.operations.lock().expect("capture poisoned");
+    let [event] = operations.as_slice() else {
+        panic!("expected exactly one operation record, got {operations:?}");
+    };
+    assert_eq!(event.record.operation, "admission_decided");
+    assert_eq!(event.record.outcome, "forbidden");
+    assert_eq!(event.record.request_id, None);
+}
+
+/// With the audit trail off, no listener receives an operation record: a subscriber that
+/// does not record the audit target turns it off as the configuration switch does.
+#[test]
+fn no_listener_is_called_while_the_audit_trail_is_off() {
+    let capture = Arc::new(CapturingListener::default());
+    let dispatcher = EventDispatcher::new(vec![capture.clone()]);
+    let subscriber = crate::audit::log_format(false)
+        .with_env_filter(format!("info,{AUDIT_TARGET}=off"))
+        .with_writer(CapturedLogs::default())
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, || {
+        futures::executor::block_on(record_without_request().dispatch(&dispatcher));
+    });
+
+    let operations = capture.operations.lock().expect("capture poisoned");
+    assert!(
+        operations.is_empty(),
+        "a listener received an operation record while the audit trail was off: {operations:?}"
+    );
 }
 
 /// The document validates a whole record from its root, so a consumer can point a stock
