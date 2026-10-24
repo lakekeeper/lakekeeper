@@ -44,8 +44,9 @@ aws-lc-rs = "1"
 # `rustls` feature is excluded because it pulls in the legacy hyper-rustls 0.24 /
 # rustls 0.21 / rustls-webpki 0.101 stack (RUSTSEC-2026-0098). `default-https-client`
 # (also a default feature) provides the modern rustls 0.23 / hyper-rustls 0.27 path.
+# `sigv4a` is excluded: it serves only Multi-Region Access Points (unsupported here) and
+# pulls in crypto-bigint 0.5 (RUSTSEC-2026-0387).
 aws-sdk-s3 = { version = "1.121", default-features = false, features = [
-    "sigv4a",
     "http-1x",
     "default-https-client",
     "rt-tokio",
