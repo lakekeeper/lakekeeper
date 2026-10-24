@@ -265,7 +265,7 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
         ),
     ] {
         for spec in specs {
-            OperationRecord::new(
+            let record = OperationRecord::new(
                 operation.as_wire(),
                 RecordOrigin::of_request(&event.request_metadata, actor()),
                 AuditOutcome::Success.as_wire(),
@@ -276,7 +276,8 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
                 &spec.resource,
             ))
             .message(message)
-            .emit();
+            .into_event();
+            shapes::write_operation_record(record);
         }
     }
 }
