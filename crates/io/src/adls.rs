@@ -4,7 +4,7 @@ use std::{
 };
 
 use azure_core::{
-    FixedRetryOptions, RetryOptions, TransportOptions,
+    ExponentialRetryOptions, RetryOptions, TransportOptions,
     auth::{AccessToken, TokenCredential},
 };
 use azure_identity::{
@@ -71,7 +71,17 @@ static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
 /// single slow connect expires the policy before any retry happens. The retry
 /// clock starts after the first attempt completes, so this budget covers the
 /// retries, not the initial request.
-const RETRY_MAX_TOTAL_ELAPSED: Duration = Duration::from_secs(30);
+const RETRY_MAX_TOTAL_ELAPSED: Duration = Duration::from_mins(1);
+/// Retries of a request. The waits double from about 0.4 s to 12.8 s (initial delay 200 ms,
+/// at most 30 s), so a throttled account gets time to recover; a `Retry-After` from the
+/// service extends a wait. Retries stop once [`RETRY_MAX_TOTAL_ELAPSED`] has passed, so a
+/// request that timed out after [`READ_TIMEOUT`] is retried at most once.
+const MAX_RETRIES: u32 = 6;
+/// Limit for the time from sending a request until its response starts, and for each pause
+/// while reading the response. A large read can take longer in total. The limit includes
+/// sending the request body: a large write sends up to 10 appends of 4 megabytes at once,
+/// which needs about 140 kilobytes per second in total.
+const READ_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Shared options for every ADLS client. `ClientOptions` carries the transport,
 /// and the SDK builders' `client_options()` replaces the whole struct, so the
@@ -79,9 +89,9 @@ const RETRY_MAX_TOTAL_ELAPSED: Duration = Duration::from_secs(30);
 /// and its connection pool — in effect for the storage data plane.
 static DEFAULT_CLIENT_OPTIONS: LazyLock<azure_core::ClientOptions> = LazyLock::new(|| {
     azure_core::ClientOptions::default()
-        .retry(RetryOptions::fixed(
-            FixedRetryOptions::default()
-                .max_retries(3u32)
+        .retry(RetryOptions::exponential(
+            ExponentialRetryOptions::default()
+                .max_retries(MAX_RETRIES)
                 .max_total_elapsed(RETRY_MAX_TOTAL_ELAPSED),
         ))
         .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
@@ -90,6 +100,7 @@ static DEFAULT_CLIENT_OPTIONS: LazyLock<azure_core::ClientOptions> = LazyLock::n
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .connect_timeout(crate::CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
         .build()
         // Only fails if the TLS backend or system DNS config can't be
         // initialized — i.e. the environment is fundamentally broken. The

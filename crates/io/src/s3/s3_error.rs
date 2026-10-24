@@ -13,7 +13,28 @@ use aws_sdk_s3::{
 
 use crate::{ErrorKind, IOError};
 
+/// Kind of an error without a service error: a timed out attempt, a failed connection or an
+/// unreadable response. `None` for every other error; its kind comes from the service error.
+fn transport_error_kind<E, R>(err: &SdkError<E, R>) -> Option<ErrorKind> {
+    match err {
+        SdkError::TimeoutError(_) => Some(ErrorKind::RequestTimeout),
+        SdkError::DispatchFailure(failure) if failure.is_timeout() => {
+            Some(ErrorKind::RequestTimeout)
+        }
+        SdkError::DispatchFailure(failure)
+            if failure.is_io()
+                || failure.as_other()
+                    == Some(aws_smithy_types::retry::ErrorKind::TransientError) =>
+        {
+            Some(ErrorKind::ServiceUnavailable)
+        }
+        SdkError::ResponseError(_) => Some(ErrorKind::ServiceUnavailable),
+        _ => None,
+    }
+}
+
 pub(crate) fn parse_delete_error(err: SdkError<DeleteObjectError>, location: &str) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     let lakekeeper_kind = e
@@ -27,10 +48,16 @@ pub(crate) fn parse_delete_error(err: SdkError<DeleteObjectError>, location: &st
         |m| format!("S3 deletion failed: {m}"),
     );
 
-    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+    IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        location.to_string(),
+    )
+    .set_source(e)
 }
 
 pub(crate) fn parse_batch_delete_error(err: SdkError<DeleteObjectsError>) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     let lakekeeper_kind = e
@@ -44,10 +71,11 @@ pub(crate) fn parse_batch_delete_error(err: SdkError<DeleteObjectsError>) -> IOE
         |m| format!("S3 batch deletion failed: {m}"),
     );
 
-    IOError::new_without_location(lakekeeper_kind, msg).set_source(e)
+    IOError::new_without_location(transport_kind.unwrap_or(lakekeeper_kind), msg).set_source(e)
 }
 
 pub(crate) fn parse_put_object_error(err: SdkError<PutObjectError>, location: &str) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     let lakekeeper_kind = match e {
@@ -68,13 +96,19 @@ pub(crate) fn parse_put_object_error(err: SdkError<PutObjectError>, location: &s
         |m| format!("S3 write failed: {m}"),
     );
 
-    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+    IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        location.to_string(),
+    )
+    .set_source(e)
 }
 
 pub(crate) fn parse_create_multipart_upload_error(
     err: SdkError<CreateMultipartUploadError>,
     location: &str,
 ) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     let lakekeeper_kind = e
@@ -88,10 +122,16 @@ pub(crate) fn parse_create_multipart_upload_error(
         |m| format!("S3 create multipart upload failed: {m}"),
     );
 
-    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+    IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        location.to_string(),
+    )
+    .set_source(e)
 }
 
 pub(crate) fn parse_upload_part_error(err: SdkError<UploadPartError>, location: &str) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     let lakekeeper_kind = e
@@ -105,13 +145,19 @@ pub(crate) fn parse_upload_part_error(err: SdkError<UploadPartError>, location: 
         |m| format!("S3 upload part failed: {m}"),
     );
 
-    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+    IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        location.to_string(),
+    )
+    .set_source(e)
 }
 
 pub(crate) fn parse_complete_multipart_upload_error(
     err: SdkError<CompleteMultipartUploadError>,
     location: &str,
 ) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     let lakekeeper_kind = e
@@ -125,13 +171,19 @@ pub(crate) fn parse_complete_multipart_upload_error(
         |m| format!("S3 complete multipart upload failed: {m}"),
     );
 
-    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+    IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        location.to_string(),
+    )
+    .set_source(e)
 }
 
 pub(crate) fn parse_get_object_error(
     err: SdkError<aws_sdk_s3::operation::get_object::GetObjectError>,
     location: &str,
 ) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     let lakekeeper_kind = match &e {
@@ -148,13 +200,19 @@ pub(crate) fn parse_get_object_error(
         |m| format!("S3 get failed: {m}"),
     );
 
-    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+    IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        location.to_string(),
+    )
+    .set_source(e)
 }
 
 pub(crate) fn parse_head_object_error(
     err: SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>,
     location: &str,
 ) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     // `HeadObjectError::NotFound` is a typed variant. S3 HEAD responses
@@ -174,13 +232,19 @@ pub(crate) fn parse_head_object_error(
         |m| format!("S3 head failed: {m}"),
     );
 
-    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+    IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        location.to_string(),
+    )
+    .set_source(e)
 }
 
 pub(crate) fn parse_list_objects_v2_error(
     err: SdkError<ListObjectsV2Error>,
     location: &str,
 ) -> IOError {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
 
     let lakekeeper_kind = e
@@ -194,7 +258,12 @@ pub(crate) fn parse_list_objects_v2_error(
         |m| format!("S3 list failed: {m}"),
     );
 
-    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+    IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        location.to_string(),
+    )
+    .set_source(e)
 }
 
 /// `Ok(None)` when the bucket has no policy, the error otherwise.
@@ -202,6 +271,7 @@ pub(crate) fn parse_get_bucket_policy_error(
     err: SdkError<GetBucketPolicyError>,
     bucket: &str,
 ) -> Result<Option<String>, IOError> {
+    let transport_kind = transport_error_kind(&err);
     let e = err.into_service_error();
     let code = e.meta().code();
     if code == Some("NoSuchBucketPolicy") {
@@ -217,7 +287,12 @@ pub(crate) fn parse_get_bucket_policy_error(
         |m| format!("S3 get bucket policy failed: {m}"),
     );
 
-    Err(IOError::new(lakekeeper_kind, msg, format!("s3://{bucket}")).set_source(e))
+    Err(IOError::new(
+        transport_kind.unwrap_or(lakekeeper_kind),
+        msg,
+        format!("s3://{bucket}"),
+    )
+    .set_source(e))
 }
 
 pub(crate) fn parse_aws_sdk_error(err: &aws_sdk_s3::types::Error, location: &str) -> IOError {
@@ -282,6 +357,8 @@ impl S3ErrorCode {
 mod tests {
     use std::str::FromStr;
 
+    use aws_smithy_runtime_api::client::result::ConnectorError;
+
     use super::*;
 
     #[test]
@@ -308,5 +385,50 @@ mod tests {
         for code in error_codes {
             assert!(S3ErrorCode::from_str(code).is_ok());
         }
+    }
+
+    #[test]
+    fn attempt_timeout_is_a_request_timeout() {
+        let err = parse_delete_error(SdkError::timeout_error("attempt timed out"), "s3://b/k");
+        assert_eq!(err.kind(), ErrorKind::RequestTimeout);
+    }
+
+    #[test]
+    fn connection_resets_are_service_unavailable() {
+        let err = parse_batch_delete_error(SdkError::dispatch_failure(ConnectorError::io(
+            "connection reset".into(),
+        )));
+        assert_eq!(err.kind(), ErrorKind::ServiceUnavailable);
+    }
+
+    #[test]
+    fn connect_timeouts_are_request_timeouts() {
+        let err = parse_list_objects_v2_error(
+            SdkError::dispatch_failure(ConnectorError::timeout("connect timed out".into())),
+            "s3://b/",
+        );
+        assert_eq!(err.kind(), ErrorKind::RequestTimeout);
+    }
+
+    #[test]
+    fn connections_closed_during_a_response_are_service_unavailable() {
+        let err = parse_delete_error(
+            SdkError::dispatch_failure(ConnectorError::other(
+                "connection closed before message completed".into(),
+                Some(aws_smithy_types::retry::ErrorKind::TransientError),
+            )),
+            "s3://b/k",
+        );
+        assert_eq!(err.kind(), ErrorKind::ServiceUnavailable);
+    }
+
+    #[test]
+    fn unreadable_responses_are_service_unavailable() {
+        let response = aws_smithy_runtime_api::http::Response::new(
+            200.try_into().unwrap(),
+            aws_smithy_types::body::SdkBody::empty(),
+        );
+        let err = parse_batch_delete_error(SdkError::response_error("body read failed", response));
+        assert_eq!(err.kind(), ErrorKind::ServiceUnavailable);
     }
 }

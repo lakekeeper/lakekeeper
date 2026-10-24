@@ -27,6 +27,7 @@ use crate::{
     LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError,
     RemoveEmptyDirectoryOutcome, WriteError,
     adls::{AdlsLocation, adls_error::parse_error},
+    delete_limit::{DeleteEndpoint, DeleteLimit},
     delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
 };
 
@@ -137,6 +138,10 @@ impl LakekeeperStorage for AdlsStorage {
         // Group paths by account and filesystem
         let grouped_paths = group_paths_by_container(paths)?;
 
+        // One account per storage: `get_filesystem_client` rejects paths of other accounts.
+        let limit = DeleteLimit::of(&DeleteEndpoint::Adls {
+            account: self.cloud_location.account(),
+        });
         // Create futures for parallel deletion
         let mut delete_futures = Vec::new();
 
@@ -151,17 +156,23 @@ impl LakekeeperStorage for AdlsStorage {
                 let file_client = filesystem_client.get_file_client(path.blob_name());
                 let mut deletion_stream = file_client.delete().into_stream();
 
+                let limit = limit.clone();
                 let future = async move {
-                    let mut last_err = None;
-                    while let Some(result) = deletion_stream.next().await {
-                        let result = result
-                            .map_err(|e| parse_error(e, path.location().as_str()))
-                            .map(|_| ());
-                        let result = delete_not_found_is_ok(result);
-                        if let Err(e) = result {
-                            last_err = Some(e);
-                        }
-                    }
+                    let last_err = limit
+                        .run(async {
+                            let mut last_err = None;
+                            while let Some(result) = deletion_stream.next().await {
+                                let result = result
+                                    .map_err(|e| parse_error(e, path.location().as_str()))
+                                    .map(|_| ());
+                                let result = delete_not_found_is_ok(result);
+                                if let Err(e) = result {
+                                    last_err = Some(e);
+                                }
+                            }
+                            last_err
+                        })
+                        .await;
 
                     if let Some(e) = last_err {
                         Ok::<(AdlsLocation, Option<IOError>), DeleteBatchError>((path, Some(e)))
@@ -1056,5 +1067,68 @@ impl Drop for AdlsFileWrite {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, atomic::AtomicUsize};
+
+    use super::*;
+    use crate::{
+        adls::{AzureAuth, AzureSettings, AzureSharedAccessKeyAuth},
+        delete_limit::{DeleteEndpoint, DeleteLimit},
+    };
+
+    /// Storage of account `account` whose endpoint answers every request with `200 OK` and
+    /// counts the requests.
+    async fn counted_storage(account: &str) -> (AdlsStorage, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new().fallback({
+            let requests = requests.clone();
+            move || {
+                requests.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(axum::http::StatusCode::OK)
+            }
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let storage = AzureSettings::builder()
+            .cloud_location(CloudLocation::Custom {
+                account: account.to_string(),
+                uri: endpoint,
+            })
+            .build()
+            .get_storage_client(&AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth {
+                key: "dGVzdC1zaGFyZWQta2V5".to_string(),
+            }))
+            .await
+            .unwrap();
+        (storage, requests)
+    }
+
+    #[tokio::test]
+    async fn batch_delete_waits_for_the_delete_limit() {
+        let (storage, requests) = counted_storage("limitaccount").await;
+        let held = DeleteLimit::of(&DeleteEndpoint::Adls {
+            account: "limitaccount",
+        })
+        .hold_all()
+        .await;
+
+        let delete = tokio::spawn(async move {
+            storage
+                .delete_batch(&[
+                    "abfss://filesystem@limitaccount.dfs.core.windows.net/key".to_string()
+                ])
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+        drop(held);
+        delete.await.unwrap().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 }

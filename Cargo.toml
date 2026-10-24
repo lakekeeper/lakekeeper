@@ -68,6 +68,8 @@ azure_core = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev
     "hmac_rust",
     "enable_reqwest",
     "enable_reqwest_rustls",
+    # Retry waits sleep on tokio; without it, each wait spawns an OS thread.
+    "tokio-sleep",
 ] }
 azure_identity = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
     "enable_reqwest",

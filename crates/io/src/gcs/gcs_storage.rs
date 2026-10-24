@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     str::FromStr,
     sync::{
         Arc,
@@ -23,6 +24,7 @@ use google_cloud_storage::{
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
     LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, WriteError,
+    delete_limit::{DeleteEndpoint, DeleteLimit},
     delete_not_found_is_ok, execute_with_parallelism,
     gcs::{
         CHUNK_SIZE, ControlClient, GcsLocation, REQUEST_TIMEOUT, RESUMABLE_UPLOAD_THRESHOLD,
@@ -60,18 +62,30 @@ pub(crate) async fn within<T>(
         })
 }
 
-/// Deletes one object. Owned arguments keep the returned future free of borrows, so
-/// it satisfies the `'static` bound of [`execute_with_parallelism`] and the caller
-/// can build the futures lazily.
+/// Deletes one object of a batch while holding a permit of its bucket's [`DeleteLimit`].
+/// Owned arguments keep the returned future free of borrows, so it satisfies the `'static`
+/// bound of [`execute_with_parallelism`] and the caller can build the futures lazily.
 async fn delete_one(
     control: Arc<StorageControl>,
+    limits: Arc<HashMap<String, DeleteLimit>>,
     path: String,
 ) -> Result<(GcsLocation, Option<IOError>), DeleteBatchError> {
     let location = GcsLocation::try_from_str(&path)?;
-    let result = delete_object(&control, &location).await;
+    let limit = limits
+        .get(location.bucket_name())
+        .cloned()
+        .unwrap_or_else(|| bucket_delete_limit(&location));
+    // Waiting for the permit is not part of the request, so it is outside its timeout.
+    let result = limit.run(delete_object(&control, &location)).await;
     // Convert 404 (not found) to success for idempotent behavior
     let result = delete_not_found_is_ok(result);
     Ok((location, result.err()))
+}
+
+fn bucket_delete_limit(location: &GcsLocation) -> DeleteLimit {
+    DeleteLimit::of(&DeleteEndpoint::Gcs {
+        bucket: location.bucket_name(),
+    })
 }
 
 async fn delete_object(control: &StorageControl, location: &GcsLocation) -> Result<(), IOError> {
@@ -124,10 +138,18 @@ impl LakekeeperStorage for GcsStorage {
 
     async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         // Validate every location first so an invalid path fails the batch while all
-        // objects are still present.
+        // objects are still present. The limits are looked up once per bucket.
+        let mut limits = HashMap::new();
         for path in paths {
-            GcsLocation::try_from_str(path)?;
+            let location = GcsLocation::try_from_str(path)?;
+            if !limits.contains_key(location.bucket_name()) {
+                limits.insert(
+                    location.bucket_name().to_string(),
+                    bucket_delete_limit(&location),
+                );
+            }
         }
+        let limits = Arc::new(limits);
 
         // Futures stay lazy: `execute_with_parallelism` pulls them one at a time, so
         // only `parallelism` of them exist at once. Collecting them all costs ~2 KiB
@@ -140,7 +162,7 @@ impl LakekeeperStorage for GcsStorage {
         let delete_futures = paths
             .iter()
             .cloned()
-            .map(move |path| delete_one(control.clone(), path));
+            .map(move |path| delete_one(control.clone(), limits.clone(), path));
 
         let completed_batches = AtomicU64::new(0);
         let total_batches = paths.len();
@@ -540,7 +562,10 @@ mod tests {
     use google_cloud_auth::credentials::anonymous;
 
     use super::*;
-    use crate::gcs::{UPLOAD_TIMEOUT, build_clients};
+    use crate::{
+        delete_limit::{DeleteEndpoint, DeleteLimit},
+        gcs::{UPLOAD_TIMEOUT, build_clients},
+    };
 
     const PATH: &str = "gs://test-bucket/object";
 
@@ -553,6 +578,51 @@ mod tests {
         build_clients(anonymous::Builder::new().build(), Some(&endpoint))
             .await
             .unwrap()
+    }
+
+    /// Storage whose endpoint answers every gRPC request with `NOT_FOUND`, which a delete
+    /// counts as done, and counts the requests.
+    async fn not_found_storage() -> (GcsStorage, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = axum::Router::new().fallback({
+            let requests = requests.clone();
+            move || {
+                requests.fetch_add(1, Ordering::SeqCst);
+                std::future::ready((
+                    [("content-type", "application/grpc"), ("grpc-status", "5")],
+                    "",
+                ))
+            }
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let storage = build_clients(anonymous::Builder::new().build(), Some(&endpoint))
+            .await
+            .unwrap();
+        (storage, requests)
+    }
+
+    #[tokio::test]
+    async fn batch_delete_waits_for_the_delete_limit_outside_the_request_timeout() {
+        let (storage, requests) = not_found_storage().await;
+        let limit = DeleteLimit::of(&DeleteEndpoint::Gcs {
+            bucket: "test-bucket",
+        });
+        let held = limit.hold_all().await;
+
+        let delete = tokio::spawn(async move { storage.delete_batch(&[PATH.to_string()]).await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+        // The waiting delete does no I/O, so the clock can jump past the request timeout.
+        tokio::time::pause();
+        tokio::time::advance(REQUEST_TIMEOUT * 2).await;
+        tokio::time::resume();
+
+        drop(held);
+        delete.await.unwrap().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     /// Asserts that `operation` fails with a timeout after `limit`.

@@ -10,7 +10,7 @@ use aws_config::{
 };
 use aws_sdk_s3::config::{
     IdentityCache, RequestChecksumCalculation, SharedAsyncSleep, SharedCredentialsProvider,
-    SharedHttpClient, http::HttpRequest,
+    SharedHttpClient, http::HttpRequest, retry::RetryPartition,
 };
 use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
@@ -64,6 +64,16 @@ static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
 });
 
 static RETRY_CONFIG: LazyLock<RetryConfig> = LazyLock::new(RetryConfig::adaptive);
+/// Limit for one attempt of a request: resolving credentials, sending the request and
+/// receiving the response, except a streamed body (reads), which the SDK fails when it stalls.
+/// The SDK retries a timed out attempt. Uploads use [`TRANSFER_ATTEMPT_TIMEOUT`].
+const ATTEMPT_TIMEOUT: Duration = Duration::from_mins(2);
+/// Limit for one attempt of an upload and of completing a multipart upload. An upload takes as
+/// long as the bandwidth allows, which parallel parts share, and S3 may take minutes to
+/// assemble a large object. The SDK fails an upload whose body stalls.
+const TRANSFER_ATTEMPT_TIMEOUT: Duration = Duration::from_mins(15);
+/// Limit for loading credentials, including the retries of an STS call to assume a role.
+const CREDENTIALS_LOAD_TIMEOUT: Duration = Duration::from_mins(1);
 // `TimeoutConfig` replaces the SDK default wherever it is set, so the connect
 // timeout is spelled out here. One explicit value across every auth branch also
 // keeps them on a single connector pool, which is keyed by the (connect, read)
@@ -71,8 +81,20 @@ static RETRY_CONFIG: LazyLock<RetryConfig> = LazyLock::new(RetryConfig::adaptive
 static TIMEOUT_CONFIG: LazyLock<TimeoutConfig> = LazyLock::new(|| {
     TimeoutConfig::builder()
         .connect_timeout(crate::CONNECT_TIMEOUT)
+        .operation_attempt_timeout(ATTEMPT_TIMEOUT)
         .build()
 });
+static TRANSFER_TIMEOUT_CONFIG: LazyLock<TimeoutConfig> = LazyLock::new(|| {
+    TimeoutConfig::builder()
+        .connect_timeout(crate::CONNECT_TIMEOUT)
+        .operation_attempt_timeout(TRANSFER_ATTEMPT_TIMEOUT)
+        .build()
+});
+
+/// Config override for a request that uploads data or completes a multipart upload.
+pub(crate) fn transfer_config_override() -> aws_sdk_s3::config::Builder {
+    aws_sdk_s3::config::Builder::new().timeout_config(TRANSFER_TIMEOUT_CONFIG.clone())
+}
 static TIME_SOURCE: LazyLock<SharedTimeSource> = LazyLock::new(SharedTimeSource::default);
 static TOKIO_SLEEP: LazyLock<Arc<dyn sleep::AsyncSleep>> =
     LazyLock::new(|| Arc::new(TokioSleep::new()) as Arc<dyn sleep::AsyncSleep>);
@@ -205,8 +227,24 @@ impl S3Settings {
                 s3_builder.request_checksum_calculation(RequestChecksumCalculation::WhenRequired);
         }
 
+        // The SDK shares retry budgets and its client-side rate limit by partition name across
+        // the process. Its default names one partition per region, so throttling by one S3
+        // service would also slow retries for every other service in that region.
+        let service_scope = self.service_scope();
+        s3_builder = s3_builder.retry_partition(RetryPartition::new(format!(
+            "lakekeeper-s3-{service_scope}"
+        )));
+
         let client = aws_sdk_s3::Client::from_conf(s3_builder.build());
-        S3Storage::new(client, self.aws_kms_key_arn.clone())
+        S3Storage::new(client, self.aws_kms_key_arn.clone()).with_service_scope(service_scope)
+    }
+
+    /// Names the S3 service: the origin of its endpoint, or the AWS region.
+    fn service_scope(&self) -> String {
+        self.endpoint.as_ref().map_or_else(
+            || format!("aws-{}", self.region),
+            |endpoint| endpoint.origin().ascii_serialization(),
+        )
     }
 
     pub async fn get_sdk_config(&self, s3_credential: Option<&S3Auth>) -> SdkConfig {
@@ -293,9 +331,16 @@ impl S3Settings {
             }
             let assume_role_provider = assume_role_provider.build().await;
 
+            // The provider calls STS on every request, so this config caches its credentials.
+            // The cache belongs to the clients built from this config and goes away with them.
             sdk_config
                 .into_builder()
                 .credentials_provider(SharedCredentialsProvider::new(assume_role_provider))
+                .identity_cache(
+                    IdentityCache::lazy()
+                        .load_timeout(CREDENTIALS_LOAD_TIMEOUT)
+                        .build(),
+                )
                 .build()
         } else {
             sdk_config
