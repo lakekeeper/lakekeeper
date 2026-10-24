@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref, sync::Arc, time::Duration};
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use futures::FutureExt;
 use http::StatusCode;
@@ -24,7 +24,7 @@ use crate::{
         management::v1::warehouse::TabularDeleteProfile,
     },
     request_metadata::RequestMetadata,
-    server,
+    server::{self, io::cleanup_deadline},
     service::{
         CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTaskOps,
         NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
@@ -41,10 +41,7 @@ use crate::{
         },
         idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
-        storage::{
-            storage_layout::{NamespaceNameContext, NamespacePath},
-            validation::far_future,
-        },
+        storage::storage_layout::{NamespaceNameContext, NamespacePath},
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
@@ -633,8 +630,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         event_ctx.emit_namespace_dropped_async();
 
         if flags.purge {
-            let deadline = namespace_cleanup_deadline(
+            let deadline = cleanup_deadline(
                 tokio::time::Instant::now(),
+                CONFIG.max_request_time / 3,
                 request_metadata.received_at(),
                 CONFIG.max_request_time,
             );
@@ -1007,24 +1005,6 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
             }
         }
     }
-}
-
-/// A third of the request limit, ending by five sixths of it from the request's arrival so that a
-/// slow backend cannot time out the response of a committed drop.
-fn namespace_cleanup_deadline(
-    now: tokio::time::Instant,
-    received_at: tokio::time::Instant,
-    request_limit: Duration,
-) -> tokio::time::Instant {
-    // Divided first so that an effectively unbounded limit cannot overflow.
-    [
-        now.checked_add(request_limit / 3),
-        received_at.checked_add(request_limit / 6 * 5),
-    ]
-    .into_iter()
-    .flatten()
-    .min()
-    .unwrap_or_else(far_future)
 }
 
 /// Locations strictly below `base`, deepest first so a parent is checked after its children.
@@ -1407,25 +1387,6 @@ mod tests {
             candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![child, parent]
         );
-    }
-
-    #[test]
-    fn test_namespace_cleanup_deadline_fits_the_request_limit() {
-        let limit = Duration::from_secs(30);
-        let received_at = tokio::time::Instant::now();
-        let at = |secs| received_at + Duration::from_secs(secs);
-        // Early in the request the cleanup gets a third of the limit.
-        assert_eq!(
-            namespace_cleanup_deadline(at(1), received_at, limit),
-            at(11)
-        );
-        // Late in the request it ends at five sixths of the limit.
-        assert_eq!(
-            namespace_cleanup_deadline(at(20), received_at, limit),
-            at(25)
-        );
-        // An unbounded limit does not overflow.
-        assert!(namespace_cleanup_deadline(at(0), received_at, Duration::MAX) > at(30));
     }
 
     #[test]

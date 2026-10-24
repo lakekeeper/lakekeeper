@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::LazyLock, time::Duration};
+use std::{ops::ControlFlow, str::FromStr, sync::LazyLock, time::Duration};
 
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::Location;
@@ -7,7 +7,7 @@ use tracing::Instrument;
 #[cfg(feature = "open-api")]
 use utoipa::{PartialSchema, ToSchema};
 
-use super::{SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails};
+use super::{SpecializedTask, TaskCheckState, TaskConfig, TaskData, TaskExecutionDetails};
 use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
@@ -18,6 +18,10 @@ use crate::{
 };
 
 const QN_STR: &str = "tabular_purge";
+/// How often a running purge renews its heartbeat. A purge of a large table can run longer than
+/// [`PurgeQueueConfig::max_time_since_last_heartbeat`]; the interval covers limits above one
+/// minute.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_mins(1);
 pub static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 #[cfg(feature = "open-api")]
 pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
@@ -121,7 +125,13 @@ async fn instrumented_purge<S: SecretStore, C: CatalogStore>(
     task: &TabularPurgeTask,
 ) {
     match purge::<C, S>(task, secret_state, catalog_state.clone()).await {
-        Ok(()) => {
+        Ok(PurgeEnd::NotActive) => {
+            tracing::info!(
+                "Task of `{QN_STR}` worker stopped purging location `{}`: another worker holds a newer attempt.",
+                task.data.tabular_location
+            );
+        }
+        Ok(PurgeEnd::Purged) => {
             tracing::info!(
                 "Task of `{QN_STR}` worker exited successfully. Data at location `{}` deleted.",
                 task.data.tabular_location
@@ -143,11 +153,19 @@ async fn instrumented_purge<S: SecretStore, C: CatalogStore>(
     }
 }
 
+/// How a purge ended without an error.
+enum PurgeEnd {
+    /// The location is removed.
+    Purged,
+    /// Another worker holds a newer attempt of the task, see [`TaskCheckState::NotActive`].
+    NotActive,
+}
+
 async fn purge<C, S>(
     task: &TabularPurgeTask,
     secret_state: &S,
     catalog_state: C::State,
-) -> Result<()>
+) -> Result<PurgeEnd>
 where
     C: CatalogStore,
     S: SecretStore,
@@ -173,7 +191,7 @@ where
     let warehouse = C::get_warehouse_by_id(
         warehouse_id,
         WarehouseStatus::active_and_inactive(),
-        catalog_state,
+        catalog_state.clone(),
     )
     .await
     .map_err(ErrorModel::from)
@@ -211,7 +229,26 @@ where
             ))
         })?;
 
-    remove_all(&file_io, &tabular_location).await.map_err(|e| {
+    // A purge ignores stop requests: it removes data that is already dropped from the catalog.
+    // It ends when another worker holds a newer attempt of the task.
+    let heartbeat = || async {
+        match task.heartbeat::<C>(catalog_state.clone(), 0.0, None).await {
+            Ok(TaskCheckState::NotActive) => ControlFlow::Break(()),
+            Ok(TaskCheckState::Continue | TaskCheckState::Stop) => ControlFlow::Continue(()),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to heartbeat `{QN_STR}` task {}: {e}",
+                    task.task_id()
+                );
+                ControlFlow::Continue(())
+            }
+        }
+    };
+    let Some(purged) = with_heartbeat(remove_all(&file_io, &tabular_location), heartbeat).await
+    else {
+        return Ok(PurgeEnd::NotActive);
+    };
+    purged.map_err(|e| {
         IcebergErrorResponse::from(ErrorModel::internal(
             "Failed to remove location.",
             "FileIOError",
@@ -222,5 +259,79 @@ where
         ))
     })?;
 
-    Ok(())
+    Ok(PurgeEnd::Purged)
+}
+
+/// Runs `work` and calls `heartbeat` every [`HEARTBEAT_INTERVAL`] until `work` completes, or until
+/// `heartbeat` breaks. Returns the output of `work`, or `None` if `heartbeat` ended it.
+async fn with_heartbeat<T, H>(
+    work: impl Future<Output = T>,
+    mut heartbeat: impl FnMut() -> H,
+) -> Option<T>
+where
+    H: Future<Output = ControlFlow<()>>,
+{
+    let mut work = std::pin::pin!(work);
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + HEARTBEAT_INTERVAL,
+        HEARTBEAT_INTERVAL,
+    );
+    loop {
+        tokio::select! {
+            output = &mut work => return Some(output),
+            _ = interval.tick() => {
+                if heartbeat().await.is_break() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_long_purge_heartbeats_until_it_finishes() {
+        let beats = Arc::new(AtomicUsize::new(0));
+        let purged = with_heartbeat(
+            async {
+                tokio::time::sleep(HEARTBEAT_INTERVAL * 3 + Duration::from_secs(1)).await;
+                "purged"
+            },
+            || {
+                let beats = beats.clone();
+                async move {
+                    beats.fetch_add(1, Ordering::SeqCst);
+                    ControlFlow::Continue(())
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(purged, Some("purged"));
+        assert_eq!(beats.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_purge_ends_when_its_heartbeat_says_so() {
+        let start = tokio::time::Instant::now();
+        let purged = with_heartbeat(
+            async {
+                tokio::time::sleep(HEARTBEAT_INTERVAL * 3).await;
+                "purged"
+            },
+            || async { ControlFlow::Break(()) },
+        )
+        .await;
+
+        assert_eq!(purged, None);
+        assert_eq!(start.elapsed(), HEARTBEAT_INTERVAL);
+    }
 }

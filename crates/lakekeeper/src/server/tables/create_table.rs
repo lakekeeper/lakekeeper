@@ -5,7 +5,9 @@ use iceberg::spec::{
     FormatVersion, SortOrder, TableMetadata, TableMetadataBuilder, TableProperties,
     UnboundPartitionSpec,
 };
-use lakekeeper_io::{InvalidLocationError, LakekeeperStorage as _, Location, StorageBackend};
+use lakekeeper_io::{
+    ErrorKind, InvalidLocationError, LakekeeperStorage as _, Location, StorageBackend,
+};
 use uuid::Uuid;
 
 use super::{
@@ -326,7 +328,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let storage_secret_ref = storage_secret.as_deref();
 
     let file_io = storage_profile.file_io(storage_secret_ref).await?;
-    if !crate::service::storage::is_empty(&file_io, &table_location).await? {
+    if !crate::service::storage::is_empty(&file_io, &table_location)
+        .await
+        .map_err(location_check_error)?
+    {
         return Err(ValidationError::from(InvalidLocationError::new(
             table_location.to_string(),
             "Unexpected files in location, tabular locations have to be empty",
@@ -336,6 +341,9 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     if let Some(metadata_location) = &metadata_location {
         let compression_codec = CompressionCodec::try_from_metadata(&table_metadata)?;
+        // Marked before the write: a write that fails after the storage kept the object would
+        // otherwise leave a file that fails the client's retry with "Unexpected files".
+        guard.mark_metadata_written(file_io.clone(), metadata_location.clone());
         write_file(
             &file_io,
             metadata_location,
@@ -343,8 +351,6 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             compression_codec,
         )
         .await?;
-
-        guard.mark_metadata_written(file_io, metadata_location.clone());
     }
 
     // This requires the storage secret
@@ -573,4 +579,40 @@ pub(crate) fn ensure_format_version_allowed(
         None,
     )
     .into())
+}
+
+/// Error of the check that the table location is empty. A temporary storage error returns 503,
+/// so that the client retries. Other errors are a bad request.
+fn location_check_error(error: ValidationError) -> ErrorModel {
+    match error {
+        ValidationError::IoOperationFailed(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::RequestTimeout | ErrorKind::ServiceUnavailable | ErrorKind::RateLimited
+            ) =>
+        {
+            ErrorModel::from_io_error(*e, "Failed to check that the table location is empty.")
+        }
+        error => error.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lakekeeper_io::IOError;
+
+    use super::*;
+
+    #[test]
+    fn a_temporary_error_while_checking_the_location_returns_503() {
+        let code = |kind| {
+            let error = IOError::new(kind, "listing failed", "s3://bucket/table".to_string());
+            location_check_error(ValidationError::from(Box::new(error))).code
+        };
+        assert_eq!(code(ErrorKind::RequestTimeout), 503);
+        assert_eq!(code(ErrorKind::ServiceUnavailable), 503);
+        assert_eq!(code(ErrorKind::RateLimited), 503);
+        assert_eq!(code(ErrorKind::PermissionDenied), 400);
+        assert_eq!(code(ErrorKind::Unexpected), 400);
+    }
 }

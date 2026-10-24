@@ -21,7 +21,7 @@ use iceberg_ext::{
     },
 };
 use itertools::Itertools;
-use lakekeeper_io::{Location, s3::S3Location};
+use lakekeeper_io::{LakekeeperStorage, Location, s3::S3Location};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -39,7 +39,7 @@ use super::{
     commit_tables::{
         apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
     },
-    io::{delete_file, read_metadata_file, write_file},
+    io::{cleanup_in_background, delete_file, read_metadata_file, spawn_cleanup, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
     require_warehouse_id,
@@ -1859,40 +1859,48 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     }
     .await;
 
-    // If transaction fails, delete the metadata files we just wrote (best-effort), then
-    // return the original error.
+    // After a failed transaction, remove the metadata files written above. Nothing refers to
+    // them, so the error returns without waiting.
     if let Err(e) = transaction_result {
-        let delete_result = futures::future::join_all(
-            commits
-                .iter()
-                .map(|commit| delete_file(&file_io, &commit.new_metadata_location))
-                .collect::<Vec<_>>(),
-        )
-        .await;
-        // Log any delete errors, but return the original error
-        for r in delete_result {
-            if let Err(e) = r {
-                tracing::warn!("Failed to delete metadata file after failed commit: {e:?}");
-            }
-        }
+        let written = commits
+            .iter()
+            .map(|commit| commit.new_metadata_location.clone())
+            .collect();
+        spawn_cleanup(delete_files(
+            file_io,
+            written,
+            "metadata file after failed commit",
+        ));
         return Err(e);
     }
+    if !expired_metadata_files.is_empty() {
+        cleanup_in_background(
+            event_ctx.request_metadata().received_at(),
+            delete_files(file_io, expired_metadata_files, "expired metadata file"),
+        )
+        .await;
+    }
 
-    // Delete files in parallel - if one delete fails, we still want to delete the rest
+    Ok(Arc::new(commits))
+}
+
+/// Deletes `locations` in parallel and logs the failures. `what` names the files in the log.
+async fn delete_files(
+    file_io: impl LakekeeperStorage,
+    locations: Vec<Location>,
+    what: &'static str,
+) {
     let delete_results = futures::future::join_all(
-        expired_metadata_files
+        locations
             .iter()
-            .map(|location| delete_file(&file_io, location))
-            .collect::<Vec<_>>(),
+            .map(|location| delete_file(&file_io, location)),
     )
     .await;
     for r in delete_results {
         if let Err(e) = r {
-            tracing::warn!("Failed to delete expired metadata file: {e:?}");
+            tracing::warn!("Failed to delete {what}: {e:?}");
         }
     }
-
-    Ok(Arc::new(commits))
 }
 
 /// The expired metadata files a commit deletes: those inside the table location. A registered
