@@ -23,7 +23,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::{cleanup_in_background, delete_file, remove_all, write_file},
+        io::{cleanup_before_response, delete_file, remove_all, spawn_cleanup, write_file},
         require_warehouse_id,
         tables::{
             MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
@@ -324,27 +324,35 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 tracing::warn!("Rollback failed after idempotency conflict: {e}");
             })
             .ok();
-        // Best-effort cleanup: delete the metadata file we wrote before rollback.
-        let _ = delete_file(&file_io, &new_view.metadata_location)
-            .await
-            .inspect_err(|e| {
+        // Nothing refers to the metadata file written above, so the error returns without waiting
+        // for its delete.
+        let written = new_view.metadata_location.clone();
+        spawn_cleanup(async move {
+            let _ = delete_file(&file_io, &written).await.inspect_err(|e| {
                 tracing::warn!(
                     error = %e,
                     "Failed to clean up metadata file after idempotency rollback"
                 );
             });
+        });
         return Err(ErrorModel::request_in_progress().into());
     }
 
     // Commit transaction
     t.commit().await?;
 
-    if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {
-        cleanup_in_background(
+    // The removal ends before the response: the client's next commit may move the view back
+    // into this location.
+    if let Some(DeleteLocation(before_update_view_location)) = delete_old_location
+        && !cleanup_before_response(
             request_metadata.received_at(),
-            remove_old_view_location(file_io, before_update_view_location.clone()),
+            remove_old_view_location(&file_io, before_update_view_location),
         )
-        .await;
+        .await
+    {
+        tracing::warn!(
+            "Stopped deleting old view location '{before_update_view_location}' at the request deadline. Its remaining files stay in storage."
+        );
     }
 
     Ok((
@@ -363,9 +371,9 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 }
 
 /// Removes the location a view moved away from, and logs a failure.
-async fn remove_old_view_location(file_io: impl LakekeeperStorage, location: Location) {
+async fn remove_old_view_location(file_io: &impl LakekeeperStorage, location: &Location) {
     tracing::debug!("Deleting old view location at: '{location}'");
-    let _ = remove_all(&file_io, &location)
+    let _ = remove_all(file_io, location)
         .await
         .inspect(|()| tracing::debug!("Deleted old view location {location}"))
         .inspect_err(|e| tracing::error!("Failed to delete old view location '{location}': {e:?}"));

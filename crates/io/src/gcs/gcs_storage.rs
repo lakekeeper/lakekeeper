@@ -71,21 +71,13 @@ async fn delete_one(
     path: String,
 ) -> Result<(GcsLocation, Option<IOError>), DeleteBatchError> {
     let location = GcsLocation::try_from_str(&path)?;
-    let limit = limits
-        .get(location.bucket_name())
-        .cloned()
-        .unwrap_or_else(|| bucket_delete_limit(&location));
+    // `delete_batch` holds a limit for every bucket of the batch.
+    let limit = limits[location.bucket_name()].clone();
     // Waiting for the permit is not part of the request, so it is outside its timeout.
     let result = limit.run(delete_object(&control, &location)).await;
     // Convert 404 (not found) to success for idempotent behavior
     let result = delete_not_found_is_ok(result);
     Ok((location, result.err()))
-}
-
-fn bucket_delete_limit(location: &GcsLocation) -> DeleteLimit {
-    DeleteLimit::of(&DeleteEndpoint::Gcs {
-        bucket: location.bucket_name(),
-    })
 }
 
 async fn delete_object(control: &StorageControl, location: &GcsLocation) -> Result<(), IOError> {
@@ -145,7 +137,9 @@ impl LakekeeperStorage for GcsStorage {
             if !limits.contains_key(location.bucket_name()) {
                 limits.insert(
                     location.bucket_name().to_string(),
-                    bucket_delete_limit(&location),
+                    DeleteLimit::of(&DeleteEndpoint::Gcs {
+                        bucket: location.bucket_name(),
+                    }),
                 );
             }
         }

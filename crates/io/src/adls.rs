@@ -267,7 +267,9 @@ impl AzureSettings {
 
         SYSTEM_IDENTITY_CACHE
             .try_get_with(cache_key.clone(), async move {
-                let mut options = TokenCredentialOptions::default();
+                // The shared HTTP client bounds the token requests by its timeouts.
+                let http_client: Arc<dyn azure_core::HttpClient> = HTTP_CLIENT_ARC.clone();
+                let mut options = TokenCredentialOptions::from(http_client);
                 options.set_authority_host(authority_host_str);
                 DefaultAzureCredentialBuilder::new()
                     .with_options(options)

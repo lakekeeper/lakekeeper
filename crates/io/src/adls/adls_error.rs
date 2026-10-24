@@ -20,7 +20,9 @@ pub(crate) fn parse_error(err: azure_core::Error, location: &str) -> IOError {
         StatusCode::RequestTimeout | StatusCode::GatewayTimeout => ErrorKind::RequestTimeout,
         StatusCode::PreconditionFailed | StatusCode::Conflict => ErrorKind::ConditionNotMatch,
         StatusCode::TooManyRequests => ErrorKind::RateLimited,
-        status if status.is_server_error() => ErrorKind::ServiceUnavailable,
+        StatusCode::InternalServerError
+        | StatusCode::BadGateway
+        | StatusCode::ServiceUnavailable => ErrorKind::ServiceUnavailable,
         _ => ErrorKind::Unexpected,
     });
 
@@ -124,6 +126,22 @@ mod tests {
                 ErrorKind::ServiceUnavailable,
             ),
             (StatusCode::BadGateway, None, ErrorKind::ServiceUnavailable),
+            (
+                StatusCode::ServiceUnavailable,
+                None,
+                ErrorKind::ServiceUnavailable,
+            ),
+            (
+                StatusCode::InternalServerError,
+                None,
+                ErrorKind::ServiceUnavailable,
+            ),
+            (StatusCode::NotImplemented, None, ErrorKind::Unexpected),
+            (
+                StatusCode::HttpVersionNotSupported,
+                None,
+                ErrorKind::Unexpected,
+            ),
             (StatusCode::BadRequest, None, ErrorKind::Unexpected),
         ] {
             let error = parse_error(http_error_with_code(status, code).await, "location");

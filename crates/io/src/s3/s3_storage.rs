@@ -110,8 +110,9 @@ impl LakekeeperStorage for S3Storage {
     async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         let buckets = group_paths_by_bucket(paths)?;
         // The keys move into their chunks. A request builds its SDK input once it holds a
-        // permit, so at most `S3_DELETE_REQUESTS` inputs per bucket exist at once.
-        let mut chunks = Vec::new();
+        // permit, so at most `S3_DELETE_REQUESTS` inputs per bucket exist at once. Each bucket
+        // runs its own requests, so a bucket whose permits are taken does not hold up the others.
+        let mut per_bucket = Vec::with_capacity(buckets.len());
         for (bucket, keys) in buckets {
             let limit = DeleteLimit::of(&DeleteEndpoint::S3 {
                 scope: &self.service_scope,
@@ -119,6 +120,7 @@ impl LakekeeperStorage for S3Storage {
             });
             let bucket = Arc::<str>::from(bucket);
             let mut keys = keys.into_iter().peekable();
+            let mut chunks = Vec::new();
             while keys.peek().is_some() {
                 chunks.push(DeleteChunk {
                     bucket: bucket.clone(),
@@ -126,14 +128,17 @@ impl LakekeeperStorage for S3Storage {
                     keys: keys.by_ref().take(MAX_DELETE_BATCH_SIZE).collect(),
                 });
             }
+            let client = self.client.clone();
+            let requests = chunks
+                .into_iter()
+                .map(move |chunk| delete_chunk(client.clone(), chunk));
+            per_bucket.push(Box::pin(execute_with_parallelism(
+                requests,
+                S3_DELETE_REQUESTS,
+            )));
         }
-        let client = self.client.clone();
-        let requests = chunks
-            .into_iter()
-            .map(move |chunk| delete_chunk(client.clone(), chunk));
 
-        let results = execute_with_parallelism(requests, S3_DELETE_REQUESTS);
-        tokio::pin!(results);
+        let mut results = stream::select_all(per_bucket);
         while let Some(result) = results.next().await {
             result.map_err(|join_error| {
                 IOError::new_without_location(

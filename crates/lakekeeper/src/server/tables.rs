@@ -39,7 +39,7 @@ use super::{
     commit_tables::{
         apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
     },
-    io::{cleanup_in_background, delete_file, read_metadata_file, write_file},
+    io::{cleanup_in_background, delete_file, read_metadata_file, spawn_cleanup, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
     require_warehouse_id,
@@ -1866,18 +1866,20 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
             .iter()
             .map(|commit| commit.new_metadata_location.clone())
             .collect();
-        tokio::spawn(tracing::Instrument::in_current_span(delete_files(
+        spawn_cleanup(delete_files(
             file_io,
             written,
             "metadata file after failed commit",
-        )));
+        ));
         return Err(e);
     }
-    cleanup_in_background(
-        event_ctx.request_metadata().received_at(),
-        delete_files(file_io, expired_metadata_files, "expired metadata file"),
-    )
-    .await;
+    if !expired_metadata_files.is_empty() {
+        cleanup_in_background(
+            event_ctx.request_metadata().received_at(),
+            delete_files(file_io, expired_metadata_files, "expired metadata file"),
+        )
+        .await;
+    }
 
     Ok(Arc::new(commits))
 }
