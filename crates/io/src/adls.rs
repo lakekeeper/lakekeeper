@@ -75,9 +75,8 @@ const RETRY_MAX_TOTAL_ELAPSED: Duration = Duration::from_mins(1);
 /// Retries of a request. The waits double from about 0.4 s up to [`RETRY_MAX_DELAY`], about
 /// 14 s in total, so a throttled account gets time to recover and a request whose attempts
 /// fail at once gives up within an API request's time limit; a `Retry-After` from the service
-/// extends a wait. Retries
-/// stop once [`RETRY_MAX_TOTAL_ELAPSED`] has passed, so a request that timed out after
-/// [`READ_TIMEOUT`] is retried at most once.
+/// extends a wait. Retries stop once [`RETRY_MAX_TOTAL_ELAPSED`] has passed, so a request that
+/// timed out after [`READ_TIMEOUT`] is retried at most once.
 const MAX_RETRIES: u32 = 6;
 /// Longest wait between two retries.
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
