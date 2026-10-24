@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use iceberg::{TableIdent, ViewCreation, spec::ViewMetadataBuilder};
-use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
+use iceberg_ext::catalog::rest::{
+    CreateViewRequest, ErrorModel, IcebergErrorResponse, LoadViewResult,
+};
 
 use crate::{
     api::{
@@ -11,7 +13,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::write_file,
+        io::{delete_files_after_failure, write_file},
         maybe_get_secret, require_warehouse_id,
         tables::{require_active_warehouse, validate_table_or_view_ident},
         tabular::determine_tabular_location,
@@ -178,46 +180,57 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     .await?;
     tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
 
-    // Generate the storage profile. This requires the storage secret
-    // because the table config might contain vended-credentials based
-    // on the `data_access` parameter.
-    // ToDo: There is a small inefficiency here: If storage credentials
-    // are not required because of i.e. remote-signing and if this
-    // is a stage-create, we still fetch the secret.
-    let config = warehouse
-        .storage_profile
-        .generate_table_config(
-            data_access,
-            storage_secret_ref,
-            &view_location,
-            StoragePermissions::Read,
+    let committed = async {
+        // Generate the storage profile. This requires the storage secret
+        // because the table config might contain vended-credentials based
+        // on the `data_access` parameter.
+        // ToDo: There is a small inefficiency here: If storage credentials
+        // are not required because of i.e. remote-signing and if this
+        // is a stage-create, we still fetch the secret.
+        let config = warehouse
+            .storage_profile
+            .generate_table_config(
+                data_access,
+                storage_secret_ref,
+                &view_location,
+                StoragePermissions::Read,
+                &request_metadata,
+                &view_info,
+            )
+            .await?;
+
+        let view_id = ViewId::from(metadata_build_result.metadata.uuid());
+        authorizer
+            .create_view(
+                &request_metadata,
+                warehouse_id,
+                view_id,
+                ns_hierarchy.namespace_id(),
+            )
+            .await?;
+
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
+            authorizer,
             &request_metadata,
-            &view_info,
+            &GrantResource::View {
+                warehouse_id,
+                view_id,
+            },
+            t.transaction(),
         )
         .await?;
 
-    let view_id = ViewId::from(metadata_build_result.metadata.uuid());
-    authorizer
-        .create_view(
-            &request_metadata,
-            warehouse_id,
-            view_id,
-            ns_hierarchy.namespace_id(),
-        )
-        .await?;
-
-    let bootstrap_grants = write_bootstrap_grants::<C, A>(
-        authorizer,
-        &request_metadata,
-        &GrantResource::View {
-            warehouse_id,
-            view_id,
-        },
-        t.transaction(),
-    )
-    .await?;
-
-    t.commit().await?;
+        t.commit().await?;
+        Result::<_, IcebergErrorResponse>::Ok((config, bootstrap_grants))
+    }
+    .await;
+    let (config, bootstrap_grants) = match committed {
+        Ok(committed) => committed,
+        Err(e) => {
+            delete_files_after_failure(&file_io, [&metadata_location], &e).await;
+            return Err(e);
+        }
+    };
 
     // Held across the create event below, which consumes the context.
     let grant_dispatcher = event_ctx.dispatcher().clone();

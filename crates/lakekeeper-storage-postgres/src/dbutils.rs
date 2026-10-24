@@ -2,9 +2,24 @@ use lakekeeper::{
     api::ErrorModel,
     service::{CatalogBackendError, CatalogBackendErrorType, DatabaseIntegrityError, UserId},
 };
+use sqlx::postgres::{PgDatabaseError, PgSeverity};
 
 pub(crate) fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
     UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
+}
+
+/// Whether a transaction whose `COMMIT` failed with `error` may have been committed. Postgres
+/// rolls back before it reports an error at `COMMIT`, except for a PANIC; a dropped connection
+/// leaves the outcome open.
+pub(crate) fn commit_state_unknown(error: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(db) = error else {
+        return true;
+    };
+    // 40003: statement_completion_unknown
+    db.code().as_deref() == Some("40003")
+        || db
+            .try_downcast_ref::<PgDatabaseError>()
+            .is_none_or(|e| e.severity() == PgSeverity::Panic)
 }
 
 pub(crate) trait DBErrorHandler
@@ -33,7 +48,7 @@ impl DBErrorHandler for sqlx::Error {
                     // https://www.postgresql.org/docs/current/errcodes-appendix.html
                     Some(
                         "2D000" | "25000" | "25001" | "25P01" | "25P02" | "25P03" | "40000"
-                        | "40001" | "40002" | "40003" | "40004" | "40P01",
+                        | "40001" | "40002" | "40004" | "40P01",
                     ) => ErrorModel::conflict(
                         "Concurrent modification failed.",
                         "TransactionFailed",
@@ -55,7 +70,7 @@ impl DBErrorHandler for sqlx::Error {
                     // https://www.postgresql.org/docs/current/errcodes-appendix.html
                     Some(
                         "2D000" | "25000" | "25001" | "25P01" | "25P02" | "25P03" | "40000"
-                        | "40001" | "40002" | "40003" | "40004" | "40P01",
+                        | "40001" | "40002" | "40004" | "40P01",
                     ) => CatalogBackendError::new(
                         self,
                         CatalogBackendErrorType::ConcurrentModification,

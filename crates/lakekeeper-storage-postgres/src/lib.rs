@@ -36,9 +36,9 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 pub use endpoint_statistics::sink::PostgresStatisticsSink;
 use lakekeeper::{
-    api::Result,
+    api::{ErrorModel, Result},
     service::{
-        StateOrTransaction, StateOrTransactionEnum, Transaction,
+        COMMIT_STATE_UNKNOWN_ERROR_TYPE, StateOrTransaction, StateOrTransactionEnum, Transaction,
         health::{Health, HealthExt, HealthStatus},
     },
 };
@@ -54,7 +54,7 @@ use tokio::sync::RwLock;
 
 use self::{
     config::{CONFIG, DynAppConfig, PgSchema, PgSslMode},
-    dbutils::DBErrorHandler,
+    dbutils::{DBErrorHandler, commit_state_unknown},
 };
 
 /// # Errors
@@ -118,10 +118,17 @@ impl Transaction<CatalogState> for PostgresTransaction {
     }
 
     async fn commit(self) -> Result<()> {
-        self.transaction
-            .commit()
-            .await
-            .map_err(|e| e.into_error_model("Error committing transaction".to_string()))?;
+        self.transaction.commit().await.map_err(|e| {
+            if commit_state_unknown(&e) {
+                ErrorModel::internal(
+                    "Error committing transaction, it may have been applied",
+                    COMMIT_STATE_UNKNOWN_ERROR_TYPE,
+                    Some(Box::new(e)),
+                )
+            } else {
+                e.into_error_model("Error committing transaction".to_string())
+            }
+        })?;
         Ok(())
     }
 
@@ -466,5 +473,82 @@ mod transaction_tests {
             error.as_database_error().and_then(|e| e.code()).as_deref(),
             Some("25006")
         );
+    }
+
+    async fn probe_rows(pool: &PgPool) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM commit_probe")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn commit_failing_in_deferred_trigger_is_rolled_back(pool: PgPool) {
+        sqlx::raw_sql(
+            "CREATE TABLE commit_probe (id int);
+            CREATE FUNCTION reject_probe() RETURNS trigger LANGUAGE plpgsql AS
+                $$ BEGIN RAISE EXCEPTION 'rejected at commit'; END $$;
+            CREATE CONSTRAINT TRIGGER reject_probe AFTER INSERT ON commit_probe
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_probe();",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let mut transaction = PostgresTransaction::begin_write(state).await.unwrap();
+        sqlx::query("INSERT INTO commit_probe VALUES (1)")
+            .execute(&mut **transaction.transaction())
+            .await
+            .unwrap();
+
+        let error = transaction.commit().await.unwrap_err();
+
+        assert_eq!(error.error.r#type, "DatabaseError");
+        assert_eq!(probe_rows(&pool).await, 0);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn commit_on_terminated_session_is_rolled_back(pool: PgPool) {
+        sqlx::raw_sql("CREATE TABLE commit_probe (id int)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let mut transaction = PostgresTransaction::begin_write(state).await.unwrap();
+        let pid: i32 =
+            sqlx::query_scalar("INSERT INTO commit_probe VALUES (1) RETURNING pg_backend_pid()")
+                .fetch_one(&mut **transaction.transaction())
+                .await
+                .unwrap();
+        sqlx::query("SELECT pg_terminate_backend($1)")
+            .bind(pid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        while sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)",
+        )
+        .bind(pid)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let error = transaction.commit().await.unwrap_err();
+
+        // Postgres reports 57P01 (admin_shutdown) before it closes the session.
+        assert_eq!(error.error.r#type, "DatabaseError");
+        assert_eq!(probe_rows(&pool).await, 0);
+    }
+
+    #[test]
+    fn commit_state_is_unknown_without_a_server_reply() {
+        let dropped = sqlx::Error::Io(std::io::ErrorKind::UnexpectedEof.into());
+        assert!(commit_state_unknown(&dropped));
+        assert!(commit_state_unknown(&sqlx::Error::Protocol(
+            "bad message".into()
+        )));
     }
 }

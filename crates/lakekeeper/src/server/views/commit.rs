@@ -23,7 +23,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::{remove_all, write_file},
+        io::{delete_files_after_failure, remove_all, write_file},
         require_warehouse_id,
         tables::{
             MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
@@ -292,52 +292,53 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         new_view.metadata_location
     );
 
-    // Generate config for client
-    let config = ctx
-        .storage_profile
-        .generate_table_config(
-            ctx.data_access,
-            storage_secret_ref,
-            &new_view.metadata_location,
-            StoragePermissions::ReadWriteDelete,
-            request_metadata,
-            ctx.view_info,
-        )
-        .await?;
+    let committed = async {
+        // Generate config for client
+        let config = ctx
+            .storage_profile
+            .generate_table_config(
+                ctx.data_access,
+                storage_secret_ref,
+                &new_view.metadata_location,
+                StoragePermissions::ReadWriteDelete,
+                request_metadata,
+                ctx.view_info,
+            )
+            .await?;
 
-    // Insert idempotency key in the same transaction.
-    if let Some(key) = idempotency_key
-        && !C::try_insert_idempotency_key(
-            warehouse_id,
-            &IdempotencyInfo::builder()
-                .key(*key)
-                .endpoint(EndpointFlat::CatalogV1ReplaceView)
-                .http_status(StatusCode::OK)
-                .build(),
-            t.transaction(),
-        )
-        .await?
-    {
-        t.rollback()
-            .await
-            .inspect_err(|e| {
-                tracing::warn!("Rollback failed after idempotency conflict: {e}");
-            })
-            .ok();
-        // Best-effort cleanup: delete the metadata file we wrote before rollback.
-        let _ = remove_all(&file_io, &new_view.metadata_location)
-            .await
-            .inspect_err(|e| {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to clean up metadata file after idempotency rollback"
-                );
-            });
-        return Err(ErrorModel::request_in_progress().into());
+        // Insert idempotency key in the same transaction.
+        if let Some(key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1ReplaceView)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
+        t.commit().await?;
+        Result::<_>::Ok(config)
     }
-
-    // Commit transaction
-    t.commit().await?;
+    .await;
+    let config = match committed {
+        Ok(config) => config,
+        Err(e) => {
+            delete_files_after_failure(&file_io, [&new_view.metadata_location], &e).await;
+            return Err(e);
+        }
+    };
 
     // Handle file cleanup after transaction is committed
     if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {

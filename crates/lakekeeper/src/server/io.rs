@@ -7,7 +7,10 @@ use lakekeeper_io::{
 use serde::Serialize;
 
 use super::compression_codec::CompressionCodec;
-use crate::api::{ErrorModel, Result};
+use crate::{
+    api::{ErrorModel, Result},
+    service::COMMIT_STATE_UNKNOWN_ERROR_TYPE,
+};
 
 pub(crate) async fn write_file(
     io: &impl LakekeeperStorage,
@@ -29,6 +32,35 @@ pub(crate) async fn delete_file(
     location: &Location,
 ) -> Result<(), IOErrorExt> {
     io.delete(location.as_str()).await.map_err(Into::into)
+}
+
+/// Delete the files written for a change that failed with `error`, best effort. Keeps them if
+/// the commit may have been applied.
+pub(crate) async fn delete_files_after_failure<'a>(
+    io: &impl LakekeeperStorage,
+    locations: impl IntoIterator<Item = &'a Location>,
+    error: &IcebergErrorResponse,
+) {
+    let locations = locations.into_iter();
+    if error.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+        tracing::warn!(
+            "Commit may have been applied, keeping its new metadata files: {}",
+            locations
+                .map(Location::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return;
+    }
+    let results = futures::future::join_all(
+        locations.map(|location| async move { (location, delete_file(io, location).await) }),
+    )
+    .await;
+    for (location, result) in results {
+        if let Err(e) = result {
+            tracing::warn!("Failed to delete new metadata file {location}: {e:?}");
+        }
+    }
 }
 
 pub(crate) async fn read_file(

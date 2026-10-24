@@ -18,8 +18,8 @@ use crate::{
     api::{
         endpoints::EndpointFlat,
         iceberg::v1::{
-            ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters,
-            Result, TableIdent, TableParameters,
+            ApiContext, CreateTableRequest, ErrorModel, IcebergErrorResponse, LoadTableResult,
+            NamespaceParameters, Result, TableIdent, TableParameters,
             tables::{DataAccessMode, SnapshotsQuery},
         },
     },
@@ -29,8 +29,9 @@ use crate::{
         tabular::determine_tabular_location,
     },
     service::{
-        AllowedFormatVersions, CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps,
-        State, TableCreation, TableId, TabularId, TabularListFlags, Transaction,
+        AllowedFormatVersions, COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
+        CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId, TabularListFlags,
+        Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
             emit_bootstrap_grants_async, write_bootstrap_grants,
@@ -87,7 +88,17 @@ impl<A: Authorizer> TableCreationGuard<A> {
         self.warehouse_id
     }
 
-    async fn cleanup(&mut self) {
+    /// Remove what was prepared before `error`. Keeps it if the commit may have been applied.
+    async fn cleanup(&mut self, error: &IcebergErrorResponse) {
+        if error.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+            tracing::warn!(
+                "Creation of table {} in warehouse {} may have been committed, keeping its authorizer entry and metadata file",
+                self.table_id,
+                self.warehouse_id
+            );
+            return;
+        }
+
         if self.authorizer_created
             && let Err(e) = self
                 .authorizer
@@ -182,7 +193,7 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
             Ok(result)
         }
         Err(e) => {
-            guard.cleanup().await;
+            guard.cleanup(&e).await;
             Err(e)
         }
     }

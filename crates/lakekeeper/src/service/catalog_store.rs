@@ -427,6 +427,9 @@ impl<C: CatalogStore> WriteTransaction<C> {
     }
 }
 
+/// Error type of a [`Transaction::commit`] that may have been applied.
+pub const COMMIT_STATE_UNKNOWN_ERROR_TYPE: &str = "CommitStateUnknown";
+
 #[async_trait::async_trait]
 pub trait Transaction<D>
 where
@@ -440,6 +443,10 @@ where
 
     async fn begin_read(db_state: D) -> Result<Self>;
 
+    /// # Errors
+    /// An error of type [`COMMIT_STATE_UNKNOWN_ERROR_TYPE`] if the transaction may have been
+    /// committed, for example because the connection dropped before the reply arrived. After any
+    /// other error, the transaction was rolled back.
     async fn commit(self) -> Result<()>;
 
     async fn rollback(self) -> Result<()>;

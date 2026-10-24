@@ -39,7 +39,7 @@ use super::{
     commit_tables::{
         apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
     },
-    io::{delete_file, read_metadata_file, write_file},
+    io::{delete_file, delete_files_after_failure, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
     require_warehouse_id,
@@ -1817,18 +1817,30 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         .file_io(storage_secret_ref)
         .await?;
 
-    let write_futures: Vec<_> = commits
-        .iter()
-        .map(|commit| {
-            write_file(
-                &file_io,
-                &commit.new_metadata_location,
-                &commit.new_metadata,
-                commit.new_compression_codec,
-            )
-        })
-        .collect();
-    futures::future::try_join_all(write_futures).await?;
+    let write_results = futures::future::join_all(commits.iter().map(|commit| {
+        write_file(
+            &file_io,
+            &commit.new_metadata_location,
+            &commit.new_metadata,
+            commit.new_compression_codec,
+        )
+    }))
+    .await;
+    let mut written = Vec::with_capacity(commits.len());
+    let mut write_error = None;
+    for (commit, result) in commits.iter().zip(write_results) {
+        match result {
+            Ok(()) => written.push(&commit.new_metadata_location),
+            Err(e) => {
+                write_error.get_or_insert(e);
+            }
+        }
+    }
+    if let Some(e) = write_error {
+        let e = IcebergErrorResponse::from(e);
+        delete_files_after_failure(&file_io, written, &e).await;
+        return Err(e);
+    }
 
     // Make changes in DB
     let transaction_result = async {
@@ -1859,22 +1871,13 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     }
     .await;
 
-    // If transaction fails, delete the metadata files we just wrote (best-effort), then
-    // return the original error.
     if let Err(e) = transaction_result {
-        let delete_result = futures::future::join_all(
-            commits
-                .iter()
-                .map(|commit| delete_file(&file_io, &commit.new_metadata_location))
-                .collect::<Vec<_>>(),
+        delete_files_after_failure(
+            &file_io,
+            commits.iter().map(|commit| &commit.new_metadata_location),
+            &e,
         )
         .await;
-        // Log any delete errors, but return the original error
-        for r in delete_result {
-            if let Err(e) = r {
-                tracing::warn!("Failed to delete metadata file after failed commit: {e:?}");
-            }
-        }
         return Err(e);
     }
 
