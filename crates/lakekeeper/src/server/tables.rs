@@ -14,7 +14,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse},
+    catalog::rest::LoadCredentialsResponse,
     configs::{
         ParseFromStr,
         table::{TableProperties as TableConfigProperties, general},
@@ -39,7 +39,7 @@ use super::{
     commit_tables::{
         apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
     },
-    io::{delete_file, delete_files_after_failure, read_metadata_file, write_file},
+    io::{delete_files, delete_on_failure, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
     require_warehouse_id,
@@ -1817,33 +1817,21 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         .file_io(storage_secret_ref)
         .await?;
 
-    let write_results = futures::future::join_all(commits.iter().map(|commit| {
-        write_file(
-            &file_io,
-            &commit.new_metadata_location,
-            &commit.new_metadata,
-            commit.new_compression_codec,
-        )
-    }))
-    .await;
-    let mut written = Vec::with_capacity(commits.len());
-    let mut write_error = None;
-    for (commit, result) in commits.iter().zip(write_results) {
-        match result {
-            Ok(()) => written.push(&commit.new_metadata_location),
-            Err(e) => {
-                write_error.get_or_insert(e);
-            }
-        }
-    }
-    if let Some(e) = write_error {
-        let e = IcebergErrorResponse::from(e);
-        delete_files_after_failure(&file_io, written, &e).await;
-        return Err(e);
-    }
+    let new_metadata_locations: Vec<_> = commits.iter().map(|c| &c.new_metadata_location).collect();
+    delete_on_failure(&file_io, &new_metadata_locations, async {
+        // All writes finish before an error returns, so none lands after the cleanup.
+        futures::future::join_all(commits.iter().map(|commit| {
+            write_file(
+                &file_io,
+                &commit.new_metadata_location,
+                &commit.new_metadata,
+                commit.new_compression_codec,
+            )
+        }))
+        .await
+        .into_iter()
+        .collect::<Result<Vec<()>, _>>()?;
 
-    // Make changes in DB
-    let transaction_result = async {
         let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
         C::commit_table_transaction(
             warehouse_id,
@@ -1866,34 +1854,11 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
             return Err(ErrorModel::request_in_progress().into());
         }
 
-        transaction.commit().await?;
-        Result::<_, IcebergErrorResponse>::Ok(())
-    }
-    .await;
+        transaction.commit().await
+    })
+    .await?;
 
-    if let Err(e) = transaction_result {
-        delete_files_after_failure(
-            &file_io,
-            commits.iter().map(|commit| &commit.new_metadata_location),
-            &e,
-        )
-        .await;
-        return Err(e);
-    }
-
-    // Delete files in parallel - if one delete fails, we still want to delete the rest
-    let delete_results = futures::future::join_all(
-        expired_metadata_files
-            .iter()
-            .map(|location| delete_file(&file_io, location))
-            .collect::<Vec<_>>(),
-    )
-    .await;
-    for r in delete_results {
-        if let Err(e) = r {
-            tracing::warn!("Failed to delete expired metadata file: {e:?}");
-        }
-    }
+    delete_files(&file_io, &expired_metadata_files).await;
 
     Ok(Arc::new(commits))
 }

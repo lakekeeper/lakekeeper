@@ -123,7 +123,7 @@ impl<A: Authorizer> GenericTableCreationGuard<A> {
     async fn cleanup(&mut self, error: &IcebergErrorResponse) {
         if error.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
             tracing::warn!(
-                "Creation of generic table {} in warehouse {} may have been committed, keeping its authorizer entry",
+                "Creation of generic table {} in warehouse {} may have been committed, skipping cleanup",
                 self.generic_table_id,
                 self.warehouse_id
             );

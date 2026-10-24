@@ -23,7 +23,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::{delete_files_after_failure, remove_all, write_file},
+        io::{delete_on_failure, remove_all, write_file},
         require_warehouse_id,
         tables::{
             MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
@@ -277,22 +277,22 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     };
     let storage_secret_ref = storage_secret.as_deref();
 
-    // Write metadata file
+    // Write the metadata file and commit
     let file_io = ctx.storage_profile.file_io(storage_secret_ref).await?;
-    write_file(
-        &file_io,
-        &new_view.metadata_location,
-        &new_metadata,
-        CompressionCodec::try_from_metadata(&new_metadata)?,
-    )
-    .await?;
+    let config = delete_on_failure(&file_io, &[&new_view.metadata_location], async {
+        write_file(
+            &file_io,
+            &new_view.metadata_location,
+            &new_metadata,
+            CompressionCodec::try_from_metadata(&new_metadata)?,
+        )
+        .await?;
 
-    tracing::debug!(
-        "Wrote new view metadata file to: '{}'",
-        new_view.metadata_location
-    );
+        tracing::debug!(
+            "Wrote new view metadata file to: '{}'",
+            new_view.metadata_location
+        );
 
-    let committed = async {
         // Generate config for client
         let config = ctx
             .storage_profile
@@ -329,16 +329,9 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         }
 
         t.commit().await?;
-        Result::<_>::Ok(config)
-    }
-    .await;
-    let config = match committed {
-        Ok(config) => config,
-        Err(e) => {
-            delete_files_after_failure(&file_io, [&new_view.metadata_location], &e).await;
-            return Err(e);
-        }
-    };
+        Ok(config)
+    })
+    .await?;
 
     // Handle file cleanup after transaction is committed
     if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {

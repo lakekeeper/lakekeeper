@@ -8,18 +8,27 @@ pub(crate) fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError>
     UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
 }
 
-/// Whether a transaction whose `COMMIT` failed with `error` may have been committed. Postgres
-/// rolls back before it reports an error at `COMMIT`, except for a PANIC; a dropped connection
-/// leaves the outcome open.
+/// Whether a transaction whose `COMMIT` failed with `error` may have been committed. Only an ERROR
+/// reply proves a rollback, and only outside SQLSTATE 40003 and the classes 08, 53, 57, 58 and
+/// XX. A FATAL idle-in-transaction timeout (25P03) ends the session before `COMMIT` is read.
 pub(crate) fn commit_state_unknown(error: &sqlx::Error) -> bool {
-    let sqlx::Error::Database(db) = error else {
+    let Some(db) = error
+        .as_database_error()
+        .and_then(|e| e.try_downcast_ref::<PgDatabaseError>())
+    else {
         return true;
     };
-    // 40003: statement_completion_unknown
-    db.code().as_deref() == Some("40003")
-        || db
-            .try_downcast_ref::<PgDatabaseError>()
-            .is_none_or(|e| e.severity() == PgSeverity::Panic)
+    let code = db.code();
+    match db.severity() {
+        PgSeverity::Error => {
+            code == "40003"
+                || ["08", "53", "57", "58", "XX"]
+                    .iter()
+                    .any(|c| code.starts_with(c))
+        }
+        PgSeverity::Fatal => code != "25P03",
+        _ => true,
+    }
 }
 
 pub(crate) trait DBErrorHandler

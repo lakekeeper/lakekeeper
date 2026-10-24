@@ -34,31 +34,41 @@ pub(crate) async fn delete_file(
     io.delete(location.as_str()).await.map_err(Into::into)
 }
 
-/// Delete the files written for a change that failed with `error`, best effort. Keeps them if
-/// the commit may have been applied.
-pub(crate) async fn delete_files_after_failure<'a>(
+/// Run `change`, which commits the files written to `locations`. If it fails, delete them, best
+/// effort, unless the commit may have been applied.
+pub(crate) async fn delete_on_failure<T>(
+    io: &impl LakekeeperStorage,
+    locations: &[&Location],
+    change: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let result = change.await;
+    if let Err(e) = &result {
+        if e.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+            tracing::warn!(
+                ?locations,
+                "Commit may have been applied, keeping its new metadata files"
+            );
+        } else {
+            delete_files(io, locations.iter().copied()).await;
+        }
+    }
+    result
+}
+
+/// Delete files, best effort: failures are logged.
+pub(crate) async fn delete_files<'a>(
     io: &impl LakekeeperStorage,
     locations: impl IntoIterator<Item = &'a Location>,
-    error: &IcebergErrorResponse,
 ) {
-    let locations = locations.into_iter();
-    if error.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
-        tracing::warn!(
-            "Commit may have been applied, keeping its new metadata files: {}",
-            locations
-                .map(Location::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        return;
-    }
     let results = futures::future::join_all(
-        locations.map(|location| async move { (location, delete_file(io, location).await) }),
+        locations
+            .into_iter()
+            .map(|location| async move { (location, delete_file(io, location).await) }),
     )
     .await;
     for (location, result) in results {
         if let Err(e) = result {
-            tracing::warn!("Failed to delete new metadata file {location}: {e:?}");
+            tracing::warn!("Failed to delete file {location}: {e:?}");
         }
     }
 }
