@@ -610,6 +610,31 @@ impl StorageProfile {
         }
     }
 
+    /// Checks the server's rules for `credential` with this profile, without contacting storage.
+    /// A credential update changes no profile, so it runs this check, not [`Self::normalize`].
+    ///
+    /// # Errors
+    /// Fails if `credential` does not fit this profile or breaks a server rule.
+    pub fn check_credential(
+        &self,
+        credential: Option<&StorageCredential>,
+    ) -> Result<(), ValidationError> {
+        match self {
+            StorageProfile::S3(profile) => Ok(profile.check_credential(
+                credential
+                    .map(|s| s.try_to_s3())
+                    .transpose()
+                    .map_err(CredentialsError::from)?,
+            )?),
+            StorageProfile::Stackit(_)
+            | StorageProfile::Adls(_)
+            | StorageProfile::OneLake(_)
+            | StorageProfile::Gcs(_) => Ok(()),
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(_) => Ok(()),
+        }
+    }
+
     /// Validate physical access.
     ///
     /// If location is not provided, a dummy table location is used.

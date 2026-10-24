@@ -341,13 +341,10 @@ impl S3Profile {
         &self,
         credential: Option<&S3Credential>,
     ) -> Result<S3Storage, CredentialsError> {
-        let mut s3_settings = storage_profile_to_s3_settings(self);
+        let (mut s3_settings, auth) = self.sdk_inputs(credential)?;
         // Alibaba Cloud OSS does not implement chunked encoding, so we need the fallback
         // to "strict s3 compatibility behavious"; see `S3Settings`
         s3_settings.s3_compat_checksums = matches!(credential, Some(S3Credential::AliyunOss(_)));
-        let auth = credential
-            .map(|c| S3Auth::try_from(c.clone()))
-            .transpose()?;
         Ok(s3_settings.get_storage_client(auth.as_ref()).await)
     }
 
@@ -375,6 +372,7 @@ impl S3Profile {
         self.normalize_sts_endpoint()?;
         self.normalize_assume_role_arn();
         self.normalize_sts_role_arn();
+        self.check_credential(s3_credential)?;
         self.normalize_kms_key_arn();
         self.validate_sts_session_policy_principal(s3_credential)?;
 
@@ -742,7 +740,6 @@ impl S3Profile {
                 .map_err(Into::into),
             c
             @ (Some(S3Credential::AccessKey(..) | S3Credential::AwsSystemIdentity(..)) | None) => {
-                let auth = c.map(S3Auth::try_from).transpose()?;
                 let sts_arn = self
                     .sts_role_arn
                     .as_ref()
@@ -755,7 +752,7 @@ impl S3Profile {
                     ));
                 }
 
-                self.get_sts_token(sts_request, auth.as_ref(), sts_arn)
+                self.get_sts_token(sts_request, c.as_ref(), sts_arn)
                     .await
                     .map_err(Into::into)
             }
@@ -1100,7 +1097,7 @@ impl S3Profile {
     async fn get_sts_token(
         &self,
         sts_request: &ShortTermCredentialsRequest,
-        s3_credential: Option<&S3Auth>,
+        s3_credential: Option<&S3Credential>,
         role_arn: Option<&str>,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
         let policy = self
@@ -1111,37 +1108,16 @@ impl S3Profile {
 
     async fn assume_role_with_sts(
         &self,
-        s3_credentials: Option<&S3Auth>,
+        s3_credential: Option<&S3Credential>,
         role_arn: Option<&str>,
         policy: Option<String>,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
-        let external_id = s3_credentials
-            .as_ref()
-            .and_then(|c| c.external_id().map(ToString::to_string));
-
-        if role_arn.is_none()
-            && matches!(s3_credentials, Some(S3Auth::AwsSystemIdentity { .. }))
-            && !CONFIG.s3_enable_direct_system_credentials
-        {
-            return Err(CredentialsError::Misconfiguration(
-            "This deployment of Lakekeeper requires an `assume-role-arn` to be set for system identity credentials."
-                .to_string(),
-        ));
-        }
-
-        if external_id.is_none()
-            && role_arn.is_some()
-            && CONFIG.s3_require_external_id_for_system_credentials
-            && matches!(s3_credentials, Some(S3Auth::AwsSystemIdentity { .. }))
-        {
-            return Err(CredentialsError::Misconfiguration(
-                "An `external-id` is required when using `assume-role-arn`.".to_string(),
-            ));
-        }
-
         // We expect that we are able to assume the STS role directly, without needing to assume
         // the `assume-role-arn` role first.
-        let sdk_config = self.get_aws_sdk_config(s3_credentials, None).await?;
+        let (sdk_config, auth) = self.aws_sdk_config(s3_credential, None).await?;
+        let external_id = auth
+            .as_ref()
+            .and_then(|c| c.external_id().map(ToString::to_string));
 
         // Build the STS client, optionally overriding the endpoint if a separate
         // STS endpoint is configured (common with S3-compatible storage).
@@ -1219,29 +1195,70 @@ impl S3Profile {
         })
     }
 
-    /// Load the native AWS SDK config, optionally assuming a role if provided.
-    /// `self.assume_role_arn` / `self.sts_role_arn` are not used directly.
-    ///
-    /// # Errors
-    /// Returns an error if the credentials are misconfigured or if the SDK config cannot be loaded
-    pub async fn get_aws_sdk_config(
+    /// Checks the server's rules for AWS system identities against this profile and
+    /// `credential`.
+    fn check_aws_system_identity(
         &self,
-        s3_credential: Option<&S3Auth>,
-        assume_role_arn: Option<&str>,
-    ) -> Result<SdkConfig, CredentialsError> {
-        if matches!(&s3_credential, Some(S3Auth::AwsSystemIdentity(..)))
-            && !CONFIG.enable_aws_system_credentials
-        {
-            return Err(CredentialsError::Misconfiguration(
-                "System identity credentials are disabled in this Lakekeeper deployment."
-                    .to_string(),
-            ));
+        credential: Option<&S3Credential>,
+        rules: SystemIdentityRules,
+    ) -> Result<(), CredentialsError> {
+        let Some(S3Credential::AwsSystemIdentity(identity)) = credential else {
+            return Ok(());
+        };
+        let misconfiguration =
+            |reason: &str| Err(CredentialsError::Misconfiguration(reason.to_string()));
+        if !rules.enabled {
+            return misconfiguration(SYSTEM_IDENTITY_DISABLED);
         }
+        let assume_role_arn = non_blank(self.assume_role_arn.as_deref());
+        if assume_role_arn.is_none() && !rules.allow_direct {
+            return misconfiguration(ASSUME_ROLE_ARN_REQUIRED);
+        }
+        let assumes_role = assume_role_arn.is_some()
+            || (self.sts_enabled && non_blank(self.sts_role_arn.as_deref()).is_some());
+        if assumes_role
+            && rules.require_external_id
+            && non_blank(identity.external_id.as_deref()).is_none()
+        {
+            return misconfiguration(EXTERNAL_ID_REQUIRED);
+        }
+        Ok(())
+    }
 
-        let mut s3_settings = storage_profile_to_s3_settings(self);
+    /// Checks the server's rules for AWS system identities against this profile and
+    /// `credential`, without contacting storage.
+    pub(super) fn check_credential(
+        &self,
+        credential: Option<&S3Credential>,
+    ) -> Result<(), CredentialsError> {
+        self.check_aws_system_identity(credential, SystemIdentityRules::from(&*CONFIG))
+    }
+
+    /// The settings and the auth for the storage of this profile with `credential`, once the
+    /// server's rules for AWS system identities pass. Every storage client, signing identity and
+    /// STS call of a profile starts here.
+    fn sdk_inputs(
+        &self,
+        credential: Option<&S3Credential>,
+    ) -> Result<(S3Settings, Option<S3Auth>), CredentialsError> {
+        self.check_credential(credential)?;
+        Ok((
+            storage_profile_to_s3_settings(self),
+            credential.map(s3_auth),
+        ))
+    }
+
+    /// The AWS SDK config for this profile with `credential`, assuming `assume_role_arn` if
+    /// given, and the auth it was built from.
+    async fn aws_sdk_config(
+        &self,
+        credential: Option<&S3Credential>,
+        assume_role_arn: Option<&str>,
+    ) -> Result<(SdkConfig, Option<S3Auth>), CredentialsError> {
+        let (mut s3_settings, auth) = self.sdk_inputs(credential)?;
         s3_settings.assume_role_arn = assume_role_arn.map(String::from);
-
-        Ok(s3_settings.get_sdk_config(s3_credential).await)
+        let sdk_config = s3_settings.get_sdk_config(auth.as_ref()).await;
+        Ok((sdk_config, auth))
     }
 
     /// Get the signing identity for the S3 credentials.
@@ -1252,14 +1269,13 @@ impl S3Profile {
         &self,
         s3_credential: Option<&S3Credential>,
     ) -> Result<Identity, ErrorModel> {
-        let s3_auth = s3_credential
-            .map(|e| S3Auth::try_from(e.clone()))
-            .transpose()?;
         // Static keys sign without a network call. Assuming a role or loading the system
-        // identity calls a service, so the identity is cached.
-        if self.assume_role_arn.is_none() && !matches!(s3_auth, Some(S3Auth::AwsSystemIdentity(_)))
+        // identity calls a service, so the identity is cached. An entry is cached only after
+        // `aws_sdk_config` checked the server's rules for this profile and credential.
+        if self.assume_role_arn.is_none()
+            && !matches!(s3_credential, Some(S3Credential::AwsSystemIdentity(_)))
         {
-            return self.load_signing_identity(s3_auth.as_ref()).await;
+            return self.load_signing_identity(s3_credential).await;
         }
         let key = StorageContextKey::new(self.into(), s3_credential.map(Into::into));
         get_or_load_stc(
@@ -1267,7 +1283,7 @@ impl S3Profile {
             CredentialCacheType::S3SigningIdentity,
             key,
             || async {
-                let identity = self.load_signing_identity(s3_auth.as_ref()).await?;
+                let identity = self.load_signing_identity(s3_credential).await?;
                 let valid_until = signing_identity_valid_until(
                     identity.expiration(),
                     SystemTime::now(),
@@ -1281,10 +1297,10 @@ impl S3Profile {
 
     async fn load_signing_identity(
         &self,
-        s3_auth: Option<&S3Auth>,
+        s3_credential: Option<&S3Credential>,
     ) -> Result<Identity, ErrorModel> {
-        let sdk = self
-            .get_aws_sdk_config(s3_auth, self.assume_role_arn.as_deref())
+        let (sdk, _) = self
+            .aws_sdk_config(s3_credential, self.assume_role_arn.as_deref())
             .await?;
         let token_provider = sdk.credentials_provider().ok_or_else(|| {
             ErrorModel::precondition_failed(
@@ -2115,34 +2131,55 @@ impl From<S3AwsSystemIdentityCredential> for S3AwsSystemIdentityAuth {
     }
 }
 
-impl TryFrom<S3Credential> for S3Auth {
-    type Error = CredentialsError;
+/// The server's rules for AWS system identities as warehouse storage credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SystemIdentityRules {
+    /// System identities may be used at all.
+    enabled: bool,
+    /// Lakekeeper may use the system identity's own permissions, without assuming
+    /// `assume-role-arn`.
+    allow_direct: bool,
+    /// A system identity that assumes a role must name an `external-id`.
+    require_external_id: bool,
+}
 
-    fn try_from(credential: S3Credential) -> Result<Self, Self::Error> {
-        if matches!(&credential, S3Credential::AwsSystemIdentity(..))
-            && !CONFIG.enable_aws_system_credentials
-        {
-            return Err(CredentialsError::Misconfiguration(
-                "System identity credentials are disabled in this Lakekeeper deployment."
-                    .to_string(),
-            ));
+impl From<&crate::config::DynAppConfig> for SystemIdentityRules {
+    fn from(config: &crate::config::DynAppConfig) -> Self {
+        Self {
+            enabled: config.enable_aws_system_credentials,
+            allow_direct: config.s3_enable_direct_system_credentials,
+            require_external_id: config.s3_require_external_id_for_system_credentials,
         }
+    }
+}
 
-        Ok(match credential {
-            S3Credential::AccessKey(c) | S3Credential::AliyunOss(c) => S3Auth::AccessKey(c.into()),
-            S3Credential::AwsSystemIdentity(c) => S3Auth::AwsSystemIdentity(c.into()),
-            S3Credential::CloudflareR2(S3CloudflareR2Credential {
-                access_key_id,
-                secret_access_key,
-                token: _,
-                account_id: _,
-            }) => S3Auth::AccessKey(S3AccessKeyAuth {
-                aws_access_key_id: access_key_id,
-                aws_secret_access_key: secret_access_key,
-                aws_session_token: None,
-                external_id: None, // Cloudflare R2 does not use external ID
-            }),
-        })
+const SYSTEM_IDENTITY_DISABLED: &str =
+    "System identity credentials are disabled in this Lakekeeper deployment.";
+const ASSUME_ROLE_ARN_REQUIRED: &str = "This Lakekeeper deployment requires an `assume-role-arn` in the storage profile to use system identity credentials.";
+const EXTERNAL_ID_REQUIRED: &str = "This Lakekeeper deployment requires an `external-id` in the storage credential when system identity credentials assume a role.";
+
+/// `value` unless it is blank.
+fn non_blank(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+/// The auth the AWS SDK uses for `credential`. Only [`S3Profile::sdk_inputs`] calls it, after the
+/// server's rules pass.
+fn s3_auth(credential: &S3Credential) -> S3Auth {
+    match credential.clone() {
+        S3Credential::AccessKey(c) | S3Credential::AliyunOss(c) => S3Auth::AccessKey(c.into()),
+        S3Credential::AwsSystemIdentity(c) => S3Auth::AwsSystemIdentity(c.into()),
+        S3Credential::CloudflareR2(S3CloudflareR2Credential {
+            access_key_id,
+            secret_access_key,
+            token: _,
+            account_id: _,
+        }) => S3Auth::AccessKey(S3AccessKeyAuth {
+            aws_access_key_id: access_key_id,
+            aws_secret_access_key: secret_access_key,
+            aws_session_token: None,
+            external_id: None, // Cloudflare R2 does not use external ID
+        }),
     }
 }
 
@@ -2347,7 +2384,7 @@ pub(crate) mod test {
 
     use super::*;
     use crate::service::storage::{
-        StorageProfile,
+        StorageCredential, StorageProfile,
         storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
     };
 
@@ -2357,6 +2394,265 @@ pub(crate) mod test {
             .build()
             .expect("failed to start Tokio runtime")
     });
+
+    const STRICT_RULES: SystemIdentityRules = SystemIdentityRules {
+        enabled: true,
+        allow_direct: false,
+        require_external_id: true,
+    };
+
+    fn system_identity(external_id: Option<&str>) -> S3Credential {
+        S3Credential::AwsSystemIdentity(S3AwsSystemIdentityCredential {
+            external_id: external_id.map(String::from),
+        })
+    }
+
+    fn system_identity_profile(
+        assume_role_arn: Option<&str>,
+        sts_role_arn: Option<&str>,
+        sts_enabled: bool,
+    ) -> S3Profile {
+        let mut profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(sts_enabled)
+            .build();
+        profile.assume_role_arn = assume_role_arn.map(String::from);
+        profile.sts_role_arn = sts_role_arn.map(String::from);
+        profile
+    }
+
+    /// The rule a profile and credential break, or `None`.
+    fn broken_rule(
+        profile: &S3Profile,
+        credential: &S3Credential,
+        rules: SystemIdentityRules,
+    ) -> Option<String> {
+        match profile.check_aws_system_identity(Some(credential), rules) {
+            Ok(()) => None,
+            Err(CredentialsError::Misconfiguration(reason)) => Some(reason),
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+    }
+
+    const ROLE: &str = "arn:aws:iam::123456789012:role/warehouse";
+
+    #[test]
+    fn system_identities_follow_the_server_rules() {
+        let with_id = system_identity(Some("external-id"));
+        let without_id = system_identity(None);
+        let blank_id = system_identity(Some("  "));
+        let direct = SystemIdentityRules {
+            allow_direct: true,
+            ..STRICT_RULES
+        };
+        let no_external_id = SystemIdentityRules {
+            require_external_id: false,
+            ..STRICT_RULES
+        };
+        let disabled = SystemIdentityRules {
+            enabled: false,
+            ..STRICT_RULES
+        };
+        let assumes = system_identity_profile(Some(ROLE), None, false);
+        let no_role = system_identity_profile(None, None, false);
+        let blank_role = system_identity_profile(Some(""), None, false);
+        let vending_role_only = system_identity_profile(None, Some(ROLE), true);
+        let unused_vending_role = system_identity_profile(None, Some(ROLE), false);
+
+        let cases: [(&S3Profile, &S3Credential, SystemIdentityRules, Option<&str>); 12] = [
+            (&assumes, &with_id, STRICT_RULES, None),
+            (&assumes, &with_id, disabled, Some(SYSTEM_IDENTITY_DISABLED)),
+            (
+                &no_role,
+                &with_id,
+                STRICT_RULES,
+                Some(ASSUME_ROLE_ARN_REQUIRED),
+            ),
+            (
+                &blank_role,
+                &with_id,
+                STRICT_RULES,
+                Some(ASSUME_ROLE_ARN_REQUIRED),
+            ),
+            (
+                &vending_role_only,
+                &with_id,
+                STRICT_RULES,
+                Some(ASSUME_ROLE_ARN_REQUIRED),
+            ),
+            (&no_role, &without_id, direct, None),
+            (
+                &assumes,
+                &without_id,
+                STRICT_RULES,
+                Some(EXTERNAL_ID_REQUIRED),
+            ),
+            (
+                &assumes,
+                &blank_id,
+                STRICT_RULES,
+                Some(EXTERNAL_ID_REQUIRED),
+            ),
+            (&assumes, &without_id, no_external_id, None),
+            (
+                &vending_role_only,
+                &without_id,
+                direct,
+                Some(EXTERNAL_ID_REQUIRED),
+            ),
+            (&unused_vending_role, &without_id, direct, None),
+            (&vending_role_only, &with_id, direct, None),
+        ];
+        for (index, (profile, credential, rules, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                broken_rule(profile, credential, rules).as_deref(),
+                expected,
+                "case {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_credentials_pass_every_rule() {
+        let disabled = SystemIdentityRules {
+            enabled: false,
+            ..STRICT_RULES
+        };
+        let profile = system_identity_profile(None, None, false);
+        let access_key = S3Credential::AccessKey(S3AccessKeyCredential {
+            access_key_id: "AKIAEXAMPLE".to_string(),
+            secret_access_key: "secret".to_string(),
+            external_id: None,
+        });
+        assert!(
+            profile
+                .check_aws_system_identity(Some(&access_key), disabled)
+                .is_ok()
+        );
+        assert!(profile.check_aws_system_identity(None, disabled).is_ok());
+    }
+
+    #[test]
+    fn system_identity_rules_come_from_the_server_settings() {
+        let mut config = crate::config::DynAppConfig::default();
+        assert_eq!(
+            SystemIdentityRules::from(&config),
+            SystemIdentityRules {
+                enabled: false,
+                allow_direct: false,
+                require_external_id: true,
+            }
+        );
+        config.enable_aws_system_credentials = true;
+        config.s3_enable_direct_system_credentials = true;
+        config.s3_require_external_id_for_system_credentials = false;
+        assert_eq!(
+            SystemIdentityRules::from(&config),
+            SystemIdentityRules {
+                enabled: true,
+                allow_direct: true,
+                require_external_id: false,
+            }
+        );
+    }
+
+    /// A profile and a system identity credential that this server's settings refuse, and the
+    /// reason; `None` when the settings refuse no system identity.
+    fn refused_system_identity(
+        sts_enabled: bool,
+    ) -> Option<(S3Profile, S3Credential, &'static str)> {
+        let rules = SystemIdentityRules::from(&*CONFIG);
+        let assumes = system_identity_profile(Some(ROLE), Some(ROLE), sts_enabled);
+        if !rules.enabled {
+            Some((
+                assumes,
+                system_identity(Some("id")),
+                SYSTEM_IDENTITY_DISABLED,
+            ))
+        } else if !rules.allow_direct {
+            let direct = system_identity_profile(None, Some(ROLE), sts_enabled);
+            Some((
+                direct,
+                system_identity(Some("id")),
+                ASSUME_ROLE_ARN_REQUIRED,
+            ))
+        } else if rules.require_external_id {
+            Some((assumes, system_identity(None), EXTERNAL_ID_REQUIRED))
+        } else {
+            None
+        }
+    }
+
+    fn refusal<T>(result: Result<T, impl std::fmt::Display>) -> String {
+        match result {
+            Ok(_) => panic!("a system identity was accepted that the server settings refuse"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    // Each path that turns a profile and credential into AWS credentials refuses what the
+    // settings refuse.
+
+    #[test]
+    fn creating_a_warehouse_checks_the_system_identity_rules() {
+        let Some((mut profile, credential, reason)) = refused_system_identity(false) else {
+            return;
+        };
+        let error = refusal(profile.normalize(Some(&credential)));
+        assert!(error.contains(reason), "{error}");
+    }
+
+    #[test]
+    fn updating_a_credential_checks_the_system_identity_rules() {
+        let Some((profile, credential, reason)) = refused_system_identity(false) else {
+            return;
+        };
+        let profile = StorageProfile::S3(profile);
+        let error = refusal(profile.check_credential(Some(&StorageCredential::S3(credential))));
+        assert!(error.contains(reason), "{error}");
+    }
+
+    #[tokio::test]
+    async fn storage_client_checks_the_system_identity_rules() {
+        let Some((profile, credential, reason)) = refused_system_identity(false) else {
+            return;
+        };
+        let error = refusal(profile.lakekeeper_io(Some(&credential)).await);
+        assert!(error.contains(reason), "{error}");
+    }
+
+    #[tokio::test]
+    async fn signing_checks_the_system_identity_rules() {
+        let Some((profile, credential, reason)) = refused_system_identity(false) else {
+            return;
+        };
+        let error = profile
+            .get_signing_identity(Some(&credential))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains(reason), "{}", error.message);
+    }
+
+    #[tokio::test]
+    async fn vending_checks_the_system_identity_rules() {
+        let Some((profile, credential, reason)) = refused_system_identity(true) else {
+            return;
+        };
+        let request = ShortTermCredentialsRequest {
+            table_location: Location::from_str("s3://test-bucket/wh/table").unwrap(),
+            storage_permissions: StoragePermissions::Read,
+            warehouse_id: crate::WarehouseId::new_random(),
+            tabular_id: crate::service::TabularId::Table(crate::service::TableId::new_random()),
+        };
+        let error = refusal(
+            profile
+                .get_temporary_credentials(&request, Some(&credential))
+                .await,
+        );
+        assert!(error.contains(reason), "{error}");
+    }
 
     #[track_caller]
     pub(crate) fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output {
@@ -3626,7 +3922,6 @@ pub(crate) mod test {
                     let mut profile = profile;
                     profile.normalize(Some(&cred)).unwrap();
 
-                    let s3_auth = S3Auth::try_from(cred).unwrap();
                     let table_location: lakekeeper_io::Location = format!(
                         "s3://{}/{}",
                         profile.bucket,
@@ -3653,7 +3948,7 @@ pub(crate) mod test {
                     // Assume role with the downscoped policy
                     let sts_creds = profile
                         .assume_role_with_sts(
-                            Some(&s3_auth),
+                            Some(&cred),
                             profile.sts_role_arn.as_deref(),
                             Some(policy),
                         )
