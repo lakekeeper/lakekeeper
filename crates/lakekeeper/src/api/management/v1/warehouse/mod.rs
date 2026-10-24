@@ -1850,6 +1850,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = new_storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
+        warehouse
+            .storage_profile
+            .check_credential(new_storage_credential.as_ref())?;
         // Validated before the transaction opens: probing storage can take most
         // of the request time limit, and a write connection and the warehouse's
         // row lock must not be held across it.
