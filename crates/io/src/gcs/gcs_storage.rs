@@ -72,7 +72,13 @@ async fn delete_one(
 ) -> Result<(GcsLocation, Option<IOError>), DeleteBatchError> {
     let location = GcsLocation::try_from_str(&path)?;
     // `delete_batch` holds a limit for every bucket of the batch.
-    let limit = limits[location.bucket_name()].clone();
+    let Some(limit) = limits.get(location.bucket_name()).cloned() else {
+        return Err(DeleteBatchError::IOError(IOError::new(
+            ErrorKind::Unexpected,
+            "Batch delete has no delete limit for this bucket",
+            location.to_string(),
+        )));
+    };
     // Waiting for the permit is not part of the request, so it is outside its timeout.
     let result = limit.run(delete_object(&control, &location)).await;
     // Convert 404 (not found) to success for idempotent behavior

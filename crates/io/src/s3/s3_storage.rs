@@ -1288,6 +1288,46 @@ mod tests {
         assert_eq!(error.location(), Some("s3://bucket-b/same/key"));
     }
 
+    #[tokio::test]
+    async fn a_bucket_whose_limit_is_taken_does_not_hold_up_the_other_buckets() {
+        let free_requests = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new().fallback({
+            let free_requests = free_requests.clone();
+            move |uri: axum::http::Uri| {
+                let free_requests = free_requests.clone();
+                async move {
+                    if uri.path().starts_with("/free") {
+                        free_requests.fetch_add(1, Ordering::SeqCst);
+                    }
+                    xml(EMPTY_DELETE_RESULT.to_string())
+                }
+            }
+        });
+        let storage = storage_at(&serve(app).await).await;
+        // Each held bucket has as many chunks as one bucket may send at once. The buckets of a
+        // batch come in any order, so several held buckets make it likely that one comes first.
+        let mut held = Vec::new();
+        let mut batch = paths("free", 1);
+        for bucket in ["held-a", "held-b", "held-c"] {
+            let limit = DeleteLimit::of(&DeleteEndpoint::S3 {
+                scope: &storage.service_scope,
+                bucket,
+            });
+            held.push(limit.hold_all().await);
+            batch.extend(paths(bucket, S3_DELETE_REQUESTS * MAX_DELETE_BATCH_SIZE));
+        }
+
+        let delete = tokio::spawn(async move { storage.delete_batch(&batch).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while free_requests.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the free bucket waited for the limits of the held buckets");
+        delete.abort();
+    }
+
     /// Endpoint that holds every request until its gate has permits, and counts requests.
     struct GatedEndpoint {
         url: String,
