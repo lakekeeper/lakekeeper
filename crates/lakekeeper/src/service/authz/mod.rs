@@ -2570,6 +2570,13 @@ where
     /// Router for the API
     fn new_router<C: CatalogStore, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>>;
 
+    /// Full paths (`/management/v1/...`) of the `POST` routes of
+    /// [`new_router`](Self::new_router) that only read, such as searches whose
+    /// input does not fit a query string. Read-only maintenance mode serves them.
+    fn read_only_post_paths(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Check if the requested actor combination is allowed - especially if the user
     /// is allowed to assume the specified role.
     async fn check_assume_role_impl(

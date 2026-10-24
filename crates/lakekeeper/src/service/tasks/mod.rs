@@ -14,7 +14,9 @@ use crate::{
     api::management::v1::tasks::TaskStatus,
     service::{
         ArcProjectId, CatalogStore, CatalogTaskOps, GenericTableId, GenericTableNamed, TableId,
-        TableNamed, TabularId, ViewId, ViewNamed, task_configs::TaskQueueConfigFilter,
+        TableNamed, TabularId, ViewId, ViewNamed,
+        maintenance_mode::{MAINTENANCE, WaitOutcome, wait_until_writable},
+        task_configs::TaskQueueConfigFilter,
     },
 };
 
@@ -947,6 +949,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 
     /// Continuously poll for a new task in the queue until a task is found.
+    /// Picks nothing while this process is in read-only maintenance mode.
     /// Returns None if cancellation is requested.
     pub async fn poll_for_new_task<C: CatalogStore>(
         catalog_state: C::State,
@@ -954,6 +957,15 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         cancellation_token: tokio_util::sync::CancellationToken,
     ) -> Option<Self> {
         loop {
+            if wait_until_writable(&MAINTENANCE, *poll_interval, &cancellation_token).await
+                == WaitOutcome::Cancelled
+            {
+                tracing::info!(
+                    "Graceful shutdown requested for queue `{}`",
+                    Q::queue_name()
+                );
+                return None;
+            }
             tokio::select! {
                 () = cancellation_token.cancelled() => {
                     tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());

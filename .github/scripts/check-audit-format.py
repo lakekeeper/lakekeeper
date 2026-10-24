@@ -30,6 +30,8 @@ Read version:    python3 .github/scripts/check-audit-format.py --print-version <
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 from collections import Counter
 from functools import lru_cache
@@ -1065,6 +1067,16 @@ def show(version: tuple[int, int] | None) -> str:
     return "none" if version is None else f"{version[0]}.{version[1]}"
 
 
+# Fragments this release branch ships by exception, path -> reason. Only a `level: none`
+# fragment qualifies: it leaves AUDIT_FORMAT where it is.
+RELEASE_BRANCH_EXCEPTIONS: dict[str, str] = {
+    "audit-format/unreleased/runtime-maintenance-mode-actions.md": (
+        "0.14.2 ships runtime maintenance mode (#2156) and its two new actions; "
+        "AUDIT_FORMAT stays 1.0."
+    ),
+}
+
+
 def check_release_branch(
     base_branch: str,
     released: set[tuple[str, str]],
@@ -1085,10 +1097,17 @@ def check_release_branch(
         problems.append(
             f"the emitted records changed since the release ({len(released)} change(s))"
         )
-    if fragments:
+    excepted = sorted(
+        path
+        for path, level in fragments.items()
+        if level == "none" and path in RELEASE_BRANCH_EXCEPTIONS
+    )
+    for path in excepted:
+        print(f"Exception:  {path}: {RELEASE_BRANCH_EXCEPTIONS[path]}")
+    frozen = sorted(path for path in fragments if path not in excepted)
+    if frozen:
         problems.append(
-            f"it carries {len(fragments)} audit format fragment(s): "
-            + ", ".join(sorted(fragments))
+            f"it carries {len(frozen)} audit format fragment(s): " + ", ".join(frozen)
         )
     if head_version != baseline:
         problems.append(
@@ -2373,6 +2392,25 @@ def self_test() -> int:
         )[0],
         "breaking",
     )
+
+    # ── release branches ────────────────────────────────────────────────────────
+    with contextlib.redirect_stdout(io.StringIO()):
+        for path in RELEASE_BRANCH_EXCEPTIONS:
+            check(
+                f"a release branch takes the excepted `none` fragment {path}",
+                check_release_branch("rel-3-4", set(), {path: "none"}, (3, 4), (3, 4)),
+                0,
+            )
+            check(
+                f"a release branch refuses the excepted fragment {path} above `none`",
+                check_release_branch("rel-3-4", set(), {path: "minor"}, (3, 4), (3, 4)),
+                1,
+            )
+        check(
+            "a release branch refuses any other fragment",
+            check_release_branch("rel-3-4", set(), {"other.md": "none"}, (3, 4), (3, 4)),
+            1,
+        )
 
     for line in failures:
         print(f"FAIL {line}")

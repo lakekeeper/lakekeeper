@@ -88,9 +88,13 @@ impl Location {
 
     #[must_use]
     pub fn username(&self) -> Option<&str> {
-        self.authority_and_path
-            .split_once('@')
-            .and_then(|(auth, _)| auth.split_once(':').map(|(user, _)| user).or(Some(auth)))
+        self.authority_with_host()
+            .rsplit_once('@')
+            .map(|(userinfo, _)| {
+                userinfo
+                    .split_once(':')
+                    .map_or(userinfo, |(username, _)| username)
+            })
     }
 
     pub fn with_trailing_slash(&mut self) -> &mut Self {
@@ -862,6 +866,15 @@ mod tests {
         assert_eq!(location.username(), None);
 
         let location = Location::from_str("s3://user@bucket/foo/bar").unwrap();
+        assert_eq!(location.username(), Some("user"));
+
+        let location = Location::from_str("s3://bucket/foo@bar").unwrap();
+        assert_eq!(location.username(), None);
+
+        let location = Location::from_str("s3://user@bucket/foo@bar").unwrap();
+        assert_eq!(location.username(), Some("user"));
+
+        let location = Location::from_str("s3://user:password@bucket/foo@bar").unwrap();
         assert_eq!(location.username(), Some("user"));
     }
 

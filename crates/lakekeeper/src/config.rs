@@ -756,7 +756,10 @@ pub struct DynAppConfig {
     /// zero-downtime version upgrade: a rolling restart sets the flag on every
     /// pod, the operator then runs migrations against the database, and a
     /// second rolling restart removes the flag once new pods are ready. The
-    /// flag is captured once at startup and is not dynamic.
+    /// value is captured once at startup and acts as a floor: an instance admin
+    /// can switch a running process into read-only with
+    /// `POST /management/v1/server/maintenance-mode`, but not out of a
+    /// `read-only` set here (see [`crate::service::maintenance_mode`]).
     ///
     /// When `read-only`, mutating HTTP requests (anything other than GET, HEAD
     /// or OPTIONS) on `/catalog/v1` and `/management/v1` are rejected with
@@ -768,13 +771,15 @@ pub struct DynAppConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum MaintenanceMode {
     /// Normal operation.
     #[default]
     Off,
-    /// Reject mutating requests with 503, do not start built-in task queue
-    /// workers, suppress side-effecting writes on read endpoints.
+    /// Reject mutating requests with 503, pick no new tasks, suppress
+    /// side-effecting writes on read endpoints. When set by configuration,
+    /// built-in task queue workers are not started.
     ReadOnly,
 }
 
