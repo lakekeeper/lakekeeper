@@ -45,8 +45,8 @@ use crate::{
         storage::{
             StoragePermissions, TableConfig,
             cache::{
-                CachedStc, S3_SIGNING_IDENTITY_CACHE, S3_STC_CACHE, STCCacheKey, StorageContextKey,
-                get_or_load_stc,
+                CachedStc, CredentialCacheType, S3_SIGNING_IDENTITY_CACHE, S3_STC_CACHE,
+                STCCacheKey, StorageContextKey, get_or_load_stc,
             },
             error::{
                 CredentialsError, InvalidProfileError, StsRejection, TableConfigError, UpdateError,
@@ -709,15 +709,20 @@ impl S3Profile {
         // Single-flight read-through: concurrent identical requests coalesce onto
         // one STS fetch (the most expensive miss in the system) per cache key. The
         // typed cache returns the S3 credential directly — no variant check.
-        get_or_load_stc(&S3_STC_CACHE, cache_key, || async {
-            tracing::debug!("Fetching new STS credentials for request: {sts_request}");
-            let temporary_credential = self
-                .get_temporary_credentials(sts_request, s3_credential)
-                .await?;
-            let valid_until =
-                Instant::now().checked_add(Duration::from_secs(self.sts_token_validity_seconds));
-            Ok::<_, TableConfigError>(CachedStc::new(temporary_credential, valid_until))
-        })
+        get_or_load_stc(
+            &S3_STC_CACHE,
+            CredentialCacheType::ShortTermCredentials,
+            cache_key,
+            || async {
+                tracing::debug!("Fetching new STS credentials for request: {sts_request}");
+                let temporary_credential = self
+                    .get_temporary_credentials(sts_request, s3_credential)
+                    .await?;
+                let valid_until = Instant::now()
+                    .checked_add(Duration::from_secs(self.sts_token_validity_seconds));
+                Ok::<_, TableConfigError>(CachedStc::new(temporary_credential, valid_until))
+            },
+        )
         .await
     }
 
@@ -1251,20 +1256,25 @@ impl S3Profile {
             .map(|e| S3Auth::try_from(e.clone()))
             .transpose()?;
         // Static keys sign without a network call. Assuming a role or loading the system
-        // identity calls a service, so the identity is cached for its lifetime.
+        // identity calls a service, so the identity is cached.
         if self.assume_role_arn.is_none() && !matches!(s3_auth, Some(S3Auth::AwsSystemIdentity(_)))
         {
             return self.load_signing_identity(s3_auth.as_ref()).await;
         }
         let key = StorageContextKey::new(self.into(), s3_credential.map(Into::into));
-        get_or_load_stc(&S3_SIGNING_IDENTITY_CACHE, key, || async {
-            let identity = self.load_signing_identity(s3_auth.as_ref()).await?;
-            let valid_until = identity
-                .expiration()
-                .and_then(|expiration| expiration.duration_since(SystemTime::now()).ok())
-                .and_then(|valid_for| Instant::now().checked_add(valid_for));
-            Ok::<_, ErrorModel>(CachedStc::new(identity, valid_until))
-        })
+        get_or_load_stc(
+            &S3_SIGNING_IDENTITY_CACHE,
+            CredentialCacheType::S3SigningIdentity,
+            key,
+            || async {
+                let identity = self.load_signing_identity(s3_auth.as_ref()).await?;
+                let valid_until = identity
+                    .expiration()
+                    .and_then(|expiration| expiration.duration_since(SystemTime::now()).ok())
+                    .and_then(|valid_for| Instant::now().checked_add(valid_for));
+                Ok::<_, ErrorModel>(CachedStc::new(identity, valid_until))
+            },
+        )
         .await
     }
 

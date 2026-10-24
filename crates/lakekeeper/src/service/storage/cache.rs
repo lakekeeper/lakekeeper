@@ -128,12 +128,11 @@ where
         .build()
 }
 
-// Per-provider STC caches. Each stores a concrete credential type, so the
-// read-through hands back the right credential without a runtime variant check.
-// Each cache gets the full `CONFIG.cache.stc.capacity` ceiling: a single-cloud
-// deployment (the norm) is unaffected, but a multi-cloud server can hold up to 4×
-// the configured entries. `max_capacity` is a ceiling, not a reservation, so idle
-// providers' caches stay near-empty.
+// Credential caches. Each stores a concrete credential type, so the read-through
+// hands back the right credential without a runtime variant check. Each cache gets
+// the full `CONFIG.cache.stc.capacity` ceiling, so a server can hold up to that many
+// entries in each cache it uses. `max_capacity` is a ceiling, not a reservation, so
+// unused caches stay near-empty.
 pub(super) static S3_STC_CACHE: LazyLock<
     Cache<STCCacheKey, CachedStc<aws_sdk_sts::types::Credentials>>,
 > = LazyLock::new(build_stc_cache);
@@ -142,20 +141,41 @@ pub(super) static ADLS_STC_CACHE: LazyLock<
 > = LazyLock::new(build_stc_cache);
 pub(super) static GCS_STC_CACHE: LazyLock<Cache<STCCacheKey, CachedStc<CachedSTSResponse>>> =
     LazyLock::new(build_stc_cache);
-/// Identities that S3 remote signing signs with. Without it, every sign request assumes the
-/// role or loads the system identity again.
+/// Identities that S3 remote signing signs with when it assumes a role or uses the system
+/// identity.
 pub(super) static S3_SIGNING_IDENTITY_CACHE: LazyLock<
     Cache<StorageContextKey, CachedStc<Identity>>,
 > = LazyLock::new(build_stc_cache);
 
-/// Update the cache size metric with the combined entry count of all STC caches.
-#[inline]
-fn update_cache_size_metric() {
-    let total = S3_STC_CACHE.entry_count()
-        + ADLS_STC_CACHE.entry_count()
-        + GCS_STC_CACHE.entry_count()
-        + S3_SIGNING_IDENTITY_CACHE.entry_count();
-    set_cache_size("stc", total);
+/// Which credentials a cache holds; names its metrics.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum CredentialCacheType {
+    /// Vended short-term credentials of all providers.
+    ShortTermCredentials,
+    /// S3 signing identities.
+    S3SigningIdentity,
+}
+
+impl CredentialCacheType {
+    fn metric_label(self) -> &'static str {
+        match self {
+            Self::ShortTermCredentials => "stc",
+            Self::S3SigningIdentity => "s3_signing_identity",
+        }
+    }
+
+    /// Update the cache size metric with the entry count of the caches of this type.
+    fn update_size_metric(self) {
+        let entries = match self {
+            Self::ShortTermCredentials => {
+                S3_STC_CACHE.entry_count()
+                    + ADLS_STC_CACHE.entry_count()
+                    + GCS_STC_CACHE.entry_count()
+            }
+            Self::S3SigningIdentity => S3_SIGNING_IDENTITY_CACHE.entry_count(),
+        };
+        set_cache_size(self.metric_label(), entries);
+    }
 }
 
 /// Single-flight read-through for a short-term-credentials cache.
@@ -176,6 +196,7 @@ fn update_cache_size_metric() {
 /// variant check.
 pub(super) async fn get_or_load_stc<K, V, F, Fut, E>(
     cache: &Cache<K, CachedStc<V>>,
+    cache_type: CredentialCacheType,
     key: K,
     load: F,
 ) -> Result<V, E>
@@ -201,11 +222,11 @@ where
     // miss here but then hits `Op::Nop` below without fetching, so the miss counter
     // is *cache misses*, not *STS fetches* (the two diverge under a herd).
     if let Some(cached) = cache.get(&key).await {
-        record_cache_hit("stc");
-        update_cache_size_metric();
+        record_cache_hit(cache_type.metric_label());
+        cache_type.update_size_metric();
         return Ok(cached.value);
     }
-    record_cache_miss("stc");
+    record_cache_miss(cache_type.metric_label());
 
     let outcome = cache
         .entry(key)
@@ -217,7 +238,7 @@ where
             Ok(Op::Put(Box::pin(load()).await?))
         })
         .await?;
-    update_cache_size_metric();
+    cache_type.update_size_metric();
 
     Ok(match outcome {
         CompResult::Inserted(entry)
@@ -282,19 +303,24 @@ mod tests {
             let loads = Arc::clone(&loads);
             let key = key.clone();
             handles.push(tokio::spawn(async move {
-                get_or_load_stc(&ADLS_STC_CACHE, key, || async {
-                    loads.fetch_add(1, Ordering::SeqCst);
-                    // Widen the load window so all callers queue on the key lock
-                    // before the first fetch completes.
-                    for _ in 0..100 {
-                        tokio::task::yield_now().await;
-                    }
-                    let valid_until = Instant::now().checked_add(Duration::from_hours(1));
-                    Ok::<_, std::convert::Infallible>(CachedStc::new(
-                        ("sas-token".to_string(), time::OffsetDateTime::now_utc()),
-                        valid_until,
-                    ))
-                })
+                get_or_load_stc(
+                    &ADLS_STC_CACHE,
+                    CredentialCacheType::ShortTermCredentials,
+                    key,
+                    || async {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        // Widen the load window so all callers queue on the key lock
+                        // before the first fetch completes.
+                        for _ in 0..100 {
+                            tokio::task::yield_now().await;
+                        }
+                        let valid_until = Instant::now().checked_add(Duration::from_hours(1));
+                        Ok::<_, std::convert::Infallible>(CachedStc::new(
+                            ("sas-token".to_string(), time::OffsetDateTime::now_utc()),
+                            valid_until,
+                        ))
+                    },
+                )
                 .await
             }));
         }
@@ -331,14 +357,19 @@ mod tests {
             let loads = Arc::clone(&loads);
             let key = key.clone();
             handles.push(tokio::spawn(async move {
-                get_or_load_stc(&ADLS_STC_CACHE, key, || async {
-                    loads.fetch_add(1, Ordering::SeqCst);
-                    // Widen the window so all waiters pile onto the key lock.
-                    for _ in 0..50 {
-                        tokio::task::yield_now().await;
-                    }
-                    Err::<CachedStc<(String, time::OffsetDateTime)>, _>(TestError)
-                })
+                get_or_load_stc(
+                    &ADLS_STC_CACHE,
+                    CredentialCacheType::ShortTermCredentials,
+                    key,
+                    || async {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        // Widen the window so all waiters pile onto the key lock.
+                        for _ in 0..50 {
+                            tokio::task::yield_now().await;
+                        }
+                        Err::<CachedStc<(String, time::OffsetDateTime)>, _>(TestError)
+                    },
+                )
                 .await
             }));
         }
@@ -359,25 +390,35 @@ mod tests {
 
         // A subsequent success populates the cache (the error left no entry behind).
         let valid_until = Instant::now().checked_add(Duration::from_hours(1));
-        let ok = get_or_load_stc(&ADLS_STC_CACHE, key.clone(), || async {
-            loads.fetch_add(1, Ordering::SeqCst);
-            Ok::<_, TestError>(CachedStc::new(
-                ("sas-token".to_string(), time::OffsetDateTime::now_utc()),
-                valid_until,
-            ))
-        })
+        let ok = get_or_load_stc(
+            &ADLS_STC_CACHE,
+            CredentialCacheType::ShortTermCredentials,
+            key.clone(),
+            || async {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, TestError>(CachedStc::new(
+                    ("sas-token".to_string(), time::OffsetDateTime::now_utc()),
+                    valid_until,
+                ))
+            },
+        )
         .await;
         assert!(ok.is_ok(), "success after transient failures must populate");
         assert_eq!(loads.load(Ordering::SeqCst), 9, "exactly one success load");
 
         // The success is now cached: the next read is a hit, loader not re-run.
-        let cached = get_or_load_stc(&ADLS_STC_CACHE, key, || async {
-            loads.fetch_add(1, Ordering::SeqCst);
-            Ok::<_, TestError>(CachedStc::new(
-                ("unused".to_string(), time::OffsetDateTime::now_utc()),
-                valid_until,
-            ))
-        })
+        let cached = get_or_load_stc(
+            &ADLS_STC_CACHE,
+            CredentialCacheType::ShortTermCredentials,
+            key,
+            || async {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, TestError>(CachedStc::new(
+                    ("unused".to_string(), time::OffsetDateTime::now_utc()),
+                    valid_until,
+                ))
+            },
+        )
         .await;
         assert!(cached.is_ok());
         assert_eq!(

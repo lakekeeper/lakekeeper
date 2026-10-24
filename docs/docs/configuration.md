@@ -488,7 +488,7 @@ See [Monitoring](./monitoring.md#cache-invalidation-metrics) for the metrics and
 
 **Short-Term Credentials (STC) Cache**
 
-When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times. For S3 remote signing, the same cache holds the credentials Lakekeeper signs with when it assumes a role or uses its system identity, so it does not call STS for every signed request.
+When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times. For S3 remote signing, the same cache holds the credentials Lakekeeper signs with when it assumes a role or uses its system identity, so it does not load new credentials for every signed request.
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
