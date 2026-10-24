@@ -1,8 +1,10 @@
 use std::{
+    hash::Hash,
     sync::LazyLock,
     time::{Duration, Instant},
 };
 
+use aws_smithy_runtime_api::client::identity::Identity;
 use moka::{
     Expiry,
     future::Cache,
@@ -20,21 +22,18 @@ use crate::{
     },
 };
 
-/// Cache key for STC tokens. This uniquely identifies a set of temporary credentials.
+/// Identifies the storage profile and the credential that load temporary credentials.
 /// We hash the full context to ensure complete isolation and avoid missing any relevant fields.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub(super) struct STCCacheKey {
-    /// Request Hash
-    pub(super) request: ShortTermCredentialsRequest,
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub(super) struct StorageContextKey {
     /// Hash of the storage profile
     storage_profile_hash: u64,
     /// Hash of the credentials used to create the STC token
     credential_hash: u64,
 }
 
-impl STCCacheKey {
+impl StorageContextKey {
     pub(super) fn new(
-        request: ShortTermCredentialsRequest,
         storage_profile: StorageProfileBorrowed<'_>,
         credential: Option<StorageCredentialBorrowed<'_>>,
     ) -> Self {
@@ -49,9 +48,29 @@ impl STCCacheKey {
         let credential_hash = hasher.finish();
 
         Self {
-            request,
             storage_profile_hash,
             credential_hash,
+        }
+    }
+}
+
+/// Cache key for STC tokens. This uniquely identifies a set of temporary credentials.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub(super) struct STCCacheKey {
+    /// Request Hash
+    pub(super) request: ShortTermCredentialsRequest,
+    context: StorageContextKey,
+}
+
+impl STCCacheKey {
+    pub(super) fn new(
+        request: ShortTermCredentialsRequest,
+        storage_profile: StorageProfileBorrowed<'_>,
+        credential: Option<StorageCredentialBorrowed<'_>>,
+    ) -> Self {
+        Self {
+            request,
+            context: StorageContextKey::new(storage_profile, credential),
         }
     }
 }
@@ -73,16 +92,16 @@ impl<V> CachedStc<V> {
 }
 
 /// Per-entry expiry: cache until half the credential's remaining lifetime, capped
-/// at 1 hour. Generic over the credential type `V` so one impl serves every cache.
+/// at 1 hour. Generic over the key and the credential type `V` so one impl serves every cache.
 #[derive(Debug)]
 struct StcExpiry;
 
-impl<V> Expiry<STCCacheKey, CachedStc<V>> for StcExpiry {
+impl<K, V> Expiry<K, CachedStc<V>> for StcExpiry {
     /// Durations must be positive, so an unknown or already-elapsed validity
     /// yields a zero duration (immediate expiry).
     fn expire_after_create(
         &self,
-        _key: &STCCacheKey,
+        _key: &K,
         value: &CachedStc<V>,
         created_at: Instant,
     ) -> Option<Duration> {
@@ -96,7 +115,11 @@ impl<V> Expiry<STCCacheKey, CachedStc<V>> for StcExpiry {
     }
 }
 
-fn build_stc_cache<V: Clone + Send + Sync + 'static>() -> Cache<STCCacheKey, CachedStc<V>> {
+fn build_stc_cache<K, V>() -> Cache<K, CachedStc<V>>
+where
+    K: Hash + Eq + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
     Cache::builder()
         .max_capacity(CONFIG.cache.stc.capacity)
         .initial_capacity(100)
@@ -108,23 +131,30 @@ fn build_stc_cache<V: Clone + Send + Sync + 'static>() -> Cache<STCCacheKey, Cac
 // Per-provider STC caches. Each stores a concrete credential type, so the
 // read-through hands back the right credential without a runtime variant check.
 // Each cache gets the full `CONFIG.cache.stc.capacity` ceiling: a single-cloud
-// deployment (the norm) is unaffected, but a multi-cloud server can hold up to 3×
+// deployment (the norm) is unaffected, but a multi-cloud server can hold up to 4×
 // the configured entries. `max_capacity` is a ceiling, not a reservation, so idle
 // providers' caches stay near-empty.
 pub(super) static S3_STC_CACHE: LazyLock<
     Cache<STCCacheKey, CachedStc<aws_sdk_sts::types::Credentials>>,
-> = LazyLock::new(build_stc_cache::<aws_sdk_sts::types::Credentials>);
+> = LazyLock::new(build_stc_cache);
 pub(super) static ADLS_STC_CACHE: LazyLock<
     Cache<STCCacheKey, CachedStc<(String, time::OffsetDateTime)>>,
-> = LazyLock::new(build_stc_cache::<(String, time::OffsetDateTime)>);
+> = LazyLock::new(build_stc_cache);
 pub(super) static GCS_STC_CACHE: LazyLock<Cache<STCCacheKey, CachedStc<CachedSTSResponse>>> =
-    LazyLock::new(build_stc_cache::<CachedSTSResponse>);
+    LazyLock::new(build_stc_cache);
+/// Identities that S3 remote signing signs with. Without it, every sign request assumes the
+/// role or loads the system identity again.
+pub(super) static S3_SIGNING_IDENTITY_CACHE: LazyLock<
+    Cache<StorageContextKey, CachedStc<Identity>>,
+> = LazyLock::new(build_stc_cache);
 
 /// Update the cache size metric with the combined entry count of all STC caches.
 #[inline]
 fn update_cache_size_metric() {
-    let total =
-        S3_STC_CACHE.entry_count() + ADLS_STC_CACHE.entry_count() + GCS_STC_CACHE.entry_count();
+    let total = S3_STC_CACHE.entry_count()
+        + ADLS_STC_CACHE.entry_count()
+        + GCS_STC_CACHE.entry_count()
+        + S3_SIGNING_IDENTITY_CACHE.entry_count();
     set_cache_size("stc", total);
 }
 
@@ -132,7 +162,7 @@ fn update_cache_size_metric() {
 ///
 /// A miss here is the **most expensive** in the system — a rate-limited STS/SAS
 /// network round-trip — so concurrent identical requests are **coalesced** onto
-/// one fetch per [`STCCacheKey`]: moka serializes the per-key compute, and later
+/// one fetch per key: moka serializes the per-key compute, and later
 /// callers observe the just-fetched entry instead of each calling the cloud
 /// provider. STC has no not-found case, so the loader returns value-or-error;
 /// errors are **never cached**, so a transient STS failure does not poison the
@@ -144,12 +174,13 @@ fn update_cache_size_metric() {
 /// Generic over the cached value type `V` (each provider's concrete credential),
 /// so each provider caches and returns its own type — no shared enum, no runtime
 /// variant check.
-pub(super) async fn get_or_load_stc<V, F, Fut, E>(
-    cache: &Cache<STCCacheKey, CachedStc<V>>,
-    key: STCCacheKey,
+pub(super) async fn get_or_load_stc<K, V, F, Fut, E>(
+    cache: &Cache<K, CachedStc<V>>,
+    key: K,
     load: F,
 ) -> Result<V, E>
 where
+    K: Hash + Eq + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
     F: FnOnce() -> Fut + Send,
     Fut: std::future::Future<Output = Result<CachedStc<V>, E>> + Send,
@@ -232,8 +263,10 @@ mod tests {
         };
         STCCacheKey {
             request,
-            storage_profile_hash: 0,
-            credential_hash: 0,
+            context: StorageContextKey {
+                storage_profile_hash: 0,
+                credential_hash: 0,
+            },
         }
     }
 
