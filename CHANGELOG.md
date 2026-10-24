@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.8](https://github.com/lakekeeper/lakekeeper/compare/v0.13.7...v0.13.8) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** bump ctutils for RUSTSEC-2026-0385 ([6967b99](https://github.com/lakekeeper/lakekeeper/commit/6967b998d2a7cc4ec91fd7a00134ebc426541bca))
+* **deps:** bump tokio for RUSTSEC-2026-0386 ([6967b99](https://github.com/lakekeeper/lakekeeper/commit/6967b998d2a7cc4ec91fd7a00134ebc426541bca))
+* **deps:** bump webpki crates for RUSTSEC-2026-0381, -0382 and -0383 ([6967b99](https://github.com/lakekeeper/lakekeeper/commit/6967b998d2a7cc4ec91fd7a00134ebc426541bca))
+* **deps:** drop aws-sdk-s3 sigv4a feature for RUSTSEC-2026-0387 ([#2166](https://github.com/lakekeeper/lakekeeper/issues/2166)) ([6967b99](https://github.com/lakekeeper/lakekeeper/commit/6967b998d2a7cc4ec91fd7a00134ebc426541bca))
+* **gcs:** don't over-report downscoped token expiry when STS omits expires_in ([#2160](https://github.com/lakekeeper/lakekeeper/issues/2160)) ([6967b99](https://github.com/lakekeeper/lakekeeper/commit/6967b998d2a7cc4ec91fd7a00134ebc426541bca))
+* **io:** ignore @ in paths when extracting usernames ([#2141](https://github.com/lakekeeper/lakekeeper/issues/2141)) ([6967b99](https://github.com/lakekeeper/lakekeeper/commit/6967b998d2a7cc4ec91fd7a00134ebc426541bca))
+* **tasks:** expire soft-deleted tabulars in inactive warehouses ([#2151](https://github.com/lakekeeper/lakekeeper/issues/2151)) ([6967b99](https://github.com/lakekeeper/lakekeeper/commit/6967b998d2a7cc4ec91fd7a00134ebc426541bca))
+
 ## [0.13.7](https://github.com/lakekeeper/lakekeeper/compare/v0.13.6...v0.13.7) (2026-10-16)
 
 
