@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    audit::{ActorRecord, AnyWireStr, AuditJson},
+    audit::{ActorRecord, AnyWireStr, AuditJson, Emitters, RecordTime},
     request_metadata::RequestId,
-    service::events::backends::audit::parts::{Emitters, RecordTime},
 };
 
 /// Event emitted for an operation record: something the system did that touches identity or
@@ -14,6 +13,7 @@ use crate::{
 /// behind an [`ArcOperationRecordData`], so every listener shares one copy.
 #[derive(Clone, Debug)]
 pub struct OperationRecordedEvent {
+    /// The record, shared by every listener that receives this event.
     pub record: ArcOperationRecordData,
 }
 

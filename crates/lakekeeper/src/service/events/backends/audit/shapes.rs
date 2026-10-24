@@ -155,7 +155,7 @@ impl From<AdmissionTrigger<'_>> for RecordOrigin {
 }
 
 /// An operation record: something the system did that touches identity or access, with no
-/// permission decision of its own. The one shape any crate can emit.
+/// permission decision of its own. The one shape any crate can dispatch.
 ///
 /// `E` is the emitter. `operation`, `outcome` and `context` must all belong to it, or the
 /// record does not compile; `E` is what stamps the emitter on the record.
@@ -211,11 +211,6 @@ impl<E: AuditEmitter> OperationRecord<E> {
     pub fn message(mut self, message: &'static str) -> Self {
         self.message = message;
         self
-    }
-
-    /// Write the record.
-    pub fn emit(self) {
-        write_operation_record(self.into_event());
     }
 
     /// Hand the record to every listener of `events`, the audit listener among them, which
