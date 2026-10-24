@@ -32,6 +32,7 @@ use async_trait::async_trait;
 use axum_prometheus::metrics;
 #[cfg(feature = "router")]
 use iceberg_ext::catalog::rest::ErrorModel;
+use tracing::Instrument as _;
 use uuid::Uuid;
 
 use crate::{
@@ -40,7 +41,10 @@ use crate::{
     service::{
         Actor, ArcRoleIdent, UserId,
         authn::InternalActor,
-        events::backends::audit::{AuditOperation, AuditOutcome},
+        events::{
+            EventDispatcher,
+            backends::audit::{AuditOperation, AuditOutcome},
+        },
     },
 };
 
@@ -367,15 +371,25 @@ pub struct AdmissionContext<'a> {
     /// Who triggered the evaluation, for audit records and logs. Not an input
     /// to the decision.
     pub triggered_by: AdmissionTrigger<'a>,
+    /// Where a gate dispatches the operation records it writes about its own
+    /// enforcement, with [`OperationRecord::dispatch`](crate::audit::OperationRecord::dispatch).
+    /// Not an input to the decision.
+    pub events: &'a EventDispatcher,
 }
 
 impl<'a> AdmissionContext<'a> {
-    /// Evaluate admission of `user_id`, attributed to `triggered_by`.
+    /// Evaluate admission of `user_id`, attributed to `triggered_by`, with operation records
+    /// dispatched to `events`.
     #[must_use]
-    pub fn new(user_id: &'a UserId, triggered_by: AdmissionTrigger<'a>) -> Self {
+    pub fn new(
+        user_id: &'a UserId,
+        triggered_by: AdmissionTrigger<'a>,
+        events: &'a EventDispatcher,
+    ) -> Self {
         Self {
             user_id,
             triggered_by,
+            events,
         }
     }
 }
@@ -513,11 +527,15 @@ impl AdmissionGates {
                     // `AdmissionRejection::into_error` decides, per kind, whether
                     // the generic error-response line is suppressed.
                     //
-                    // Gated here as well as inside `emit()`: the context is
+                    // Gated here as well as inside `dispatch()`: the context is
                     // serialized when attached, so asking first makes a rejection
                     // free when the audit trail is off.
+                    //
+                    // Dispatched on a task of its own, like the authorization
+                    // records: admission runs on every authenticated request, so
+                    // a slow listener must not delay the rejection.
                     if crate::audit::enabled() {
-                        crate::audit::OperationRecord::new(
+                        let record = crate::audit::OperationRecord::new(
                             AuditOperation::AdmissionDecided.as_wire(),
                             ctx.triggered_by,
                             rejection.kind.label().as_wire(),
@@ -530,8 +548,12 @@ impl AdmissionGates {
                             message: rejection.message.as_ref(),
                             error_id: rejection.error_id.to_string(),
                         })
-                        .message("Request rejected by admission gate")
-                        .emit();
+                        .message("Request rejected by admission gate");
+                        let events = ctx.events.clone();
+                        tokio::spawn(
+                            async move { record.dispatch(&events).await }
+                                .instrument(tracing::Span::current()),
+                        );
                     }
                     // A gate failing closed is an outage of a dependency, not a
                     // decision about the caller, so it needs a level that
@@ -613,7 +635,7 @@ mod tests {
     use http::StatusCode;
 
     use super::*;
-    use crate::service::RoleIdent;
+    use crate::service::{RoleIdent, events::backends::audit::block_on_with_spawned};
 
     /// Build a role set from role source-id names.
     fn role_set(names: &[&str]) -> XXHashSet<ArcRoleIdent> {
@@ -696,9 +718,16 @@ mod tests {
     static TEST_USER: LazyLock<UserId> =
         LazyLock::new(|| UserId::new_unchecked("oidc", "test-user-one"));
 
+    /// A dispatcher holding the audit listener, so a rejection record reaches the log.
+    static TEST_EVENTS: LazyLock<EventDispatcher> = LazyLock::new(|| {
+        EventDispatcher::new(vec![Arc::new(
+            crate::service::events::backends::audit::AuditEventListener::new(),
+        )])
+    });
+
     /// Admission of the test user, triggered by `md`'s request.
     fn context_for(md: &RequestMetadata) -> AdmissionContext<'_> {
-        AdmissionContext::new(&TEST_USER, AdmissionTrigger::from_request(md))
+        AdmissionContext::new(&TEST_USER, AdmissionTrigger::from_request(md), &TEST_EVENTS)
     }
 
     /// A gate scoped to principals it does not cover: it adjudicates nothing.
@@ -802,8 +831,8 @@ mod tests {
     /// The record a rejection leaves behind is the only one there is, so its
     /// shape is a contract: `docs/docs/logging.md` tells consumers to read the
     /// operation-specific fields under `context`.
-    #[tokio::test]
-    async fn the_rejection_record_is_a_complete_audit_event() {
+    #[test]
+    fn the_rejection_record_is_a_complete_audit_event() {
         let md = RequestMetadata::new_unauthenticated();
         for (gate, outcome, status, error_type, rule) in [
             (
@@ -823,7 +852,7 @@ mod tests {
         ] {
             let name = gate.name();
             let lines = capture_json(|| {
-                futures::executor::block_on(gates(vec![gate]).admit(context_for(&md)))
+                block_on_with_spawned(gates(vec![gate]).admit(context_for(&md)))
                     .expect_err("gate rejects");
             });
 
@@ -862,16 +891,18 @@ mod tests {
     /// raising its own record for the same request reaches the identical shape
     /// through `AdmissionTrigger::audit_actor`; rendering only the principal
     /// would leave the two disagreeing about who was refused.
-    #[tokio::test]
-    async fn the_record_names_the_role_the_caller_assumed() {
+    #[test]
+    fn the_record_names_the_role_the_caller_assumed() {
         let user_id = crate::service::UserId::new_unchecked("oidc", "u-1");
         let role_id = crate::service::RoleId::new_random();
         let md = RequestMetadata::test_user_assumed_role(user_id.clone(), role_id);
 
         let lines = capture_json(|| {
-            futures::executor::block_on(gates(vec![Arc::new(DenyGate)]).admit(
-                AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md)),
-            ))
+            block_on_with_spawned(gates(vec![Arc::new(DenyGate)]).admit(AdmissionContext::new(
+                &user_id,
+                AdmissionTrigger::from_request(&md),
+                &TEST_EVENTS,
+            )))
             .expect_err("gate rejects");
         });
         let record = lines
@@ -883,6 +914,55 @@ mod tests {
         assert_eq!(
             record["actor"]["assumed_role"]["role_id"],
             role_id.to_string()
+        );
+    }
+
+    /// A listener that never finishes, as a stalled external audit sink would.
+    #[derive(Debug)]
+    struct StalledListener;
+
+    impl std::fmt::Display for StalledListener {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "StalledListener")
+        }
+    }
+
+    #[async_trait]
+    impl crate::service::events::EventListener for StalledListener {
+        async fn operation_recorded(
+            &self,
+            _: crate::service::events::OperationRecordedEvent,
+        ) -> anyhow::Result<()> {
+            std::future::pending().await
+        }
+    }
+
+    /// The rejection does not wait for the listeners: admission runs on every
+    /// authenticated request, and a stalled listener must not hold the response.
+    #[tokio::test]
+    async fn a_stalled_listener_does_not_delay_the_rejection() {
+        let md = RequestMetadata::new_unauthenticated();
+        let events = EventDispatcher::new(vec![Arc::new(StalledListener)]);
+        // A subscriber that records the audit target, so the record is dispatched.
+        let _subscriber = tracing::subscriber::set_default(
+            crate::audit::log_format(false)
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+
+        let rejected = tokio::time::timeout(
+            Duration::from_secs(5),
+            gates(vec![Arc::new(DenyGate)]).admit(AdmissionContext::new(
+                &TEST_USER,
+                AdmissionTrigger::from_request(&md),
+                &events,
+            )),
+        )
+        .await;
+
+        assert!(
+            matches!(rejected, Ok(Err(_))),
+            "the rejection waited for a stalled listener: {rejected:?}"
         );
     }
 
@@ -901,7 +981,7 @@ mod tests {
         let project_id = assumed_role.project_id().to_string();
         let rendered = format!(
             "{:?}",
-            AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md))
+            AdmissionContext::new(&user_id, AdmissionTrigger::from_request(&md), &TEST_EVENTS)
         );
         assert!(!rendered.contains(&project_id), "{rendered}");
         assert!(rendered.contains("Role"), "{rendered}");
@@ -914,15 +994,13 @@ mod tests {
     /// A fail-closed gate is an outage of a dependency, and must stay visible to
     /// an operator filtering at `RUST_LOG=warn` — which the audit record, being
     /// `INFO`, is not.
-    #[tokio::test]
-    async fn failing_closed_also_warns_on_the_general_stream() {
+    #[test]
+    fn failing_closed_also_warns_on_the_general_stream() {
         let md = RequestMetadata::new_unauthenticated();
 
         let lines = capture_json(|| {
-            futures::executor::block_on(
-                gates(vec![Arc::new(UnavailableGate)]).admit(context_for(&md)),
-            )
-            .expect_err("gate rejects");
+            block_on_with_spawned(gates(vec![Arc::new(UnavailableGate)]).admit(context_for(&md)))
+                .expect_err("gate rejects");
         });
         let warn = lines
             .iter()
@@ -936,7 +1014,7 @@ mod tests {
         // An authoritative denial is a decision about the caller, not an
         // outage, and must not warn.
         let lines = capture_json(|| {
-            futures::executor::block_on(gates(vec![Arc::new(DenyGate)]).admit(context_for(&md)))
+            block_on_with_spawned(gates(vec![Arc::new(DenyGate)]).admit(context_for(&md)))
                 .expect_err("gate rejects");
         });
         assert!(
@@ -981,11 +1059,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn the_cause_of_a_fail_closed_reaches_the_warning_only() {
+    #[test]
+    fn the_cause_of_a_fail_closed_reaches_the_warning_only() {
         let md = RequestMetadata::new_unauthenticated();
         let lines = capture_json(|| {
-            futures::executor::block_on(gates(vec![Arc::new(CausedGate)]).admit(context_for(&md)))
+            block_on_with_spawned(gates(vec![Arc::new(CausedGate)]).admit(context_for(&md)))
                 .expect_err("gate rejects");
         });
 
@@ -1014,11 +1092,10 @@ mod tests {
 
         #[cfg(feature = "router")]
         {
-            let rendered = futures::executor::block_on(
-                gates(vec![Arc::new(CausedGate)]).admit(context_for(&md)),
-            )
-            .expect_err("gate rejects")
-            .into_error();
+            let rendered =
+                block_on_with_spawned(gates(vec![Arc::new(CausedGate)]).admit(context_for(&md)))
+                    .expect_err("gate rejects")
+                    .into_error();
             assert_eq!(rendered.message, "admission could not be verified upstream");
             assert!(rendered.source.is_none(), "{rendered:?}");
         }

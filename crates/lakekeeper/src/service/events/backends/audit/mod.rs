@@ -38,7 +38,7 @@ use crate::{
         authz::UserOrRoleId,
         events::{
             AuthorizationFailedEvent, AuthorizationSucceededEvent, EventCatalog, EventListener,
-            GrantsChangedEvent, IdempotentReplayEvent,
+            GrantsChangedEvent, IdempotentReplayEvent, OperationRecordedEvent,
         },
     },
 };
@@ -265,7 +265,7 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
         ),
     ] {
         for spec in specs {
-            OperationRecord::new(
+            let record = OperationRecord::new(
                 operation.as_wire(),
                 RecordOrigin::of_request(&event.request_metadata, actor()),
                 AuditOutcome::Success.as_wire(),
@@ -276,7 +276,8 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
                 &spec.resource,
             ))
             .message(message)
-            .emit();
+            .into_event();
+            shapes::write_operation_record(record);
         }
     }
 }
@@ -366,6 +367,40 @@ impl EventListener for AuditEventListener {
         assemble::replay(&event, &enrichment).emit("Idempotent replay served");
         Ok(())
     }
+
+    /// An operation record, written as it was built: it needs no enrichment.
+    async fn operation_recorded(&self, event: OperationRecordedEvent) -> anyhow::Result<()> {
+        if !enabled() {
+            return Ok(());
+        }
+        shapes::write_operation_record(event);
+        Ok(())
+    }
+}
+
+/// Run `future` to completion on a current-thread runtime on this thread, then every task it
+/// spawned, such as a dispatched operation record. A subscriber installed with
+/// `tracing::subscriber::with_default` therefore sees what those tasks log.
+///
+/// # Panics
+///
+/// If called from inside a runtime.
+#[cfg(test)]
+pub(crate) fn block_on_with_spawned<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime builds")
+        .block_on(async {
+            let output = future.await;
+            while tokio::runtime::Handle::current()
+                .metrics()
+                .num_alive_tasks()
+                > 0
+            {
+                tokio::task::yield_now().await;
+            }
+            output
+        })
 }
 
 #[cfg(test)]

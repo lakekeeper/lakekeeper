@@ -8,6 +8,8 @@
 //! action and entity lists under one name whatever their length, and omits a field it has no
 //! value for; nothing writes `null`.
 
+use std::sync::Arc;
+
 use super::{
     Decision,
     parts::{
@@ -22,7 +24,13 @@ use crate::{
         audit_part,
     },
     request_metadata::{PrivilegeSource, RequestId, RequestMetadata},
-    service::{admission::AdmissionTrigger, events::AuthorizationFailureReason},
+    service::{
+        admission::AdmissionTrigger,
+        events::{
+            AuthorizationFailureReason, EventDispatcher, OperationRecordData,
+            OperationRecordedEvent,
+        },
+    },
 };
 
 /// An authorization record: was this caller permitted to do these actions on these entities?
@@ -147,7 +155,7 @@ impl From<AdmissionTrigger<'_>> for RecordOrigin {
 }
 
 /// An operation record: something the system did that touches identity or access, with no
-/// permission decision of its own. The one shape any crate can emit.
+/// permission decision of its own. The one shape any crate can dispatch.
 ///
 /// `E` is the emitter. `operation`, `outcome` and `context` must all belong to it, or the
 /// record does not compile; `E` is what stamps the emitter on the record.
@@ -205,19 +213,49 @@ impl<E: AuditEmitter> OperationRecord<E> {
         self
     }
 
-    /// Write the record.
-    pub fn emit(self) {
-        OperationWire {
-            emitters: Emitters::of(crate::audit::EmitterStamp::of::<E>(), []),
-            request_id: self.origin.request_id,
-            time: self.time,
-            operation: self.operation,
-            actor: self.origin.actor,
-            outcome: self.outcome,
-            context: self.context,
+    /// Hand the record to every listener of `events`, the audit listener among them, which
+    /// writes it to the log.
+    ///
+    /// Does nothing while the audit trail is disabled (see [`crate::audit::enabled`]). Await
+    /// it, or spawn it to keep the listeners off the caller's path.
+    pub async fn dispatch(self, events: &EventDispatcher) {
+        if !crate::audit::enabled() {
+            return;
         }
-        .emit(self.message);
+        events.operation_recorded(self.into_event()).await;
     }
+
+    /// The record with its emitter and vocabulary types erased, stamped with `E`.
+    pub(crate) fn into_event(self) -> OperationRecordedEvent {
+        OperationRecordedEvent {
+            record: Arc::new(OperationRecordData {
+                emitters: Emitters::of(crate::audit::EmitterStamp::of::<E>(), []),
+                request_id: self.origin.request_id,
+                time: self.time,
+                operation: self.operation,
+                actor: self.origin.actor,
+                outcome: self.outcome,
+                context: self.context,
+                message: self.message,
+            }),
+        }
+    }
+}
+
+/// Write `event` as one operation record on the log. The one place an operation record is
+/// written.
+pub(super) fn write_operation_record(event: OperationRecordedEvent) {
+    let record = Arc::unwrap_or_clone(event.record);
+    OperationWire {
+        emitters: record.emitters,
+        request_id: record.request_id,
+        time: record.time,
+        operation: record.operation,
+        actor: record.actor,
+        outcome: record.outcome,
+        context: record.context,
+    }
+    .emit(record.message);
 }
 
 /// An operation record: something the system did that touches identity or access, with no

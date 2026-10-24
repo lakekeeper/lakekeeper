@@ -100,7 +100,9 @@ pub type XXHashSet<T> = std::collections::HashSet<T, xxhash_rust::xxh3::Xxh3Buil
 pub mod audit {
     pub use lakekeeper_audit_macros::audit_part;
 
-    pub use crate::service::events::backends::audit::parts::include_role_source_id;
+    pub use crate::service::events::backends::audit::parts::{
+        Emitters, RecordTime, include_role_source_id,
+    };
     #[cfg(any(test, feature = "test-utils"))]
     pub use crate::service::events::backends::audit::parts::{
         include_user_email_in_tests, omit_role_source_id_in_tests,

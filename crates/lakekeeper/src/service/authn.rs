@@ -840,7 +840,7 @@ async fn admit_then_check_actor<A: super::authz::Authorizer>(
 ) -> Option<Response> {
     use crate::service::authz::AuthZServerOps;
 
-    if let Some(refusal) = run_admission_gates(admission_gates, request_metadata).await {
+    if let Some(refusal) = run_admission_gates(admission_gates, events, request_metadata).await {
         return Some(refusal);
     }
 
@@ -889,6 +889,7 @@ async fn admit_then_check_actor<A: super::authz::Authorizer>(
 #[cfg(feature = "router")]
 async fn run_admission_gates(
     admission_gates: &AdmissionGates,
+    events: &EventDispatcher,
     request_metadata: &mut RequestMetadata,
 ) -> Option<Response> {
     if admission_gates.is_empty() {
@@ -910,6 +911,7 @@ async fn run_admission_gates(
         .admit(AdmissionContext::new(
             user_id,
             AdmissionTrigger::from_request(request_metadata),
+            events,
         ))
         .await
     {

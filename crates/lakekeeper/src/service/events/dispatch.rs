@@ -294,6 +294,15 @@ impl EventDispatcher {
         dispatch_event!(self, idempotent_replay_served, event);
     }
 
+    /// Hand an operation record to every listener.
+    ///
+    /// Public, so an extension can dispatch its own records: build an
+    /// [`OperationRecord`](crate::audit::OperationRecord) and call its `dispatch`, which
+    /// calls this while the audit trail is enabled. A listener error is logged, not returned.
+    pub async fn operation_recorded(&self, event: types::OperationRecordedEvent) {
+        dispatch_event!(self, operation_recorded, event);
+    }
+
     // ===== Role Events =====
 
     pub(crate) async fn role_created(&self, event: types::CreateRoleEvent) {
@@ -720,6 +729,20 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn idempotent_replay_served(
         &self,
         _event: types::IdempotentReplayEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked for every operation record: something the system did that touches identity
+    /// or access, with no permission decision of its own, such as an admission rejection or
+    /// a record an extension dispatched.
+    ///
+    /// Fires only while the audit trail is enabled. Grant records are not delivered here:
+    /// every listener receives the same grants through
+    /// [`grants_changed`](Self::grants_changed).
+    async fn operation_recorded(
+        &self,
+        _event: types::OperationRecordedEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }
