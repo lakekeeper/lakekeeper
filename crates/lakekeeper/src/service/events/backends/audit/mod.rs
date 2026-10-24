@@ -378,5 +378,30 @@ impl EventListener for AuditEventListener {
     }
 }
 
+/// Run `future` to completion on a current-thread runtime on this thread, then every task it
+/// spawned, such as a dispatched operation record. A subscriber installed with
+/// `tracing::subscriber::with_default` therefore sees what those tasks log.
+///
+/// # Panics
+///
+/// If called from inside a runtime.
+#[cfg(test)]
+pub(crate) fn block_on_with_spawned<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime builds")
+        .block_on(async {
+            let output = future.await;
+            while tokio::runtime::Handle::current()
+                .metrics()
+                .num_alive_tasks()
+                > 0
+            {
+                tokio::task::yield_now().await;
+            }
+            output
+        })
+}
+
 #[cfg(test)]
 mod tests;
