@@ -1,0 +1,259 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH selected_entities AS (\n            SELECT entity_id, entity_type\n            FROM unnest($10::uuid[], $11::entity_type[]) AS t(entity_id, entity_type)\n        ),\n        -- Copied into each branch below, so that each branch uses its own index.\n        active_rows AS NOT MATERIALIZED (\n            SELECT\n                task_id,\n                warehouse_id,\n                project_id,\n                queue_name,\n                entity_id,\n                entity_type,\n                entity_name,\n                status as task_status,\n                null::task_final_status as task_log_status,\n                scheduled_for as attempt_scheduled_for,\n                picked_up_at as started_at,\n                attempt,\n                last_heartbeat_at,\n                progress,\n                parent_task_id,\n                created_at as task_created_at,\n                updated_at,\n                resource_demand\n            FROM task\n            WHERE ($18 OR project_id = $15)\n                AND CASE\n                    WHEN $16 THEN $17 OR warehouse_id IS NULL -- project-level tasks\n                    ELSE warehouse_id = $1 -- warehouse-level tasks\n                END\n                AND ((created_at < $3 OR $3 IS NULL) OR (created_at = $3 AND task_id < $4))\n                -- Implied by the line above; lets the index scan start at the page token.\n                AND (created_at <= $3 OR $3 IS NULL)\n                AND ($6 OR queue_name = ANY($5))\n                AND ($9 OR status = ANY($7::task_intermediate_status[]))\n                AND (created_at >= $13 OR $13 IS NULL)\n                AND (created_at <= $14 OR $14 IS NULL)\n                AND ($19::uuid IS NULL OR parent_task_id = $19)\n        ),\n        -- Three disjoint branches, each limited on its own; without an entity filter the entity list is empty, so only the first returns rows.\n        active_tasks AS (\n            -- Evaluated at run time: Postgres 16 would otherwise cost the skipped branch as a full scan.\n            (SELECT * FROM active_rows WHERE (SELECT $12::bool)\n            ORDER BY task_created_at DESC, task_id DESC LIMIT $2)\n            UNION ALL\n            SELECT r.* FROM selected_entities se\n            CROSS JOIN LATERAL (\n                SELECT * FROM active_rows\n                WHERE entity_type = se.entity_type AND entity_id = se.entity_id\n                ORDER BY task_created_at DESC, task_id DESC LIMIT $2\n            ) r\n            WHERE se.entity_type <> 'warehouse'\n            UNION ALL\n            -- A warehouse-scoped task may carry the id of its schedule.\n            (SELECT * FROM active_rows WHERE entity_type = 'warehouse'\n                AND EXISTS (SELECT 1 FROM selected_entities se WHERE se.entity_type = 'warehouse')\n            ORDER BY task_created_at DESC, task_id DESC LIMIT $2)\n        ),\n        log_rows AS NOT MATERIALIZED (\n            SELECT\n                task_id,\n                warehouse_id,\n                project_id,\n                queue_name,\n                entity_id,\n                entity_type,\n                entity_name,\n                null::task_intermediate_status as task_status,\n                status as task_log_status,\n                attempt_scheduled_for,\n                started_at,\n                attempt,\n                last_heartbeat_at,\n                progress,\n                parent_task_id,\n                task_created_at,\n                null::timestamptz as updated_at,\n                resource_demand\n            FROM task_log\n            WHERE ($18 OR project_id = $15)\n                AND CASE\n                    WHEN $16 THEN $17 OR warehouse_id IS NULL -- project-level tasks\n                    ELSE warehouse_id = $1\n                END\n                AND ((task_created_at < $3 OR $3 IS NULL) OR (task_created_at = $3 AND task_id < $4))\n                AND (task_created_at <= $3 OR $3 IS NULL)\n                AND ($6 OR queue_name = ANY($5))\n                AND ($9 OR status = ANY($8::task_final_status[]))\n                AND (task_created_at >= $13 OR $13 IS NULL)\n                AND (task_created_at <= $14 OR $14 IS NULL)\n                AND ($19::uuid IS NULL OR parent_task_id = $19)\n        ),\n        -- Same branches as active_tasks; DISTINCT ON keeps the newest attempt of each task.\n        log_tasks AS (\n            (SELECT DISTINCT ON (task_created_at, task_id) * FROM log_rows WHERE (SELECT $12::bool)\n            ORDER BY task_created_at DESC, task_id DESC, attempt DESC LIMIT $2)\n            UNION ALL\n            SELECT r.* FROM selected_entities se\n            CROSS JOIN LATERAL (\n                SELECT DISTINCT ON (task_created_at, task_id) * FROM log_rows\n                WHERE entity_type = se.entity_type AND entity_id = se.entity_id\n                ORDER BY task_created_at DESC, task_id DESC, attempt DESC LIMIT $2\n            ) r\n            WHERE se.entity_type <> 'warehouse'\n            UNION ALL\n            (SELECT DISTINCT ON (task_created_at, task_id) * FROM log_rows WHERE entity_type = 'warehouse'\n                AND EXISTS (SELECT 1 FROM selected_entities se WHERE se.entity_type = 'warehouse')\n            ORDER BY task_created_at DESC, task_id DESC, attempt DESC LIMIT $2)\n        )\n        SELECT \n            task_id AS \"task_id!\",\n            warehouse_id,\n            project_id AS \"project_id!\",\n            queue_name AS \"queue_name!\",\n            entity_id,\n            entity_type as \"entity_type!: TaskEntityTypeDB\",\n            entity_name as \"entity_name: Vec<String>\",\n            task_status as \"task_status: TaskIntermediateStatus\",\n            task_log_status as \"task_log_status: TaskOutcome\",\n            attempt_scheduled_for as \"attempt_scheduled_for!\",\n            started_at,\n            attempt as \"attempt!\",\n            last_heartbeat_at,\n            progress as \"progress!\",\n            parent_task_id,\n            task_created_at as \"task_created_at!\",\n            updated_at,\n            resource_demand\n         FROM (\n            SELECT * FROM active_tasks\n            UNION ALL\n            SELECT * FROM log_tasks\n        ) as combined\n        ORDER BY task_created_at DESC, task_id DESC\n        LIMIT $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "project_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "queue_name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "entity_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "entity_type!: TaskEntityTypeDB",
+        "type_info": {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "project",
+                "warehouse",
+                "namespace",
+                "role",
+                "user",
+                "server",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "entity_name: Vec<String>",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "task_status: TaskIntermediateStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "task_log_status: TaskOutcome",
+        "type_info": {
+          "Custom": {
+            "name": "task_final_status",
+            "kind": {
+              "Enum": [
+                "failed",
+                "cancelled",
+                "success"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "attempt_scheduled_for!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "started_at",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "attempt!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "last_heartbeat_at",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "progress!",
+        "type_info": "Float4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "parent_task_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "task_created_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "resource_demand",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Timestamptz",
+        "Uuid",
+        "TextArray",
+        "Bool",
+        {
+          "Custom": {
+            "name": "task_intermediate_status[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "task_intermediate_status",
+                  "kind": {
+                    "Enum": [
+                      "running",
+                      "scheduled",
+                      "should-stop"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_final_status[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "task_final_status",
+                  "kind": {
+                    "Enum": [
+                      "failed",
+                      "cancelled",
+                      "success"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Bool",
+        "UuidArray",
+        {
+          "Custom": {
+            "name": "entity_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "entity_type",
+                  "kind": {
+                    "Enum": [
+                      "table",
+                      "view",
+                      "project",
+                      "warehouse",
+                      "namespace",
+                      "role",
+                      "user",
+                      "server",
+                      "generic-table"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Bool",
+        "Timestamptz",
+        "Timestamptz",
+        "Text",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "35c4706a221e6e0ff28b27d1eafef266f63174f1e247ac2db198724b64a3c4cb"
+}
