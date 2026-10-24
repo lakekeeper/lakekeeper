@@ -7,7 +7,7 @@ use std::{
 use http::StatusCode;
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::{ViewRequirement, rest::ViewUpdate};
-use lakekeeper_io::Location;
+use lakekeeper_io::{LakekeeperStorage, Location};
 use uuid::Uuid;
 
 use crate::{
@@ -340,20 +340,10 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     t.commit().await?;
 
     if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {
-        let before_update_view_location = before_update_view_location.clone();
-        cleanup_in_background(async move {
-            tracing::debug!("Deleting old view location at: '{before_update_view_location}'");
-            let _ = remove_all(&file_io, &before_update_view_location)
-                .await
-                .inspect(|()| {
-                    tracing::debug!("Deleted old view location {before_update_view_location}");
-                })
-                .inspect_err(|e| {
-                    tracing::error!(
-                        "Failed to delete old view location '{before_update_view_location}': {e:?}"
-                    );
-                });
-        })
+        cleanup_in_background(remove_old_view_location(
+            file_io,
+            before_update_view_location.clone(),
+        ))
         .await;
     }
 
@@ -370,6 +360,15 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             new_metadata_location: new_view.metadata_location,
         },
     ))
+}
+
+/// Removes the location a view moved away from, and logs a failure.
+async fn remove_old_view_location(file_io: impl LakekeeperStorage, location: Location) {
+    tracing::debug!("Deleting old view location at: '{location}'");
+    let _ = remove_all(&file_io, &location)
+        .await
+        .inspect(|()| tracing::debug!("Deleted old view location {location}"))
+        .inspect_err(|e| tracing::error!("Failed to delete old view location '{location}': {e:?}"));
 }
 
 fn check_requirements(requirements: Option<&Vec<ViewRequirement>>, view_id: ViewId) -> Result<()> {
