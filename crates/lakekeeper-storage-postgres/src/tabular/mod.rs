@@ -1862,7 +1862,7 @@ pub(crate) async fn drop_tabular(
             WHERE tabular_id = $2
                 AND warehouse_id = $1
                 AND typ = $3
-                AND tabular_id in (SELECT tabular_id FROM active_tabulars WHERE warehouse_id = $1 AND tabular_id = $2)
+            -- Any warehouse status: API callers require an active warehouse, and expiry also runs in inactive ones.
             FOR UPDATE
         ),
         deleted AS (
@@ -2179,8 +2179,9 @@ mod tests {
         assert!(matches!(error, DropTabularError::TabularNotFound(_)));
     }
 
+    /// Expiry drops soft-deleted tabulars of inactive warehouses too.
     #[sqlx::test]
-    async fn test_drop_tabular_inactive_warehouse_returns_404(pool: sqlx::PgPool) {
+    async fn test_drop_tabular_inactive_warehouse_succeeds(pool: sqlx::PgPool) {
         let table_info = setup_test_tabular(&pool, false).await;
 
         // Deactivate the warehouse
@@ -2200,13 +2201,12 @@ mod tests {
             table_info.warehouse_id,
             table_info.table_id().into(),
             false,
-            Some(&table_info.metadata_location.unwrap()),
+            Some(table_info.metadata_location.as_ref().unwrap()),
             &mut transaction,
         )
         .await;
 
-        let error = result.unwrap_err();
-        assert!(matches!(error, DropTabularError::TabularNotFound(_)));
+        assert_eq!(result.unwrap(), table_info.location);
     }
 
     #[sqlx::test]

@@ -1572,7 +1572,7 @@ pub trait CatalogTabularOps
 where
     Self: CatalogStore,
 {
-    /// Drops staged and non-staged tables and views.
+    /// Drops staged and non-staged tables and views, in active and inactive warehouses.
     ///
     /// Returns the table location
     async fn drop_tabular<'a>(
