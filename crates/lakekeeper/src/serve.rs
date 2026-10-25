@@ -14,7 +14,6 @@ use crate::{
             server::{APACHE_LICENSE_STATUS, BuildInfo, DEFAULT_BUILD_INFO, LicenseStatus},
         },
         router::{RouterArgs, new_full_router, new_health_router, serve as service_serve},
-        shutdown_signal,
     },
     service::{
         CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
@@ -30,9 +29,22 @@ use crate::{
             backends::audit::AuditEventListener,
         },
         health::ServiceHealthProvider,
-        tasks::TaskQueueRegistry,
+        tasks::{
+            TaskQueueRegistry,
+            task_drain::{
+                ArcTaskRunnerControl, DrainSettings, StopReason, stop_signals,
+                wait_for_stop_and_drain,
+            },
+        },
     },
 };
+
+/// The service whose end stops the process: it waits for a stop signal or timer and drains the
+/// task workers.
+struct StopService {
+    id: tokio::task::Id,
+    task_control: ArcTaskRunnerControl,
+}
 
 /// Type alias for a function that registers additional background services.
 ///
@@ -196,7 +208,7 @@ pub struct ServeConfiguration<
 /// - If the service cannot bind to the specified address.
 /// - If the terms of service have not been accepted during bootstrap.
 /// - If a cache change receiver names a domain of Lakekeeper, or two name the same domain.
-#[allow(clippy::too_many_lines)]
+/// - If idle exit or max lifetime is set while the process serves the HTTP API.
 pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     mut config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
@@ -213,6 +225,8 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
         let _ = rejected;
     }
 
+    let drain_settings = DrainSettings::from_config();
+    drain_settings.validate(CONFIG.serve_http_api)?;
     let cancellation_token = CancellationToken::new();
 
     // Validate Authenticators and propagate their IDP IDs to the authorizer
@@ -228,18 +242,13 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
     let mut service_futures = JoinSet::<Result<(), anyhow::Error>>::new();
     let mut service_ids = HashMap::new();
 
-    // Sigint / Sigterm handler:
-    let cancellation_token_clone = cancellation_token.clone();
-    let shutdown_signal_handle = service_futures.spawn(async move {
-        shutdown_signal(cancellation_token_clone).await;
-        tracing::info!("Shutdown signal received");
-        Ok(())
-    });
-    let shutdown_signal_id = shutdown_signal_handle.id();
-    service_ids.insert(
-        shutdown_signal_handle.id(),
-        "Shutdown Signal Handler".to_string(),
+    // Sigint / Sigterm handler, idle exit and max lifetime:
+    let stop_service = spawn_stop_service(
+        &mut service_futures,
+        drain_settings,
+        cancellation_token.clone(),
     );
+    service_ids.insert(stop_service.id, "Shutdown Signal Handler".to_string());
 
     // Endpoint statistics TX
     let (endpoint_statistics_tx, endpoint_statistics_rx) = tokio::sync::mpsc::channel(1000);
@@ -258,7 +267,7 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
         cloud_events_rx,
         endpoint_statistics_tracker_tx.clone(),
         endpoint_statistics_rx,
-        shutdown_signal_id,
+        stop_service,
     )
     .await;
 
@@ -276,8 +285,17 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
         .await?;
     cloud_events_tx.send(CloudEventsMessage::Shutdown).await?;
 
-    // Wait for remaining tasks to finish, wait at most 20 seconds, then print which tasks are still running
-    // but exit anyway. Report progress every 5 seconds.
+    wait_for_services_to_stop(&mut service_futures, &mut service_ids).await;
+
+    serving_result
+}
+
+/// Waits for the background services to finish after cancellation, at most 20 seconds, then
+/// aborts the rest. Reports progress every 5 seconds.
+async fn wait_for_services_to_stop<H: ::std::hash::BuildHasher>(
+    service_futures: &mut JoinSet<Result<(), anyhow::Error>>,
+    service_ids: &mut HashMap<tokio::task::Id, String, H>,
+) {
     let shutdown_timeout_secs = 20;
     let report_interval_secs = 5;
     let start_time = std::time::Instant::now();
@@ -293,7 +311,7 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
             let mut last_report = std::time::Instant::now();
 
             while let Some(result) = service_futures.join_next_with_id().await {
-                log_service_completion(&result, &mut service_ids, true);
+                log_service_completion(&result, service_ids, true);
 
                 // Report progress every 5 seconds
                 if last_report.elapsed() >= std::time::Duration::from_secs(report_interval_secs) {
@@ -338,8 +356,34 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
 
         tracing::info!("Aborted all remaining background services");
     }
+}
 
-    serving_result
+fn spawn_stop_service(
+    service_futures: &mut JoinSet<Result<(), anyhow::Error>>,
+    drain_settings: DrainSettings,
+    cancellation_token: CancellationToken,
+) -> StopService {
+    let task_control = ArcTaskRunnerControl::default();
+    let control = Arc::clone(&task_control);
+    let mut signals = stop_signals();
+    let handle = service_futures.spawn(async move {
+        let reason =
+            wait_for_stop_and_drain(&control, drain_settings, &mut signals, &cancellation_token)
+                .await;
+        match reason {
+            StopReason::Signal => tracing::info!("Shutdown signal received"),
+            StopReason::Idle => tracing::info!("No task ran for the idle exit time, stopping"),
+            StopReason::Lifetime => tracing::info!("Max lifetime reached, stopping"),
+            StopReason::Cancelled => {
+                tracing::info!("Shutdown signal function terminating due to external cancellation");
+            }
+        }
+        Ok(())
+    });
+    StopService {
+        id: handle.id(),
+        task_control,
+    }
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -358,7 +402,7 @@ async fn serve_inner<
     cloud_events_rx: tokio::sync::mpsc::Receiver<CloudEventsMessage>,
     endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
     endpoint_statistics_rx: tokio::sync::mpsc::Receiver<EndpointStatisticsMessage>,
-    shutdown_signal_id: tokio::task::Id,
+    stop_service: StopService,
 ) -> anyhow::Result<()> {
     let ServeConfiguration {
         bind_addr,
@@ -453,59 +497,7 @@ async fn serve_inner<
             "No cloud-event sinks configured, not registering the cloud-events publisher"
         );
     }
-    if CONFIG.cache.warehouse.enabled {
-        tracing::info!("Warehouse cache is enabled, registering warehouse cache event listener");
-        dispatcher
-            .append(Arc::new(
-                crate::service::warehouse_cache::WarehouseCacheEventListener {},
-            ))
-            .await;
-    } else {
-        tracing::info!("Warehouse cache is disabled");
-    }
-    if CONFIG.cache.namespace.enabled {
-        tracing::info!("Namespace cache is enabled, registering namespace cache event listener");
-        dispatcher
-            .append(Arc::new(
-                crate::service::namespace_cache::NamespaceCacheEventListener {},
-            ))
-            .await;
-    } else {
-        tracing::info!("Namespace cache is disabled");
-    }
-    if CONFIG.cache.role.enabled {
-        tracing::info!("Role cache is enabled, registering role cache event listener");
-        dispatcher
-            .append(Arc::new(
-                crate::service::role_cache::RoleCacheEventListener {},
-            ))
-            .await;
-    } else {
-        tracing::info!("Role cache is disabled");
-    }
-    if CONFIG.cache.user.enabled {
-        tracing::info!("User cache is enabled, registering user cache event listener");
-        dispatcher
-            .append(Arc::new(
-                crate::service::user_cache::UserCacheEventListener {},
-            ))
-            .await;
-    } else {
-        tracing::info!("User cache is disabled");
-    }
-    if CONFIG.audit.tracing.enabled {
-        tracing::info!("Audit tracing is enabled, registering audit event listener");
-        if CONFIG.audit.tracing.include_user_email {
-            tracing::info!("Audit records carry user emails");
-        }
-        dispatcher
-            .append(Arc::new(AuditEventListener::with_catalog(Arc::new(
-                crate::service::events::CatalogStoreReader::<C>::new(catalog_state.clone()),
-            ))))
-            .await;
-    } else {
-        tracing::info!("Audit tracing is disabled");
-    }
+    register_built_in_listeners::<C>(&dispatcher, &catalog_state).await;
 
     // Task queues
     let task_queue_registry = TaskQueueRegistry::new();
@@ -665,7 +657,8 @@ async fn serve_inner<
     // Task Queues:
     let task_runner = task_queue_registry
         .task_queues_runner(cancellation_token.clone())
-        .await;
+        .await
+        .with_control(stop_service.task_control);
     if total_task_workers == 0 {
         // Queues can be registered with zero workers (every TASK_*_WORKERS=0) or
         // skipped entirely (read-only maintenance). `run_queue_workers` returns
@@ -718,7 +711,7 @@ async fn serve_inner<
         let msg = log_service_completion(&result, service_ids, false);
         match result {
             Ok((id, res)) => {
-                if id == shutdown_signal_id || cancellation_token.is_cancelled() {
+                if id == stop_service.id || cancellation_token.is_cancelled() {
                     Ok(())
                 } else {
                     match res {
@@ -732,6 +725,66 @@ async fn serve_inner<
     } else {
         tracing::error!("No services were started, exiting.");
         Ok(())
+    }
+}
+
+/// Registers the cache and audit listeners that the configuration turns on.
+async fn register_built_in_listeners<C: CatalogStore>(
+    dispatcher: &EventDispatcher,
+    catalog_state: &C::State,
+) {
+    if CONFIG.cache.warehouse.enabled {
+        tracing::info!("Warehouse cache is enabled, registering warehouse cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::warehouse_cache::WarehouseCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("Warehouse cache is disabled");
+    }
+    if CONFIG.cache.namespace.enabled {
+        tracing::info!("Namespace cache is enabled, registering namespace cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::namespace_cache::NamespaceCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("Namespace cache is disabled");
+    }
+    if CONFIG.cache.role.enabled {
+        tracing::info!("Role cache is enabled, registering role cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::role_cache::RoleCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("Role cache is disabled");
+    }
+    if CONFIG.cache.user.enabled {
+        tracing::info!("User cache is enabled, registering user cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::user_cache::UserCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("User cache is disabled");
+    }
+    if CONFIG.audit.tracing.enabled {
+        tracing::info!("Audit tracing is enabled, registering audit event listener");
+        if CONFIG.audit.tracing.include_user_email {
+            tracing::info!("Audit records carry user emails");
+        }
+        dispatcher
+            .append(Arc::new(AuditEventListener::with_catalog(Arc::new(
+                crate::service::events::CatalogStoreReader::<C>::new(catalog_state.clone()),
+            ))))
+            .await;
+    } else {
+        tracing::info!("Audit tracing is disabled");
     }
 }
 

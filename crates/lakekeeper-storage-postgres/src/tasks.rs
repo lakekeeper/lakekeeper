@@ -5517,4 +5517,70 @@ mod test {
         }
         assert_eq!(picked_tasks.len(), 2);
     }
+
+    /// The real poll under a runner: a picked task runs until the worker polls again, and a
+    /// closed gate lets the poll pick nothing.
+    #[sqlx::test]
+    async fn test_poll_counts_picked_tasks_and_stops_at_the_drain_gate(pool: PgPool) {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct Config {}
+        impl TaskConfig for Config {
+            fn queue_name() -> &'static TaskQueueName {
+                &QUEUE_NAME
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(3600)
+            }
+        }
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct Empty {}
+        impl TaskData for Empty {}
+        impl TaskExecutionDetails for Empty {}
+        static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| "test-drain-gate".into());
+        type Specialized = SpecializedTask<Config, Empty, Empty>;
+
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let first = queue_with_demand(&pool, &QUEUE_NAME, warehouse_id, &project_id, None, 3).await;
+        let second =
+            queue_with_demand(&pool, &QUEUE_NAME, warehouse_id, &project_id, None, 2).await;
+        let third = queue_with_demand(&pool, &QUEUE_NAME, warehouse_id, &project_id, None, 1).await;
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let runner = lakekeeper::service::tasks::TestTaskRunner::default();
+        let poll_interval = std::time::Duration::from_millis(10);
+        let poll = |token: lakekeeper::CancellationToken| {
+            Specialized::poll_for_new_task::<PostgresBackend>(state.clone(), &poll_interval, token)
+        };
+
+        let worker_runner = runner.clone();
+        runner
+            .run_as_worker(async move {
+                let token = lakekeeper::CancellationToken::new();
+                assert_eq!(worker_runner.running_tasks(), 0);
+                let task = poll(token.clone()).await.unwrap();
+                assert_eq!(task.task_id(), first);
+                assert_eq!(worker_runner.running_tasks(), 1);
+                // Polling again ends the first task and picks the second.
+                let task = poll(token.clone()).await.unwrap();
+                assert_eq!(task.task_id(), second);
+                assert_eq!(worker_runner.running_tasks(), 1);
+
+                worker_runner.stop_picking();
+                let cancel = token.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    cancel.cancel();
+                });
+                assert!(poll(token).await.is_none());
+                assert_eq!(worker_runner.running_tasks(), 0);
+            })
+            .await;
+
+        // The gate left the third task due.
+        let task = pick_task(&pool, &QUEUE_NAME, &[], chrono::Duration::seconds(3600))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.task_id(), third);
+    }
 }

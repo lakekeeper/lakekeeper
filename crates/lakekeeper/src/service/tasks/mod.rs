@@ -20,6 +20,9 @@ use crate::{
     },
 };
 
+pub(crate) mod task_drain;
+#[cfg(feature = "test-utils")]
+pub use task_drain::TestTaskRunner;
 mod task_queues_runner;
 mod task_registry;
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
@@ -1276,7 +1279,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 
     /// Continuously poll for a new task in the queue until a task is found.
-    /// Picks nothing while this process is in read-only maintenance mode.
+    /// Picks nothing while this process is in read-only maintenance mode or drains its workers.
     /// Returns None if cancellation is requested.
     pub async fn poll_for_new_task<C: CatalogStore>(
         catalog_state: C::State,
@@ -1301,6 +1304,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         poll_interval: &Duration,
         cancellation_token: tokio_util::sync::CancellationToken,
     ) -> Option<Self> {
+        task_drain::end_task();
         loop {
             if wait_until_writable(&MAINTENANCE, *poll_interval, &cancellation_token).await
                 == WaitOutcome::Cancelled
@@ -1311,6 +1315,15 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 );
                 return None;
             }
+            let task_drain::PickAdmission::Open(permit) = task_drain::admit_pick() else {
+                tokio::select! {
+                    () = cancellation_token.cancelled() => {
+                        tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                        return None;
+                    }
+                    () = tokio::time::sleep(*poll_interval) => continue,
+                }
+            };
             // Not raced against cancellation: a pick dropped mid-flight can leave a task it claimed
             // running until its heartbeat times out, or, while its `BEGIN` is in flight, return its
             // connection to the pool inside an open transaction.
@@ -1322,6 +1335,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             {
                 Ok(task) => task,
                 Err(e) => {
+                    drop(permit);
                     tracing::error!(
                         "Failed to pick new task from queue `{}`. Retrying in 5s. Error: {e}",
                         Q::queue_name()
@@ -1337,6 +1351,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             };
 
             let Some(task) = task else {
+                drop(permit);
                 let jitter = { fastrand::u64(0..500) };
                 tokio::select! {
                     () = cancellation_token.cancelled() => {
@@ -1347,6 +1362,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 }
             };
 
+            if let Some(permit) = permit {
+                permit.task_picked();
+            }
             tracing::debug!("Picked up `{}` task {}.", task.id, Q::queue_name());
             return Some(task);
         }

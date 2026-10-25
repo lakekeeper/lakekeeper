@@ -149,6 +149,22 @@ The following global configuration options are available:
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` | 2 | `2` | Number of workers spawned to purge table files after dropping a table with the purge option. |
 | `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
 | `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
+| `LAKEKEEPER__TASK_DRAIN_TIMEOUT` | 300s | 0s | How long running tasks may continue after a stop signal (SIGTERM or SIGINT) before Lakekeeper cancels them. `0s` cancels them at once. See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` | 180s | — | Stop the process after it ran no task for this long. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_MAX_LIFETIME` | 3600s | — | Stop the process this long after it started. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`). See [Stopping Task Workers](#stopping-task-workers). |
+
+#### Stopping Task Workers
+
+When Lakekeeper stops, it first stops taking new tasks and lets running tasks finish. While it waits, the HTTP API, health checks, metrics and task heartbeats keep running. When no task runs any more, or the wait ends, Lakekeeper stops the workers and exits with code 0. A task that did not finish may be tried again later, depending on its retry limit.
+
+A stop signal (SIGTERM or SIGINT) waits up to `LAKEKEEPER__TASK_DRAIN_TIMEOUT`. The default of `0s` cancels running tasks at once. If you set a longer time, give the pod a longer grace period: set `terminationGracePeriodSeconds` in Kubernetes to the drain timeout plus about 30 seconds. Otherwise Kubernetes kills the process before running tasks are cancelled cleanly. A second stop signal cancels running tasks at once. On pods that serve the HTTP API, a longer drain timeout also makes rolling updates slower.
+
+Headless workers can also stop on their own, for example when an autoscaler starts them for a backlog of tasks:
+
+- `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` stops the worker after it ran no task for this long.
+- `LAKEKEEPER__TASK_MAX_LIFETIME` stops the worker this long after it started. This is the time when it stops taking tasks. A task picked just before can keep the worker running until that task ends.
+
+These two wait for running tasks without a time limit. A stop signal during this wait limits it to `LAKEKEEPER__TASK_DRAIN_TIMEOUT` from the signal. Lakekeeper refuses to start if either is set on a process that serves the HTTP API, because the API would stop with the workers.
 
 ### NATS
 
