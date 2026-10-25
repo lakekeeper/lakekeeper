@@ -583,6 +583,7 @@ impl TaskQueueRegistry {
         TaskQueuesRunner {
             registered_queues: Arc::new(registered_task_queues),
             cancellation_token,
+            control: Arc::default(),
         }
     }
 }
