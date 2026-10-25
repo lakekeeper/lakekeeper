@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.14.2](https://github.com/lakekeeper/lakekeeper/compare/v0.14.1...v0.14.2) (2026-10-25)
+
+
+### Features
+
+* **maintenance:** instance admins switch a process into and out of read-only at runtime ([#2156](https://github.com/lakekeeper/lakekeeper/issues/2156)) ([5bd6579](https://github.com/lakekeeper/lakekeeper/commit/5bd6579d93a663476800ad5ca1437beeb4318ce6))
+* **pg-performance:** start read transactions in one round trip ([#2146](https://github.com/lakekeeper/lakekeeper/issues/2146)) ([5bd6579](https://github.com/lakekeeper/lakekeeper/commit/5bd6579d93a663476800ad5ca1437beeb4318ce6))
+
+
+### Bug Fixes
+
+* **deps:** bump ctutils for RUSTSEC-2026-0385 ([5bd6579](https://github.com/lakekeeper/lakekeeper/commit/5bd6579d93a663476800ad5ca1437beeb4318ce6))
+* **deps:** bump tokio for RUSTSEC-2026-0386 ([5bd6579](https://github.com/lakekeeper/lakekeeper/commit/5bd6579d93a663476800ad5ca1437beeb4318ce6))
+* **deps:** bump webpki crates for RUSTSEC-2026-0381, -0382 and -0383 ([5bd6579](https://github.com/lakekeeper/lakekeeper/commit/5bd6579d93a663476800ad5ca1437beeb4318ce6))
+* **deps:** drop aws-sdk-s3 sigv4a feature for RUSTSEC-2026-0387 ([#2166](https://github.com/lakekeeper/lakekeeper/issues/2166)) ([#2168](https://github.com/lakekeeper/lakekeeper/issues/2168)) ([4d63aec](https://github.com/lakekeeper/lakekeeper/commit/4d63aec7911aeb05d4192fcadbd8ad8f09c5a446))
+* **gcs:** don't over-report downscoped token expiry when STS omits expires_in ([#2160](https://github.com/lakekeeper/lakekeeper/issues/2160)) ([5bd6579](https://github.com/lakekeeper/lakekeeper/commit/5bd6579d93a663476800ad5ca1437beeb4318ce6))
+* **io:** ignore @ in paths when extracting usernames ([#2141](https://github.com/lakekeeper/lakekeeper/issues/2141)) ([5bd6579](https://github.com/lakekeeper/lakekeeper/commit/5bd6579d93a663476800ad5ca1437beeb4318ce6))
+* **s3:** cache the identity remote signing signs with ([#2170](https://github.com/lakekeeper/lakekeeper/issues/2170)) ([8d5c917](https://github.com/lakekeeper/lakekeeper/commit/8d5c9170d230a8f6de6b40d8c4e77682d9af5919))
+* **tasks:** expire soft-deleted tabulars in inactive warehouses ([#2151](https://github.com/lakekeeper/lakekeeper/issues/2151)) ([5bd6579](https://github.com/lakekeeper/lakekeeper/commit/5bd6579d93a663476800ad5ca1437beeb4318ce6))
+
 ## [0.14.1](https://github.com/lakekeeper/lakekeeper/compare/v0.14.0...v0.14.1) (2026-10-16)
 
 
