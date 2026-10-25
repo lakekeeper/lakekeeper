@@ -14,14 +14,14 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse},
+    catalog::rest::LoadCredentialsResponse,
     configs::{
         ParseFromStr,
         table::{TableProperties as TableConfigProperties, general},
     },
 };
 use itertools::Itertools;
-use lakekeeper_io::{LakekeeperStorage, Location, s3::S3Location};
+use lakekeeper_io::{Location, s3::S3Location};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -39,7 +39,7 @@ use super::{
     commit_tables::{
         apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
     },
-    io::{cleanup_in_background, delete_file, read_metadata_file, spawn_cleanup, write_file},
+    io::{cleanup_in_background, delete_files, delete_on_failure, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
     require_warehouse_id,
@@ -1817,21 +1817,21 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         .file_io(storage_secret_ref)
         .await?;
 
-    let write_futures: Vec<_> = commits
-        .iter()
-        .map(|commit| {
+    let new_metadata_locations: Vec<_> = commits.iter().map(|c| &c.new_metadata_location).collect();
+    delete_on_failure(&file_io, &new_metadata_locations, async {
+        // All writes finish before an error returns, so none lands after the cleanup.
+        futures::future::join_all(commits.iter().map(|commit| {
             write_file(
                 &file_io,
                 &commit.new_metadata_location,
                 &commit.new_metadata,
                 commit.new_compression_codec,
             )
-        })
-        .collect();
-    futures::future::try_join_all(write_futures).await?;
+        }))
+        .await
+        .into_iter()
+        .collect::<Result<(), _>>()?;
 
-    // Make changes in DB
-    let transaction_result = async {
         let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
         C::commit_table_transaction(
             warehouse_id,
@@ -1854,53 +1854,18 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
             return Err(ErrorModel::request_in_progress().into());
         }
 
-        transaction.commit().await?;
-        Result::<_, IcebergErrorResponse>::Ok(())
-    }
-    .await;
+        transaction.commit().await
+    })
+    .await?;
 
-    // After a failed transaction, remove the metadata files written above. Nothing refers to
-    // them, so the error returns without waiting.
-    if let Err(e) = transaction_result {
-        let written = commits
-            .iter()
-            .map(|commit| commit.new_metadata_location.clone())
-            .collect();
-        spawn_cleanup(delete_files(
-            file_io,
-            written,
-            "metadata file after failed commit",
-        ));
-        return Err(e);
-    }
     if !expired_metadata_files.is_empty() {
-        cleanup_in_background(
-            event_ctx.request_metadata().received_at(),
-            delete_files(file_io, expired_metadata_files, "expired metadata file"),
-        )
+        cleanup_in_background(event_ctx.request_metadata().received_at(), async move {
+            delete_files(&file_io, &expired_metadata_files).await;
+        })
         .await;
     }
 
     Ok(Arc::new(commits))
-}
-
-/// Deletes `locations` in parallel and logs the failures. `what` names the files in the log.
-async fn delete_files(
-    file_io: impl LakekeeperStorage,
-    locations: Vec<Location>,
-    what: &'static str,
-) {
-    let delete_results = futures::future::join_all(
-        locations
-            .iter()
-            .map(|location| delete_file(&file_io, location)),
-    )
-    .await;
-    for r in delete_results {
-        if let Err(e) = r {
-            tracing::warn!("Failed to delete {what}: {e:?}");
-        }
-    }
 }
 
 /// The expired metadata files a commit deletes: those inside the table location. A registered

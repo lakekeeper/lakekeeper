@@ -106,6 +106,9 @@ pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
         )
         .into());
     }
+    if let Some(config_check_fn) = task_queues.config_check_fn(queue_name).await {
+        config_check_fn(request.queue_config.0.clone())?;
+    }
     let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
     C::set_task_queue_config(
         project_id.clone(),

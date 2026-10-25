@@ -14,9 +14,12 @@ use lakekeeper::{
         },
         management::v1::{
             ApiServer,
-            task_queue::{ScheduleTaskRequest, ScheduleTaskResponse},
+            project::Service as _,
+            task_queue::{
+                QueueConfig, ScheduleTaskRequest, ScheduleTaskResponse, SetTaskQueueConfigRequest,
+            },
             tasks::{ControlTaskAction, ControlTasksRequest, Service as _},
-            warehouse::TabularDeleteProfile,
+            warehouse::{Service as _, TabularDeleteProfile},
         },
     },
     server::CatalogServer,
@@ -29,7 +32,9 @@ use lakekeeper::{
         },
     },
 };
-use lakekeeper_integration_tests::{create_ns, memory_io_profile, setup_with_registry};
+use lakekeeper_integration_tests::{
+    create_ns, memory_io_profile, random_request_metadata, setup_with_registry,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -566,4 +571,166 @@ async fn schedule_missing_table_returns_404(pool: PgPool) {
         err.error.r#type, "NoSuchTableException",
         "missing-table 404 must carry the iceberg-standard error type, got {err:?}"
     );
+}
+
+static STRICT_WAREHOUSE_QUEUE_NAME: LazyLock<TaskQueueName> =
+    LazyLock::new(|| "test_config_check_warehouse".into());
+static STRICT_PROJECT_QUEUE_NAME: LazyLock<TaskQueueName> =
+    LazyLock::new(|| "test_config_check_project".into());
+
+/// Refuses `level: 0`, like [`StrictProjectConfig`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(lakekeeper::utoipa::ToSchema))]
+struct StrictWarehouseConfig {
+    level: u32,
+}
+
+impl TaskConfig for StrictWarehouseConfig {
+    fn queue_name() -> &'static TaskQueueName {
+        &STRICT_WAREHOUSE_QUEUE_NAME
+    }
+    fn max_time_since_last_heartbeat() -> chrono::Duration {
+        chrono::Duration::seconds(60)
+    }
+    fn check_config(config: &Self) -> Result<(), iceberg_ext::catalog::rest::ErrorModel> {
+        check_level(config.level)
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(lakekeeper::utoipa::ToSchema))]
+struct StrictProjectConfig {
+    level: u32,
+}
+
+impl TaskConfig for StrictProjectConfig {
+    fn queue_name() -> &'static TaskQueueName {
+        &STRICT_PROJECT_QUEUE_NAME
+    }
+    fn max_time_since_last_heartbeat() -> chrono::Duration {
+        chrono::Duration::seconds(60)
+    }
+    fn check_config(config: &Self) -> Result<(), iceberg_ext::catalog::rest::ErrorModel> {
+        check_level(config.level)
+    }
+}
+
+fn check_level(level: u32) -> Result<(), iceberg_ext::catalog::rest::ErrorModel> {
+    if level == 0 {
+        return Err(iceberg_ext::catalog::rest::ErrorModel::bad_request(
+            "level must be at least 1",
+            "TestLevelTooLow",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn set_config_request(level: u32) -> SetTaskQueueConfigRequest {
+    SetTaskQueueConfigRequest {
+        queue_config: QueueConfig::from_json(serde_json::json!({ "level": level })),
+        max_seconds_since_last_heartbeat: None,
+    }
+}
+
+#[sqlx::test]
+async fn set_config_refused_by_check_config_is_not_stored(pool: PgPool) {
+    let (ctx, warehouse, registry) = setup_with_registry(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+        1,
+        None,
+    )
+    .await;
+    registry
+        .register_queue::<StrictWarehouseConfig, TestSchedulablePayload>(QueueRegistration {
+            queue_name: &STRICT_WAREHOUSE_QUEUE_NAME,
+            worker_fn: Arc::new(|_| Box::pin(async {})),
+            num_workers: 0,
+            scope: QueueScope::Warehouse,
+            user_scheduling: UserScheduling::Disabled,
+        })
+        .await;
+    registry
+        .register_queue::<StrictProjectConfig, TestSchedulablePayload>(QueueRegistration {
+            queue_name: &STRICT_PROJECT_QUEUE_NAME,
+            worker_fn: Arc::new(|_| Box::pin(async {})),
+            num_workers: 0,
+            scope: QueueScope::Project,
+            user_scheduling: UserScheduling::Disabled,
+        })
+        .await;
+    let warehouse_id = warehouse.warehouse_id;
+
+    // Warehouse route: an accepted config is stored; a refused one leaves it in place.
+    ApiServer::set_task_queue_config(
+        warehouse_id,
+        &STRICT_WAREHOUSE_QUEUE_NAME,
+        set_config_request(2),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("level 2 must be accepted");
+    let err = ApiServer::set_task_queue_config(
+        warehouse_id,
+        &STRICT_WAREHOUSE_QUEUE_NAME,
+        set_config_request(0),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("warehouse route: level 0 must be refused");
+    assert_eq!(
+        (
+            err.error.code,
+            err.error.r#type.as_str(),
+            err.error.message.as_str()
+        ),
+        (400, "TestLevelTooLow", "level must be at least 1")
+    );
+    let stored = ApiServer::get_task_queue_config(
+        warehouse_id,
+        &STRICT_WAREHOUSE_QUEUE_NAME,
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stored.queue_config.config, serde_json::json!({"level": 2}));
+
+    // Project route: the same check applies.
+    let project_metadata = || {
+        let mut request_metadata = random_request_metadata();
+        request_metadata.with_project_id((*warehouse.project_id).clone());
+        request_metadata
+    };
+    let err = ApiServer::set_project_task_queue_config(
+        &STRICT_PROJECT_QUEUE_NAME,
+        set_config_request(0),
+        ctx.clone(),
+        project_metadata(),
+    )
+    .await
+    .expect_err("project route: level 0 must be refused");
+    assert_eq!(
+        (
+            err.error.code,
+            err.error.r#type.as_str(),
+            err.error.message.as_str()
+        ),
+        (400, "TestLevelTooLow", "level must be at least 1")
+    );
+    let stored = ApiServer::get_project_task_queue_config(
+        &STRICT_PROJECT_QUEUE_NAME,
+        ctx,
+        project_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stored.queue_config.config, serde_json::json!({}));
 }

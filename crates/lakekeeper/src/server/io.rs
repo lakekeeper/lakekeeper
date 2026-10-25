@@ -13,6 +13,7 @@ use super::compression_codec::CompressionCodec;
 use crate::{
     CONFIG,
     api::{ErrorModel, Result},
+    service::COMMIT_STATE_UNKNOWN_ERROR_TYPE,
 };
 
 pub(crate) async fn write_file(
@@ -123,6 +124,48 @@ pub(crate) fn cleanup_deadline(
     .flatten()
     .min()
     .unwrap_or_else(crate::service::storage::validation::far_future)
+}
+
+/// Run `change`, which commits the files written to `locations`. If it fails, delete them, best
+/// effort, unless the commit may have been applied. Nothing refers to the files, so the error
+/// returns without waiting for the delete, which runs with [`spawn_cleanup`].
+pub(crate) async fn delete_on_failure<T>(
+    io: &(impl LakekeeperStorage + Clone + 'static),
+    locations: &[&Location],
+    change: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let result = change.await;
+    if let Err(e) = &result {
+        if e.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+            tracing::warn!(
+                locations = ?locations.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
+                "Commit may have been applied, keeping its new metadata files"
+            );
+        } else {
+            let io = io.clone();
+            let locations: Vec<Location> = locations.iter().map(|l| (*l).clone()).collect();
+            spawn_cleanup(async move { delete_files(&io, &locations).await });
+        }
+    }
+    result
+}
+
+/// Delete files, best effort: failures are logged.
+pub(crate) async fn delete_files<'a>(
+    io: &impl LakekeeperStorage,
+    locations: impl IntoIterator<Item = &'a Location>,
+) {
+    let results = futures::future::join_all(
+        locations
+            .into_iter()
+            .map(|location| async move { (location, delete_file(io, location).await) }),
+    )
+    .await;
+    for (location, result) in results {
+        if let Err(e) = result {
+            tracing::warn!("Failed to delete file {location}: {e:?}");
+        }
+    }
 }
 
 pub(crate) async fn read_file(

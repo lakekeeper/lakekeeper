@@ -9,9 +9,9 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result},
     server::namespace::validate_namespace_ident_creation,
     service::{
-        ArcResolvedWarehouse, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps,
-        NamespaceHierarchy, NamespaceId, NamespaceIdent, ResolvedWarehouse, SecretStore, State,
-        WriteTransaction,
+        ArcResolvedWarehouse, COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
+        CatalogStore, CatalogWarehouseOps, NamespaceHierarchy, NamespaceId, NamespaceIdent,
+        ResolvedWarehouse, SecretStore, State, WriteTransaction,
         authz::{
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
             CatalogWarehouseAction, NamespaceParent,
@@ -383,7 +383,8 @@ where
     /// | Failure | Resulting state |
     /// |---|---|
     /// | detach (pre-commit) | nothing committed; both systems unchanged; request fails |
-    /// | commit | old edge re-attached to compensate; request fails |
+    /// | commit, rolled back | old edge re-attached to compensate; request fails |
+    /// | commit, outcome unknown | namespace has no parent: access lost, never leaked |
     /// | attach-new (post-commit) | namespace has no parent: access lost, never leaked |
     ///
     /// Missing edges are also the repairable kind: `lakekeeper openfga reconcile` fixes them
@@ -479,10 +480,17 @@ where
         }
 
         if let Err(err) = t.commit().await {
-            // The move did not happen, so put the old edge back. Best effort: if this also
+            // A move that did not happen gets its old edge back. Best effort: if this also
             // fails the namespace is left parentless, which is fail-closed and repairable
             // by an additive reconcile.
-            if reparented {
+            if reparented && err.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+                tracing::error!(
+                    %warehouse_id,
+                    %namespace_id,
+                    "Namespace move may have been committed; the parent edge in the authorizer \
+                     may be missing until it is reconciled"
+                );
+            } else if reparented {
                 authorizer
                     .attach_namespace_parent(event_ctx.request_metadata(), namespace_id, old_parent)
                     .await
