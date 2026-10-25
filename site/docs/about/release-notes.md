@@ -16,6 +16,39 @@ For Lakekeeper+ releases, see the [Lakekeeper+ Release Notes](enterprise-release
 
 _[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
 
+## v0.14.2 (2026-10-25)
+
+### Features
+
+- **Read-only maintenance mode at runtime.** Instance admins can switch a running Lakekeeper process into read-only maintenance mode, and back, with `POST /management/v1/server/maintenance-mode`. While read-only, requests that only read keep working, and no new background tasks start. The mode belongs to one process, so call each replica on its own address ([#2156](https://github.com/lakekeeper/lakekeeper/pull/2156)).
+- **Fewer database round trips.** Read transactions, such as those of paged listings, need one fewer round trip to the database to start ([#2146](https://github.com/lakekeeper/lakekeeper/pull/2146)).
+
+### Bug Fixes
+
+- **GCS: vended credentials report their real expiry.** When Google STS returns no expiry, a vended token now expires with the token it was made from. Before, Lakekeeper assumed one hour, so clients could get tokens that had already expired (thanks @rohankmr414) ([#2160](https://github.com/lakekeeper/lakekeeper/pull/2160)).
+- **S3 remote signing with an assumed role or the system identity.** Lakekeeper caches the identity it signs with, so remote signing no longer calls STS for every request. `LAKEKEEPER__CACHE__STC__ENABLED` and `LAKEKEEPER__CACHE__STC__CAPACITY` apply to this cache too ([#2170](https://github.com/lakekeeper/lakekeeper/pull/2170)).
+- **Soft-deleted tables and views expire in inactive warehouses.** Before, their expiry was skipped, and they and their files stayed forever ([#2151](https://github.com/lakekeeper/lakekeeper/pull/2151)).
+- **Object paths with `@`.** Locations such as `s3://bucket/foo@bar` are no longer read as containing a user name (thanks @sivakumar-mahalingam) ([#2141](https://github.com/lakekeeper/lakekeeper/pull/2141)).
+- **Security updates of dependencies.** Updated the webpki crates, `ctutils` and `tokio`, and removed `crypto-bigint`, to fix security advisories RUSTSEC-2026-0381 to -0383 and RUSTSEC-2026-0385 to -0387 ([#2166](https://github.com/lakekeeper/lakekeeper/pull/2166)).
+
+### Audit log format
+
+**Also worth knowing** — the format itself did not change:
+
+- **Switching a Lakekeeper process into or out of read-only maintenance mode at runtime is recorded with two new actions.**
+
+    ```text
+    POST /management/v1/server/maintenance-mode
+      mode read-only   set_maintenance_mode_read_only
+      mode off         set_maintenance_mode_off
+    ```
+
+    Both are recorded on the server entity, allowed or refused. Only instance admins are allowed.
+
+    **What to do:** Nothing.
+
+Records from v0.14.2 carry `audit_format` **1.0** (unchanged).
+
 ## v0.14.1 (2026-10-16)
 
 ### Bug Fixes
@@ -316,6 +349,15 @@ _[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → R
     **What to do:** nothing. Use the schema to validate records or to generate a parser.
 
 Records from v0.14.0 carry `audit_format` **1.0** (the first version).
+
+## v0.13.8 (2026-10-25)
+
+### Bug Fixes
+
+- **GCS: vended credentials report their real expiry.** When Google STS returns no expiry, a vended token now expires with the token it was made from. Before, Lakekeeper assumed one hour, so clients could get tokens that had already expired (thanks @rohankmr414) ([#2160](https://github.com/lakekeeper/lakekeeper/pull/2160)).
+- **Soft-deleted tables and views expire in inactive warehouses.** Before, their expiry was skipped, and they and their files stayed forever ([#2151](https://github.com/lakekeeper/lakekeeper/pull/2151)).
+- **Object paths with `@`.** Locations such as `s3://bucket/foo@bar` are no longer read as containing a user name (thanks @sivakumar-mahalingam) ([#2141](https://github.com/lakekeeper/lakekeeper/pull/2141)).
+- **Security updates of dependencies.** Updated the webpki crates, `ctutils` and `tokio`, and removed `crypto-bigint`, to fix security advisories RUSTSEC-2026-0381 to -0383 and RUSTSEC-2026-0385 to -0387 ([#2166](https://github.com/lakekeeper/lakekeeper/pull/2166)).
 
 ## v0.13.7 (2026-10-16)
 
