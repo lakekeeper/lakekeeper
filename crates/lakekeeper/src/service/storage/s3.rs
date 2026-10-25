@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
     sync::LazyLock,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use aws_config::SdkConfig;
@@ -44,7 +44,10 @@ use crate::{
         BasicTabularInfo,
         storage::{
             StoragePermissions, TableConfig,
-            cache::{CachedStc, S3_STC_CACHE, STCCacheKey, get_or_load_stc},
+            cache::{
+                CachedStc, CredentialCacheType, S3_SIGNING_IDENTITY_CACHE, S3_STC_CACHE,
+                STCCacheKey, StorageContextKey, get_or_load_stc,
+            },
             error::{
                 CredentialsError, InvalidProfileError, StsRejection, TableConfigError, UpdateError,
                 ValidationError,
@@ -669,15 +672,20 @@ impl S3Profile {
         // Single-flight read-through: concurrent identical requests coalesce onto
         // one STS fetch (the most expensive miss in the system) per cache key. The
         // typed cache returns the S3 credential directly — no variant check.
-        get_or_load_stc(&S3_STC_CACHE, cache_key, || async {
-            tracing::debug!("Fetching new STS credentials for request: {sts_request}");
-            let temporary_credential = self
-                .get_temporary_credentials(sts_request, s3_credential)
-                .await?;
-            let valid_until =
-                Instant::now().checked_add(Duration::from_secs(self.sts_token_validity_seconds));
-            Ok::<_, TableConfigError>(CachedStc::new(temporary_credential, valid_until))
-        })
+        get_or_load_stc(
+            &S3_STC_CACHE,
+            CredentialCacheType::ShortTermCredentials,
+            cache_key,
+            || async {
+                tracing::debug!("Fetching new STS credentials for request: {sts_request}");
+                let temporary_credential = self
+                    .get_temporary_credentials(sts_request, s3_credential)
+                    .await?;
+                let valid_until = Instant::now()
+                    .checked_add(Duration::from_secs(self.sts_token_validity_seconds));
+                Ok::<_, TableConfigError>(CachedStc::new(temporary_credential, valid_until))
+            },
+        )
         .await
     }
 
@@ -1210,8 +1218,36 @@ impl S3Profile {
         let s3_auth = s3_credential
             .map(|e| S3Auth::try_from(e.clone()))
             .transpose()?;
+        // Static keys sign without a network call. Assuming a role or loading the system
+        // identity calls a service, so the identity is cached.
+        if self.assume_role_arn.is_none() && !matches!(s3_auth, Some(S3Auth::AwsSystemIdentity(_)))
+        {
+            return self.load_signing_identity(s3_auth.as_ref()).await;
+        }
+        let key = StorageContextKey::new(self.into(), s3_credential.map(Into::into));
+        get_or_load_stc(
+            &S3_SIGNING_IDENTITY_CACHE,
+            CredentialCacheType::S3SigningIdentity,
+            key,
+            || async {
+                let identity = self.load_signing_identity(s3_auth.as_ref()).await?;
+                let valid_until = signing_identity_valid_until(
+                    identity.expiration(),
+                    SystemTime::now(),
+                    Instant::now(),
+                );
+                Ok::<_, ErrorModel>(CachedStc::new(identity, valid_until))
+            },
+        )
+        .await
+    }
+
+    async fn load_signing_identity(
+        &self,
+        s3_auth: Option<&S3Auth>,
+    ) -> Result<Identity, ErrorModel> {
         let sdk = self
-            .get_aws_sdk_config(s3_auth.as_ref(), self.assume_role_arn.as_deref())
+            .get_aws_sdk_config(s3_auth, self.assume_role_arn.as_deref())
             .await?;
         let token_provider = sdk.credentials_provider().ok_or_else(|| {
             ErrorModel::precondition_failed(
@@ -1585,6 +1621,27 @@ fn escape_iam_glob_literal(value: &str) -> String {
     }
     out
 }
+
+/// Until when the cache treats a signing identity as valid. Static keys of the system identity,
+/// for example from the environment, carry no expiry and count as valid for
+/// [`STATIC_SIGNING_IDENTITY_VALIDITY`], so the cache serves them for half of it and picks up a
+/// rotated key within that time.
+fn signing_identity_valid_until(
+    expiration: Option<SystemTime>,
+    system_now: SystemTime,
+    now: Instant,
+) -> Option<Instant> {
+    match expiration {
+        Some(expiration) => expiration
+            .duration_since(system_now)
+            .ok()
+            .and_then(|valid_for| now.checked_add(valid_for)),
+        None => now.checked_add(STATIC_SIGNING_IDENTITY_VALIDITY),
+    }
+}
+
+/// Validity the cache assumes for a signing identity without an expiry.
+const STATIC_SIGNING_IDENTITY_VALIDITY: Duration = Duration::from_mins(10);
 
 fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
     S3Settings {
@@ -2783,6 +2840,121 @@ pub(crate) mod test {
             Some("m".repeat(StsRejection::MAX_MESSAGE_CHARS).as_str())
         );
         assert_eq!(rejection.request_id(), Some("Ünïcode-id"));
+    }
+
+    const ASSUME_ROLE_RESPONSE: &str = r#"<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleResult><Credentials><AccessKeyId>test-access-key</AccessKeyId><SecretAccessKey>test-secret-key</SecretAccessKey><SessionToken>test-session-token</SessionToken><Expiration>2099-01-01T00:00:00Z</Expiration></Credentials><AssumedRoleUser><Arn>arn:aws:sts::000000000000:assumed-role/test-role/test-session</Arn><AssumedRoleId>TESTROLEID:test-session</AssumedRoleId></AssumedRoleUser></AssumeRoleResult></AssumeRoleResponse>"#;
+
+    /// A local STS that answers every `AssumeRole`, and the number of calls it received.
+    async fn counting_sts() -> (url::Url, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let router = axum::Router::new().fallback({
+            let calls = calls.clone();
+            move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(ASSUME_ROLE_RESPONSE)
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (format!("http://{addr}/").parse().unwrap(), calls)
+    }
+
+    /// A profile that signs with a role assumed through `sts`. The role is unique, so the
+    /// process-wide cache holds nothing for it yet.
+    fn assume_role_profile(sts: url::Url) -> S3Profile {
+        S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_endpoint(sts)
+            .assume_role_arn(format!(
+                "arn:aws:iam::000000000000:role/signing-{}",
+                uuid::Uuid::now_v7()
+            ))
+            .sts_enabled(false)
+            .build()
+    }
+
+    fn access_key(external_id: &str) -> S3Credential {
+        S3Credential::AccessKey(S3AccessKeyCredential {
+            access_key_id: "AKIAEXAMPLE".to_string(),
+            secret_access_key: "secret".to_string(),
+            external_id: Some(external_id.to_string()),
+        })
+    }
+
+    #[tokio::test]
+    async fn signing_requests_assume_the_role_once() {
+        let (sts, calls) = counting_sts().await;
+        let profile = assume_role_profile(sts);
+        let credential = access_key("external-id-1");
+
+        for _ in 0..3 {
+            let identity = profile
+                .get_signing_identity(Some(&credential))
+                .await
+                .unwrap();
+            let credentials = identity
+                .data::<aws_credential_types::Credentials>()
+                .unwrap();
+            assert_eq!(credentials.access_key_id(), "test-access-key");
+        }
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn signing_identities_are_cached_until_their_expiry() {
+        let now = Instant::now();
+        let system_now = SystemTime::now();
+        assert_eq!(
+            signing_identity_valid_until(
+                Some(system_now + Duration::from_hours(1)),
+                system_now,
+                now
+            ),
+            Some(now + Duration::from_hours(1))
+        );
+        assert_eq!(
+            signing_identity_valid_until(
+                Some(system_now - Duration::from_secs(1)),
+                system_now,
+                now
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn static_signing_identities_are_cached_for_ten_minutes() {
+        let now = Instant::now();
+        assert_eq!(
+            signing_identity_valid_until(None, SystemTime::now(), now),
+            Some(now + Duration::from_mins(10))
+        );
+    }
+
+    #[tokio::test]
+    async fn signing_with_another_external_id_assumes_the_role_again() {
+        let (sts, calls) = counting_sts().await;
+        let profile = assume_role_profile(sts);
+
+        profile
+            .get_signing_identity(Some(&access_key("external-id-1")))
+            .await
+            .unwrap();
+        profile
+            .get_signing_identity(Some(&access_key("external-id-2")))
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     /// Only the first `limit` bytes of a large body are read.
