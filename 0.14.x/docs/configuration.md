@@ -461,12 +461,12 @@ With a separate read replica (`LAKEKEEPER__PG_DATABASE_URL_READ`), an entry load
 
 **Short-Term Credentials (STC) Cache**
 
-When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
+When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times. These settings also apply to a separate cache for the credentials Lakekeeper signs S3 requests with when it assumes a role or uses its system identity, so it does not load new credentials for every signed request. Static keys of the system identity have no expiry; they are cached for 5 minutes.
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | `LAKEKEEPER__CACHE__STC__ENABLED` | `true` | `true` | Enable or disable the short-term credentials cache. |
-| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. |
+| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of credential entries to cache, **per cache** — S3 vended credentials, S3 signing credentials, Azure, and GCP each maintain a separate cache. A deployment can hold up to this many entries in each cache it uses. |
 
 _Expiry Mechanism_: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 
@@ -679,16 +679,19 @@ The bound is applied to the raw list the client sent, before Lakekeeper decides 
 
 ### Maintenance Mode
 
-Captured at startup; not dynamic. While `read-only`:
+`LAKEKEEPER__MAINTENANCE_MODE` sets the mode when Lakekeeper starts. An instance admin can also switch a running Lakekeeper process into or out of read-only with `POST /management/v1/server/maintenance-mode` and a body of `{"mode": "read-only"}` or `{"mode": "off"}`. Switching back to `off` works only when `LAKEKEEPER__MAINTENANCE_MODE` is not `read-only` at startup. The call changes only the process that serves it, so call each pod on its own address, not through the Service. When the host name of the process is known, the response includes it in `hostname`; on Kubernetes this is usually the pod name. A restarted process starts in the mode the variable sets again. Pods that serve no API (`LAKEKEEPER__SERVE_HTTP_API=false`) cannot be switched this way: scale them down or restart them with `LAKEKEEPER__MAINTENANCE_MODE=read-only`.
 
-- Mutating requests (anything other than `GET`/`HEAD`/`OPTIONS`) on `/catalog/v1` and `/management/v1` return `503` with `Retry-After: 60` and `error.type = "MaintenanceModeError"`. `/health` is unaffected.
-- Built-in task queue workers are not started.
+While `read-only`:
+
+- Mutating requests (anything other than `GET`/`HEAD`/`OPTIONS`) on `/catalog/v1` and `/management/v1` return `503` with `Retry-After: 60` and `error.type = "MaintenanceModeError"`. Two exceptions: `POST /management/v1/server/maintenance-mode`, so read-only can be switched off again, and the `POST` requests below that only read. `/health` is unaffected.
+- Requests that only read keep working, even when they are sent as `POST`: searches, task listings, permission checks, endpoint statistics, table metrics reports and S3 request signing.
+- No new background tasks start. Tasks already running finish. With `LAKEKEEPER__MAINTENANCE_MODE=read-only`, built-in task queue workers are not started at all.
 - `GET /v1/config` skips user auto-registration.
 - `GET /health` exposes the current mode as `maintenance_mode` for operator fan-out checks.
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
-| `LAKEKEEPER__MAINTENANCE_MODE` | `read-only` | — | `off` (default) or `read-only`. Captured at startup; not dynamic. |
+| `LAKEKEEPER__MAINTENANCE_MODE` | `read-only` | `off` | `off` or `read-only`. Applies from startup. |
 
 ### Idempotency
 
