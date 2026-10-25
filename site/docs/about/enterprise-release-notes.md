@@ -4,6 +4,25 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 
 # Lakekeeper+ Release Notes
 
+## v0.14.2 (2026-10-25)
+
+_Based on Lakekeeper OSS v0.14.2._
+
+### Bug Fixes
+
+- **`migrate` can re-run the post-migration hooks.** `lakekeeper-plus migrate --force-idempotent-post-migration-hooks` re-runs the post-migration hooks that are safe to repeat, for example after one of them reported a failure. A hook that fails then stops the command with an error.
+- **Warning for an audit log filter that matches nothing.** The server warns at start when `RUST_LOG` selects audit records by their old module paths, `lakekeeper::service::events::backends::audit` or `lakekeeper::service::admission`. Such a filter matches no audit record. Audit records use the fixed target `lakekeeper::audit`, for example `RUST_LOG=warn,lakekeeper::audit=info`.
+- **Security updates of dependencies.** `tokio`, `ctutils` and the webpki crates are updated, and the DPoP signing of the Okta role provider uses `p256` 0.14. This fixes security advisories RUSTSEC-2026-0381 to -0383 and RUSTSEC-2026-0385 to -0387.
+
+### Upstream Lakekeeper changes (bump to v0.14.2)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/). The most important ones for Lakekeeper Plus:
+
+- **Read-only maintenance mode at runtime.** Instance admins can switch a running process into read-only maintenance mode, and back, with `POST /management/v1/server/maintenance-mode`. The audit log records both switches with two new actions ([lakekeeper#2156](https://github.com/lakekeeper/lakekeeper/pull/2156)).
+- **GCS: vended credentials report their real expiry.** Clients no longer get tokens that have already expired ([lakekeeper#2160](https://github.com/lakekeeper/lakekeeper/pull/2160)).
+- **S3 remote signing with an assumed role or the system identity** no longer calls STS for every request ([lakekeeper#2170](https://github.com/lakekeeper/lakekeeper/pull/2170)).
+- **Soft-deleted tables and views expire in inactive warehouses.** Before, they and their files stayed forever ([lakekeeper#2151](https://github.com/lakekeeper/lakekeeper/pull/2151)).
+
 ## v0.14.1 (2026-10-16)
 
 _Based on Lakekeeper OSS v0.14.1._
@@ -356,6 +375,21 @@ Lakekeeper Plus writes the same audit log as Lakekeeper, so this section lists t
 
 Records from v0.14.0 carry `audit_format` **1.0** (the first version). Records from v0.14.0 that Lakekeeper Plus contributes to carry `emitters.lakekeeper_plus` **1.0** (the first version).
 
+
+## v0.13.8 (2026-10-25)
+
+_Based on Lakekeeper OSS v0.13.8._
+
+### Bug Fixes
+
+- **Security updates of dependencies.** `tokio`, `ctutils` and the webpki crates are updated, and the DPoP signing of the Okta role provider uses `p256` 0.14. This fixes security advisories RUSTSEC-2026-0381 to -0383 and RUSTSEC-2026-0385 to -0387.
+
+### Upstream Lakekeeper changes (bump to v0.13.8)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/). The most important ones for Lakekeeper Plus:
+
+- **GCS: vended credentials report their real expiry.** Clients no longer get tokens that have already expired ([lakekeeper#2160](https://github.com/lakekeeper/lakekeeper/pull/2160)).
+- **Soft-deleted tables and views expire in inactive warehouses.** Before, they and their files stayed forever ([lakekeeper#2151](https://github.com/lakekeeper/lakekeeper/pull/2151)).
 
 ## v0.13.7 (2026-10-16)
 

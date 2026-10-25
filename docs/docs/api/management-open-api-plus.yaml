@@ -4173,6 +4173,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/server/maintenance-mode:
+    post:
+      tags:
+        - server
+      summary: Set Maintenance Mode
+      description: |-
+        Switches the Lakekeeper process that serves this request into or out of
+        read-only maintenance mode. While read-only, the process rejects mutating
+        requests with `503` and starts no new background tasks. The mode is held
+        per process: call each replica on its own address, not through a load
+        balancer. A restart returns the process to the mode set by
+        `LAKEKEEPER__MAINTENANCE_MODE`, and `off` is rejected with `409` while
+        that variable sets `read-only`. Requires instance-admin privilege.
+      operationId: set_maintenance_mode
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetMaintenanceModeRequest'
+        required: true
+      responses:
+        '200':
+          description: Maintenance mode of the serving process
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaintenanceModeResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/tag-definition:
     get:
       tags:
@@ -10385,7 +10418,9 @@ components:
             - run-now
     ControlTaskActionStop:
       type: object
-      description: Stop the task gracefully. The task will be retried.
+      description: |-
+        Stop the task gracefully. The task will be retried. An attempt that does not stop before
+        its heartbeat times out counts as failed; after its last try, the task fails.
       required:
         - action-type
       properties:
@@ -15290,6 +15325,14 @@ components:
             Next page token, re-use the same request as for the original request,
             but set this to the `next_page_token` from the previous response.
             Stop iterating when no more items are returned in a page.
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+            a client that depends on it checks `parent-task-id` of each returned task.
         queue-name:
           type:
             - array
@@ -15492,6 +15535,14 @@ components:
             Next page token, re-use the same request as for the original request,
             but set this to the `next_page_token` from the previous response.
             Stop iterating when no more items are returned in a page.
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+            a client that depends on it checks `parent-task-id` of each returned task.
         queue-name:
           type:
             - array
@@ -15544,6 +15595,33 @@ components:
           items:
             $ref: '#/components/schemas/GetWarehouseResponse'
           description: List of warehouses in the project.
+    MaintenanceMode:
+      type: string
+      enum:
+        - off
+        - read-only
+    MaintenanceModeResponse:
+      type: object
+      description: |-
+        Maintenance mode of the process that served the request. Each process holds
+        its own mode; call every replica on its own address to change them all.
+      required:
+        - mode
+        - startup-mode
+      properties:
+        hostname:
+          type:
+            - string
+            - 'null'
+          description: Host name of the serving process (the pod name on Kubernetes), if known.
+        mode:
+          $ref: '#/components/schemas/MaintenanceMode'
+          description: Mode in effect after the request.
+        startup-mode:
+          $ref: '#/components/schemas/MaintenanceMode'
+          description: |-
+            Mode set by `LAKEKEEPER__MAINTENANCE_MODE` at startup. A restart returns the
+            process to it.
     ManagedBy:
       type: string
       description: |-
@@ -16308,6 +16386,14 @@ components:
         queue-name:
           type: string
           description: Name of the queue processing this task
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+            has none.
         scheduled-for:
           type: string
           format: date-time
@@ -16405,11 +16491,13 @@ components:
           format: int64
           description: |-
             Maximum wall-clock duration of a single task attempt, in seconds.
-            On timeout the task is marked failed and is retried at most once
-            before being recorded as a terminal failure. Operators with very
-            large tables can raise this; in exchange a single attempt may hold
-            a worker slot for the configured duration. Defaults to 3600 (60
-            minutes). Must be at least 60.
+            A run that reaches it stops; if it was still reading the table's
+            metadata, it deleted nothing. The next run follows one day later,
+            and the wait doubles with every further run that stops, up to
+            `maximum-interval-seconds`, until a run completes. Operators with
+            very large tables can raise this; in exchange a single attempt may
+            hold a worker slot for the configured duration. Defaults to 3600
+            (60 minutes). Must be at least 60.
           default: 3600
           minimum: 60
         maximum-interval-seconds:
@@ -17675,6 +17763,17 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/ExpireSnapshotsQueueConfig'
+    SetMaintenanceModeRequest:
+      type: object
+      description: Request to switch this process into or out of read-only maintenance mode.
+      required:
+        - mode
+      properties:
+        mode:
+          $ref: '#/components/schemas/MaintenanceMode'
+          description: |-
+            Mode to switch to. `off` is rejected while `LAKEKEEPER__MAINTENANCE_MODE`
+            sets `read-only`.
     SetManagedAccessRequest:
       type: object
       required:
@@ -19145,6 +19244,14 @@ components:
           type: number
           format: float
           description: Progress achieved in this attempt
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How much worker capacity this attempt needed, in a unit its queue chooses; unset if it
+            had none.
         scheduled-for:
           type: string
           format: date-time
@@ -19167,7 +19274,7 @@ components:
             - 'null'
           description: |-
             How often to run the cleanup task in ISO8601 duration format. Defaults to once a day (P1D).
-            If a value below 1 day is provided, it will be set to the default of 1 day.
+            Values below 1 day are raised to 1 day; values above 100 years are lowered to 100 years.
           example: PT1H30M45.5S
         retention-period:
           type:
@@ -20249,6 +20356,14 @@ components:
         queue-name:
           type: string
           description: Name of the queue processing this task
+        resource-demand:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+            has none.
         scheduled-for:
           type: string
           format: date-time
