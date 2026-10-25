@@ -28,7 +28,7 @@ use crate::{
         BasicTabularInfo,
         storage::{
             ShortTermCredentialsRequest, TableConfig,
-            cache::{CachedStc, GCS_STC_CACHE, STCCacheKey, get_or_load_stc},
+            cache::{CachedStc, CredentialCacheType, GCS_STC_CACHE, STCCacheKey, get_or_load_stc},
             error::{
                 CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
                 ValidationError,
@@ -305,34 +305,39 @@ impl GcsProfile {
         // Single-flight read-through: concurrent identical requests coalesce onto
         // one STS downscope (the most expensive miss in the system) per cache key.
         // The typed cache returns the `CachedSTSResponse` directly — no variant check.
-        let response = get_or_load_stc(&GCS_STC_CACHE, cache_key, || async {
-            let (subject_token, project_id) = Self::get_subject_token(credential).await?;
-            let token = sts::downscope(&subject_token.token, &self.bucket, stc_request).await?;
+        let response = get_or_load_stc(
+            &GCS_STC_CACHE,
+            CredentialCacheType::ShortTermCredentials,
+            cache_key,
+            || async {
+                let (subject_token, project_id) = Self::get_subject_token(credential).await?;
+                let token = sts::downscope(&subject_token.token, &self.bucket, stc_request).await?;
 
-            let sts_validity_duration = vended_token_validity(
-                token.expires_in,
-                subject_token.expires_at,
-                std::time::SystemTime::now(),
-            );
-
-            let expires_at_system_time =
-                std::time::SystemTime::now().checked_add(sts_validity_duration);
-            if expires_at_system_time.is_none() {
-                tracing::warn!(
-                    "Calculated expiry time for STS token overflowed. Valid duration: {sts_validity_duration:?}",
+                let sts_validity_duration = vended_token_validity(
+                    token.expires_in,
+                    subject_token.expires_at,
+                    std::time::SystemTime::now(),
                 );
-            }
 
-            let token = CachedSTSResponse {
-                token,
-                project_id,
-                expires_at_system_time,
-            };
-            Ok::<_, TableConfigError>(CachedStc::new(
-                token,
-                Instant::now().checked_add(sts_validity_duration),
-            ))
-        })
+                let expires_at_system_time =
+                    std::time::SystemTime::now().checked_add(sts_validity_duration);
+                if expires_at_system_time.is_none() {
+                    tracing::warn!(
+                        "Calculated expiry time for STS token overflowed. Valid duration: {sts_validity_duration:?}",
+                    );
+                }
+
+                let token = CachedSTSResponse {
+                    token,
+                    project_id,
+                    expires_at_system_time,
+                };
+                Ok::<_, TableConfigError>(CachedStc::new(
+                    token,
+                    Instant::now().checked_add(sts_validity_duration),
+                ))
+            },
+        )
         .await?;
 
         table_properties.insert(&gcs::Token(response.token.access_token));

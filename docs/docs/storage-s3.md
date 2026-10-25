@@ -194,6 +194,8 @@ To set up a system identity securely:
 
 By default, a Warehouse that uses the system identity must set both an `external-id` and an `assume-role-arn`. The [Configuration Guide](./configuration.md#storage) describes the settings that relax this.
 
+Lakekeeper checks these rules when a Warehouse is created and when its storage profile or storage credential changes. It checks them again each time it uses the system identity: for its own reads and writes, for remote signing and for vended credentials. A Warehouse that no longer meets the rules, for example after a setting was made stricter, fails with an error that names the rule until its storage profile or storage credential is updated.
+
 For this example, assume the system identity has the ARN `arn:aws:iam::123:user/lakekeeper-system-identity`. Each Warehouse needs an IAM role whose trust policy lets the system identity assume it with the external ID:
 
 ```json
