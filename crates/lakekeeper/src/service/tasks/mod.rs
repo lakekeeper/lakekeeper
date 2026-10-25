@@ -24,8 +24,8 @@ mod task_queues_runner;
 mod task_registry;
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
 pub use task_registry::{
-    QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues, ScheduleEligibilityFn,
-    TaskQueueRegistry, UserScheduling, ValidatorFn,
+    ConfigCheckFn, QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues,
+    ScheduleEligibilityFn, TaskQueueRegistry, UserScheduling, ValidatorFn,
 };
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
@@ -496,6 +496,20 @@ pub trait TaskConfig:
     ) -> Result<(), ErrorModel> {
         Ok(())
     }
+
+    /// Decide whether a queue config is acceptable when it is saved through the
+    /// `task-queue/{name}/config` endpoint, at warehouse and project scope alike. Called after
+    /// authz and after the config is parsed. Sync + pure.
+    ///
+    /// Return `Err(ErrorModel)` (typically `400 Bad Request`) for a config the worker would refuse
+    /// at pickup, so the operator sees the problem when saving. The error reaches the caller
+    /// unchanged, so name the setting and what to change in the message. Stored configs are not
+    /// re-checked when read, so the worker must still handle a config this check refuses.
+    ///
+    /// Default: every config that parses is accepted.
+    fn check_config(_config: &Self) -> Result<(), ErrorModel> {
+        Ok(())
+    }
 }
 
 #[cfg(not(feature = "open-api"))]
@@ -535,6 +549,11 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
         entity_properties: &std::collections::HashMap<String, String>,
         entity: WarehouseTaskEntityId,
     ) -> Result<(), ErrorModel> {
+        Ok(())
+    }
+
+    /// See the `open-api`-enabled trait for full documentation.
+    fn check_config(_config: &Self) -> Result<(), ErrorModel> {
         Ok(())
     }
 }

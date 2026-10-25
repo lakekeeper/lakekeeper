@@ -87,6 +87,13 @@ pub type ScheduleEligibilityFn = Arc<
         + Sync,
 >;
 
+/// Check run by the `task-queue/{name}/config` endpoint after the config is parsed. Receives
+/// the raw config JSON and returns `Err(ErrorModel)` to refuse the save. Wraps
+/// [`TaskConfig::check_config`].
+pub type ConfigCheckFn = Arc<
+    dyn Fn(serde_json::Value) -> Result<(), iceberg_ext::catalog::rest::ErrorModel> + Send + Sync,
+>;
+
 #[derive(Clone)]
 struct RegisteredQueue {
     /// API configuration for this queue
@@ -94,6 +101,8 @@ struct RegisteredQueue {
     /// Schema validator function for the queue configuration
     /// This function is called to validate the configuration payload
     schema_validator_fn: ValidatorFn,
+    /// Check called by the config endpoint. Wraps `T::check_config` into a type-erased dispatch.
+    config_check_fn: ConfigCheckFn,
     /// Pre-check called by the schedule endpoint. Wraps
     /// `T::check_schedule_eligibility` into a type-erased dispatch.
     schedule_eligibility_fn: ScheduleEligibilityFn,
@@ -117,6 +126,7 @@ impl std::fmt::Debug for RegisteredQueue {
         f.debug_struct("RegisteredQueue")
             .field("api_config", &self.api_config)
             .field("schema_validator_fn", &"Fn(...)")
+            .field("config_check_fn", &"Fn(...)")
             .field("schedule_eligibility_fn", &"Fn(...)")
             .field("payload_validator_fn", &"Fn(...)")
             .field("legacy_names", &self.legacy_names)
@@ -145,6 +155,17 @@ impl RegisteredTaskQueues {
             .await
             .get(queue_name)
             .map(|q| Arc::clone(&q.schema_validator_fn))
+    }
+
+    /// Config check for the config endpoint, run after [`Self::validate_config_fn`] accepted
+    /// the config. Returns `None` if the queue is not registered.
+    #[must_use]
+    pub async fn config_check_fn(&self, queue_name: &TaskQueueName) -> Option<ConfigCheckFn> {
+        self.queues
+            .read()
+            .await
+            .get(queue_name)
+            .map(|q| Arc::clone(&q.config_check_fn))
     }
 
     /// Get the API configuration for all registered queues
@@ -365,18 +386,11 @@ impl TaskQueueRegistry {
         // worker and fail at pickup.
         let payload_validator_fn = |v| serde_json::from_value::<D>(v).map(|_| ());
         let payload_validator_fn = Arc::new(payload_validator_fn) as ValidatorFn;
+        let config_check_fn: ConfigCheckFn =
+            Arc::new(|raw_config| T::check_config(&parse_queue_config::<T>(raw_config)?));
         let schedule_eligibility_fn: ScheduleEligibilityFn =
             Arc::new(|raw_config, entity_props, entity| {
-                let config: T = serde_json::from_value(raw_config).map_err(|e| {
-                    iceberg_ext::catalog::rest::ErrorModel::internal(
-                        format!(
-                            "Failed to deserialize queue config for queue '{}': {e}",
-                            T::queue_name()
-                        ),
-                        "TaskConfigDeserializeError",
-                        Some(Box::new(e)),
-                    )
-                })?;
+                let config = parse_queue_config::<T>(raw_config)?;
                 T::check_schedule_eligibility(&config, &entity_props, entity)
             });
         let api_config = QueueApiConfig {
@@ -400,6 +414,7 @@ impl TaskQueueRegistry {
             RegisteredQueue {
                 api_config,
                 schema_validator_fn,
+                config_check_fn,
                 schedule_eligibility_fn,
                 payload_validator_fn,
                 legacy_names: T::legacy_queue_names(),
@@ -612,6 +627,22 @@ impl std::fmt::Debug for QueueApiConfig {
             .field("user_scheduling", &self.user_scheduling)
             .finish()
     }
+}
+
+/// Parse a stored or just-validated queue config. A failure is an internal error.
+fn parse_queue_config<T: TaskConfig>(
+    raw_config: serde_json::Value,
+) -> Result<T, iceberg_ext::catalog::rest::ErrorModel> {
+    serde_json::from_value(raw_config).map_err(|e| {
+        iceberg_ext::catalog::rest::ErrorModel::internal(
+            format!(
+                "Failed to deserialize queue config for queue '{}': {e}",
+                T::queue_name()
+            ),
+            "TaskConfigDeserializeError",
+            Some(Box::new(e)),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1037,6 +1068,60 @@ mod test {
             picky_fn(serde_json::json!({}), HashMap::new(), entity).is_ok(),
             "picky queue should accept when the marker prop is absent"
         );
+    }
+
+    #[tokio::test]
+    async fn test_check_config_dispatches_through_registry() {
+        static STRICT_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "strict-config-check".into());
+
+        // Refuses `level: 0`.
+        #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct StrictCheckCfg {
+            #[serde(default)]
+            level: u32,
+        }
+        impl TaskConfig for StrictCheckCfg {
+            fn queue_name() -> &'static TaskQueueName {
+                &STRICT_QN
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+            fn check_config(config: &Self) -> Result<(), iceberg_ext::catalog::rest::ErrorModel> {
+                if config.level == 0 {
+                    return Err(iceberg_ext::catalog::rest::ErrorModel::bad_request(
+                        "level must be at least 1",
+                        "StrictLevelTooLow",
+                        None,
+                    ));
+                }
+                Ok(())
+            }
+        }
+
+        let registry = TaskQueueRegistry::new();
+        let queues = registry.registered_task_queues();
+        registry
+            .register_queue::<StrictCheckCfg, TestPayload>(QueueRegistration {
+                queue_name: &STRICT_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+
+        let strict_fn = queues
+            .config_check_fn(&STRICT_QN)
+            .await
+            .expect("strict queue registered");
+        let err = strict_fn(serde_json::json!({"level": 0}))
+            .expect_err("strict queue must refuse level 0");
+        assert_eq!(err.code, 400);
+        assert_eq!(err.r#type, "StrictLevelTooLow");
+        assert_eq!(err.message, "level must be at least 1");
+        assert!(strict_fn(serde_json::json!({"level": 1})).is_ok());
     }
 
     #[tokio::test]
