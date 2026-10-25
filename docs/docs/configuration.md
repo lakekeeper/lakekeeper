@@ -488,12 +488,12 @@ See [Monitoring](./monitoring.md#cache-invalidation-metrics) for the metrics and
 
 **Short-Term Credentials (STC) Cache**
 
-When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
+When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times. These settings also apply to a separate cache for the credentials Lakekeeper signs S3 requests with when it assumes a role or uses its system identity, so it does not load new credentials for every signed request. Static keys of the system identity have no expiry; they are cached for 5 minutes.
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | `LAKEKEEPER__CACHE__STC__ENABLED` | `true` | `true` | Enable or disable the short-term credentials cache. |
-| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. |
+| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of credential entries to cache, **per cache** — S3 vended credentials, S3 signing credentials, Azure, and GCP each maintain a separate cache. A deployment can hold up to this many entries in each cache it uses. |
 
 _Expiry Mechanism_: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 
