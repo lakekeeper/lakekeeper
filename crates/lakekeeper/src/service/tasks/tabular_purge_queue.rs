@@ -276,11 +276,17 @@ where
         tokio::time::Instant::now() + HEARTBEAT_INTERVAL,
         HEARTBEAT_INTERVAL,
     );
+    // The running heartbeat. `work` keeps running while it is pending.
+    let mut beat = None;
     loop {
         tokio::select! {
             output = &mut work => return Some(output),
-            _ = interval.tick() => {
-                if heartbeat().await.is_break() {
+            _ = interval.tick(), if beat.is_none() => beat = Some(Box::pin(heartbeat())),
+            flow = async { beat.as_mut().expect("the branch runs only with a heartbeat").await },
+                if beat.is_some() =>
+            {
+                beat = None;
+                if flow.is_break() {
                     return None;
                 }
             }
@@ -333,5 +339,25 @@ mod tests {
 
         assert_eq!(purged, None);
         assert_eq!(start.elapsed(), HEARTBEAT_INTERVAL);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_purge_continues_while_its_heartbeat_is_pending() {
+        let start = tokio::time::Instant::now();
+        let purged = tokio::time::timeout(
+            HEARTBEAT_INTERVAL * 10,
+            with_heartbeat(
+                async {
+                    tokio::time::sleep(HEARTBEAT_INTERVAL * 2).await;
+                    "purged"
+                },
+                std::future::pending::<ControlFlow<()>>,
+            ),
+        )
+        .await
+        .expect("the purge waited for its heartbeat");
+
+        assert_eq!(purged, Some("purged"));
+        assert_eq!(start.elapsed(), HEARTBEAT_INTERVAL * 2);
     }
 }
