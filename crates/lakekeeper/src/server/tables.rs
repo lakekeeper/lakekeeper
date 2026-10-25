@@ -39,7 +39,7 @@ use super::{
     commit_tables::{
         apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
     },
-    io::{delete_files, delete_on_failure, read_metadata_file, write_file},
+    io::{cleanup_in_background, delete_files, delete_on_failure, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
     require_warehouse_id,
@@ -1858,7 +1858,12 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     })
     .await?;
 
-    delete_files(&file_io, &expired_metadata_files).await;
+    if !expired_metadata_files.is_empty() {
+        cleanup_in_background(event_ctx.request_metadata().received_at(), async move {
+            delete_files(&file_io, &expired_metadata_files).await;
+        })
+        .await;
+    }
 
     Ok(Arc::new(commits))
 }

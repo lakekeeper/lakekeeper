@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Range, str::FromStr, time::Duration};
+use std::{collections::HashMap, ops::Range, str::FromStr, sync::Arc, time::Duration};
 
 use aws_sdk_s3::{
     operation::head_object::HeadObjectOutput,
@@ -11,7 +11,9 @@ use futures::{StreamExt, stream};
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
     LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, RetryableError,
-    WriteError, execute_with_parallelism,
+    WriteError,
+    delete_limit::{DeleteEndpoint, DeleteLimit, S3_DELETE_REQUESTS},
+    execute_with_parallelism,
     s3::{
         S3Location,
         s3_error::{
@@ -39,15 +41,31 @@ const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
 pub struct S3Storage {
     client: aws_sdk_s3::Client,
     aws_kms_key_arn: Option<String>,
+    /// Names the S3 service for the process-wide [`DeleteLimit`] of its buckets.
+    service_scope: String,
 }
 
 impl S3Storage {
+    /// Batch deletes of buckets with the same name in the same region share one process-wide
+    /// limit: the client exposes no endpoint.
     #[must_use]
     pub fn new(client: aws_sdk_s3::Client, aws_kms_key_arn: Option<String>) -> Self {
+        let service_scope = client
+            .config()
+            .region()
+            .map_or_else(|| "aws".to_string(), |region| format!("aws-{region}"));
         Self {
             client,
             aws_kms_key_arn,
+            service_scope,
         }
+    }
+
+    /// Names the S3 service of the client, for the [`DeleteLimit`] of its buckets.
+    #[must_use]
+    pub(crate) fn with_service_scope(mut self, service_scope: String) -> Self {
+        self.service_scope = service_scope;
+        self
     }
 
     #[must_use]
@@ -90,13 +108,47 @@ impl LakekeeperStorage for S3Storage {
     }
 
     async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
-        let s3_locations: HashMap<String, HashMap<String, String>> = group_paths_by_bucket(paths)?;
-        let key_to_path_mapping = build_key_to_path_mapping(&s3_locations);
-        let delete_futures = create_delete_futures(&self.client, s3_locations)?;
+        let buckets = group_paths_by_bucket(paths)?;
+        // The keys move into their chunks. A request builds its SDK input once it holds a
+        // permit, so at most `S3_DELETE_REQUESTS` inputs per bucket exist at once. Each bucket
+        // runs its own requests, so a bucket whose permits are taken does not hold up the others.
+        let mut per_bucket = Vec::with_capacity(buckets.len());
+        for (bucket, keys) in buckets {
+            let limit = DeleteLimit::of(&DeleteEndpoint::S3 {
+                scope: &self.service_scope,
+                bucket: &bucket,
+            });
+            let bucket = Arc::<str>::from(bucket);
+            let mut keys = keys.into_iter().peekable();
+            let mut chunks = Vec::new();
+            while keys.peek().is_some() {
+                chunks.push(DeleteChunk {
+                    bucket: bucket.clone(),
+                    limit: limit.clone(),
+                    keys: keys.by_ref().take(MAX_DELETE_BATCH_SIZE).collect(),
+                });
+            }
+            let client = self.client.clone();
+            let requests = chunks
+                .into_iter()
+                .map(move |chunk| delete_chunk(client.clone(), chunk));
+            per_bucket.push(Box::pin(execute_with_parallelism(
+                requests,
+                S3_DELETE_REQUESTS,
+            )));
+        }
 
-        process_delete_results(delete_futures, key_to_path_mapping)
-            .await
-            .map_err(Into::into)
+        let mut results = stream::select_all(per_bucket);
+        while let Some(result) = results.next().await {
+            result.map_err(|join_error| {
+                IOError::new_without_location(
+                    ErrorKind::Unexpected,
+                    format!("Delete task panicked: {join_error}"),
+                )
+                .with_context("S3 batch delete")
+            })??;
+        }
+        Ok(())
     }
 
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
@@ -528,7 +580,9 @@ async fn put_object_single(
             .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
             .set_ssekms_key_id(Some(arn.to_string()));
     }
-    put.send()
+    put.customize()
+        .config_override(crate::s3::transfer_config_override())
+        .send()
         .await
         .map_err(|e| WriteError::IOError(parse_put_object_error(e, location.as_str())))?;
     Ok(())
@@ -584,6 +638,8 @@ async fn upload_part(
         .upload_id(upload_id)
         .part_number(part_number)
         .body(bytes.into())
+        .customize()
+        .config_override(crate::s3::transfer_config_override())
         .send()
         .await
         .map_err(|e| {
@@ -620,6 +676,8 @@ async fn complete_multipart(
         .key(s3_key_to_str(&location.key()))
         .upload_id(upload_id)
         .multipart_upload(multipart)
+        .customize()
+        .config_override(crate::s3::transfer_config_override())
         .send()
         .await
         .map_err(|e| {
@@ -1019,73 +1077,37 @@ fn group_paths_by_bucket(
     Ok(s3_locations)
 }
 
-/// Builds a global key-to-path mapping
-///
-/// Input is a `HashMap` where:
-/// - Key: Bucket name
-/// - Value: A `HashMap` of S3 keys to their original paths
-fn build_key_to_path_mapping(
-    s3_locations: &HashMap<String, HashMap<String, String>>,
-) -> HashMap<String, String> {
-    let mut key_to_path_mapping: HashMap<String, String> = HashMap::new();
-
-    for keys in s3_locations.values() {
-        for (key, path) in keys {
-            key_to_path_mapping.insert(key.clone(), path.clone());
-        }
-    }
-
-    key_to_path_mapping
+/// Keys of one bucket, each with the path it was given as, deleted with one `DeleteObjects`
+/// request.
+struct DeleteChunk {
+    bucket: Arc<str>,
+    limit: DeleteLimit,
+    keys: Vec<(String, String)>,
 }
 
-#[derive(derive_more::From, Debug)]
-enum AWSBatchDeleteError {
-    SDKError(
-        aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::delete_objects::DeleteObjectsError>,
-    ),
-    IOError(IOError),
-}
-
-/// Creates delete futures for batch operations, processing keys in batches of `MAX_DELETE_BATCH_SIZE`.
-fn create_delete_futures(
-    client: &aws_sdk_s3::Client,
-    s3_locations: HashMap<String, HashMap<String, String>>,
-) -> Result<
-    impl Iterator<
-        Item = impl std::future::Future<
-            Output = Result<
-                aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
-                AWSBatchDeleteError,
-            >,
-        > + Send
-               + 'static,
-    >,
-    InvalidLocationError,
-> {
-    let mut delete_futures = Vec::new();
-
-    for (bucket, keys) in s3_locations {
-        // Process keys in batches of MAX_DELETE_BATCH_SIZE
-        for key_batch in keys
-            .into_iter()
-            .collect::<Vec<_>>()
-            .chunks(MAX_DELETE_BATCH_SIZE)
-        {
-            let objects: Vec<ObjectIdentifier> = key_batch
+/// Deletes the keys of `chunk` while holding a permit of the bucket's [`DeleteLimit`].
+async fn delete_chunk(
+    client: aws_sdk_s3::Client,
+    chunk: DeleteChunk,
+) -> Result<(), DeleteBatchError> {
+    let DeleteChunk {
+        bucket,
+        limit,
+        keys,
+    } = chunk;
+    let output = limit
+        .run(async {
+            let objects = keys
                 .iter()
-                .map(|key| {
-                    ObjectIdentifier::builder()
-                        .key(&key.0)
-                        .build()
-                        .map_err(|e| {
-                            InvalidLocationError::new(
-                                key.0.clone(),
-                                format!("Could not build S3 ObjectIdentifier: {e}"),
-                            )
-                        })
+                .map(|(key, _)| {
+                    ObjectIdentifier::builder().key(key).build().map_err(|e| {
+                        InvalidLocationError::new(
+                            key.clone(),
+                            format!("Could not build S3 ObjectIdentifier: {e}"),
+                        )
+                    })
                 })
-                .collect::<Result<_, _>>()?;
-
+                .collect::<Result<Vec<_>, _>>()?;
             let delete = aws_sdk_s3::types::Delete::builder()
                 .set_objects(Some(objects))
                 .build()
@@ -1095,96 +1117,41 @@ fn create_delete_futures(
                         format!("Could not build S3 Delete: {e}"),
                     )
                 })?;
+            client
+                .delete_objects()
+                .bucket(bucket.as_ref())
+                .delete(delete)
+                .send()
+                .await
+                .map_err(|e| {
+                    DeleteBatchError::from(parse_batch_delete_error(e).with_context(format!(
+                        "Failed to delete {} keys of bucket {bucket}",
+                        keys.len()
+                    )))
+                })
+        })
+        .await?;
 
-            let bucket_clone = bucket.clone();
-            let client_clone = client.clone();
-            let delete_future = async move {
-                client_clone
-                    .delete_objects()
-                    .bucket(&bucket_clone)
-                    .delete(delete)
-                    .send()
-                    .await
-                    .map_err(AWSBatchDeleteError::SDKError)
-            };
-
-            delete_futures.push(delete_future);
-        }
-    }
-
-    Ok(delete_futures.into_iter())
-}
-
-/// Processes delete results and handles errors as they complete.
-async fn process_delete_results(
-    delete_futures: impl Iterator<
-        Item = impl std::future::Future<
-            Output = Result<
-                aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
-                AWSBatchDeleteError,
-            >,
-        > + Send
-               + 'static,
-    >,
-    key_to_path_mapping: HashMap<String, String>,
-) -> Result<(), IOError> {
-    // Execute delete operations with parallelism limit of 100
-    let delete_results = execute_with_parallelism(delete_futures, 100);
-    tokio::pin!(delete_results);
-
-    let completed_batches = std::sync::atomic::AtomicU64::new(0);
-    let mut total_batches = 0;
-
-    while let Some(result) = delete_results.next().await {
-        let completed_batch = completed_batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        total_batches += 1;
-
-        // Handle join error
-        let aws_result = result.map_err(|e| {
-            IOError::new_without_location(
-                ErrorKind::Unexpected,
-                format!("Delete task panicked: {e}"),
-            )
-            .with_context("S3 batch delete")
-        })?;
-
-        // Increment the counter for each processed batch
-        match aws_result {
-            Ok(output) => {
-                // Check if there were any errors in the delete operation response
-                let errors = output.errors();
-                let total_errors = errors.len();
-                if let Some(error) = errors.first() {
-                    let error_key = error.key().map(String::from);
-                    let path = error_key
-                        .as_ref()
-                        .and_then(|key| key_to_path_mapping.get(key))
-                        .cloned()
-                        .or(error_key)
-                        .unwrap_or_else(|| "Unknown".to_string());
-
-                    return Err(
-                        parse_aws_sdk_error(error, path.as_str()).with_context(format!(
-                            "Delete batch {completed_batch} out of {total_batches} failed with {total_errors} errors"
-                        )),
-                    );
-                }
-            }
-            Err(e) => {
-                // Network or other SDK-level error
-                match e {
-                    AWSBatchDeleteError::IOError(io_error) => return Err(io_error),
-                    AWSBatchDeleteError::SDKError(sdk_error) => {
-                        return Err(parse_batch_delete_error(sdk_error).with_context(format!(
-                            "Delete batch {completed_batch} out of {total_batches} failed"
-                        )));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
+    // Some S3-compatible stores report a key that does not exist; it counts as deleted.
+    let mut errors = output
+        .errors()
+        .iter()
+        .filter(|error| error.code() != Some("NoSuchKey"));
+    let Some(error) = errors.next() else {
+        return Ok(());
+    };
+    let failed = 1 + errors.count();
+    let key = error.key().unwrap_or_default();
+    let path = keys
+        .iter()
+        .find(|(sent, _)| sent == key)
+        .map_or_else(|| format!("s3://{bucket}/{key}"), |(_, path)| path.clone());
+    Err(parse_aws_sdk_error(error, &path)
+        .with_context(format!(
+            "{failed} of {} keys of bucket {bucket} were not deleted",
+            keys.len()
+        ))
+        .into())
 }
 
 fn s3_key_to_str(key: &[&str]) -> String {
@@ -1196,6 +1163,11 @@ fn s3_key_to_str(key: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
 
     #[test]
@@ -1235,6 +1207,348 @@ mod tests {
             .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
             .build();
         S3Storage::new(aws_sdk_s3::Client::from_conf(config), None)
+    }
+
+    const EMPTY_DELETE_RESULT: &str = r#"<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>"#;
+
+    fn delete_result_with_error(key: &str, code: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Error><Key>{key}</Key><Code>{code}</Code><Message>{code}</Message></Error></DeleteResult>"#
+        )
+    }
+
+    fn xml(body: String) -> impl axum::response::IntoResponse {
+        ([("content-type", "application/xml")], body)
+    }
+
+    /// Serves `app` on a local endpoint and returns its URL.
+    async fn serve(app: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        endpoint
+    }
+
+    /// Storage of the S3 service at `endpoint`, built the way a warehouse builds it.
+    async fn storage_at(endpoint: &str) -> S3Storage {
+        let credential = crate::s3::S3Auth::AccessKey(
+            crate::s3::S3AccessKeyAuth::builder()
+                .aws_access_key_id("access".to_string())
+                .aws_secret_access_key("secret".to_string())
+                .build(),
+        );
+        crate::s3::S3Settings::builder()
+            .endpoint(Some(endpoint.parse().unwrap()))
+            .region("local".to_string())
+            .path_style_access(Some(true))
+            .build()
+            .get_storage_client(Some(&credential))
+            .await
+    }
+
+    fn paths(bucket: &str, count: usize) -> Vec<String> {
+        (0..count)
+            .map(|i| format!("s3://{bucket}/key-{i}"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_key_reported_missing_counts_as_deleted() {
+        let app = axum::Router::new()
+            .fallback(|| async { xml(delete_result_with_error("missing", "NoSuchKey")) });
+        let storage = storage_at(&serve(app).await).await;
+        storage
+            .delete_batch(&["s3://bucket-a/missing".to_string()])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_key_error_names_the_path_in_its_bucket() {
+        // The same key in two buckets; only the second bucket refuses it.
+        let app = axum::Router::new().fallback(|uri: axum::http::Uri| async move {
+            if uri.path().starts_with("/bucket-b") {
+                xml(delete_result_with_error("same/key", "AccessDenied"))
+            } else {
+                xml(EMPTY_DELETE_RESULT.to_string())
+            }
+        });
+        let storage = storage_at(&serve(app).await).await;
+        let error = storage
+            .delete_batch(&[
+                "s3a://bucket-a/same/key".to_string(),
+                "s3://bucket-b/same/key".to_string(),
+            ])
+            .await
+            .unwrap_err();
+        let DeleteBatchError::IOError(error) = error else {
+            panic!("expected an IO error, got {error:?}");
+        };
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(error.location(), Some("s3://bucket-b/same/key"));
+    }
+
+    #[tokio::test]
+    async fn a_bucket_whose_limit_is_taken_does_not_hold_up_the_other_buckets() {
+        let free_requests = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new().fallback({
+            let free_requests = free_requests.clone();
+            move |uri: axum::http::Uri| {
+                let free_requests = free_requests.clone();
+                async move {
+                    if uri.path().starts_with("/free") {
+                        free_requests.fetch_add(1, Ordering::SeqCst);
+                    }
+                    xml(EMPTY_DELETE_RESULT.to_string())
+                }
+            }
+        });
+        let storage = storage_at(&serve(app).await).await;
+        // Each held bucket has as many chunks as one bucket may send at once. The buckets of a
+        // batch come in any order, so several held buckets make it likely that one comes first.
+        let mut held = Vec::new();
+        let mut batch = paths("free", 1);
+        for bucket in ["held-a", "held-b", "held-c"] {
+            let limit = DeleteLimit::of(&DeleteEndpoint::S3 {
+                scope: &storage.service_scope,
+                bucket,
+            });
+            held.push(limit.hold_all().await);
+            batch.extend(paths(bucket, S3_DELETE_REQUESTS * MAX_DELETE_BATCH_SIZE));
+        }
+
+        let delete = tokio::spawn(async move { storage.delete_batch(&batch).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while free_requests.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the free bucket waited for the limits of the held buckets");
+        delete.abort();
+    }
+
+    /// Endpoint that holds every request until its gate has permits, and counts requests.
+    struct GatedEndpoint {
+        url: String,
+        gate: Arc<tokio::sync::Semaphore>,
+        in_flight: Arc<AtomicUsize>,
+        max_in_flight: Arc<AtomicUsize>,
+        requests: Arc<AtomicUsize>,
+    }
+
+    impl GatedEndpoint {
+        async fn start() -> Self {
+            let gate = Arc::new(tokio::sync::Semaphore::new(0));
+            let in_flight = Arc::new(AtomicUsize::new(0));
+            let max_in_flight = Arc::new(AtomicUsize::new(0));
+            let requests = Arc::new(AtomicUsize::new(0));
+            let app = axum::Router::new().fallback({
+                let (gate, in_flight, max_in_flight, requests) = (
+                    gate.clone(),
+                    in_flight.clone(),
+                    max_in_flight.clone(),
+                    requests.clone(),
+                );
+                move || {
+                    let (gate, in_flight, max_in_flight, requests) = (
+                        gate.clone(),
+                        in_flight.clone(),
+                        max_in_flight.clone(),
+                        requests.clone(),
+                    );
+                    async move {
+                        let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_in_flight.fetch_max(now, Ordering::SeqCst);
+                        let _pass = gate.acquire().await.unwrap();
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        xml(EMPTY_DELETE_RESULT.to_string())
+                    }
+                }
+            });
+            Self {
+                url: serve(app).await,
+                gate,
+                in_flight,
+                max_in_flight,
+                requests,
+            }
+        }
+
+        /// Waits until `expected` requests are held, checks that no more arrive, then lets
+        /// every request through.
+        async fn hold_then_release(&self, expected: usize) {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while self.in_flight.load(Ordering::SeqCst) < expected {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("requests reach the endpoint");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(self.in_flight.load(Ordering::SeqCst), expected);
+            self.gate.add_permits(1000);
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_deletes_of_one_bucket_share_the_delete_limit() {
+        let endpoint = GatedEndpoint::start().await;
+        let first = storage_at(&endpoint.url).await;
+        let second = storage_at(&endpoint.url).await;
+        let paths = paths("shared", 6 * MAX_DELETE_BATCH_SIZE);
+        let deletes = async {
+            let (a, b) = tokio::join!(first.delete_batch(&paths), second.delete_batch(&paths));
+            a.unwrap();
+            b.unwrap();
+        };
+        tokio::join!(deletes, endpoint.hold_then_release(4));
+        assert_eq!(endpoint.requests.load(Ordering::SeqCst), 12);
+        assert_eq!(endpoint.max_in_flight.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn batch_deletes_of_different_buckets_have_separate_delete_limits() {
+        let endpoint = GatedEndpoint::start().await;
+        let storage = storage_at(&endpoint.url).await;
+        let one = paths("one", 6 * MAX_DELETE_BATCH_SIZE);
+        let two = paths("two", 6 * MAX_DELETE_BATCH_SIZE);
+        let deletes = async {
+            let (a, b) = tokio::join!(storage.delete_batch(&one), storage.delete_batch(&two));
+            a.unwrap();
+            b.unwrap();
+        };
+        tokio::join!(deletes, endpoint.hold_then_release(8));
+        assert_eq!(endpoint.requests.load(Ordering::SeqCst), 12);
+        assert_eq!(endpoint.max_in_flight.load(Ordering::SeqCst), 8);
+    }
+
+    #[tokio::test]
+    async fn s3_services_have_separate_retry_partitions() {
+        let first = storage_at("http://127.0.0.1:1").await;
+        let second = storage_at("http://127.0.0.1:2").await;
+        let partition = |storage: &S3Storage| {
+            storage
+                .client()
+                .config()
+                .retry_partition()
+                .map(ToString::to_string)
+        };
+        assert_eq!(
+            partition(&first).as_deref(),
+            Some("lakekeeper-s3-http://127.0.0.1:1")
+        );
+        assert_eq!(
+            partition(&second).as_deref(),
+            Some("lakekeeper-s3-http://127.0.0.1:2")
+        );
+    }
+
+    const ASSUME_ROLE_RESPONSE: &str = r#"<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleResult><Credentials><AccessKeyId>test-access-key</AccessKeyId><SecretAccessKey>test-secret-key</SecretAccessKey><SessionToken>test-session-token</SessionToken><Expiration>2099-01-01T00:00:00Z</Expiration></Credentials><AssumedRoleUser><Arn>arn:aws:sts::000000000000:assumed-role/test-role/test-session</Arn><AssumedRoleId>TESTROLEID:test-session</AssumedRoleId></AssumedRoleUser></AssumeRoleResult></AssumeRoleResponse>"#;
+
+    /// Storage that assumes a role through a local STS endpoint answering after `sts_delay`,
+    /// and the number of STS requests.
+    async fn storage_assuming_role(sts_delay: Duration) -> (S3Storage, Arc<AtomicUsize>) {
+        let sts_requests = Arc::new(AtomicUsize::new(0));
+        let sts = serve(axum::Router::new().fallback({
+            let sts_requests = sts_requests.clone();
+            move || {
+                sts_requests.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    tokio::time::sleep(sts_delay).await;
+                    xml(ASSUME_ROLE_RESPONSE.to_string())
+                }
+            }
+        }))
+        .await;
+        let s3 =
+            serve(axum::Router::new().fallback(|| async { axum::http::StatusCode::NO_CONTENT }))
+                .await;
+        let credential = crate::s3::S3Auth::AccessKey(
+            crate::s3::S3AccessKeyAuth::builder()
+                .aws_access_key_id("access".to_string())
+                .aws_secret_access_key("secret".to_string())
+                .build(),
+        );
+        let storage = crate::s3::S3Settings::builder()
+            .endpoint(Some(s3.parse().unwrap()))
+            .sts_endpoint(Some(sts.parse().unwrap()))
+            .assume_role_arn(Some("arn:aws:iam::000000000000:role/test-role".to_string()))
+            .region("local".to_string())
+            .path_style_access(Some(true))
+            .build()
+            .get_storage_client(Some(&credential))
+            .await;
+        (storage, sts_requests)
+    }
+
+    #[tokio::test]
+    async fn one_storage_reuses_assumed_role_credentials() {
+        let (storage, sts_requests) = storage_assuming_role(Duration::ZERO).await;
+        storage.delete("s3://bucket/first").await.unwrap();
+        storage.delete("s3://bucket/second").await.unwrap();
+        assert_eq!(sts_requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_slow_role_assumption_still_succeeds() {
+        // Longer than the SDK's default limit of 5 seconds for loading credentials.
+        let (storage, sts_requests) = storage_assuming_role(Duration::from_secs(6)).await;
+        storage.delete("s3://bucket/key").await.unwrap();
+        assert_eq!(sts_requests.load(Ordering::SeqCst), 1);
+    }
+
+    // A paused clock cannot test the timeout itself: it jumps past the connect timeout
+    // while the local connection is still being set up.
+    #[tokio::test]
+    async fn every_request_attempt_has_a_time_limit() {
+        let storage = storage_at("http://127.0.0.1:1").await;
+        let timeouts = storage.client().config().timeout_config().cloned();
+        assert_eq!(
+            timeouts.and_then(|t| t.operation_attempt_timeout()),
+            Some(Duration::from_mins(2))
+        );
+    }
+
+    #[test]
+    fn uploads_keep_the_connect_timeout_and_connector_pool() {
+        let transfer = &*crate::s3::TRANSFER_TIMEOUT_CONFIG;
+        let default = &*crate::s3::TIMEOUT_CONFIG;
+        assert_eq!(transfer.connect_timeout(), default.connect_timeout());
+        assert_eq!(transfer.read_timeout(), default.read_timeout());
+        assert_eq!(
+            transfer.operation_attempt_timeout(),
+            Some(Duration::from_mins(15))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_delete_does_not_wait_for_the_delete_limit() {
+        let endpoint =
+            serve(axum::Router::new().fallback(|| async { axum::http::StatusCode::NO_CONTENT }))
+                .await;
+        let storage = storage_at(&endpoint).await;
+        let _held = DeleteLimit::of(&DeleteEndpoint::S3 {
+            scope: &storage.service_scope,
+            bucket: "single-delete",
+        })
+        .hold_all()
+        .await;
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            storage.delete("s3://single-delete/key"),
+        )
+        .await
+        .expect("a single delete waited for the bulk-delete limit")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_service_scope_is_the_endpoint_origin() {
+        let storage = storage_at("http://127.0.0.1:1").await;
+        assert_eq!(storage.service_scope, "http://127.0.0.1:1");
     }
 
     #[tokio::test]
