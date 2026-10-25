@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Instant};
 
 use futures::{FutureExt, StreamExt as _};
 use iceberg::spec::FormatVersion;
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
@@ -20,7 +20,7 @@ pub use crate::service::{
     },
 };
 use crate::{
-    ProjectId, WarehouseId,
+    ProjectId, SecretId, WarehouseId,
     api::{
         ApiContext, ArcRequestMetadata, Result,
         iceberg::v1::{PageToken, PaginationQuery},
@@ -37,10 +37,10 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{UnfilteredPage, maybe_get_secret},
     service::{
-        AllowedFormatVersions, ArcProjectId, ArcResolvedWarehouse, CachePolicy,
-        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps,
-        EnsureWarehouseSpecMutableError, NamespaceId, State, TabularId, TabularListFlags,
-        Transaction, UpdatedWarehouseStorage, ViewOrTableDeletionInfo,
+        AllowedFormatVersions, ArcProjectId, ArcResolvedWarehouse, COMMIT_STATE_UNKNOWN_ERROR_TYPE,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId, State, TabularId,
+        TabularListFlags, Transaction, UpdatedWarehouseStorage, ViewOrTableDeletionInfo,
         WarehouseFormatVersionPolicy, WarehouseSpecLocked, WriteTransaction,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -465,6 +465,64 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
 {
 }
 
+/// Remove what a warehouse creation that failed with `error` wrote outside its transaction.
+/// Keeps it if the commit may have been applied.
+async fn clean_up_failed_warehouse_creation<A: Authorizer, S: SecretStore>(
+    authorizer: &A,
+    secrets: &S,
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    authz_relations_written: bool,
+    secret_id: Option<SecretId>,
+    error: &IcebergErrorResponse,
+) {
+    if error.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+        tracing::error!(
+            %warehouse_id,
+            ?secret_id,
+            "Creation of the warehouse may have been committed, skipping cleanup; if the \
+             warehouse does not exist, its id cannot be used again and the secret is orphaned"
+        );
+        return;
+    }
+    // Relations written for a warehouse that then failed to commit would outlive it, and
+    // `create_warehouse` refuses an id that still carries any — so leaving them behind makes
+    // this id permanently unusable, including for the caller's own retry.
+    if authz_relations_written {
+        authorizer
+            .delete_warehouse(request_metadata, warehouse_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    %warehouse_id,
+                    "Failed to remove the authorization relations of a warehouse that \
+                     was not created; the id cannot be used again until they are \
+                     cleared: {}",
+                    e.error
+                );
+            })
+            .ok();
+    }
+    // Best effort, and the caller gets the creation error: a failed cleanup orphans the
+    // credential, which must not mask why the create failed.
+    if let Some(secret_id) = secret_id {
+        secrets
+            .delete_secret(&secret_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    %secret_id,
+                    "Failed to delete the storage secret of a warehouse that was not \
+                     created; it is now orphaned in the secret store: {}",
+                    e.error
+                );
+            })
+            .ok();
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     #[allow(clippy::too_many_lines)]
@@ -569,7 +627,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // remove it. Everything up to the commit runs as one unit so that any
         // failure — an id or name conflict, the authorizer, the commit itself —
         // can delete the secret before returning, instead of leaving a credential
-        // behind that nothing references and no API can reach.
+        // behind that nothing references and no API can reach. A commit whose
+        // outcome is unknown keeps it, as the warehouse may exist.
         //
         // The transaction stays owned out here rather than being moved into the
         // block, so it can be settled explicitly below before the secret store is
@@ -621,7 +680,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // and discarded — the create error is what the caller needs, and the
         // transaction is abandoned either way. A commit that fails has already
         // ended the transaction, so there is nothing left to roll back, but its
-        // secret still needs cleaning up, which is why both funnel into one arm.
+        // secret still needs cleaning up, which is why both funnel into one arm
+        // (unless the commit outcome is unknown).
         let settled = match staged {
             Ok(staged) => transaction.commit().await.map(|()| staged),
             Err(create_error) => {
@@ -643,46 +703,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (resolved_warehouse, bootstrap_grants) = match settled {
             Ok(settled) => settled,
             Err(create_error) => {
-                // Relations written for a warehouse that then failed to commit
-                // would outlive it, and `create_warehouse` refuses an id that
-                // still carries any — so leaving them behind makes this id
-                // permanently unusable, including for the caller's own retry.
-                if authz_relations_written {
-                    authorizer
-                        .delete_warehouse(request_metadata, warehouse_id)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::error!(
-                                ?e,
-                                %warehouse_id,
-                                "Failed to remove the authorization relations of a warehouse that \
-                                 was not created; the id cannot be used again until they are \
-                                 cleared: {}",
-                                e.error
-                            );
-                        })
-                        .ok();
-                }
-                // Best-effort, and the creation error is what the caller gets: a
-                // failure to clean up leaves the credential orphaned exactly as
-                // before, which must not mask why the create failed.
-                if let Some(secret_id) = secret_id {
-                    context
-                        .v1_state
-                        .secrets
-                        .delete_secret(&secret_id)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::error!(
-                                ?e,
-                                %secret_id,
-                                "Failed to delete the storage secret of a warehouse that was not \
-                                 created; it is now orphaned in the secret store: {}",
-                                e.error
-                            );
-                        })
-                        .ok();
-                }
+                clean_up_failed_warehouse_creation(
+                    &authorizer,
+                    &context.v1_state.secrets,
+                    request_metadata,
+                    warehouse_id,
+                    authz_relations_written,
+                    secret_id,
+                    &create_error,
+                )
+                .await;
                 return Err(create_error);
             }
         };
@@ -1850,6 +1880,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = new_storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
+        warehouse
+            .storage_profile
+            .check_credential(new_storage_credential.as_ref())?;
         // Validated before the transaction opens: probing storage can take most
         // of the request time limit, and a write connection and the warehouse's
         // row lock must not be held across it.
