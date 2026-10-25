@@ -8,7 +8,8 @@ use crate::{
         CatalogStore, SecretStore,
         authz::Authorizer,
         tasks::{
-            OnWarehouseDelete, TaskConfig, TaskQueueName, TaskQueueWorkerFn, TaskQueuesRunner,
+            OnWarehouseDelete, TaskConfig, TaskDemandClass, TaskQueueName, TaskQueueWorkerFn,
+            TaskQueuesRunner, queue_demand::is_valid_demand_class_name,
             task_queues_runner::QueueWorkerConfig,
         },
     },
@@ -119,6 +120,10 @@ struct RegisteredQueue {
     legacy_names: Vec<&'static TaskQueueName>,
     /// From `TaskConfig::on_warehouse_delete` at registration time.
     on_warehouse_delete: OnWarehouseDelete,
+    /// From `TaskConfig::max_time_since_last_heartbeat` at registration time.
+    max_time_since_last_heartbeat: chrono::Duration,
+    /// Named resource demand ranges autoscalers ask for.
+    demand_classes: Vec<TaskDemandClass>,
 }
 
 impl std::fmt::Debug for RegisteredQueue {
@@ -131,6 +136,11 @@ impl std::fmt::Debug for RegisteredQueue {
             .field("payload_validator_fn", &"Fn(...)")
             .field("legacy_names", &self.legacy_names)
             .field("on_warehouse_delete", &self.on_warehouse_delete)
+            .field(
+                "max_time_since_last_heartbeat",
+                &self.max_time_since_last_heartbeat,
+            )
+            .field("demand_classes", &self.demand_classes)
             .finish()
     }
 }
@@ -277,6 +287,45 @@ impl RegisteredTaskQueues {
         v
     }
 
+    /// What the demand of `class` of the queue `queue_name` or of one of its earlier names
+    /// counts. Without a class, the whole queue.
+    ///
+    /// # Errors
+    /// If no registered queue answers to `queue_name`, or the queue has no such class.
+    #[cfg(feature = "router")]
+    pub(crate) async fn demand_target(
+        &self,
+        queue_name: &TaskQueueName,
+        class: Option<&str>,
+    ) -> Result<DemandTarget, DemandLookupError> {
+        let queues = self.queues.read().await;
+        let (name, queue) = queues
+            .get_key_value(queue_name)
+            .or_else(|| {
+                queues
+                    .iter()
+                    .find(|(_, q)| q.legacy_names.iter().any(|n| **n == *queue_name))
+            })
+            .ok_or(DemandLookupError::UnknownQueue)?;
+        let resource_demand = match class {
+            None => super::TaskResourceDemandRange::default(),
+            Some(class) => {
+                queue
+                    .demand_classes
+                    .iter()
+                    .find(|c| c.name == class)
+                    .ok_or(DemandLookupError::UnknownClass)?
+                    .resource_demand
+            }
+        };
+        Ok(DemandTarget {
+            queue_name: name,
+            legacy_queue_names: queue.legacy_names.clone(),
+            max_time_since_last_heartbeat: queue.max_time_since_last_heartbeat,
+            resource_demand,
+        })
+    }
+
     /// Queues whose tasks are cancelled when their warehouse is deleted, each with its
     /// legacy names. Sorted by name, so concurrent deletes cancel the queues in the same order.
     #[must_use]
@@ -297,6 +346,26 @@ impl RegisteredTaskQueues {
         v.sort_unstable();
         v
     }
+}
+
+/// The tasks a demand count covers.
+#[cfg(feature = "router")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DemandTarget {
+    pub(crate) queue_name: &'static TaskQueueName,
+    pub(crate) legacy_queue_names: Vec<&'static TaskQueueName>,
+    /// Used where no task configuration of the queue sets a heartbeat timeout.
+    pub(crate) max_time_since_last_heartbeat: chrono::Duration,
+    pub(crate) resource_demand: super::TaskResourceDemandRange,
+}
+
+#[cfg(feature = "router")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum DemandLookupError {
+    #[error("Unknown task queue")]
+    UnknownQueue,
+    #[error("Unknown demand class of the task queue")]
+    UnknownClass,
 }
 
 #[derive(Clone)]
@@ -419,6 +488,8 @@ impl TaskQueueRegistry {
                 payload_validator_fn,
                 legacy_names: T::legacy_queue_names(),
                 on_warehouse_delete: T::on_warehouse_delete(),
+                max_time_since_last_heartbeat: T::max_time_since_last_heartbeat(),
+                demand_classes: Vec::new(),
             },
         ) {
             tracing::warn!("Overwriting registration for queue `{queue_name}`");
@@ -432,6 +503,38 @@ impl TaskQueueRegistry {
             },
         );
         self
+    }
+
+    /// Names ranges of resource demands of a registered queue, so that autoscalers can ask for
+    /// the demand of each by its name. Replaces the queue's earlier classes.
+    ///
+    /// # Errors
+    /// If the queue is not registered, or a class name is not lower case letters, digits and
+    /// `-`, or two classes share a name.
+    pub async fn register_demand_classes(
+        &self,
+        queue_name: &TaskQueueName,
+        classes: Vec<TaskDemandClass>,
+    ) -> anyhow::Result<()> {
+        for (i, class) in classes.iter().enumerate() {
+            anyhow::ensure!(
+                is_valid_demand_class_name(&class.name),
+                "Demand class `{}` of queue `{queue_name}`: a name consists of lower case letters, \
+                 digits and `-`",
+                class.name
+            );
+            anyhow::ensure!(
+                classes[..i].iter().all(|c| c.name != class.name),
+                "Demand class `{}` of queue `{queue_name}` is named twice",
+                class.name
+            );
+        }
+        let mut queues = self.registered_queues.write().await;
+        let queue = queues
+            .get_mut(queue_name)
+            .ok_or_else(|| anyhow::anyhow!("Queue `{queue_name}` is not registered"))?;
+        queue.demand_classes = classes;
+        Ok(())
     }
 
     pub async fn register_built_in_queues<C: CatalogStore, S: SecretStore, A: Authorizer>(
@@ -654,7 +757,7 @@ mod test {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::service::tasks::{TaskData, TaskQueueName};
+    use crate::service::tasks::{TaskData, TaskQueueName, TaskResourceDemandRange};
 
     /// Placeholder payload used by the test queues below. Real queues bind
     /// their actual `TaskData` via the `D` generic of `register_queue`;
@@ -1296,5 +1399,135 @@ mod test {
             queues.queues_cancelled_on_warehouse_delete().await,
             vec![(&*CANCELLED_QN, vec![&*CANCELLED_LEGACY_QN])]
         );
+    }
+
+    static DEMAND_QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| "demand-queue".into());
+    static DEMAND_LEGACY_NAME: LazyLock<TaskQueueName> =
+        LazyLock::new(|| "old-demand-queue".into());
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+    struct DemandQueueConfig {}
+
+    impl TaskConfig for DemandQueueConfig {
+        fn queue_name() -> &'static TaskQueueName {
+            &DEMAND_QUEUE_NAME
+        }
+
+        fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
+            vec![&DEMAND_LEGACY_NAME]
+        }
+
+        fn max_time_since_last_heartbeat() -> chrono::Duration {
+            chrono::Duration::seconds(60)
+        }
+    }
+
+    async fn register_demand_queue(registry: &TaskQueueRegistry) {
+        registry
+            .register_queue::<DemandQueueConfig, TestPayload>(super::QueueRegistration {
+                queue_name: &DEMAND_QUEUE_NAME,
+                worker_fn: std::sync::Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+    }
+
+    fn demand_class(name: &str, resource_demand: TaskResourceDemandRange) -> TaskDemandClass {
+        TaskDemandClass::builder()
+            .name(name)
+            .resource_demand(resource_demand)
+            .build()
+    }
+
+    #[cfg(feature = "router")]
+    #[tokio::test]
+    async fn demand_targets_resolve_legacy_names_and_classes() {
+        let registry = TaskQueueRegistry::new();
+        let small = TaskResourceDemandRange::builder().at_most(10).build();
+        let large = TaskResourceDemandRange::builder().above(10).build();
+        let classes = vec![
+            demand_class("small", small),
+            demand_class("x-large-2", large),
+        ];
+        register_demand_queue(&registry).await;
+        registry
+            .register_demand_classes(&DEMAND_QUEUE_NAME, classes)
+            .await
+            .unwrap();
+        let queues = registry.registered_task_queues();
+
+        let expected = |resource_demand| DemandTarget {
+            queue_name: &DEMAND_QUEUE_NAME,
+            legacy_queue_names: vec![&DEMAND_LEGACY_NAME],
+            max_time_since_last_heartbeat: chrono::Duration::seconds(60),
+            resource_demand,
+        };
+        let whole = TaskResourceDemandRange::default();
+        for (queue_name, class, target) in [
+            (&*DEMAND_QUEUE_NAME, None, Ok(expected(whole))),
+            (&*DEMAND_LEGACY_NAME, None, Ok(expected(whole))),
+            (&*DEMAND_QUEUE_NAME, Some("small"), Ok(expected(small))),
+            (&*DEMAND_LEGACY_NAME, Some("x-large-2"), Ok(expected(large))),
+            (
+                &*DEMAND_QUEUE_NAME,
+                Some("medium"),
+                Err(DemandLookupError::UnknownClass),
+            ),
+            (
+                &TaskQueueName::from("other"),
+                None,
+                Err(DemandLookupError::UnknownQueue),
+            ),
+        ] {
+            assert_eq!(
+                queues.demand_target(queue_name, class).await,
+                target,
+                "{queue_name} {class:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn demand_classes_need_a_registered_queue_and_unique_valid_names() {
+        let registry = TaskQueueRegistry::new();
+        let small = TaskResourceDemandRange::builder().at_most(10).build();
+        let not_registered = registry
+            .register_demand_classes(&DEMAND_QUEUE_NAME, vec![demand_class("small", small)])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            not_registered.to_string(),
+            "Queue `demand-queue` is not registered"
+        );
+
+        register_demand_queue(&registry).await;
+        for (names, error) in [
+            (
+                vec!["Small"],
+                "Demand class `Small` of queue `demand-queue`: a name consists of lower case \
+                 letters, digits and `-`",
+            ),
+            (
+                vec![""],
+                "Demand class `` of queue `demand-queue`: a name consists of lower case letters, \
+                 digits and `-`",
+            ),
+            (
+                vec!["small", "small"],
+                "Demand class `small` of queue `demand-queue` is named twice",
+            ),
+        ] {
+            let classes = names
+                .into_iter()
+                .map(|name| demand_class(name, small))
+                .collect();
+            let result = registry
+                .register_demand_classes(&DEMAND_QUEUE_NAME, classes)
+                .await;
+            assert_eq!(result.unwrap_err().to_string(), error);
+        }
     }
 }

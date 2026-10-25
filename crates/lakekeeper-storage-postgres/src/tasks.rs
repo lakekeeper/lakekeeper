@@ -17,8 +17,8 @@ use lakekeeper::{
             RetryPolicy, ScheduleTaskMetadata, TASK_ATTEMPT_ALREADY_COMPLETED_ERROR_TYPE,
             TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE, Task, TaskAttemptId, TaskCheckState,
             TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
-            TaskQueueName, TaskResourceDemandRange, TaskScheduleId, WarehouseTaskEntityId,
-            given_up_message,
+            TaskQueueDemand, TaskQueueDemandRequest, TaskQueueName, TaskResourceDemandRange,
+            TaskScheduleId, WarehouseTaskEntityId, given_up_message,
         },
     },
 };
@@ -610,14 +610,9 @@ pub(crate) async fn pick_task_with_retry_policy(
     retry_policy: RetryPolicy,
     resource_demand: TaskResourceDemandRange,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
-    let TaskResourceDemandRange { above, at_most } = resource_demand;
+    let (above, at_most) = demand_bounds(resource_demand);
     let queue_name = queue_name.as_str();
-    // All names this queue answers to: the current name plus any pre-rename
-    // aliases. Rows enqueued before a rename still carry the old name, so the
-    // worker must match on the full set to finalize them.
-    let queue_names: Vec<String> = std::iter::once(queue_name.to_string())
-        .chain(legacy_queue_names.iter().map(|n| n.as_str().to_string()))
-        .collect();
+    let queue_names = all_queue_names(queue_name, legacy_queue_names);
     if let Err(e) = fail_timed_out_attempt(
         pool,
         &queue_names,
@@ -645,9 +640,10 @@ pub(crate) async fn pick_task_with_retry_policy(
                 SELECT t.task_id, t.attempt, t.warehouse_id, t.project_id, t.scheduled_for
                 FROM task t
                 WHERE t.queue_name = q.queue_name AND t.scheduled_for <= now() AND t.status = 'scheduled'
-                    -- A task without a resource demand counts as 0.
-                    AND ($3::bigint IS NULL OR COALESCE(t.resource_demand, 0) > $3)
-                    AND ($4::bigint IS NULL OR COALESCE(t.resource_demand, 0) <= $4)
+                    -- A task without a resource demand counts as 0. Bounds are never NULL, so the
+                    -- range stays an index condition in a generic plan.
+                    AND COALESCE(t.resource_demand, 0) > $3
+                    AND COALESCE(t.resource_demand, 0) <= $4
                 -- task_id breaks ties of scheduled_for.
                 ORDER BY t.scheduled_for, t.task_id
                 -- Skips rows other pickers hold before LIMIT counts them, so a held row never
@@ -742,6 +738,85 @@ pub(crate) async fn pick_task_with_retry_policy(
     }
 
     Ok(None)
+}
+
+/// All names a queue answers to: the current name plus any pre-rename aliases. Rows enqueued
+/// before a rename still carry the old name.
+fn all_queue_names(queue_name: &str, legacy_queue_names: &[&TaskQueueName]) -> Vec<String> {
+    std::iter::once(queue_name.to_string())
+        .chain(legacy_queue_names.iter().map(|n| n.as_str().to_string()))
+        .collect()
+}
+
+/// `(above, at_most)` of `range` without open bounds: resource demands are never negative.
+fn demand_bounds(range: TaskResourceDemandRange) -> (i64, i64) {
+    (range.above.unwrap_or(-1), range.at_most.unwrap_or(i64::MAX))
+}
+
+/// Count the due, heartbeat-expired and running tasks of a queue in a resource demand range.
+pub(crate) async fn task_queue_demand(
+    pool: &PgPool,
+    request: TaskQueueDemandRequest<'_>,
+) -> Result<TaskQueueDemand, IcebergErrorResponse> {
+    let TaskQueueDemandRequest {
+        queue_name,
+        legacy_queue_names,
+        default_max_time_since_last_heartbeat,
+        resource_demand,
+    } = request;
+    if resource_demand.is_empty() {
+        return Ok(TaskQueueDemand::default());
+    }
+    let (above, at_most) = demand_bounds(resource_demand);
+    let queue_name = queue_name.as_str();
+    let queue_names = all_queue_names(queue_name, legacy_queue_names);
+    let counts = sqlx::query!(
+        r#"
+        SELECT
+            COUNT(*) FILTER (WHERE s.state = 'due') AS "due!",
+            COUNT(*) FILTER (WHERE s.state = 'expired') AS "heartbeat_expired!",
+            COUNT(*) FILTER (WHERE s.state = 'running') AS "running!"
+        FROM (
+            -- What a pick can take now, as in `pick_task_with_retry_policy`.
+            SELECT 'due' AS state
+            FROM task t
+            WHERE t.queue_name = ANY($1) AND t.status = 'scheduled' AND t.scheduled_for <= now()
+                AND COALESCE(t.resource_demand, 0) > $3
+                AND COALESCE(t.resource_demand, 0) <= $4
+            UNION ALL
+            -- The heartbeat timeout as in `fail_timed_out_attempt`.
+            SELECT CASE
+                WHEN now() - t.last_heartbeat_at > COALESCE(tc.max_time_since_last_heartbeat, $5)
+                THEN 'expired' ELSE 'running' END
+            FROM task t
+            LEFT JOIN LATERAL (
+                SELECT cfg.max_time_since_last_heartbeat
+                FROM task_config cfg
+                WHERE cfg.queue_name = ANY($1)
+                    AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))
+                    AND cfg.project_id = t.project_id
+                ORDER BY (cfg.queue_name = $2) DESC
+                LIMIT 1
+            ) tc ON true
+            WHERE t.queue_name = ANY($1) AND t.status IN ('running', 'should-stop')
+                AND COALESCE(t.resource_demand, 0) > $3
+                AND COALESCE(t.resource_demand, 0) <= $4
+        ) s
+        "#,
+        &queue_names,
+        queue_name,
+        above,
+        at_most,
+        pg_interval(default_max_time_since_last_heartbeat)?,
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.into_error_model(format!("Failed to count the '{queue_name}' tasks")))?;
+    Ok(TaskQueueDemand {
+        due: counts.due,
+        heartbeat_expired: counts.heartbeat_expired,
+        running: counts.running,
+    })
 }
 
 /// Record one attempt of the queue whose heartbeat timed out as failed, including one that was
@@ -5645,5 +5720,222 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(task.task_id(), second);
+    }
+
+    /// Marks a task as picked, with its last heartbeat `heartbeat_seconds_ago` seconds ago.
+    async fn set_picked(pool: &PgPool, task_id: TaskId, status: &str, heartbeat_seconds_ago: i64) {
+        sqlx::query(
+            "UPDATE task SET status = $2::task_intermediate_status, attempt = 1, \
+             picked_up_at = now(), last_heartbeat_at = now() - $3 * interval '1 second' \
+             WHERE task_id = $1",
+        )
+        .bind(*task_id)
+        .bind(status)
+        .bind(heartbeat_seconds_ago)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn demand_in(
+        pool: &PgPool,
+        queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
+        range: TaskResourceDemandRange,
+    ) -> (i64, i64, i64) {
+        let demand = task_queue_demand(
+            pool,
+            TaskQueueDemandRequest::builder()
+                .queue_name(queue_name)
+                .legacy_queue_names(legacy_queue_names)
+                .default_max_time_since_last_heartbeat(chrono::Duration::minutes(5))
+                .resource_demand(range)
+                .build(),
+        )
+        .await
+        .unwrap();
+        (demand.due, demand.heartbeat_expired, demand.running)
+    }
+
+    #[sqlx::test]
+    async fn test_task_queue_demand_counts_each_range(pool: PgPool) {
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = generate_tq_name();
+        let legacy = generate_tq_name();
+        let other = generate_tq_name();
+        let queue = |name: &TaskQueueName, demand: Option<i64>, minutes_ago: i64| {
+            let pool = pool.clone();
+            let name = name.clone();
+            let project_id = project_id.clone();
+            async move {
+                queue_with_demand(&pool, &name, warehouse_id, &project_id, demand, minutes_ago)
+                    .await
+            }
+        };
+
+        // Due, at the edges of the ranges (-, 10], (10, 20] and (20, -).
+        queue(&q, None, 9).await;
+        queue(&q, Some(0), 8).await;
+        queue(&q, Some(10), 7).await;
+        queue(&q, Some(11), 6).await;
+        queue(&q, Some(20), 5).await;
+        queue(&q, Some(21), 4).await;
+        // Under the queue's earlier name, and in another queue.
+        queue(&legacy, None, 3).await;
+        queue(&other, Some(5), 3).await;
+        // Not due yet.
+        queue(&q, Some(5), -10).await;
+        // Running with a live heartbeat, asked to stop, and with an expired heartbeat.
+        let running = queue(&q, Some(5), 2).await;
+        set_picked(&pool, running, "running", 0).await;
+        let stopping = queue(&q, Some(15), 2).await;
+        set_picked(&pool, stopping, "should-stop", 10).await;
+        let expired = queue(&q, Some(10), 2).await;
+        set_picked(&pool, expired, "running", 3600).await;
+        let live = queue(&q, Some(30), 2).await;
+        set_picked(&pool, live, "running", 30).await;
+
+        // A second project whose heartbeat timeout is 1 second: the same 30 seconds are expired.
+        let second_project = Arc::new(ProjectId::from_db_unchecked(Uuid::now_v7().to_string()));
+        sqlx::query("INSERT INTO project (project_id, project_name) VALUES ($1, 'second')")
+            .bind(second_project.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        set_task_queue_config(
+            &mut conn,
+            &q,
+            second_project.clone(),
+            None,
+            &SetTaskQueueConfigRequest {
+                queue_config: QueueConfig::from_json(serde_json::json!({})),
+                max_seconds_since_last_heartbeat: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        let second = queue_task_batch(
+            &mut conn,
+            &q,
+            vec![TaskInput {
+                task_metadata: ScheduleTaskMetadata {
+                    resource_demand: Some(25),
+                    project_id: second_project,
+                    parent_task_id: None,
+                    scheduled_for: None,
+                    entity: TaskEntity::Project,
+                },
+                payload: serde_json::json!({}),
+            }],
+        )
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .task_id;
+        set_picked(&pool, second, "running", 30).await;
+
+        let small = TaskResourceDemandRange::builder().at_most(10).build();
+        let medium = TaskResourceDemandRange::builder()
+            .above(10)
+            .at_most(20)
+            .build();
+        let large = TaskResourceDemandRange::builder().above(20).build();
+        let empty = TaskResourceDemandRange::builder()
+            .above(5)
+            .at_most(5)
+            .build();
+        for (range, legacy_names, expected) in [
+            // (due, heartbeat expired, running)
+            (small, vec![&legacy], (4, 1, 1)),
+            (small, vec![], (3, 1, 1)),
+            (medium, vec![&legacy], (2, 0, 1)),
+            (large, vec![&legacy], (1, 1, 1)),
+            (TaskResourceDemandRange::default(), vec![&legacy], (7, 2, 3)),
+            (empty, vec![&legacy], (0, 0, 0)),
+        ] {
+            assert_eq!(
+                demand_in(&pool, &q, &legacy_names, range).await,
+                expected,
+                "{range:?} {legacy_names:?}"
+            );
+        }
+    }
+
+    /// Plan of `sql` as a generic plan, with sequential and bitmap scans off.
+    async fn generic_plan(pool: &PgPool, sql: &str, args: &str) -> String {
+        let mut transaction = pool.begin().await.unwrap();
+        for setting in [
+            "SET LOCAL plan_cache_mode = force_generic_plan",
+            "SET LOCAL enable_seqscan = off",
+            "SET LOCAL enable_bitmapscan = off",
+        ] {
+            sqlx::query(setting)
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+        }
+        // `sql` and `args` are literals of the tests below.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("PREPARE demand_plan AS {sql}")))
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "EXPLAIN EXECUTE demand_plan{args}"
+        )))
+        .fetch_all(&mut *transaction)
+        .await
+        .unwrap();
+        // A prepared statement outlives the transaction; the pool reuses the connection.
+        sqlx::raw_sql("DEALLOCATE demand_plan")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        transaction.rollback().await.unwrap();
+        rows.join("\n")
+    }
+
+    /// The pick and the due count find a resource demand range in `task_queue_name_status_idx`,
+    /// also in a generic plan.
+    #[sqlx::test]
+    async fn test_resource_demand_ranges_are_index_conditions(pool: PgPool) {
+        setup_warehouse(pool.clone()).await;
+        let range_in_index = "Index Cond: ((queue_name = $1) AND (status = 'scheduled'::task_intermediate_status) \
+             AND (scheduled_for <= now()) AND (COALESCE(resource_demand, '0'::bigint) > $2) \
+             AND (COALESCE(resource_demand, '0'::bigint) <= $3))";
+        // The inner select of the pick.
+        let pick = generic_plan(
+            &pool,
+            "SELECT t.task_id FROM task t \
+             WHERE t.queue_name = $1 AND t.scheduled_for <= now() AND t.status = 'scheduled' \
+             AND COALESCE(t.resource_demand, 0) > $2 AND COALESCE(t.resource_demand, 0) <= $3 \
+             ORDER BY t.scheduled_for, t.task_id FOR UPDATE OF t SKIP LOCKED LIMIT 1",
+            "('compaction', 100, 200)",
+        )
+        .await;
+        assert!(
+            pick.contains("Index Scan using task_queue_name_status_idx"),
+            "{pick}"
+        );
+        assert!(pick.contains(range_in_index), "{pick}");
+        // The index order is the pick's order, also within one `scheduled_for`.
+        assert!(!pick.contains("Sort"), "{pick}");
+        assert!(!pick.contains("Filter:"), "{pick}");
+
+        // The due branch of `task_queue_demand`.
+        let range_in_index_any =
+            range_in_index.replace("(queue_name = $1)", "(queue_name = ANY ($1))");
+        let count = generic_plan(
+            &pool,
+            "SELECT COUNT(*) FROM task t \
+             WHERE t.queue_name = ANY($1) AND t.status = 'scheduled' AND t.scheduled_for <= now() \
+             AND COALESCE(t.resource_demand, 0) > $2 AND COALESCE(t.resource_demand, 0) <= $3",
+            "('{compaction}', 100, 200)",
+        )
+        .await;
+        assert!(count.contains("task_queue_name_status_idx"), "{count}");
+        assert!(count.contains(&range_in_index_any), "{count}");
+        assert!(!count.contains("Filter:"), "{count}");
     }
 }
