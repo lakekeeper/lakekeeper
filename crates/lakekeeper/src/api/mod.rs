@@ -7,6 +7,8 @@ pub mod endpoints;
 pub mod maintenance;
 #[cfg(feature = "router")]
 pub mod router;
+#[cfg(feature = "router")]
+pub(crate) mod task_queue_demand;
 pub use iceberg_ext::catalog::rest::*;
 
 #[cfg(any(test, feature = "test-utils"))]

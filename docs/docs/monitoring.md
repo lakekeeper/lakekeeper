@@ -204,7 +204,7 @@ Decisions are cached per `(subject, check)` and report as `cache_type="admission
 
 ## Prometheus Integration
 
-Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS__PORT` (defaults: `0.0.0.0:9000`). The bind address `0.0.0.0` means "listen on all interfaces" — it is not a valid scrape target. Configure Prometheus to scrape a reachable address such as `http://localhost:9000/metrics` or `http://<service-or-pod-ip>:9000/metrics`.
+Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS__PORT` (defaults: `0.0.0.0:9000`). The bind address `0.0.0.0` means "listen on all interfaces" — it is not a valid scrape target. Configure Prometheus to scrape a reachable address such as `http://localhost:9000/metrics` or `http://<service-or-pod-ip>:9000/metrics`. The metrics port also serves `/health` and the [task queue demand](#task-queue-demand).
 
 | Variable                                                      | Description  |
 |---------------------------------------------------------------|--------------|
@@ -217,6 +217,23 @@ scrape_configs:
     static_configs:
       - targets: ["lakekeeper-host:9000"]
 ```
+
+## Task Queue Demand
+
+An autoscaler can ask Lakekeeper how many workers the tasks of a queue need. The metrics port answers `GET /task-queue/<queue>/demand`, for example `http://<service-or-pod-ip>:9000/task-queue/compaction/demand?class=small`. The answer looks like this:
+
+```json
+{"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2}
+```
+
+- `due` counts the tasks that wait and can start now.
+- `running` counts the tasks that run.
+- `heartbeat-expired` counts tasks whose worker stopped sending heartbeats. The next worker that polls the queue ends that try, and the task is tried again later.
+- `demand` is the sum of the three. Use it as the scaling value, for example with the [KEDA Metrics API scaler](https://keda.sh/docs/latest/scalers/metrics-api/) and `valueLocation: demand`.
+
+Some queues group their tasks into classes, for example size classes of workers. Name the class with `?class=<name>` to count only its tasks. Without `class`, the answer counts the whole queue. An unknown queue or class returns `404`, also on a pod that does not have the class configuration. In read-only maintenance mode every answer is `0`, for every queue and class, because no worker starts tasks then.
+
+All replicas read the same database, so every replica with the same queue and class configuration gives the same answer. Each replica keeps an answer for 5 seconds, so frequent requests do not load the database. The endpoint has no authentication, like `/metrics`, and shows only counts, no project, warehouse or table names. Do not expose the metrics port outside the cluster.
 
 ## Database (Postgres) Monitoring
 

@@ -24,9 +24,9 @@ use crate::{
             CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
             ProjectTaskScheduleState, ResolvedTaskEntity, RetryDecision, Task, TaskAttemptId,
             TaskCheckState, TaskDetailsScope, TaskFilter, TaskId, TaskInfo, TaskInput,
-            TaskQueueName, TaskResolveScope, TaskSchedule, TaskScheduleFilter, TaskScheduleId,
-            TaskScheduleStoreError, TaskScheduleUpsert, TriggerTaskScheduleError,
-            UpsertTaskScheduleError,
+            TaskQueueDemand, TaskQueueDemandRequest, TaskQueueName, TaskResolveScope, TaskSchedule,
+            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
+            TriggerTaskScheduleError, UpsertTaskScheduleError,
             task_schedule::{validate_task_schedule_interval, validate_task_schedule_key},
         },
     },
@@ -167,6 +167,21 @@ where
         state: Self::State,
     ) -> Result<Option<Task>> {
         Self::pick_new_task_impl(request, state).await
+    }
+
+    /// Count the due, heartbeat-expired and running tasks of the request's queue whose resource
+    /// demand lies in the request's range, from one consistent read. Due tasks are what a pick
+    /// can take now; an attempt whose heartbeat expired is failed by the queue's next pick.
+    #[tracing::instrument(
+        name = "catalog_task_queue_demand",
+        skip(request, state),
+        fields(queue_name = %request.queue_name, resource_demand = ?request.resource_demand)
+    )]
+    async fn task_queue_demand(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> Result<TaskQueueDemand> {
+        Self::task_queue_demand_impl(request, state).await
     }
 
     async fn record_task_success(

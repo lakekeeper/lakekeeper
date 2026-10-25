@@ -20,12 +20,16 @@ use crate::{
     },
 };
 
+mod queue_demand;
 pub(crate) mod task_drain;
 #[cfg(feature = "test-utils")]
 pub use task_drain::TestTaskRunner;
 mod task_queues_runner;
 mod task_registry;
+pub use queue_demand::{TaskDemandClass, TaskQueueDemand, TaskQueueDemandRequest};
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
+#[cfg(feature = "router")]
+pub(crate) use task_registry::DemandTarget;
 pub use task_registry::{
     ConfigCheckFn, QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues,
     ScheduleEligibilityFn, TaskQueueRegistry, UserScheduling, ValidatorFn,

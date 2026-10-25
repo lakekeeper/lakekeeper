@@ -76,9 +76,10 @@ use lakekeeper::{
         tasks::{
             CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
             ProjectTaskScheduleState, RetryDecision, Task, TaskAttemptId, TaskCheckState,
-            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope,
-            TaskSchedule, TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError,
-            TaskScheduleUpsert, TriggerTaskScheduleError, UpsertTaskScheduleError,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueDemand,
+            TaskQueueDemandRequest, TaskQueueName, TaskResolveScope, TaskSchedule,
+            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
+            TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -138,8 +139,8 @@ use crate::{
         get_task_queue_config, list_project_task_schedule_states, list_task_schedules, list_tasks,
         materialize_due_task_schedules, pick_task_with_retry_policy, queue_task_batch,
         record_failure, record_success, reparent_pending_task, request_tasks_stop,
-        reschedule_tasks_for, resolve_tasks, set_task_queue_config, trigger_task_schedule,
-        upsert_task_schedule,
+        reschedule_tasks_for, resolve_tasks, set_task_queue_config, task_queue_demand,
+        trigger_task_schedule, upsert_task_schedule,
     },
     user::{create_or_update_user, delete_user, list_users, search_user},
     warehouse::{
@@ -1349,6 +1350,13 @@ impl CatalogStore for super::PostgresBackend {
             resource_demand,
         )
         .await
+    }
+
+    async fn task_queue_demand_impl(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> Result<TaskQueueDemand> {
+        task_queue_demand(&state.read_pool(), request).await
     }
 
     async fn resolve_tasks_impl(
