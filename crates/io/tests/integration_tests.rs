@@ -3,10 +3,18 @@ use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
+#[cfg(feature = "storage-gcs")]
+use lakekeeper_io::SoftDeletedVersion;
 use lakekeeper_io::{
-    ErrorKind, LakekeeperStorage, ReadError, RemoveEmptyDirectoryOutcome, StorageBackend,
-    execute_with_parallelism,
+    ErrorKind, LakekeeperStorage, ObjectTags, ReadError, RemoveEmptyDirectoryOutcome,
+    StorageBackend, execute_with_parallelism,
 };
+#[cfg(any(
+    feature = "storage-in-memory",
+    feature = "storage-s3",
+    feature = "storage-gcs"
+))]
+use lakekeeper_io::{IOError, ObjectVersionEntry};
 use tokio::{
     runtime::Runtime,
     time::{Duration, Instant, sleep},
@@ -40,8 +48,30 @@ async fn create_memory_storage() -> anyhow::Result<(StorageBackend, TestConfig)>
 
 #[cfg(feature = "storage-s3")]
 async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
-    let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET")
-        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_BUCKET not set"))?;
+    create_s3_storage_in("LAKEKEEPER_TEST__S3_BUCKET").await
+}
+
+/// S3 storage on a bucket with versioning enabled, reached with the
+/// `LAKEKEEPER_TEST__S3_*` endpoint and credentials.
+#[cfg(feature = "storage-s3")]
+async fn create_s3_versioned_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
+    create_s3_storage_in("LAKEKEEPER_TEST__S3_VERSIONED_BUCKET").await
+}
+
+#[cfg(feature = "storage-s3")]
+async fn create_s3_storage_in(
+    bucket_env_var: &str,
+) -> anyhow::Result<(StorageBackend, TestConfig)> {
+    let (storage, config) = create_s3_client_storage_in(bucket_env_var).await?;
+    Ok((StorageBackend::S3(storage), config))
+}
+
+#[cfg(feature = "storage-s3")]
+async fn create_s3_client_storage_in(
+    bucket_env_var: &str,
+) -> anyhow::Result<(lakekeeper_io::s3::S3Storage, TestConfig)> {
+    let bucket =
+        std::env::var(bucket_env_var).map_err(|_| anyhow::anyhow!("{bucket_env_var} not set"))?;
     let region = std::env::var("LAKEKEEPER_TEST__S3_REGION")
         .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_REGION not set"))?;
     let access_key = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY")
@@ -67,7 +97,7 @@ async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
         external_id: None,
     });
 
-    let storage = StorageBackend::S3(s3_settings.get_storage_client(Some(&s3_auth)).await);
+    let storage = s3_settings.get_storage_client(Some(&s3_auth)).await;
     let base_path = format!(
         "s3://{}/lakekeeper-io-integration-tests/{}",
         bucket,
@@ -259,6 +289,31 @@ macro_rules! test_all_storages {
     };
 }
 
+/// Macro to generate parameterized tests for the backends that keep object versions
+macro_rules! test_versioned_storages {
+    ($test_name:ident, $test_fn:ident) => {
+        pastey::paste! {
+            #[cfg(feature = "storage-in-memory")]
+            #[test]
+            fn [<$test_name _memory>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_memory_storage().await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+
+            #[cfg(feature = "storage-s3")]
+            #[test]
+            fn [<$test_name _s3_versioned>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_s3_versioned_storage().await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+        }
+    };
+}
+
 /// Test configuration for different storage backends
 #[derive(Debug)]
 pub struct TestConfig {
@@ -367,6 +422,27 @@ test_all_storages!(
     test_write_then_read_single_and_read_impl
 );
 test_all_storages!(test_read_returns_metadata, test_read_returns_metadata_impl);
+test_all_storages!(
+    test_write_outcome_identifies_the_object,
+    test_write_outcome_identifies_the_object_impl
+);
+test_versioned_storages!(test_version_history, test_version_history_impl);
+test_versioned_storages!(
+    test_old_version_reads_its_own_bytes,
+    test_old_version_reads_its_own_bytes_impl
+);
+test_versioned_storages!(
+    test_version_listing_pages_across_keys,
+    test_version_listing_pages_across_keys_impl
+);
+test_versioned_storages!(
+    test_tags_address_one_version,
+    test_tags_address_one_version_impl
+);
+test_versioned_storages!(
+    test_writer_close_returns_the_version,
+    test_writer_close_returns_the_version_impl
+);
 
 // // Performance tests for storage backend initialization
 // #[cfg(feature = "storage-in-memory")]
@@ -1262,7 +1338,7 @@ async fn test_special_characters_in_url_segments_impl(
             .write(&path, Bytes::from(format!("Content for {seg}")))
             .await
         {
-            Ok(()) => written_paths.push((seg.to_string(), path)),
+            Ok(_) => written_paths.push((seg.to_string(), path)),
             Err(e) => failures.push(format!("write({seg}): {e}")),
         }
     }
@@ -1289,7 +1365,7 @@ async fn test_special_characters_in_url_segments_impl(
         for seg in &negative_segments {
             let path = format!("{base_dir}{seg}/data/metadata/00000-test.metadata.json");
             match storage.write(&path, Bytes::from("x")).await {
-                Ok(()) => {
+                Ok(_) => {
                     failures.push(format!("write({seg}): expected reject, got Ok"));
                     let _ = storage.delete(&path).await;
                 }
@@ -1980,21 +2056,12 @@ async fn test_read_returns_metadata_impl(
         read.info.location()
     );
 
-    // The in-memory backend has no ETag; every cloud backend must surface one,
-    // so the agreement check below can't pass vacuously via `None == None`.
-    // The `Memory` variant only exists when `storage-in-memory` is enabled, so
-    // gate the arm by its feature (every other build is cloud-only).
-    let is_memory = match storage {
-        #[cfg(feature = "storage-in-memory")]
-        StorageBackend::Memory(_) => true,
-        _ => false,
-    };
-    if !is_memory {
-        assert!(
-            read.info.e_tag().is_some(),
-            "cloud backend should surface an ETag on read",
-        );
-    }
+    // Every backend surfaces an ETag, so the agreement check below can't pass
+    // vacuously via `None == None`.
+    assert!(
+        read.info.e_tag().is_some(),
+        "backend should surface an ETag on read",
+    );
 
     // The metadata surfaced by `read` matches a standalone `metadata` call.
     let meta = storage.metadata(&path).await?;
@@ -2371,4 +2438,561 @@ fn generate_test_data(size_mb: usize) -> Bytes {
     }
 
     buffer.freeze()
+}
+
+/// Every entry `list_versions` returns under `prefix`.
+#[cfg(any(
+    feature = "storage-in-memory",
+    feature = "storage-s3",
+    feature = "storage-gcs"
+))]
+async fn all_versions(
+    storage: &StorageBackend,
+    prefix: &str,
+) -> anyhow::Result<Vec<ObjectVersionEntry>> {
+    let pages: Vec<Result<Vec<ObjectVersionEntry>, IOError>> =
+        storage.list_versions(prefix, None).await?.collect().await;
+    let mut entries = Vec::new();
+    for page in pages {
+        entries.extend(page?);
+    }
+    Ok(entries)
+}
+
+fn assert_unsupported_read(result: Result<impl std::fmt::Debug, ReadError>) {
+    assert!(
+        matches!(&result, Err(ReadError::IOError(e)) if e.kind() == ErrorKind::Unsupported),
+        "expected Unsupported, got {result:?}"
+    );
+}
+
+#[cfg(any(feature = "storage-adls", feature = "storage-gcs"))]
+fn assert_unsupported_write(result: Result<(), lakekeeper_io::WriteError>) {
+    assert!(
+        matches!(&result, Err(lakekeeper_io::WriteError::IOError(e)) if e.kind() == ErrorKind::Unsupported),
+        "expected Unsupported, got {result:?}"
+    );
+}
+
+#[cfg(any(
+    feature = "storage-in-memory",
+    feature = "storage-s3",
+    feature = "storage-gcs"
+))]
+fn assert_read_not_found(result: Result<impl std::fmt::Debug, ReadError>) {
+    assert!(
+        matches!(&result, Err(ReadError::IOError(e)) if e.kind() == ErrorKind::NotFound),
+        "expected NotFound, got {result:?}"
+    );
+}
+
+/// The identity a write returns is the one `metadata`, `list` and `list_versions` report
+/// for the same object.
+async fn test_write_outcome_identifies_the_object_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let dir = config.test_dir_path("identity");
+    let path = format!("{dir}object.bin");
+    let outcome = storage.write(&path, Bytes::from("identity")).await?;
+    assert!(
+        outcome.e_tag.is_some(),
+        "write returned no ETag: {outcome:?}"
+    );
+
+    let metadata = storage.metadata(&path).await?;
+    assert_eq!(metadata.e_tag(), outcome.e_tag.as_deref());
+    assert_eq!(metadata.version(), outcome.version.as_deref());
+
+    let listed: Vec<_> = storage
+        .list(&dir, None)
+        .await?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(listed.len(), 1);
+
+    match storage {
+        #[cfg(feature = "storage-adls")]
+        StorageBackend::Adls(_) => {
+            assert_unsupported_read(storage.list_versions(&dir, None).await.map(|_| ()));
+            assert_unsupported_read(storage.list_soft_deleted(&dir, None).await.map(|_| ()));
+            assert_unsupported_read(storage.read_version(&path, "1").await);
+            assert_unsupported_read(storage.read_range_version(&path, "1", 0..1).await);
+            assert_unsupported_read(storage.metadata_version(&path, "1").await);
+            assert_unsupported_read(storage.get_tags(&path, "1").await);
+            assert_unsupported_write(storage.put_tags(&path, "1", &ObjectTags::new()).await);
+            assert_unsupported_write(storage.remove_tags(&path, "1").await);
+        }
+        #[cfg(feature = "storage-gcs")]
+        StorageBackend::Gcs(_) => {
+            // GCS lists the generation; it is the version.
+            assert_eq!(listed[0].e_tag(), outcome.e_tag.as_deref());
+            assert_eq!(listed[0].version(), outcome.version.as_deref());
+            let version = outcome.version.clone().expect("GCS reports a generation");
+            let versions = all_versions(storage, &dir).await?;
+            assert_eq!(versions.len(), 1);
+            assert_eq!(versions[0].version(), version);
+            assert!(versions[0].is_latest());
+            assert_eq!(
+                storage.read_version(&path, &version).await?.bytes,
+                Bytes::from("identity")
+            );
+            assert_eq!(
+                storage.read_range_version(&path, &version, 1..4).await?,
+                Bytes::from("den")
+            );
+            assert_eq!(
+                storage.metadata_version(&path, &version).await?.version(),
+                Some(version.as_str())
+            );
+            // A generation the object does not have is not read as the current one.
+            let other = (version.parse::<i64>()? + 1).to_string();
+            assert_read_not_found(storage.read_version(&path, &other).await);
+            assert_read_not_found(storage.read_range_version(&path, &other, 1..4).await);
+            assert_unsupported_read(storage.get_tags(&path, &version).await);
+            assert_unsupported_write(storage.put_tags(&path, &version, &ObjectTags::new()).await);
+            assert_unsupported_write(storage.remove_tags(&path, &version).await);
+        }
+        #[cfg(feature = "storage-in-memory")]
+        StorageBackend::Memory(_) => {
+            // Like S3, a listing carries the ETag and no version.
+            assert_eq!(listed[0].e_tag(), outcome.e_tag.as_deref());
+            assert_eq!(listed[0].version(), None);
+            let version = outcome.version.clone().expect("memory reports a version");
+            let versions = all_versions(storage, &dir).await?;
+            assert_eq!(versions.len(), 1);
+            assert_eq!(versions[0].version(), version);
+            assert!(versions[0].is_latest());
+            assert_unsupported_read(storage.list_soft_deleted(&dir, None).await.map(|_| ()));
+        }
+        #[cfg(feature = "storage-s3")]
+        StorageBackend::S3(_) => {
+            // S3 listings carry the ETag and no version.
+            assert_eq!(listed[0].e_tag(), outcome.e_tag.as_deref());
+            assert_eq!(listed[0].version(), None);
+            // The `_s3` and `_oss` buckets are unversioned: the write gets no version id,
+            // and version listing reports the object as version "null".
+            assert_eq!(outcome.version, None);
+            let versions = all_versions(storage, &dir).await?;
+            assert_eq!(versions.len(), 1);
+            assert_eq!(versions[0].version(), "null");
+            assert!(versions[0].is_latest());
+            assert_unsupported_read(storage.list_soft_deleted(&dir, None).await.map(|_| ()));
+        }
+    }
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Deleted objects are listed among the soft-deleted generations, with the generations
+/// their writes returned, in key order.
+#[cfg(feature = "storage-gcs")]
+async fn test_soft_deleted_versions_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let dir = config.test_dir_path("soft-deleted");
+    let mut written = Vec::new();
+    for name in ["a.bin", "b.bin"] {
+        let path = format!("{dir}{name}");
+        let outcome = storage.write(&path, Bytes::from("soft-deleted")).await?;
+        written.push((path, outcome));
+    }
+    let pages: Vec<Result<Vec<SoftDeletedVersion>, IOError>> =
+        storage.list_soft_deleted(&dir, None).await?.collect().await;
+    assert_eq!(
+        pages.into_iter().collect::<Result<Vec<_>, _>>()?.concat(),
+        vec![]
+    );
+    for (path, _) in &written {
+        storage.delete(path).await?;
+    }
+    // A deleted sibling whose name extends the prefix's last segment.
+    let sibling = format!("{}-sibling/c.bin", dir.trim_end_matches('/'));
+    storage.write(&sibling, Bytes::from("outside")).await?;
+    storage.delete(&sibling).await?;
+
+    // Paging continues after the last entry of each page, and the listing stays inside
+    // the prefix, given with or without its trailing slash.
+    let pages: Vec<Result<Vec<SoftDeletedVersion>, IOError>> = storage
+        .list_soft_deleted(dir.trim_end_matches('/'), Some(1))
+        .await?
+        .collect()
+        .await;
+    let pages = pages.into_iter().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 1]);
+    for (entry, (path, outcome)) in pages.concat().iter().zip(&written) {
+        assert_eq!(entry.location.as_str(), path);
+        assert_eq!(Some(entry.version.as_str()), outcome.version.as_deref());
+        assert_eq!(entry.size, Some(12));
+        let soft_delete_time = entry.soft_delete_time.expect("GCS reports the delete time");
+        let hard_delete_time = entry.hard_delete_time.expect("GCS reports the purge time");
+        assert!(soft_delete_time < hard_delete_time, "{entry:?}");
+    }
+    // Only soft delete keeps them.
+    assert!(all_versions(storage, &dir).await?.is_empty());
+    Ok(())
+}
+
+#[cfg(feature = "storage-gcs")]
+#[test]
+fn test_soft_deleted_versions_gcs_regular() -> anyhow::Result<()> {
+    execute_in_common_runtime(async {
+        let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_BUCKET").await?;
+        test_soft_deleted_versions_impl(&storage, &config).await
+    })
+}
+
+#[cfg(feature = "storage-gcs")]
+#[test]
+fn test_soft_deleted_versions_gcs_hns() -> anyhow::Result<()> {
+    execute_in_common_runtime(async {
+        let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_HNS_BUCKET").await?;
+        test_soft_deleted_versions_impl(&storage, &config).await
+    })
+}
+
+/// Write, overwrite and delete one key: both versions stay readable and listed, with the
+/// ids the writes returned, under a delete marker.
+#[cfg(any(feature = "storage-in-memory", feature = "storage-s3"))]
+async fn test_version_history_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let dir = config.test_dir_path("history");
+    let path = format!("{dir}object.bin");
+    let first = storage.write(&path, Bytes::from("first")).await?;
+    // Larger than one request, so the overwrite is a multipart upload.
+    let second_bytes = generate_test_data(30);
+    let second = storage.write(&path, second_bytes.clone()).await?;
+    storage.delete(&path).await?;
+
+    let first_version = first.version.clone().expect("versioned write");
+    let second_version = second.version.clone().expect("versioned write");
+    assert_ne!(first_version, second_version);
+
+    let entries = all_versions(storage, &dir).await?;
+    assert_eq!(entries.len(), 3, "{entries:?}");
+    // Paging continues after the last entry of each page.
+    let pages: Vec<Result<Vec<ObjectVersionEntry>, IOError>> =
+        storage.list_versions(&dir, Some(1)).await?.collect().await;
+    let pages = pages.into_iter().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        pages.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![1, 1, 1]
+    );
+    assert_eq!(pages.concat(), entries);
+    let ObjectVersionEntry::DeleteMarker(marker) = &entries[0] else {
+        panic!("expected the delete marker first, got {:?}", entries[0]);
+    };
+    assert!(marker.is_latest);
+    assert_eq!(marker.location.as_str(), path);
+    let mut summary = Vec::new();
+    for entry in &entries[1..] {
+        let ObjectVersionEntry::Version(v) = entry else {
+            panic!("expected a version, got {entry:?}");
+        };
+        summary.push((v.version.clone(), v.e_tag.clone(), v.size, v.is_latest));
+    }
+    assert_eq!(
+        summary,
+        vec![
+            (
+                second_version.clone(),
+                second.e_tag.clone(),
+                Some(second_bytes.len() as u64),
+                false
+            ),
+            (first_version.clone(), first.e_tag.clone(), Some(5), false),
+        ]
+    );
+
+    assert_read_not_found(storage.read(&path).await);
+    // A delete marker is a version id with no object behind it.
+    assert_read_not_found(storage.read_version(&path, &marker.version).await);
+    assert_read_not_found(storage.metadata_version(&path, &marker.version).await);
+    assert_read_not_found(storage.get_tags(&path, &marker.version).await);
+    // A value that is no version id of the store is refused, not looked up.
+    let refused = storage.read_version(&path, "not-a-version").await;
+    assert!(
+        matches!(&refused, Err(ReadError::IOError(e)) if e.kind() == ErrorKind::ConditionNotMatch),
+        "expected ConditionNotMatch, got {refused:?}"
+    );
+
+    let read = storage.read_version(&path, &first_version).await?;
+    assert_eq!(read.bytes, Bytes::from("first"));
+    assert_eq!(read.info.version(), Some(first_version.as_str()));
+    let info = storage.metadata_version(&path, &first_version).await?;
+    assert_eq!(info.e_tag(), first.e_tag.as_deref());
+    assert_eq!(info.size(), Some(5));
+    let read = storage.read_version(&path, &second_version).await?;
+    assert_eq!(read.bytes, second_bytes);
+    // Larger than one request, so the range is read in pinned parallel chunks.
+    let range = 1..29 * 1024 * 1024;
+    assert_eq!(
+        storage
+            .read_range_version(&path, &second_version, range.clone())
+            .await?,
+        second_bytes.slice(range.start as usize..range.end as usize)
+    );
+    assert_eq!(
+        storage
+            .read_range_version(&path, &first_version, 1..4)
+            .await?,
+        Bytes::from("irs")
+    );
+    Ok(())
+}
+
+/// An old version reads back its own bytes while a newer version is current, also when the
+/// read is split into parallel chunks.
+#[cfg(any(feature = "storage-in-memory", feature = "storage-s3"))]
+async fn test_old_version_reads_its_own_bytes_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("overwritten.bin");
+    // Larger than one request, so the reads below are split into chunks.
+    let old_bytes = generate_test_data(30);
+    let new_bytes = Bytes::from(
+        old_bytes
+            .iter()
+            .map(|b| b.wrapping_add(1))
+            .collect::<Vec<_>>(),
+    );
+    let old = storage
+        .write(&path, old_bytes.clone())
+        .await?
+        .version
+        .expect("versioned write");
+    let new = storage
+        .write(&path, new_bytes.clone())
+        .await?
+        .version
+        .expect("versioned write");
+
+    let read = storage.read_version(&path, &old).await?;
+    assert_eq!(read.bytes, old_bytes);
+    assert_eq!(read.info.version(), Some(old.as_str()));
+    let range = 1..29 * 1024 * 1024;
+    assert_eq!(
+        storage
+            .read_range_version(&path, &old, range.clone())
+            .await?,
+        old_bytes.slice(range.start as usize..range.end as usize)
+    );
+    let current = storage.read(&path).await?;
+    assert_eq!(current.bytes, new_bytes);
+    assert_eq!(current.info.version(), Some(new.as_str()));
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Version listing pages split the versions of several keys; the pages hold every version
+/// once, and the listing stays inside its prefix.
+#[cfg(any(feature = "storage-in-memory", feature = "storage-s3"))]
+async fn test_version_listing_pages_across_keys_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let base = config.test_dir_path("paging");
+    let dir = format!("{base}dir/");
+    let mut expected = Vec::new();
+    for key in ["a", "b", "c"] {
+        let path = format!("{dir}{key}");
+        let mut written = Vec::new();
+        for content in ["one", "two"] {
+            let outcome = storage.write(&path, Bytes::from(content)).await?;
+            written.push(outcome.version.expect("versioned write"));
+        }
+        written.reverse();
+        expected.extend(written.into_iter().map(|version| (path.clone(), version)));
+    }
+    // A sibling whose name extends the prefix's last segment.
+    storage
+        .write(&format!("{base}dirty/a"), Bytes::from("outside"))
+        .await?;
+
+    let summary = |entries: &[ObjectVersionEntry]| {
+        entries
+            .iter()
+            .map(|entry| (entry.location().to_string(), entry.version().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let without_slash = dir.trim_end_matches('/');
+    assert_eq!(
+        summary(&all_versions(storage, without_slash).await?),
+        expected
+    );
+    let pages: Vec<Result<Vec<ObjectVersionEntry>, IOError>> =
+        storage.list_versions(&dir, Some(4)).await?.collect().await;
+    let pages = pages.into_iter().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), vec![4, 2]);
+    assert_eq!(summary(&pages.concat()), expected);
+    Ok(())
+}
+
+/// A tag put on an overwritten version stays on that version.
+#[cfg(any(feature = "storage-in-memory", feature = "storage-s3"))]
+async fn test_tags_address_one_version_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("tagged.bin");
+    let first = storage
+        .write(&path, Bytes::from("first"))
+        .await?
+        .version
+        .expect("versioned write");
+    let second = storage
+        .write(&path, Bytes::from("second"))
+        .await?
+        .version
+        .expect("versioned write");
+    let tags = ObjectTags::from([
+        ("state".to_string(), "expired".to_string()),
+        ("owner".to_string(), "io-tests".to_string()),
+    ]);
+
+    storage.put_tags(&path, &first, &tags).await?;
+    assert_eq!(storage.get_tags(&path, &first).await?, tags);
+    assert_eq!(storage.get_tags(&path, &second).await?, ObjectTags::new());
+
+    // A put replaces the whole tag set.
+    let replacement = ObjectTags::from([("state".to_string(), "kept".to_string())]);
+    storage.put_tags(&path, &first, &replacement).await?;
+    assert_eq!(storage.get_tags(&path, &first).await?, replacement);
+
+    storage.remove_tags(&path, &first).await?;
+    assert_eq!(storage.get_tags(&path, &first).await?, ObjectTags::new());
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// The streaming writer's `close` returns the version it created, for a single request
+/// and for a multipart or resumable upload.
+#[cfg(any(
+    feature = "storage-in-memory",
+    feature = "storage-s3",
+    feature = "storage-gcs"
+))]
+async fn test_writer_close_returns_the_version_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    for (name, size_mb) in [("small.bin", 1), ("multipart.bin", 30)] {
+        let path = config.test_path(name);
+        let data = generate_test_data(size_mb);
+        let mut writer = storage.writer(&path).await?;
+        writer.write(data.clone()).await?;
+        let outcome = writer.close().await?;
+        let version = outcome.version.clone().expect("versioned write");
+
+        let read = storage.read_version(&path, &version).await?;
+        assert_eq!(read.bytes, data);
+        assert_eq!(read.info.e_tag(), outcome.e_tag.as_deref());
+        assert_eq!(read.info.version(), Some(version.as_str()));
+        storage.delete(&path).await?;
+    }
+    Ok(())
+}
+
+/// GCS reports a generation for every write, on any bucket.
+#[cfg(feature = "storage-gcs")]
+#[test]
+fn test_writer_close_returns_the_version_gcs_regular() -> anyhow::Result<()> {
+    execute_in_common_runtime(async {
+        let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_BUCKET").await?;
+        test_writer_close_returns_the_version_impl(&storage, &config).await
+    })
+}
+
+#[cfg(feature = "storage-gcs")]
+#[test]
+fn test_writer_close_returns_the_version_gcs_hns() -> anyhow::Result<()> {
+    execute_in_common_runtime(async {
+        let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_HNS_BUCKET").await?;
+        test_writer_close_returns_the_version_impl(&storage, &config).await
+    })
+}
+
+/// On an unversioned S3 bucket a write reports no version.
+#[cfg(feature = "storage-s3")]
+#[test]
+fn test_unversioned_write_has_no_version_s3() -> anyhow::Result<()> {
+    execute_in_common_runtime(async {
+        let (storage, config) = create_s3_storage().await?;
+        let dir = config.test_dir_path("unversioned");
+        let path = format!("{dir}object.bin");
+        let small = storage.write(&path, Bytes::from("small")).await?;
+        let multipart = storage.write(&path, generate_test_data(30)).await?;
+        let mut writer = storage.writer(&path).await?;
+        writer.write(Bytes::from("streamed")).await?;
+        let streamed = writer.close().await?;
+        assert_eq!(
+            (small.version, multipart.version, streamed.version.clone()),
+            (None, None, None)
+        );
+        assert_eq!(storage.metadata(&path).await?.version(), None);
+
+        // The object is listed as version "null", which reads it.
+        let versions = all_versions(&storage, &dir).await?;
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].version(), "null");
+        assert!(versions[0].is_latest());
+        let read = storage.read_version(&path, "null").await?;
+        assert_eq!(read.bytes, Bytes::from("streamed"));
+        assert_eq!(read.info.e_tag(), streamed.e_tag.as_deref());
+        storage.delete(&path).await?;
+        Ok(())
+    })
+}
+
+/// A streaming multipart write dropped before `close` leaves no pending upload.
+#[cfg(feature = "storage-s3")]
+#[test]
+fn test_dropped_writer_leaves_no_multipart_upload_s3() -> anyhow::Result<()> {
+    execute_in_common_runtime(async {
+        let (storage, config) = create_s3_client_storage_in("LAKEKEEPER_TEST__S3_BUCKET").await?;
+        let path = config.test_path("dropped.bin");
+        let (bucket, key) = path
+            .strip_prefix("s3://")
+            .and_then(|rest| rest.split_once('/'))
+            .expect("s3 path");
+        let pending = || async {
+            let uploads = storage
+                .client()
+                .list_multipart_uploads()
+                .bucket(bucket)
+                .prefix(key)
+                .send()
+                .await?;
+            anyhow::Ok(uploads.uploads().len())
+        };
+
+        {
+            let mut writer = storage.writer(&path).await?;
+            // More than one request, so the writer has started a multipart upload.
+            writer.write(generate_test_data(30)).await?;
+            assert_eq!(pending().await?, 1);
+        }
+
+        // The writer gives its abort 10 seconds.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while pending().await? != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "multipart upload for {path} still pending 20s after the writer was dropped"
+            );
+            sleep(Duration::from_millis(50)).await;
+        }
+        Ok(())
+    })
 }

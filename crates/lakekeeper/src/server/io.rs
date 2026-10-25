@@ -24,6 +24,7 @@ pub(crate) async fn write_file(
 
     io.write(location.as_str(), metadata_bytes.into())
         .await
+        .map(|_| ())
         .map_err(Into::into)
 }
 

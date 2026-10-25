@@ -181,6 +181,8 @@ services:
       sleep 5;
       /usr/bin/mc alias set dockerminio http://minio:9000 minio-root-user minio-root-password;
       /usr/bin/mc mb dockerminio/tests;
+      /usr/bin/mc mb dockerminio/tests-versioned;
+      /usr/bin/mc version enable dockerminio/tests-versioned;
       exit 0;
       "
     networks:
