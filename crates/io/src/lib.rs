@@ -775,9 +775,9 @@ pub(crate) fn calculate_ranges(total_size: usize, chunksize: usize) -> Vec<(usiz
         .collect()
 }
 
-/// Helper function to assemble downloaded chunks into a final buffer.
-/// Takes a stream of results containing `(chunk_index, chunk_data)` pairs and assembles them
-/// into a pre-allocated buffer of the specified total size.
+/// Helper function to assemble downloaded pieces into a final buffer.
+/// Takes a stream of results containing `(offset, data)` pairs and writes each
+/// piece at its offset into a pre-allocated buffer of the specified total size.
 #[cfg(any(
     feature = "storage-s3",
     feature = "storage-gcs",
@@ -786,7 +786,6 @@ pub(crate) fn calculate_ranges(total_size: usize, chunksize: usize) -> Vec<(usiz
 pub(crate) async fn assemble_chunks<S, E>(
     mut chunk_stream: S,
     total_size: usize,
-    chunk_size: usize,
 ) -> Result<bytes::Bytes, E>
 where
     S: futures::StreamExt<Item = Result<(usize, bytes::Bytes), E>> + Unpin,
@@ -795,10 +794,7 @@ where
     let mut combined_data = vec![0u8; total_size];
 
     while let Some(result) = chunk_stream.next().await {
-        let (chunk_index, chunk_data) = result?;
-
-        // Calculate the offset for this chunk
-        let offset = chunk_index * chunk_size;
+        let (offset, chunk_data) = result?;
         let end_offset = std::cmp::min(offset + chunk_data.len(), combined_data.len());
 
         // Write directly to the pre-allocated buffer
@@ -809,12 +805,21 @@ where
     Ok(bytes)
 }
 
+/// Download `range_size` bytes in parallel chunks of `chunk_size`, after the
+/// `prefix_len` bytes that `prefix` yields.
+///
+/// `fetch_chunk` receives the inclusive start and end of a chunk relative to
+/// the bytes after the prefix, and the chunk's index. The prefix is awaited
+/// while the chunks download, and every piece is written into one buffer of
+/// `prefix_len + range_size` bytes.
 #[cfg(any(
     feature = "storage-s3",
     feature = "storage-gcs",
     feature = "storage-adls"
 ))]
-pub(crate) async fn parallel_chunked_read<F, Fut>(
+pub(crate) async fn parallel_chunked_read<P, F, Fut>(
+    prefix: P,
+    prefix_len: usize,
     range_size: usize,
     chunk_size: usize,
     parallelism: usize,
@@ -822,6 +827,7 @@ pub(crate) async fn parallel_chunked_read<F, Fut>(
     fetch_chunk: F,
 ) -> Result<bytes::Bytes, ReadError>
 where
+    P: Future<Output = Result<bytes::Bytes, ReadError>>,
     F: Fn(usize, usize, usize) -> Fut + Send + Sync + Clone + 'static,
     Fut: Future<Output = Result<(usize, bytes::Bytes), ReadError>> + Send + 'static,
 {
@@ -849,9 +855,80 @@ where
                     ))
                 })
                 .and_then(|inner| inner)
+                .map(|(chunk_index, chunk)| (prefix_len + chunk_index * chunk_size, chunk))
         });
-    tokio::pin!(download_stream);
-    assemble_chunks(download_stream, range_size, chunk_size).await
+    let context = error_context.to_string();
+    let prefix_stream = futures::stream::once(async move {
+        let prefix = prefix.await?;
+        if prefix.len() != prefix_len {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::Unexpected,
+                format!(
+                    "Received {} bytes for the first {prefix_len} bytes of the object",
+                    prefix.len()
+                ),
+                context,
+            )));
+        }
+        Ok((0, prefix))
+    });
+    let pieces = futures::stream::select(prefix_stream, download_stream);
+    tokio::pin!(pieces);
+    assemble_chunks(pieces, prefix_len + range_size).await
+}
+
+/// Read an object of `total_size` bytes whose first `window_size` bytes are
+/// served by `window`.
+///
+/// An object that fits the window is the window. For a larger object, the
+/// bytes after the window are read with `fetch_chunk` (see
+/// [`parallel_chunked_read`]) while the window body is still arriving.
+#[cfg(any(feature = "storage-s3", feature = "storage-adls"))]
+pub(crate) async fn read_from_window<P, F, Fut>(
+    window: P,
+    window_size: usize,
+    total_size: u64,
+    chunk_size: usize,
+    parallelism: usize,
+    location: &str,
+    fetch_chunk: F,
+) -> Result<bytes::Bytes, ReadError>
+where
+    P: Future<Output = Result<bytes::Bytes, ReadError>>,
+    F: Fn(usize, usize, usize) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<(usize, bytes::Bytes), ReadError>> + Send + 'static,
+{
+    if total_size <= window_size as u64 {
+        let bytes = window.await?;
+        if bytes.len() as u64 != total_size {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::Unexpected,
+                format!(
+                    "Received {} bytes for an object of {total_size} bytes",
+                    bytes.len()
+                ),
+                location.to_string(),
+            )));
+        }
+        return Ok(bytes);
+    }
+    let rest_size = usize::try_from(total_size - window_size as u64).map_err(|_| {
+        ReadError::IOError(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("Object size {total_size} too large for this platform"),
+            location.to_string(),
+        ))
+    })?;
+    parallel_chunked_read(
+        window,
+        window_size,
+        rest_size,
+        chunk_size,
+        parallelism,
+        location,
+        fetch_chunk,
+    )
+    .await
 }
 
 #[cfg(any(feature = "storage-gcs", feature = "storage-adls"))]

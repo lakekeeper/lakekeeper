@@ -6,7 +6,7 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, stream};
+use futures::{StreamExt, future::BoxFuture, stream};
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
@@ -29,6 +29,7 @@ use crate::{
 // Convert MB constants to bytes - these will always be safe conversions from u16
 const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
 const DEFAULT_BYTES_PER_REQUEST: usize = 16 * 1024 * 1024;
+const READ_PARALLELISM: usize = 10;
 const MAX_PARTS_PER_UPLOAD: usize = 10_000; // S3 limit for multipart uploads
 const MAX_DELETE_BATCH_SIZE: usize = 1000;
 /// Upper bound on best-effort cleanup work spawned from `Drop`. The abort
@@ -280,56 +281,27 @@ impl LakekeeperStorage for S3Storage {
         )
         .with_e_tag(window.e_tag.clone());
 
-        let first_len = window.bytes.len() as u64;
-        if window.total_size <= first_len {
-            if window.total_size < first_len {
-                return Err(ReadError::IOError(IOError::new(
-                    ErrorKind::Unexpected,
-                    format!(
-                        "S3 returned {first_len} bytes for an object of {} bytes",
-                        window.total_size
-                    ),
-                    s3_location.to_string(),
-                )));
-            }
-            return Ok(ObjectRead {
-                bytes: window.bytes,
-                info,
-            });
-        }
-
-        // The object is larger than the window: the window is the first chunk
-        // and the rest is read in parallel, pinned to the window's `ETag`.
-        // Without an `ETag` the rest cannot be pinned to the window's version,
-        // so the object is read from a `HEAD`.
-        if window.e_tag.is_none() {
+        // The bytes after the window are pinned to the window's `ETag`. Without
+        // one, an object larger than the window is read from a `HEAD`.
+        if window.total_size > MAX_BYTES_PER_REQUEST as u64 && window.e_tag.is_none() {
             return read_via_head(&self.client, &s3_location, path).await;
         }
-        let rest_size = usize::try_from(window.total_size - first_len).map_err(|_| {
-            ReadError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                format!(
-                    "Object size {} too large for this platform",
-                    window.total_size
-                ),
-                s3_location.to_string(),
-            ))
-        })?;
-        let rest = parallel_chunked_read(
-            &self.client,
-            &s3_location,
-            first_len,
-            rest_size,
-            window.e_tag,
+        let bytes = crate::read_from_window(
+            collect_body(window.body, &s3_location),
+            MAX_BYTES_PER_REQUEST,
+            window.total_size,
+            DEFAULT_BYTES_PER_REQUEST,
+            READ_PARALLELISM,
+            s3_location.as_str(),
+            chunk_fetcher(
+                &self.client,
+                &s3_location,
+                MAX_BYTES_PER_REQUEST as u64,
+                window.e_tag,
+            ),
         )
         .await?;
-        let mut bytes = bytes::BytesMut::with_capacity(window.bytes.len() + rest.len());
-        bytes.extend_from_slice(&window.bytes);
-        bytes.extend_from_slice(&rest);
-        Ok(ObjectRead {
-            bytes: bytes.freeze(),
-            info,
-        })
+        Ok(ObjectRead { bytes, info })
     }
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, ReadError> {
@@ -526,8 +498,14 @@ async fn fetch_range(
         .send()
         .await
         .map_err(|e| parse_get_object_error(e, location))?;
+    collect_body(response.body, location).await
+}
 
-    let body = response.body.collect().await.map_err(|e| {
+async fn collect_body(
+    body: aws_sdk_s3::primitives::ByteStream,
+    location: &S3Location,
+) -> Result<Bytes, ReadError> {
+    let body = body.collect().await.map_err(|e| {
         IOError::new(
             ErrorKind::Unexpected,
             format!("Error collecting S3 range bytestream: {e}"),
@@ -538,15 +516,17 @@ async fn fetch_range(
     Ok(body.into_bytes())
 }
 
-/// The first window of an object and the metadata of the response that served it.
+/// The first window of an object and the metadata of the response that serves
+/// it. The body is still streaming.
 struct FirstWindow {
-    bytes: Bytes,
+    body: aws_sdk_s3::primitives::ByteStream,
     total_size: u64,
     last_modified: Option<DateTime<Utc>>,
     e_tag: Option<String>,
 }
 
-/// Read `[0, window)` of an object in one GET.
+/// Request `[0, window)` of an object in one GET and return once its headers
+/// arrive.
 ///
 /// Returns `None` when the response does not give the object size: the range
 /// is unsatisfiable (`416`, an empty object), or `Content-Range` is missing or
@@ -576,17 +556,9 @@ async fn fetch_first_window(
     };
     let last_modified = response.last_modified().and_then(parse_timestamp);
     let e_tag = response.e_tag().map(ToString::to_string);
-    let body = response.body.collect().await.map_err(|e| {
-        IOError::new(
-            ErrorKind::Unexpected,
-            format!("Error collecting S3 range bytestream: {e}"),
-            location.to_string(),
-        )
-        .set_source(anyhow::anyhow!(e))
-    })?;
 
     Ok(Some(FirstWindow {
-        bytes: body.into_bytes(),
+        body: response.body,
         total_size,
         last_modified,
         e_tag,
@@ -663,41 +635,54 @@ async fn parallel_chunked_read(
     if range_size == 0 {
         return Ok(Bytes::new());
     }
-
-    let client = client.clone();
-    let location_for_chunks = s3_location.clone();
-
     crate::parallel_chunked_read(
+        std::future::ready(Ok(Bytes::new())),
+        0,
         range_size,
         DEFAULT_BYTES_PER_REQUEST,
-        10,
+        READ_PARALLELISM,
         s3_location.as_str(),
-        move |rel_start, rel_end, chunk_index| {
-            let client = client.clone();
-            let location = location_for_chunks.clone();
-            let if_match = if_match.clone();
-            let abs_start = range_start + rel_start as u64;
-            let abs_end = range_start + rel_end as u64 + 1;
-            async move {
-                let chunk =
-                    fetch_range(&client, &location, abs_start..abs_end, if_match.as_deref())
-                        .await
-                        .map_err(|e| {
-                            match e {
-                        ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
-                            "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
-                        ))),
-                        invalid_location_error @ ReadError::InvalidLocation(_) => {
-                            invalid_location_error
-                        }
-                    }
-                        })?;
-                Ok((chunk_index, chunk))
-            }
-        },
+        chunk_fetcher(client, s3_location, range_start, if_match),
     )
     .await
 }
+
+/// Fetches the chunks of a parallel download that starts at `range_start`,
+/// each with `If-Match: <etag>` if `if_match` is set.
+fn chunk_fetcher(
+    client: &aws_sdk_s3::Client,
+    s3_location: &S3Location,
+    range_start: u64,
+    if_match: Option<String>,
+) -> impl Fn(usize, usize, usize) -> BoxFuture<'static, Result<(usize, Bytes), ReadError>>
++ Send
++ Sync
++ Clone
++ 'static {
+    let client = client.clone();
+    let location = s3_location.clone();
+    move |rel_start, rel_end, chunk_index| {
+        let client = client.clone();
+        let location = location.clone();
+        let if_match = if_match.clone();
+        let abs_start = range_start + rel_start as u64;
+        let abs_end = range_start + rel_end as u64 + 1;
+        Box::pin(async move {
+            let chunk = fetch_range(&client, &location, abs_start..abs_end, if_match.as_deref())
+                .await
+                .map_err(|e| match e {
+                    ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                        "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                    ))),
+                    invalid_location_error @ ReadError::InvalidLocation(_) => {
+                        invalid_location_error
+                    }
+                })?;
+            Ok((chunk_index, chunk))
+        })
+    }
+}
+
 /// Upload a small object in a single PUT request.
 async fn put_object_single(
     client: &aws_sdk_s3::Client,
