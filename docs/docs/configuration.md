@@ -150,8 +150,8 @@ The following global configuration options are available:
 | `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
 | `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 | `LAKEKEEPER__TASK_DRAIN_TIMEOUT` | 300s | 0s | How long running tasks may continue after a stop signal (SIGTERM or SIGINT) before Lakekeeper stops the workers. `0s` does not wait. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
-| `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` | 180s | — | Stop the process after it ran no task for this long. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
-| `LAKEKEEPER__TASK_MAX_LIFETIME` | 3600s | — | Stop the process this long after it started. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` | 180s | — | Stop the process after it ran no task for this long. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. The value must be greater than 0. Leave it unset to turn it off. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_MAX_LIFETIME` | 3600s | — | Stop the process this long after it started. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. The value must be greater than 0. Leave it unset to turn it off. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
 
 #### Stopping Task Workers
 
