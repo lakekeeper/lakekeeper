@@ -29,7 +29,7 @@ use crate::{
         BasicTabularInfo,
         storage::{
             ShortTermCredentialsRequest, StoragePermissions, TableConfig,
-            cache::{ADLS_STC_CACHE, CachedStc, STCCacheKey, get_or_load_stc},
+            cache::{ADLS_STC_CACHE, CachedStc, CredentialCacheType, STCCacheKey, get_or_load_stc},
             error::{CredentialsError, InvalidProfileError, TableConfigError, ValidationError},
         },
     },
@@ -363,47 +363,53 @@ pub(super) async fn get_or_mint_sas(
     let effective = effective_ttl_seconds(ctx.user_ttl);
     let valid_until = cache_valid_until(effective);
 
-    get_or_load_stc(&ADLS_STC_CACHE, cache_key, || async move {
-        let (start, end) = sas_validity_window(effective);
-        tracing::debug!(
-            "Generating SAS token with requested validity - start: {start}, end: {end}",
-        );
-        let (canonical, depth) = canonical_resource(ctx.account_name, ctx.filesystem, stc_request)?;
-        let permissions: BlobSasPermissions = stc_request.storage_permissions.into();
+    get_or_load_stc(
+        &ADLS_STC_CACHE,
+        CredentialCacheType::ShortTermCredentials,
+        cache_key,
+        || async move {
+            let (start, end) = sas_validity_window(effective);
+            tracing::debug!(
+                "Generating SAS token with requested validity - start: {start}, end: {end}",
+            );
+            let (canonical, depth) =
+                canonical_resource(ctx.account_name, ctx.filesystem, stc_request)?;
+            let permissions: BlobSasPermissions = stc_request.storage_permissions.into();
 
-        let (sas, expiration) = match credential {
-            AzCredential::ClientCredentials { .. } => {
-                let auth = AzureAuth::try_from(credential.clone())?;
-                let client = ctx.settings.get_blob_service_client(&auth).await?;
-                mint_sas_via_delegation_key(client, start, end, canonical, permissions, depth)
-                    .await?
-            }
-            AzCredential::SharedAccessKey { key } => {
-                let sas = build_directory_sas(
-                    canonical,
-                    permissions,
-                    end,
-                    depth,
-                    azure_core::auth::Secret::new(key.clone()),
-                )?;
-                (sas, end)
-            }
-            AzCredential::AzureSystemIdentity {} => {
-                let auth = AzureAuth::try_from(credential.clone())?;
-                let client = ctx.settings.get_blob_service_client(&auth).await?;
-                mint_sas_via_delegation_key(client, start, end, canonical, permissions, depth)
-                    .await
-                    .map_err(|e| {
-                        tracing::debug!("Failed to get azure system identity token: {e}");
-                        CredentialsError::ShortTermCredential {
-                            reason: "Failed to get azure system identity token".to_string(),
-                            source: Some(Box::new(e)),
-                        }
-                    })?
-            }
-        };
-        Ok::<_, CredentialsError>(CachedStc::new((sas, expiration), valid_until))
-    })
+            let (sas, expiration) = match credential {
+                AzCredential::ClientCredentials { .. } => {
+                    let auth = AzureAuth::try_from(credential.clone())?;
+                    let client = ctx.settings.get_blob_service_client(&auth).await?;
+                    mint_sas_via_delegation_key(client, start, end, canonical, permissions, depth)
+                        .await?
+                }
+                AzCredential::SharedAccessKey { key } => {
+                    let sas = build_directory_sas(
+                        canonical,
+                        permissions,
+                        end,
+                        depth,
+                        azure_core::auth::Secret::new(key.clone()),
+                    )?;
+                    (sas, end)
+                }
+                AzCredential::AzureSystemIdentity {} => {
+                    let auth = AzureAuth::try_from(credential.clone())?;
+                    let client = ctx.settings.get_blob_service_client(&auth).await?;
+                    mint_sas_via_delegation_key(client, start, end, canonical, permissions, depth)
+                        .await
+                        .map_err(|e| {
+                            tracing::debug!("Failed to get azure system identity token: {e}");
+                            CredentialsError::ShortTermCredential {
+                                reason: "Failed to get azure system identity token".to_string(),
+                                source: Some(Box::new(e)),
+                            }
+                        })?
+                }
+            };
+            Ok::<_, CredentialsError>(CachedStc::new((sas, expiration), valid_until))
+        },
+    )
     .await
 }
 

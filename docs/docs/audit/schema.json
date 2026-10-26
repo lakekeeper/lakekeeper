@@ -1584,11 +1584,15 @@
       "type": "string",
       "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
+        "set_maintenance_mode_off",
+        "set_maintenance_mode_read_only",
         "set_warehouse_managed_by"
       ],
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
+        "set_maintenance_mode_off": "Switch this Lakekeeper process out of runtime read-only maintenance mode.",
+        "set_maintenance_mode_read_only": "Switch this Lakekeeper process into read-only maintenance mode.",
         "set_warehouse_managed_by": "Set or clear a warehouse's managed-by marker."
       }
     },

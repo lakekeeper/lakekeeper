@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH schedule AS (\n                SELECT schedule_id, project_id, warehouse_id, queue_name, payload\n                FROM task_schedule\n                WHERE schedule_id = $1\n                -- A concurrent delete of the schedule, or of its project or warehouse, waits.\n                FOR KEY SHARE\n            ),\n            inserted AS (\n                INSERT INTO task (\n                    task_id,\n                    queue_name,\n                    status,\n                    warehouse_id,\n                    scheduled_for,\n                    task_data,\n                    entity_id,\n                    entity_type,\n                    project_id\n                )\n                SELECT\n                    $2,\n                    s.queue_name,\n                    'scheduled',\n                    s.warehouse_id,\n                    now(),\n                    s.payload,\n                    s.schedule_id,\n                    CASE WHEN s.warehouse_id IS NULL THEN 'project'::entity_type\n                        ELSE 'warehouse'::entity_type END,\n                    s.project_id\n                FROM schedule s\n                ON CONFLICT (project_id, warehouse_id, entity_type, entity_id, queue_name) DO NOTHING\n                RETURNING task_id\n            )\n            SELECT\n                s.project_id,\n                s.warehouse_id,\n                s.queue_name,\n                (SELECT task_id FROM inserted) AS inserted_task_id\n            FROM schedule s\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "queue_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_schedule",
+            "name": "queue_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "inserted_task_id",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "3eeb077fc2c3c1e977fcefab5c3293d8e51358114a25b360965dbf83f55287da"
+}

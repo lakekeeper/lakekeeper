@@ -4,6 +4,42 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 
 # Lakekeeper+ Release Notes
 
+## v0.14.2 (2026-10-25)
+
+_Based on Lakekeeper OSS v0.14.2._
+
+### Bug Fixes
+
+- **`migrate` can re-run the post-migration hooks.** `lakekeeper-plus migrate --force-idempotent-post-migration-hooks` re-runs the post-migration hooks that are safe to repeat, for example after one of them reported a failure. A hook that fails then stops the command with an error.
+- **Warning for an audit log filter that matches nothing.** The server warns at start when `RUST_LOG` selects audit records by their old module paths, `lakekeeper::service::events::backends::audit` or `lakekeeper::service::admission`. Such a filter matches no audit record. Audit records use the fixed target `lakekeeper::audit`, for example `RUST_LOG=warn,lakekeeper::audit=info`.
+- **Security updates of dependencies.** `tokio`, `ctutils` and the webpki crates are updated, and the DPoP signing of the Okta role provider uses `p256` 0.14. This fixes security advisories RUSTSEC-2026-0381 to -0383 and RUSTSEC-2026-0385 to -0387.
+
+### Upstream Lakekeeper changes (bump to v0.14.2)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/). The most important ones for Lakekeeper Plus:
+
+- **Read-only maintenance mode at runtime.** Instance admins can switch a running process into read-only maintenance mode, and back, with `POST /management/v1/server/maintenance-mode`. The audit log records both switches with two new actions ([lakekeeper#2156](https://github.com/lakekeeper/lakekeeper/pull/2156)).
+- **GCS: vended credentials report their real expiry.** Clients no longer get tokens that have already expired ([lakekeeper#2160](https://github.com/lakekeeper/lakekeeper/pull/2160)).
+- **S3 remote signing with an assumed role or the system identity** no longer calls STS for every request ([lakekeeper#2170](https://github.com/lakekeeper/lakekeeper/pull/2170)).
+- **Soft-deleted tables and views expire in inactive warehouses.** Before, they and their files stayed forever ([lakekeeper#2151](https://github.com/lakekeeper/lakekeeper/pull/2151)).
+
+## v0.14.1 (2026-10-16)
+
+_Based on Lakekeeper OSS v0.14.1._
+
+### Bug Fixes
+
+- **UI paths.** The UI no longer serves a file for a path that contains `ui/` a second time. Such a path now returns `404`.
+- **Security updates of dependencies.** `rustls`, `quinn-proto` and `xxhash-rust` are updated to fix security advisories RUSTSEC-2026-0338 to -0342, RUSTSEC-2026-0346 to -0349 and GHSA-6g2r-675j-hx59.
+
+### Upstream Lakekeeper changes (bump to v0.14.1)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/). The most important ones for Lakekeeper Plus:
+
+- **Security: S3 remote signing signs only what it knows.** Unknown query parameters and headers are refused, and so are writes that use an encryption key other than the warehouse's ([lakekeeper#2102](https://github.com/lakekeeper/lakekeeper/pull/2102)).
+- **Remote signing with Iceberg 1.12 or later.** Batch deletes and repeated deletes, for example in `expire_snapshots` or `remove_orphan_files`, no longer fail with `403 SignatureDoesNotMatch` ([lakekeeper#2124](https://github.com/lakekeeper/lakekeeper/pull/2124), [lakekeeper#2104](https://github.com/lakekeeper/lakekeeper/pull/2104)).
+- **Concurrent commits to one table** that block each other in the database return a `409` error, which clients retry, instead of `503`. A commit that removes the last branch or tag of a table is now kept ([lakekeeper#2117](https://github.com/lakekeeper/lakekeeper/pull/2117)).
+
 ## v0.14.0 (2026-10-08)
 
 _Based on Lakekeeper OSS v0.14.0._
@@ -339,6 +375,53 @@ Lakekeeper Plus writes the same audit log as Lakekeeper, so this section lists t
 
 Records from v0.14.0 carry `audit_format` **1.0** (the first version). Records from v0.14.0 that Lakekeeper Plus contributes to carry `emitters.lakekeeper_plus` **1.0** (the first version).
 
+
+## v0.13.8 (2026-10-25)
+
+_Based on Lakekeeper OSS v0.13.8._
+
+### Bug Fixes
+
+- **Security updates of dependencies.** `tokio`, `ctutils` and the webpki crates are updated, and the DPoP signing of the Okta role provider uses `p256` 0.14. This fixes security advisories RUSTSEC-2026-0381 to -0383 and RUSTSEC-2026-0385 to -0387.
+
+### Upstream Lakekeeper changes (bump to v0.13.8)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/). The most important ones for Lakekeeper Plus:
+
+- **GCS: vended credentials report their real expiry.** Clients no longer get tokens that have already expired ([lakekeeper#2160](https://github.com/lakekeeper/lakekeeper/pull/2160)).
+- **Soft-deleted tables and views expire in inactive warehouses.** Before, they and their files stayed forever ([lakekeeper#2151](https://github.com/lakekeeper/lakekeeper/pull/2151)).
+
+## v0.13.7 (2026-10-16)
+
+_Based on Lakekeeper OSS v0.13.7._
+
+### Bug Fixes
+
+- **Security: snapshot expiration deletes only files inside the table location.** It runs with the warehouse's storage credentials and follows references in table metadata that clients write. A principal that can commit to one table can no longer get files of other tables deleted. A snapshot whose parent chain loops back on itself no longer stops the expiration.
+- **Snapshot expiration keeps branches and tags that move during it.** When a branch or tag is moved onto a snapshot that the expiration is about to remove, the expiration retries and keeps the snapshot and its files. Before, it dropped the branch or tag.
+- **Security: Okta and Entra ID role providers refuse subjects that consist only of dots.** Such a subject would change the request URL, so that a lookup of the user's groups could return other groups. The request is refused before it is sent.
+- **The health check probes the server by default.** `lakekeeper-plus healthcheck` without flags now checks the server's `/health` endpoint.
+- **Database pool metrics.** The server reports the `lakekeeper_catalog_pg_pool_*` metrics, as Lakekeeper does.
+- **`migrate` sets up the background tasks.** `lakekeeper-plus migrate` now also sets up the scheduled background tasks of Lakekeeper Plus.
+- **UI paths.** The UI no longer serves a file for a path that contains `ui/` a second time. Such a path now returns `404`.
+- **Security updates of dependencies.** `rustls` and `quinn-proto` are updated to fix security advisories RUSTSEC-2026-0338 to -0342 and RUSTSEC-2026-0346 to -0349.
+
+### Upgrade Notes
+
+- **Snapshot expiration leaves files outside the table location in place.** This includes the data files of tables that still carry a `write.data.path`, `write.object-storage.path` or `write.folder-storage.path` property. The task result counts them in `skipped-outside-table-location-count`.
+- **An older binary refuses to start against a newer database.** `wait-for-db` and the server start now stop with an error when the database was migrated by a newer Lakekeeper Plus. `wait-for-db` reads the migration state from the primary database, not from a read replica.
+- **`migrate` writes structured logs.** Its output moves from plain text on stdout to the server's log format.
+
+### Upstream Lakekeeper changes (bump to v0.13.7)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/) of v0.13.6 and v0.13.7. The most important ones for Lakekeeper Plus:
+
+- **Security: S3 remote signing and metadata cleanup stay inside the table.** The signer refuses unknown query parameters and headers, and writes that use an encryption key other than the warehouse's. A commit deletes expired metadata files only inside the table location ([lakekeeper#2102](https://github.com/lakekeeper/lakekeeper/pull/2102)).
+- **Remote signing with Iceberg 1.12 or later.** Batch deletes, repeated deletes and repeated ranged reads no longer fail with `403 SignatureDoesNotMatch` ([lakekeeper#2124](https://github.com/lakekeeper/lakekeeper/pull/2124), [lakekeeper#2104](https://github.com/lakekeeper/lakekeeper/pull/2104)).
+- **Tables can no longer set `write.object-storage.path` or `write.folder-storage.path`.** These old names of `write.data.path` make engines write data files outside the table location. Tables that already have them can remove them ([lakekeeper#2044](https://github.com/lakekeeper/lakekeeper/pull/2044)).
+- **OPA bridge:** deploy the updated policies from `authz/opa-bridge/policies` to get the fix for warehouse IDs that could not be found ([lakekeeper#2052](https://github.com/lakekeeper/lakekeeper/pull/2052)).
+- **Shared HTTP caches** can no longer give one user's response, which may contain vended credentials, to another user ([lakekeeper#1947](https://github.com/lakekeeper/lakekeeper/pull/1947)).
+- **Connections to ADLS, S3 and GCS time out after 10 seconds**, and ADLS reuses connections ([lakekeeper#2022](https://github.com/lakekeeper/lakekeeper/pull/2022)).
 
 ## v0.13.6 (2026-09-18)
 

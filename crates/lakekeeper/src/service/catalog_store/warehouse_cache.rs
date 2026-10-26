@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{sync::LazyLock, time::Duration};
 
 use moka::{
     future::Cache,
@@ -14,9 +11,9 @@ use super::secondary_index_get_or_load;
 #[cfg(feature = "router")]
 use crate::service::events::{self, EventListener};
 use crate::{
-    CONFIG, WarehouseId,
+    CONFIG, ProjectId, WarehouseId,
     service::{
-        ArcProjectId, ResolvedWarehouse,
+        ArcProjectId, ArcResolvedWarehouse,
         cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         cache_ttl::JitteredTtl,
     },
@@ -97,7 +94,7 @@ static NAME_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, UniCase<String>), Warehou
 
 #[derive(Debug, Clone)]
 pub struct CachedWarehouse {
-    pub warehouse: Arc<ResolvedWarehouse>,
+    pub warehouse: ArcResolvedWarehouse,
 }
 
 /// Drop a warehouse from this replica's cache.
@@ -129,7 +126,32 @@ pub async fn warehouse_cache_invalidate(warehouse_id: WarehouseId) {
     }
 }
 
-pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
+/// Drop the entry that resolves `name` in `project_id` to a warehouse id from this
+/// replica's cache.
+pub(crate) async fn warehouse_cache_invalidate_name(project_id: &ProjectId, name: &str) {
+    if CONFIG.cache.warehouse.enabled {
+        tracing::debug!("Invalidating warehouse name {name} from cache");
+        NAME_TO_ID_CACHE
+            .invalidate(&(
+                ArcProjectId::new(project_id.clone()),
+                UniCase::new(name.to_string()),
+            ))
+            .await;
+        update_cache_size_metric();
+    }
+}
+
+/// Drop every warehouse from this replica's cache.
+pub(crate) fn warehouse_cache_invalidate_all() {
+    if CONFIG.cache.warehouse.enabled {
+        tracing::debug!("Invalidating all warehouses from cache");
+        WAREHOUSE_CACHE.invalidate_all();
+        NAME_TO_ID_CACHE.invalidate_all();
+        update_cache_size_metric();
+    }
+}
+
+pub(super) async fn warehouse_cache_insert(warehouse: ArcResolvedWarehouse) {
     if CONFIG.cache.warehouse.enabled {
         let warehouse_id = warehouse.warehouse_id;
         let project_id = warehouse.project_id.clone();
@@ -180,9 +202,9 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
 pub(super) async fn warehouse_cache_get_or_load<Fut, E>(
     warehouse_id: WarehouseId,
     load: Fut,
-) -> Result<Option<Arc<ResolvedWarehouse>>, E>
+) -> Result<Option<ArcResolvedWarehouse>, E>
 where
-    Fut: std::future::Future<Output = Result<Option<Arc<ResolvedWarehouse>>, E>> + Send,
+    Fut: std::future::Future<Output = Result<Option<ArcResolvedWarehouse>, E>> + Send,
     E: Send + Sync + 'static,
 {
     if !CONFIG.cache.warehouse.enabled {
@@ -260,7 +282,7 @@ fn update_cache_size_metric() {
 
 pub(super) async fn warehouse_cache_get_by_id(
     warehouse_id: WarehouseId,
-) -> Option<Arc<ResolvedWarehouse>> {
+) -> Option<ArcResolvedWarehouse> {
     update_cache_size_metric();
     if let Some(value) = WAREHOUSE_CACHE.get(&warehouse_id).await {
         tracing::debug!("Warehouse id {warehouse_id} found in cache");
@@ -275,7 +297,7 @@ pub(super) async fn warehouse_cache_get_by_id(
 pub(super) async fn warehouse_cache_get_by_name(
     name: &str,
     project_id: &ArcProjectId,
-) -> Option<Arc<ResolvedWarehouse>> {
+) -> Option<ArcResolvedWarehouse> {
     update_cache_size_metric();
     let name_key = (project_id.clone(), UniCase::new(name.to_string()));
     let Some(warehouse_id) = NAME_TO_ID_CACHE.get(&name_key).await else {
@@ -313,7 +335,7 @@ pub(super) async fn warehouse_name_to_id_get_or_load<Fut, E>(
     load: Fut,
 ) -> Result<Option<WarehouseId>, E>
 where
-    Fut: std::future::Future<Output = Result<Option<Arc<ResolvedWarehouse>>, E>> + Send,
+    Fut: std::future::Future<Output = Result<Option<ArcResolvedWarehouse>, E>> + Send,
     E: Send + Sync + 'static,
 {
     secondary_index_get_or_load(
@@ -321,7 +343,7 @@ where
         &NAME_TO_ID_CACHE,
         (project_id, UniCase::new(name.to_string())),
         load,
-        |warehouse: &Arc<ResolvedWarehouse>| warehouse.warehouse_id,
+        |warehouse: &ArcResolvedWarehouse| warehouse.warehouse_id,
         warehouse_cache_insert,
     )
     .await
@@ -347,17 +369,6 @@ impl EventListener for WarehouseCacheEventListener {
             request_metadata: _request_metadata,
         } = event;
         warehouse_cache_insert(warehouse).await;
-        Ok(())
-    }
-
-    async fn warehouse_deleted(&self, event: events::DeleteWarehouseEvent) -> anyhow::Result<()> {
-        let events::DeleteWarehouseEvent {
-            warehouse,
-            request_metadata: _request_metadata,
-        } = event;
-        // When we invalidate by warehouse_id, the eviction listener will handle
-        // removing the entry from NAME_TO_ID_CACHE
-        warehouse_cache_invalidate(warehouse.warehouse_id).await;
         Ok(())
     }
 
@@ -453,13 +464,17 @@ impl EventListener for WarehouseCacheEventListener {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use chrono::Utc;
 
     use super::*;
     use crate::{
         ProjectId,
         api::management::v1::warehouse::TabularDeleteProfile,
-        service::{catalog_store::warehouse::WarehouseStatus, storage::MemoryProfile},
+        service::{
+            ResolvedWarehouse, catalog_store::warehouse::WarehouseStatus, storage::MemoryProfile,
+        },
     };
 
     /// Helper function to create a test warehouse
@@ -469,7 +484,7 @@ mod tests {
         project_id: ArcProjectId,
         updated_at: Option<chrono::DateTime<chrono::Utc>>,
         version: i64,
-    ) -> Arc<ResolvedWarehouse> {
+    ) -> ArcResolvedWarehouse {
         Arc::new(ResolvedWarehouse {
             warehouse_id,
             name,
@@ -589,6 +604,24 @@ mod tests {
         // Verify name-to-id cache is also invalidated
         let cached_by_name = warehouse_cache_get_by_name(&name, &project_id).await;
         assert!(cached_by_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalidating_a_name_keeps_the_warehouse_by_id() {
+        let warehouse_id = WarehouseId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        let name = "test-warehouse-invalidate-name".to_string();
+        let warehouse = test_warehouse(warehouse_id, name.clone(), project_id.clone(), None, 0);
+        warehouse_cache_insert(warehouse).await;
+
+        warehouse_cache_invalidate_name(&project_id, &name).await;
+
+        assert!(
+            warehouse_cache_get_by_name(&name, &project_id)
+                .await
+                .is_none()
+        );
+        assert!(warehouse_cache_get_by_id(warehouse_id).await.is_some());
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@
 //!
 //! Every cache emits the same three metric names differentiated by the
 //! `cache_type` label (values: `"role"`, `"warehouse"`, `"namespace"`,
-//! `"secrets"`, `"stc"`, `"user_assignments"`, `"role_ancestors"`, `"user"`,
+//! `"secrets"`, `"stc"`, `"s3_signing_identity"`, `"user_assignments"`, `"role_ancestors"`, `"user"`,
 //! `"warehouse_name_to_id"`, `"role_ident_to_id"`, `"namespace_ident_to_id"`,
 //! `"shared_role_idents"`, `"shared_project_ids"`). The user-assignments and user
 //! caches also count the results they leave uncached after an overlapping
@@ -29,8 +29,8 @@ pub(crate) const METRIC_CACHE_MISSES_TOTAL: &str = "lakekeeper_cache_misses_tota
 /// that count invalidations emit it.
 pub(crate) const METRIC_CACHE_FENCED_TOTAL: &str = "lakekeeper_cache_fenced_total";
 
-/// Histogram of how many users' cached role assignments are invalidated by a
-/// single role→role membership edge change, labelled by `operation`
+/// Histogram of how many users' cached role assignments a single role→role membership
+/// edge change records as changed, labelled by `operation`
 /// (`"add"`/`"remove"`). `USER_ASSIGNMENTS_CACHE` stores a fully-expanded
 /// transitive closure, so one edge change fans out to every affected user; this
 /// measures that fan-out distribution.
@@ -48,7 +48,7 @@ pub(crate) static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
     );
     metrics::describe_histogram!(
         METRIC_ROLE_MEMBERSHIP_EDGE_FANOUT_USERS,
-        "Number of users whose cached role assignments were invalidated by a single role-membership edge change"
+        "Number of users whose cached role assignments a single role-membership edge change records as changed"
     );
 });
 

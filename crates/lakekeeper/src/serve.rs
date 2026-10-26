@@ -9,12 +9,13 @@ use crate::{
     CONFIG, CancellationToken,
     api::{
         ApiContext,
-        management::v1::server::{
-            APACHE_LICENSE_STATUS, BuildInfo, DEFAULT_BUILD_INFO, LicenseStatus,
+        management::v1::{
+            extension::ArcManagementApiExtension,
+            server::{APACHE_LICENSE_STATUS, BuildInfo, DEFAULT_BUILD_INFO, LicenseStatus},
         },
         router::{RouterArgs, new_full_router, new_health_router, serve as service_serve},
-        shutdown_signal,
     },
+    metrics::MetricsServer,
     service::{
         CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
         admission::AdmissionGates,
@@ -29,9 +30,21 @@ use crate::{
             backends::audit::AuditEventListener,
         },
         health::ServiceHealthProvider,
-        tasks::TaskQueueRegistry,
+        tasks::{
+            TaskQueueRegistry,
+            task_drain::{
+                ArcTaskRunnerControl, DrainSettings, stop_signals, wait_for_stop_and_drain,
+            },
+        },
     },
 };
+
+/// The service whose end stops the process: it waits for a stop signal or timer and drains the
+/// task workers.
+struct StopService {
+    id: tokio::task::Id,
+    task_control: ArcTaskRunnerControl,
+}
 
 /// Type alias for a function that registers additional background services.
 ///
@@ -143,6 +156,10 @@ pub struct ServeConfiguration<
     #[builder(default)]
     /// A function to modify the router before serving
     pub modify_router_fn: Option<fn(axum::Router) -> axum::Router>,
+    /// Routes added to the management API. They are authenticated and counted in endpoint
+    /// statistics like Lakekeeper's own routes; each handler authorizes and audits its request.
+    #[builder(default)]
+    pub management_api_extensions: Vec<ArcManagementApiExtension<A, C, S>>,
     /// Cloud events sinks / publishers.
     ///
     /// The cloud-event publisher is registered only when this is non-empty.
@@ -179,6 +196,10 @@ pub struct ServeConfiguration<
     /// `run_post_migration_hooks` so both subcommands agree.
     #[builder(default)]
     pub system_roles: Vec<crate::service::SystemRoleSpec>,
+    /// Receivers of the cache change-log rows of the cache domains that extensions own.
+    /// They are called while `cache.invalidation.enabled` is on.
+    #[builder(default)]
+    pub cache_change_receivers: Vec<crate::service::cache_invalidation::ArcCacheChangeReceiver>,
 }
 
 /// Starts the service with the provided configuration.
@@ -186,7 +207,7 @@ pub struct ServeConfiguration<
 /// # Errors
 /// - If the service cannot bind to the specified address.
 /// - If the terms of service have not been accepted during bootstrap.
-#[allow(clippy::too_many_lines)]
+/// - If a cache change receiver names a domain of Lakekeeper, or two name the same domain.
 pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     mut config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
@@ -203,6 +224,7 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
         let _ = rejected;
     }
 
+    let drain_settings = DrainSettings::from_config();
     let cancellation_token = CancellationToken::new();
 
     // Validate Authenticators and propagate their IDP IDs to the authorizer
@@ -218,18 +240,13 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
     let mut service_futures = JoinSet::<Result<(), anyhow::Error>>::new();
     let mut service_ids = HashMap::new();
 
-    // Sigint / Sigterm handler:
-    let cancellation_token_clone = cancellation_token.clone();
-    let shutdown_signal_handle = service_futures.spawn(async move {
-        shutdown_signal(cancellation_token_clone).await;
-        tracing::info!("Shutdown signal received");
-        Ok(())
-    });
-    let shutdown_signal_id = shutdown_signal_handle.id();
-    service_ids.insert(
-        shutdown_signal_handle.id(),
-        "Shutdown Signal Handler".to_string(),
+    // Sigint / Sigterm handler, idle exit and max lifetime:
+    let stop_service = spawn_stop_service(
+        &mut service_futures,
+        drain_settings,
+        cancellation_token.clone(),
     );
+    service_ids.insert(stop_service.id, "Shutdown Handler".to_string());
 
     // Endpoint statistics TX
     let (endpoint_statistics_tx, endpoint_statistics_rx) = tokio::sync::mpsc::channel(1000);
@@ -248,7 +265,7 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
         cloud_events_rx,
         endpoint_statistics_tracker_tx.clone(),
         endpoint_statistics_rx,
-        shutdown_signal_id,
+        stop_service,
     )
     .await;
 
@@ -266,8 +283,17 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
         .await?;
     cloud_events_tx.send(CloudEventsMessage::Shutdown).await?;
 
-    // Wait for remaining tasks to finish, wait at most 20 seconds, then print which tasks are still running
-    // but exit anyway. Report progress every 5 seconds.
+    wait_for_services_to_stop(&mut service_futures, &mut service_ids).await;
+
+    serving_result
+}
+
+/// Waits for the background services to finish after cancellation, at most 20 seconds, then
+/// aborts the rest. Reports progress every 5 seconds.
+async fn wait_for_services_to_stop<H: ::std::hash::BuildHasher>(
+    service_futures: &mut JoinSet<Result<(), anyhow::Error>>,
+    service_ids: &mut HashMap<tokio::task::Id, String, H>,
+) {
     let shutdown_timeout_secs = 20;
     let report_interval_secs = 5;
     let start_time = std::time::Instant::now();
@@ -283,7 +309,7 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
             let mut last_report = std::time::Instant::now();
 
             while let Some(result) = service_futures.join_next_with_id().await {
-                log_service_completion(&result, &mut service_ids, true);
+                log_service_completion(&result, service_ids, true);
 
                 // Report progress every 5 seconds
                 if last_report.elapsed() >= std::time::Duration::from_secs(report_interval_secs) {
@@ -328,8 +354,24 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
 
         tracing::info!("Aborted all remaining background services");
     }
+}
 
-    serving_result
+fn spawn_stop_service(
+    service_futures: &mut JoinSet<Result<(), anyhow::Error>>,
+    drain_settings: DrainSettings,
+    cancellation_token: CancellationToken,
+) -> StopService {
+    let task_control = ArcTaskRunnerControl::default();
+    let control = Arc::clone(&task_control);
+    let mut signals = stop_signals();
+    let handle = service_futures.spawn(async move {
+        wait_for_stop_and_drain(&control, drain_settings, &mut signals, &cancellation_token).await;
+        Ok(())
+    });
+    StopService {
+        id: handle.id(),
+        task_control,
+    }
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -348,7 +390,7 @@ async fn serve_inner<
     cloud_events_rx: tokio::sync::mpsc::Receiver<CloudEventsMessage>,
     endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
     endpoint_statistics_rx: tokio::sync::mpsc::Receiver<EndpointStatisticsMessage>,
-    shutdown_signal_id: tokio::task::Id,
+    stop_service: StopService,
 ) -> anyhow::Result<()> {
     let ServeConfiguration {
         bind_addr,
@@ -360,6 +402,7 @@ async fn serve_inner<
         contract_verification,
         admission_gates,
         modify_router_fn,
+        management_api_extensions,
         cloud_event_sinks,
         enable_built_in_task_queues: enable_built_in_queues,
         register_additional_task_queues_fn,
@@ -368,7 +411,10 @@ async fn serve_inner<
         license_status,
         build_info,
         system_roles: _,
+        cache_change_receivers,
     } = config;
+    let cache_change_receivers =
+        crate::service::cache_invalidation::CacheChangeReceivers::new(cache_change_receivers)?;
 
     let license_status = license_status.unwrap_or(&APACHE_LICENSE_STATUS);
     let build_info = build_info.unwrap_or(&DEFAULT_BUILD_INFO);
@@ -403,16 +449,13 @@ async fn serve_inner<
     };
 
     // Metrics server
-    let (layer, metrics_future) = crate::metrics::get_axum_layer_and_install_recorder(
-        CONFIG.metrics.port,
-        cancellation_token.clone(),
-    )
-    .map_err(|e| {
-        anyhow!(e).context(format!(
-            "Failed to start metrics server on port: {}",
-            CONFIG.metrics.port
-        ))
-    })?;
+    let (layer, metrics_server) =
+        crate::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics.port).map_err(|e| {
+            anyhow!(e).context(format!(
+                "Failed to start metrics server on port: {}",
+                CONFIG.metrics.port
+            ))
+        })?;
 
     // Endpoint stats
     let tracker = EndpointStatisticsTracker::new(
@@ -439,59 +482,7 @@ async fn serve_inner<
             "No cloud-event sinks configured, not registering the cloud-events publisher"
         );
     }
-    if CONFIG.cache.warehouse.enabled {
-        tracing::info!("Warehouse cache is enabled, registering warehouse cache event listener");
-        dispatcher
-            .append(Arc::new(
-                crate::service::warehouse_cache::WarehouseCacheEventListener {},
-            ))
-            .await;
-    } else {
-        tracing::info!("Warehouse cache is disabled");
-    }
-    if CONFIG.cache.namespace.enabled {
-        tracing::info!("Namespace cache is enabled, registering namespace cache event listener");
-        dispatcher
-            .append(Arc::new(
-                crate::service::namespace_cache::NamespaceCacheEventListener {},
-            ))
-            .await;
-    } else {
-        tracing::info!("Namespace cache is disabled");
-    }
-    if CONFIG.cache.role.enabled {
-        tracing::info!("Role cache is enabled, registering role cache event listener");
-        dispatcher
-            .append(Arc::new(
-                crate::service::role_cache::RoleCacheEventListener {},
-            ))
-            .await;
-    } else {
-        tracing::info!("Role cache is disabled");
-    }
-    if CONFIG.cache.user.enabled {
-        tracing::info!("User cache is enabled, registering user cache event listener");
-        dispatcher
-            .append(Arc::new(
-                crate::service::user_cache::UserCacheEventListener {},
-            ))
-            .await;
-    } else {
-        tracing::info!("User cache is disabled");
-    }
-    if CONFIG.audit.tracing.enabled {
-        tracing::info!("Audit tracing is enabled, registering audit event listener");
-        if CONFIG.audit.tracing.include_user_email {
-            tracing::info!("Audit records carry user emails");
-        }
-        dispatcher
-            .append(Arc::new(AuditEventListener::with_catalog(Arc::new(
-                crate::service::events::CatalogStoreReader::<C>::new(catalog_state.clone()),
-            ))))
-            .await;
-    } else {
-        tracing::info!("Audit tracing is disabled");
-    }
+    register_built_in_listeners::<C>(&dispatcher, &catalog_state).await;
 
     // Task queues
     let task_queue_registry = TaskQueueRegistry::new();
@@ -564,7 +555,7 @@ async fn serve_inner<
     // it (a worker serves no API requests to record). The metrics server itself
     // still runs, spawned below.
     let router = if CONFIG.serve_http_api {
-        let mut router = new_full_router::<C, _, _, _>(RouterArgs {
+        let router = new_full_router::<C, _, _, _>(RouterArgs {
             authenticator: authenticator.clone(),
             state: state.clone(),
             service_health_provider: health_provider.clone(),
@@ -573,13 +564,10 @@ async fn serve_inner<
             endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
             instance_admin_membership: Arc::new(ConfiguredInstanceAdmins::from_config()),
             admission_gates,
+            management_api_extensions,
         })
         .await?;
-
-        if let Some(modify_router_fn) = modify_router_fn {
-            router = modify_router_fn(router);
-        }
-        router
+        modify_router_fn.unwrap_or(std::convert::identity)(router)
     } else {
         // Headless: the host announces the mode at startup (see the binary's
         // `serve`). Serve only `/health` for probes.
@@ -589,11 +577,11 @@ async fn serve_inner<
 
     // ---- Launch background services ----
     // Metrics server:
-    let metrics_handle = service_futures.spawn(async move {
-        metrics_future
-            .await
-            .map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
-    });
+    let metrics_handle = service_futures.spawn(serve_metrics(
+        metrics_server,
+        &state.v1_state,
+        cancellation_token.clone(),
+    ));
     service_ids.insert(metrics_handle.id(), "Metrics Server".to_string());
 
     // Periodic health checks:
@@ -622,6 +610,21 @@ async fn serve_inner<
         "Endpoint Statistics Tracker".to_string(),
     );
 
+    // Cache invalidation: reading and pruning the change log.
+    for (service_name, task) in crate::service::cache_invalidation::background_tasks::<C>(
+        state.v1_state.catalog.clone(),
+        cache_change_receivers,
+        &cancellation_token,
+    )
+    .await
+    {
+        let abort_handle = service_futures.spawn(async move {
+            task.await;
+            Ok(())
+        });
+        service_ids.insert(abort_handle.id(), service_name.to_string());
+    }
+
     // Execute additional background services:
     for additional_service_register_fn in additional_background_services {
         let abort_handles = additional_service_register_fn(
@@ -639,7 +642,8 @@ async fn serve_inner<
     // Task Queues:
     let task_runner = task_queue_registry
         .task_queues_runner(cancellation_token.clone())
-        .await;
+        .await
+        .with_control(stop_service.task_control);
     if total_task_workers == 0 {
         // Queues can be registered with zero workers (every TASK_*_WORKERS=0) or
         // skipped entirely (read-only maintenance). `run_queue_workers` returns
@@ -658,6 +662,25 @@ async fn serve_inner<
         service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
     }
 
+    // Writes, so skipped in read-only maintenance. Runs also without task workers.
+    if !skip_built_in_queues_for_maintenance {
+        let materializer_catalog_state = state.v1_state.catalog.clone();
+        let materializer_cancellation_token = cancellation_token.clone();
+        let materializer_abort_handle = service_futures.spawn(async move {
+            crate::service::tasks::task_schedule::task_schedule_materializer::<C>(
+                materializer_catalog_state,
+                CONFIG.task_poll_interval,
+                materializer_cancellation_token,
+            )
+            .await;
+            Ok(())
+        });
+        service_ids.insert(
+            materializer_abort_handle.id(),
+            "Task Schedule Materializer".to_string(),
+        );
+    }
+
     // HTTP Server / Axum. Serves the full API, or just `/health` in headless
     // worker mode.
     let cancellation_token_clone = cancellation_token.clone();
@@ -673,7 +696,7 @@ async fn serve_inner<
         let msg = log_service_completion(&result, service_ids, false);
         match result {
             Ok((id, res)) => {
-                if id == shutdown_signal_id || cancellation_token.is_cancelled() {
+                if id == stop_service.id || cancellation_token.is_cancelled() {
                     Ok(())
                 } else {
                     match res {
@@ -687,6 +710,84 @@ async fn serve_inner<
     } else {
         tracing::error!("No services were started, exiting.");
         Ok(())
+    }
+}
+
+/// Serves the metrics port, with the task queue demand route.
+fn serve_metrics<A: Authorizer, C: CatalogStore, S: SecretStore>(
+    metrics_server: MetricsServer,
+    state: &State<A, C, S>,
+    cancellation_token: CancellationToken,
+) -> impl Future<Output = anyhow::Result<()>> + use<A, C, S> {
+    let routes = crate::api::task_queue_demand::router::<C>(
+        state.catalog.clone(),
+        state.registered_task_queues.clone(),
+    );
+    let metrics_future = metrics_server.serve(routes, cancellation_token);
+    async move {
+        metrics_future
+            .await
+            .map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
+    }
+}
+
+/// Registers the cache and audit listeners that the configuration turns on.
+async fn register_built_in_listeners<C: CatalogStore>(
+    dispatcher: &EventDispatcher,
+    catalog_state: &C::State,
+) {
+    if CONFIG.cache.warehouse.enabled {
+        tracing::info!("Warehouse cache is enabled, registering warehouse cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::warehouse_cache::WarehouseCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("Warehouse cache is disabled");
+    }
+    if CONFIG.cache.namespace.enabled {
+        tracing::info!("Namespace cache is enabled, registering namespace cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::namespace_cache::NamespaceCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("Namespace cache is disabled");
+    }
+    if CONFIG.cache.role.enabled {
+        tracing::info!("Role cache is enabled, registering role cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::role_cache::RoleCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("Role cache is disabled");
+    }
+    if CONFIG.cache.user.enabled {
+        tracing::info!("User cache is enabled, registering user cache event listener");
+        dispatcher
+            .append(Arc::new(
+                crate::service::user_cache::UserCacheEventListener {},
+            ))
+            .await;
+    } else {
+        tracing::info!("User cache is disabled");
+    }
+    if CONFIG.audit.tracing.enabled {
+        tracing::info!("Audit tracing is enabled, registering audit event listener");
+        if CONFIG.audit.tracing.include_user_email {
+            tracing::info!("Audit records carry user emails");
+        }
+        dispatcher
+            .append(Arc::new(AuditEventListener::with_catalog(Arc::new(
+                crate::service::events::CatalogStoreReader::<C>::new(catalog_state.clone()),
+            ))))
+            .await;
+    } else {
+        tracing::info!("Audit tracing is disabled");
     }
 }
 

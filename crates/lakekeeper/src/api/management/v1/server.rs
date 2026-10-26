@@ -12,11 +12,13 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         Actor, ArcProjectId, CatalogStore, Result, SecretStore, State, Transaction, UserUpsertMode,
-        authz::{Authorizer, GrantResource, emit_bootstrap_grants_async, write_bootstrap_grants},
-        tasks::{
-            ScheduleTaskMetadata, TaskEntity,
-            task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
+        authz::{
+            Authorizer, GrantResource, InstanceAdminAction, InstanceAdminAuthorizer,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
         },
+        events::APIEventContext,
+        maintenance_mode::{MAINTENANCE, MaintenanceMode},
+        tasks::task_log_cleanup_queue,
     },
 };
 
@@ -226,6 +228,32 @@ fn managed_role_providers_sorted<A: Authorizer>(authorizer: &A) -> Vec<String> {
     ids
 }
 
+/// Request to switch this process into or out of read-only maintenance mode.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct SetMaintenanceModeRequest {
+    /// Mode to switch to. `off` is rejected while `LAKEKEEPER__MAINTENANCE_MODE`
+    /// sets `read-only`.
+    pub mode: MaintenanceMode,
+}
+
+/// Maintenance mode of the process that served the request. Each process holds
+/// its own mode; call every replica on its own address to change them all.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct MaintenanceModeResponse {
+    /// Mode in effect after the request.
+    pub mode: MaintenanceMode,
+    /// Mode set by `LAKEKEEPER__MAINTENANCE_MODE` at startup. A restart returns the
+    /// process to it.
+    pub startup_mode: MaintenanceMode,
+    /// Host name of the serving process (the pod name on Kubernetes), if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+}
+
 impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
@@ -341,23 +369,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     t.transaction(),
                 )
                 .await?;
-                TaskLogCleanupTask::schedule_task::<C>(
-                    ScheduleTaskMetadata {
-                        project_id: default_project_id.clone(),
-                        parent_task_id: None,
-                        scheduled_for: None,
-                        entity: TaskEntity::Project,
-                    },
-                    TaskLogCleanupPayload::new(),
+                task_log_cleanup_queue::create_project_schedule::<C>(
+                    default_project_id.clone(),
                     t.transaction(),
                 )
-                .await
-                .map_err(|e| {
-                    e.append_detail(format!(
-                        "Failed to queue `{}` task for new project with id {default_project_id}.",
-                        task_log_cleanup_queue::QUEUE_NAME.as_str(),
-                    ))
-                })?;
+                .await?;
                 authorizer
                     .create_project(&request_metadata, default_project_id)
                     .await?;
@@ -427,6 +443,45 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             },
             managed_role_providers: managed_role_providers_sorted(&state.v1_state.authz),
             license_status: state.v1_state.license_status.clone(),
+        })
+    }
+
+    /// Switch this process into or out of read-only maintenance mode.
+    /// Authorized solely by instance-admin privilege, never by the resource
+    /// authorizer.
+    async fn set_maintenance_mode(
+        request: SetMaintenanceModeRequest,
+        state: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<MaintenanceModeResponse> {
+        // ------------------- AuthZ -------------------
+        let action = if request.mode.is_read_only() {
+            InstanceAdminAction::SetMaintenanceModeReadOnly
+        } else {
+            InstanceAdminAction::SetMaintenanceModeOff
+        };
+        let event_ctx = APIEventContext::for_server(
+            Arc::new(request_metadata),
+            state.v1_state.events.clone(),
+            action,
+            state.v1_state.authz.server_id(),
+        );
+        let authz_result = InstanceAdminAuthorizer::require(event_ctx.request_metadata(), action);
+        event_ctx.emit_authz(authz_result)?;
+
+        // ------------------- Business Logic -------------------
+        let mode = MAINTENANCE.set(request.mode).map_err(ErrorModel::from)?;
+        let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
+        tracing::warn!(
+            maintenance_mode = ?mode,
+            hostname = hostname.as_deref(),
+            "Maintenance mode set at runtime"
+        );
+
+        Ok(MaintenanceModeResponse {
+            mode,
+            startup_mode: MAINTENANCE.startup(),
+            hostname,
         })
     }
 }

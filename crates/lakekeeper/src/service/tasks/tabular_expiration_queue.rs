@@ -298,6 +298,7 @@ where
     {
         super::tabular_purge_queue::TabularPurgeTask::schedule_task::<C>(
             ScheduleTaskMetadata {
+                resource_demand: None,
                 project_id: task.task_metadata.project_id.clone(),
                 parent_task_id: Some(task.task_id()),
                 scheduled_for: None,

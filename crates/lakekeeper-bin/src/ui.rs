@@ -110,13 +110,10 @@ pub(crate) async fn favicon_handler(headers: HeaderMap) -> impl IntoResponse {
     static_handler("/favicon.ico".parse::<Uri>().unwrap(), headers).await
 }
 
-// Handler for static assets
+/// Serve the static UI asset identified by the request URI.
 pub(crate) async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoResponse {
-    let mut path = uri.path().trim_start_matches('/').to_string();
-
-    if path.starts_with("ui/") {
-        path = path.replace("ui/", "");
-    }
+    let path = uri.path().trim_start_matches('/');
+    let path = path.strip_prefix("ui/").unwrap_or(path);
 
     let forwarded_prefix = forwarded_prefix(&headers);
     let lakekeeper_base_uri = determine_base_uri(&headers);
@@ -128,9 +125,9 @@ pub(crate) async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoRes
         lakekeeper_base_uri
     );
     cache_item_to_response(
-        &path,
+        path,
         &headers,
-        FILE_CACHE.get_file(&path, forwarded_prefix, lakekeeper_base_uri.as_deref()),
+        FILE_CACHE.get_file(path, forwarded_prefix, lakekeeper_base_uri.as_deref()),
     )
 }
 
@@ -407,5 +404,24 @@ mod test {
             .await
             .unwrap();
         assert!(body.is_empty(), "304 response must have an empty body");
+    }
+
+    #[tokio::test]
+    async fn nested_ui_path_segment_is_preserved() {
+        let existing = static_handler(
+            "/ui/duckdb/duckdb-eh.wasm".parse::<Uri>().unwrap(),
+            HeaderMap::new(),
+        )
+        .await
+        .into_response();
+        assert_eq!(existing.status(), StatusCode::OK);
+
+        let nested = static_handler(
+            "/ui/duckdb/ui/duckdb-eh.wasm".parse::<Uri>().unwrap(),
+            HeaderMap::new(),
+        )
+        .await
+        .into_response();
+        assert_eq!(nested.status(), StatusCode::NOT_FOUND);
     }
 }

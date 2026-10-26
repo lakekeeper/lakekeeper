@@ -170,13 +170,11 @@ async fn create_gcs_storage(bucket_env_var: &str) -> anyhow::Result<(StorageBack
     let bucket =
         std::env::var(bucket_env_var).map_err(|_| anyhow::anyhow!("{bucket_env_var} not set"))?;
 
-    let credential_file: lakekeeper_io::gcs::CredentialsFile = serde_json::from_str(&credential)
-        .map_err(|e| anyhow::anyhow!("Failed to parse GCS credential file: {e}"))?;
+    let key: lakekeeper_io::gcs::GcsServiceAccountKey = serde_json::from_str(&credential)
+        .map_err(|e| anyhow::anyhow!("Failed to parse GCS service account key: {e}"))?;
 
     let settings = lakekeeper_io::gcs::GCSSettings {};
-    let auth = lakekeeper_io::gcs::GcsAuth::CredentialsFile {
-        file: credential_file,
-    };
+    let auth = lakekeeper_io::gcs::GcsAuth::ServiceAccountKey { key };
 
     let storage = StorageBackend::Gcs(
         settings
@@ -193,9 +191,25 @@ async fn create_gcs_storage(bucket_env_var: &str) -> anyhow::Result<(StorageBack
     Ok((storage, config))
 }
 
-/// Macro to generate parameterized tests for all available storage backends
+/// Macro to generate parameterized tests for all available storage backends.
+///
+/// `except_adls:` leaves out ADLS, which creates the file when a writer opens it.
 macro_rules! test_all_storages {
     ($test_name:ident, $test_fn:ident) => {
+        test_all_storages!(except_adls: $test_name, $test_fn);
+
+        pastey::paste! {
+            #[cfg(feature = "storage-adls")]
+            #[test]
+            fn [<$test_name _adls>]() -> anyhow::Result<()> {
+                execute_in_common_runtime(async {
+                    let (storage, config) = create_adls_storage().await?;
+                    $test_fn(&storage, &config).await
+                })
+            }
+        }
+    };
+    (except_adls: $test_name:ident, $test_fn:ident) => {
         pastey::paste! {
             #[cfg(feature = "storage-in-memory")]
             #[test]
@@ -220,15 +234,6 @@ macro_rules! test_all_storages {
             fn [<$test_name _oss>]() -> anyhow::Result<()> {
                 execute_in_common_runtime(async {
                     let (storage, config) = create_oss_storage().await?;
-                    $test_fn(&storage, &config).await
-                })
-            }
-
-            #[cfg(feature = "storage-adls")]
-            #[test]
-            fn [<$test_name _adls>]() -> anyhow::Result<()> {
-                execute_in_common_runtime(async {
-                    let (storage, config) = create_adls_storage().await?;
                     $test_fn(&storage, &config).await
                 })
             }
@@ -343,6 +348,10 @@ test_all_storages!(
     test_writer_write_after_close_errors_impl
 );
 test_all_storages!(test_writer_drop_cleanup, test_writer_drop_cleanup_impl);
+test_all_storages!(
+    except_adls: test_writer_drop_never_finalizes,
+    test_writer_drop_never_finalizes_impl
+);
 test_all_storages!(test_read_range_basic, test_read_range_basic_impl);
 test_all_storages!(test_read_range_large, test_read_range_large_impl);
 test_all_storages!(test_metadata_basic, test_metadata_basic_impl);
@@ -1835,6 +1844,32 @@ async fn test_writer_drop_cleanup_impl(
         }
         sleep(poll_interval).await;
     }
+}
+
+/// Writes 30 MiB, drops the writer without closing it, and checks for 3s that the
+/// object never appears: an unfinished upload must not be committed as a truncated
+/// object.
+async fn test_writer_drop_never_finalizes_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-drop-never-finalizes.bin");
+    let data = generate_test_data(30);
+
+    {
+        let mut writer = storage.writer(&path).await?;
+        writer.write(data).await?;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        assert!(
+            !storage.exists(&path).await?,
+            "file {path} exists after its writer was dropped without closing"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
 }
 
 /// `read_range` returns exactly the requested slice on a small file, including

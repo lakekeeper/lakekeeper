@@ -10,7 +10,7 @@ use lakekeeper::{
 use lakekeeper_integration_tests::upsert_system_roles_in_all_projects;
 use lakekeeper_storage_postgres::{
     CatalogState, PostgresBackend, PostgresTransaction, migrations, migrations::migrate_core_only,
-    role::list_roles,
+    role::list_roles, test_utils::change_log_head,
 };
 use sqlx::PgPool;
 
@@ -375,6 +375,7 @@ async fn test_casing_repair_hook_runs_only_when_its_gate_is_open(pool: PgPool) {
     );
 
     // Gate open — what the break-glass flag sets, even though the pinned migration is long applied.
+    let log_head = change_log_head(&pool).await;
     run_post_migration_hooks::<PostgresBackend>(
         state,
         Vec::new(),
@@ -396,8 +397,17 @@ async fn test_casing_repair_hook_runs_only_when_its_gate_is_open(pool: PgPool) {
         "with its gate open the repair adopts the namespace's stored casing"
     );
     assert_eq!(
-        stored_tabular(pool, in_drifted_id).await,
+        stored_tabular(pool.clone(), in_drifted_id).await,
         vec!["a".to_string(), "B".to_string(), "c".to_string()],
         "a copy inside a repaired namespace must end on the repaired path"
     );
+    // The repair rewrites paths of any namespace, so it names the whole domain as changed.
+    let namespace_changes: Vec<Vec<String>> = sqlx::query_scalar(
+        "SELECT keys FROM cache_change_log WHERE id > $1 AND domain = 'namespace' ORDER BY id",
+    )
+    .bind(log_head)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(namespace_changes, vec![Vec::<String>::new()]);
 }

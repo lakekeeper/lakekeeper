@@ -183,7 +183,7 @@ impl ServiceHealthProvider {
                 HealthStatus::Unhealthy
             },
             services,
-            maintenance_mode: crate::CONFIG.maintenance_mode,
+            maintenance_mode: crate::service::maintenance_mode::MAINTENANCE.effective(),
         }
     }
 }
@@ -192,10 +192,12 @@ impl ServiceHealthProvider {
 pub struct HealthState {
     pub health: HealthStatus,
     pub services: HashMap<String, Vec<Health>>,
-    /// Current maintenance mode. A Kubernetes operator can rely on this to
-    /// confirm that every pod in a Deployment has picked up the
-    /// `LAKEKEEPER__MAINTENANCE_MODE=read-only` env var after a rolling
-    /// restart, before running database migrations.
+    /// Maintenance mode in effect in this process: `read-only` when
+    /// `LAKEKEEPER__MAINTENANCE_MODE=read-only` is set or an instance admin
+    /// switched the process into read-only at runtime. Equals the `mode` that
+    /// `POST /management/v1/server/maintenance-mode` returns. A Kubernetes
+    /// operator can rely on this to confirm that every pod in a Deployment is
+    /// read-only before running database migrations.
     #[serde(default)]
     pub maintenance_mode: crate::config::MaintenanceMode,
 }

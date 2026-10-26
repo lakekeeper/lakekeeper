@@ -56,7 +56,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
-    dbutils::DBErrorHandler,
+    dbutils::{DBErrorHandler, user_id_from_db},
     pagination::{PaginateToken, V1PaginateToken, V2PaginateToken, to_token_precision},
     tabular::TabularType,
 };
@@ -371,10 +371,6 @@ impl GrantAssignmentRow {
             created_at: Some(self.created_at),
         })
     }
-}
-
-fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
-    UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
 }
 
 /// A resource split into the columns that locate it. Exactly one shape is populated,

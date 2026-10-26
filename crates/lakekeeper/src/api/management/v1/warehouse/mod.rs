@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Instant};
 
 use futures::{FutureExt, StreamExt as _};
 use iceberg::spec::FormatVersion;
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
@@ -20,9 +20,9 @@ pub use crate::service::{
     },
 };
 use crate::{
-    ProjectId, WarehouseId,
+    ProjectId, SecretId, WarehouseId,
     api::{
-        ApiContext, Result,
+        ApiContext, ArcRequestMetadata, Result,
         iceberg::v1::{PageToken, PaginationQuery},
         management::v1::{
             ApiServer, DeletedTabularResponse, GetWarehouseStatisticsQuery,
@@ -37,10 +37,11 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{UnfilteredPage, maybe_get_secret},
     service::{
-        AllowedFormatVersions, ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId,
-        ResolvedWarehouse, State, TabularId, TabularListFlags, Transaction,
-        ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy, WarehouseSpecLocked,
+        AllowedFormatVersions, ArcProjectId, ArcResolvedWarehouse, COMMIT_STATE_UNKNOWN_ERROR_TYPE,
+        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
+        CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId, State, TabularId,
+        TabularListFlags, Transaction, UpdatedWarehouseStorage, ViewOrTableDeletionInfo,
+        WarehouseFormatVersionPolicy, WarehouseSpecLocked, WriteTransaction,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
@@ -62,9 +63,9 @@ use crate::{
         },
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
+            CancelTasksFilter, RegisteredTaskQueues, TaskQueueName,
+            tabular_expiration_queue::TabularExpirationTask,
         },
-        warehouse_cache::warehouse_cache_invalidate,
     },
 };
 
@@ -464,6 +465,64 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
 {
 }
 
+/// Remove what a warehouse creation that failed with `error` wrote outside its transaction.
+/// Keeps it if the commit may have been applied.
+async fn clean_up_failed_warehouse_creation<A: Authorizer, S: SecretStore>(
+    authorizer: &A,
+    secrets: &S,
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    authz_relations_written: bool,
+    secret_id: Option<SecretId>,
+    error: &IcebergErrorResponse,
+) {
+    if error.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+        tracing::error!(
+            %warehouse_id,
+            ?secret_id,
+            "Creation of the warehouse may have been committed, skipping cleanup; if the \
+             warehouse does not exist, its id cannot be used again and the secret is orphaned"
+        );
+        return;
+    }
+    // Relations written for a warehouse that then failed to commit would outlive it, and
+    // `create_warehouse` refuses an id that still carries any — so leaving them behind makes
+    // this id permanently unusable, including for the caller's own retry.
+    if authz_relations_written {
+        authorizer
+            .delete_warehouse(request_metadata, warehouse_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    %warehouse_id,
+                    "Failed to remove the authorization relations of a warehouse that \
+                     was not created; the id cannot be used again until they are \
+                     cleared: {}",
+                    e.error
+                );
+            })
+            .ok();
+    }
+    // Best effort, and the caller gets the creation error: a failed cleanup orphans the
+    // credential, which must not mask why the create failed.
+    if let Some(secret_id) = secret_id {
+        secrets
+            .delete_secret(&secret_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    %secret_id,
+                    "Failed to delete the storage secret of a warehouse that was not \
+                     created; it is now orphaned in the secret store: {}",
+                    e.error
+                );
+            })
+            .ok();
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     #[allow(clippy::too_many_lines)]
@@ -551,7 +610,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         let secret_id = if let Some(storage_credential) = storage_credential {
             Some(
                 context
@@ -568,7 +627,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // remove it. Everything up to the commit runs as one unit so that any
         // failure — an id or name conflict, the authorizer, the commit itself —
         // can delete the secret before returning, instead of leaving a credential
-        // behind that nothing references and no API can reach.
+        // behind that nothing references and no API can reach. A commit whose
+        // outcome is unknown keeps it, as the warehouse may exist.
         //
         // The transaction stays owned out here rather than being moved into the
         // block, so it can be settled explicitly below before the secret store is
@@ -591,7 +651,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .format_version_policy(format_version_policy)
                     .managed_by(managed_by)
                     .build(),
-                transaction.transaction(),
+                &mut transaction,
             )
             .await?;
             authorizer
@@ -620,7 +680,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // and discarded — the create error is what the caller needs, and the
         // transaction is abandoned either way. A commit that fails has already
         // ended the transaction, so there is nothing left to roll back, but its
-        // secret still needs cleaning up, which is why both funnel into one arm.
+        // secret still needs cleaning up, which is why both funnel into one arm
+        // (unless the commit outcome is unknown).
         let settled = match staged {
             Ok(staged) => transaction.commit().await.map(|()| staged),
             Err(create_error) => {
@@ -642,59 +703,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (resolved_warehouse, bootstrap_grants) = match settled {
             Ok(settled) => settled,
             Err(create_error) => {
-                // Relations written for a warehouse that then failed to commit
-                // would outlive it, and `create_warehouse` refuses an id that
-                // still carries any — so leaving them behind makes this id
-                // permanently unusable, including for the caller's own retry.
-                if authz_relations_written {
-                    authorizer
-                        .delete_warehouse(request_metadata, warehouse_id)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::error!(
-                                ?e,
-                                %warehouse_id,
-                                "Failed to remove the authorization relations of a warehouse that \
-                                 was not created; the id cannot be used again until they are \
-                                 cleared: {}",
-                                e.error
-                            );
-                        })
-                        .ok();
-                }
-                // Best-effort, and the creation error is what the caller gets: a
-                // failure to clean up leaves the credential orphaned exactly as
-                // before, which must not mask why the create failed.
-                if let Some(secret_id) = secret_id {
-                    context
-                        .v1_state
-                        .secrets
-                        .delete_secret(&secret_id)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::error!(
-                                ?e,
-                                %secret_id,
-                                "Failed to delete the storage secret of a warehouse that was not \
-                                 created; it is now orphaned in the secret store: {}",
-                                e.error
-                            );
-                        })
-                        .ok();
-                }
+                clean_up_failed_warehouse_creation(
+                    &authorizer,
+                    &context.v1_state.secrets,
+                    request_metadata,
+                    warehouse_id,
+                    authz_relations_written,
+                    secret_id,
+                    &create_error,
+                )
+                .await;
                 return Err(create_error);
             }
         };
-
-        // Drop any entry this replica still holds for the id before the create
-        // event repopulates it. Every other warehouse write invalidates; create
-        // could skip it while ids were always fresh, because there was nothing to
-        // displace. A caller-supplied id can name a warehouse this replica cached
-        // before it was deleted, and `warehouse_cache_insert` refuses to overwrite
-        // a higher `version` — a recreated warehouse starts back at 0, so without
-        // this the replica would keep serving the previous warehouse's project and
-        // storage profile under an id that now belongs to a different one.
-        warehouse_cache_invalidate(resolved_warehouse.warehouse_id).await;
 
         // Held across the create event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
@@ -974,11 +995,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: &ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         check_spec_mutable: bool,
-    ) -> Result<(
-        Arc<RequestMetadata>,
-        Arc<ResolvedWarehouse>,
-        ValidationCheck,
-    )> {
+    ) -> Result<(ArcRequestMetadata, ArcResolvedWarehouse, ValidationCheck)> {
         let event_ctx = APIEventContext::for_warehouse(
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
@@ -1238,7 +1255,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
+        // Delete schedules before the warehouse row is locked: the materializer holds a schedule
+        // row while its task insert waits for the warehouse row.
+        C::delete_warehouse_task_schedules(warehouse_id, transaction.transaction()).await?;
+        // Cancel before ensure_warehouse_spec_mutable locks the warehouse row: a worker recording
+        // its outcome holds its task row and needs the warehouse row for the task_log foreign key.
+        cancel_tasks_on_warehouse_delete::<C>(
+            &context.v1_state.registered_task_queues,
+            warehouse_id,
+            &mut transaction,
+        )
+        .await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1252,10 +1280,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // The secret comes from the row the delete removed, inside this
         // transaction, so it cannot name a credential a concurrent rotation
         // replaced between an earlier read and the delete.
-        let storage_secret_id =
-            C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
+        let storage_secret_id = C::delete_warehouse(warehouse_id, query, &mut transaction).await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         // Post-commit: best-effort authz cleanup (see `delete_project`).
         authorizer
@@ -1337,7 +1363,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         tracing::debug!("Setting protection for warehouse {warehouse_id} to {protection}");
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1350,9 +1376,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
         let resolved_warehouse =
-            C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
+            C::set_warehouse_protected(warehouse_id, protection, &mut transaction).await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_protection_set(protection, resolved_warehouse.clone());
 
@@ -1391,15 +1416,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let updated_warehouse = C::set_warehouse_managed_by(
-            warehouse_id,
-            request.managed_by,
-            transaction.transaction(),
-        )
-        .await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
+        let updated_warehouse =
+            C::set_warehouse_managed_by(warehouse_id, request.managed_by, &mut transaction).await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_managed_by_set(request.managed_by, updated_warehouse.clone());
 
@@ -1447,7 +1467,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         validate_warehouse_name(&request.new_name)?;
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1460,10 +1480,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
 
         let updated_warehouse =
-            C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
+            C::rename_warehouse(warehouse_id, &request.new_name, &mut transaction).await?;
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_renamed(Arc::new(request), updated_warehouse.clone());
 
@@ -1505,7 +1524,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1519,11 +1538,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let updated_warehouse = C::set_warehouse_deletion_profile(
             warehouse_id,
             &request.delete_profile,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx
             .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
@@ -1576,7 +1594,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1587,14 +1605,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
-        let updated_warehouse = C::set_warehouse_format_version_policy(
-            warehouse_id,
-            &policy,
-            transaction.transaction(),
-        )
-        .await?;
+        let updated_warehouse =
+            C::set_warehouse_format_version_policy(warehouse_id, &policy, &mut transaction).await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_format_version_policy_updated(
             Arc::new(request),
@@ -1642,7 +1655,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
 
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1655,15 +1668,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
 
-        C::set_warehouse_status(
-            warehouse_id,
-            WarehouseStatus::Inactive,
-            transaction.transaction(),
-        )
-        .await?;
+        C::set_warehouse_status(warehouse_id, WarehouseStatus::Inactive, &mut transaction).await?;
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         Ok(())
     }
@@ -1701,7 +1708,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, _) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
 
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
@@ -1714,15 +1721,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
 
-        C::set_warehouse_status(
-            warehouse_id,
-            WarehouseStatus::Active,
-            transaction.transaction(),
-        )
-        .await?;
+        C::set_warehouse_status(warehouse_id, WarehouseStatus::Active, &mut transaction).await?;
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         Ok(())
     }
@@ -1779,7 +1780,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1794,7 +1795,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .storage_profile
             .clone()
             .update_with(storage_profile)?;
-        let old_secret_id = warehouse.storage_secret_id;
 
         let secret_id = if let Some(storage_credential) = storage_credential {
             Some(
@@ -1808,16 +1808,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let updated_warehouse = C::update_storage_profile(
-            warehouse_id,
-            storage_profile,
-            secret_id,
-            transaction.transaction(),
-        )
-        .await?;
+        let UpdatedWarehouseStorage {
+            warehouse: updated_warehouse,
+            previous_secret_id: old_secret_id,
+        } = C::update_storage_profile(warehouse_id, storage_profile, secret_id, &mut transaction)
+            .await?;
+        let updated_warehouse = Arc::new(updated_warehouse);
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_storage_updated(request_for_event, updated_warehouse.clone());
 
@@ -1882,6 +1880,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let credential_type = new_storage_credential
             .as_ref()
             .map(StorageCredential::credential_type);
+        warehouse
+            .storage_profile
+            .check_credential(new_storage_credential.as_ref())?;
         // Validated before the transaction opens: probing storage can take most
         // of the request time limit, and a write connection and the warehouse's
         // row lock must not be held across it.
@@ -1892,7 +1893,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         ))
         .await?;
 
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1903,7 +1904,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
-        let old_secret_id = warehouse.storage_secret_id;
 
         let secret_id = if let Some(new_storage_credential) = new_storage_credential {
             Some(
@@ -1917,16 +1917,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             None
         };
 
-        let updated_warehouse = C::update_storage_profile(
+        let UpdatedWarehouseStorage {
+            warehouse: updated_warehouse,
+            previous_secret_id: old_secret_id,
+        } = C::update_storage_profile(
             warehouse_id,
             warehouse.storage_profile.clone(),
             secret_id,
-            transaction.transaction(),
+            &mut transaction,
         )
         .await?;
+        let updated_warehouse = Arc::new(updated_warehouse);
 
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_storage_credential_updated(
             request_for_event,
@@ -2121,7 +2124,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                     .iter()
                                     .map(ViewOrTableDeletionInfo::namespace_id)
                                     .collect_vec(),
-                                t.transaction(),
+                                t.committed_reads(),
                             )
                             .await?,
                         )
@@ -2389,6 +2392,26 @@ where
     }
 }
 
+/// Cancels this warehouse's tasks, running ones included, of every registered queue whose
+/// `TaskConfig::on_warehouse_delete` is `Cancel`.
+async fn cancel_tasks_on_warehouse_delete<C: CatalogStore>(
+    task_queues: &RegisteredTaskQueues,
+    warehouse_id: WarehouseId,
+    transaction: &mut WriteTransaction<C>,
+) -> Result<()> {
+    for (queue_name, legacy_names) in task_queues.queues_cancelled_on_warehouse_delete().await {
+        C::cancel_scheduled_tasks(
+            Some(queue_name),
+            &legacy_names,
+            CancelTasksFilter::WarehouseId { warehouse_id },
+            true,
+            transaction.transaction(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Reject creation when the new storage profile overlaps the location of an
 /// existing warehouse in the same project.
 async fn ensure_no_storage_overlap<C: CatalogStore>(
@@ -2433,7 +2456,7 @@ fn skipped_access_checks(reason: &str) -> Vec<ValidationCheck> {
 /// create can still take the name between this check and the real request.
 fn warehouse_name_check(
     warehouse_name: &str,
-    warehouses: &[Arc<ResolvedWarehouse>],
+    warehouses: &[ArcResolvedWarehouse],
 ) -> ValidationCheck {
     let started = Instant::now();
     if let Err(e) = validate_warehouse_name(warehouse_name) {
@@ -2462,7 +2485,7 @@ fn warehouse_name_check(
 /// the project surfaces as a conflict on the real create.
 fn warehouse_id_check(
     warehouse_id: Option<WarehouseId>,
-    warehouses: &[Arc<ResolvedWarehouse>],
+    warehouses: &[ArcResolvedWarehouse],
 ) -> ValidationCheck {
     let started = Instant::now();
     let Some(warehouse_id) = warehouse_id else {
@@ -2495,7 +2518,7 @@ fn warehouse_id_taken_error(warehouse_id: WarehouseId) -> ErrorModel {
 /// Check that no other warehouse in the project already occupies this location.
 fn location_overlap_check(
     storage_profile: &StorageProfile,
-    warehouses: &[Arc<ResolvedWarehouse>],
+    warehouses: &[ArcResolvedWarehouse],
 ) -> ValidationCheck {
     let started = Instant::now();
     match find_overlapping_warehouse(storage_profile, warehouses) {
@@ -2515,8 +2538,8 @@ fn location_overlap_check(
 /// Shared with the create path so the dry-run and the real thing cannot drift.
 fn find_overlapping_warehouse<'a>(
     storage_profile: &StorageProfile,
-    warehouses: &'a [Arc<ResolvedWarehouse>],
-) -> Option<&'a Arc<ResolvedWarehouse>> {
+    warehouses: &'a [ArcResolvedWarehouse],
+) -> Option<&'a ArcResolvedWarehouse> {
     warehouses
         .iter()
         .find(|w| storage_profile.is_overlapping_location(&w.storage_profile))
@@ -2685,7 +2708,7 @@ mod test {
             profile_compatibility_check, skipped_access_checks, warehouse_name_check,
         };
         use crate::service::{
-            ResolvedWarehouse,
+            ArcResolvedWarehouse, ResolvedWarehouse,
             storage::{S3Flavor, S3Profile},
         };
 
@@ -2700,10 +2723,7 @@ mod test {
                 .into()
         }
 
-        fn warehouses(
-            name: &str,
-            storage_profile: StorageProfile,
-        ) -> Vec<std::sync::Arc<ResolvedWarehouse>> {
+        fn warehouses(name: &str, storage_profile: StorageProfile) -> Vec<ArcResolvedWarehouse> {
             let mut warehouse = ResolvedWarehouse::new_random();
             warehouse.name = name.to_string();
             warehouse.storage_profile = storage_profile;

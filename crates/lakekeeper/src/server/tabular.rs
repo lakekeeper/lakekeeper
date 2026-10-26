@@ -8,8 +8,8 @@ use crate::{
     request_metadata::RequestMetadata,
     server::tables::parse_location,
     service::{
-        CatalogIdempotencyOps, CatalogStore, NamespaceHierarchy, NamespaceId, ResolvedWarehouse,
-        TabularId, Transaction,
+        COMMIT_STATE_UNKNOWN_ERROR_TYPE, CatalogIdempotencyOps, CatalogStore, NamespaceHierarchy,
+        NamespaceId, ResolvedWarehouse, TabularId, Transaction,
         authz::{AuthZError, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         idempotency::{IdempotencyInfo, IdempotencyKey},
         is_same_namespace_path_ignoring_ascii_case,
@@ -212,13 +212,12 @@ where
 /// full ordering contract. Consumes the transaction: nothing may run between the detach and
 /// the commit.
 ///
-/// Three residual windows, all requiring reconciliation rather than a retry:
+/// Three residual windows:
 ///
 /// * An **ambiguous commit** — the connection dies after Postgres commits but before the
-///   ack — surfaces as `Err`, and the compensation below then re-attaches a namespace the
-///   tabular has actually left. That is the one path that can leave a surplus edge. It is
-///   the same trade the namespace move makes, and `--mode add-and-delete-drift` is its
-///   repair.
+///   ack — surfaces as an error of type [`COMMIT_STATE_UNKNOWN_ERROR_TYPE`]. Neither edge is
+///   attached then. If the commit did not apply, a retry repairs it; otherwise an additive
+///   reconcile restores the edge the catalog implies.
 /// * A **failed post-commit attach** leaves the tabular parentless, and no retry repairs
 ///   it. With an idempotency key the replay short-circuits before reaching this function,
 ///   because the key was inserted in the committed transaction; without one the storage
@@ -250,10 +249,17 @@ pub(crate) async fn commit_rename_with_reparent<C: CatalogStore, A: Authorizer>(
     }
 
     if let Err(err) = transaction.commit().await {
-        // The rename did not happen, so put the old edge back. Best effort: if this also
+        // A rename that did not happen gets its old edge back. Best effort: if this also
         // fails the tabular is left parentless, which is fail-closed and repairable by an
         // additive reconcile.
-        if reparented {
+        if reparented && err.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+            tracing::error!(
+                %warehouse_id,
+                %tabular_id,
+                "Rename may have been committed; the parent edge in the authorizer may be \
+                 missing until it is reconciled"
+            );
+        } else if reparented {
             authorizer
                 .attach_tabular_parent(metadata, warehouse_id, tabular_id, source_namespace_id)
                 .await
@@ -384,7 +390,7 @@ macro_rules! fetch_entities {
                         C::get_namespaces_by_id(
                             warehouse_id,
                             &requested_namespace_ids,
-                            trx.transaction(),
+                            trx.committed_reads(),
                         )
                         .await?,
                     )

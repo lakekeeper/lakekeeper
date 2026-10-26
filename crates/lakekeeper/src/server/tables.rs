@@ -14,7 +14,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse},
+    catalog::rest::LoadCredentialsResponse,
     configs::{
         ParseFromStr,
         table::{TableProperties as TableConfigProperties, general},
@@ -39,7 +39,7 @@ use super::{
     commit_tables::{
         apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
     },
-    io::{delete_file, read_metadata_file, write_file},
+    io::{cleanup_in_background, delete_files, delete_on_failure, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
     require_warehouse_id,
@@ -71,11 +71,11 @@ use crate::{
         tabular::{authorize_entities, fetch_entities},
     },
     service::{
-        AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
-        CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps,
-        NamedEntity, ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId,
-        TableInfo, TabularId, TabularIdentBorrowed, TabularInfo, TabularListFlags, TabularNotFound,
-        Transaction, WarehouseStatus,
+        ArcResolvedWarehouse, AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
+        CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
+        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit,
+        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed,
+        TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
@@ -921,6 +921,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 if purge_requested {
                     TabularPurgeTask::schedule_task::<C>(
                         ScheduleTaskMetadata {
+                            resource_demand: None,
                             project_id: project_id.clone(),
 
                             parent_task_id: None,
@@ -944,6 +945,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
+                        resource_demand: None,
                         project_id: project_id.clone(),
                         parent_task_id: None,
                         scheduled_for: Some(chrono::Utc::now() + expiration_seconds),
@@ -1129,14 +1131,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     authorizer: A,
     state: C::State,
     referenced_by: Option<&[ReferencingView]>,
-) -> Result<
-    (
-        Arc<ResolvedWarehouse>,
-        TableInfo,
-        Option<StoragePermissions>,
-    ),
-    AuthZError,
-> {
+) -> Result<(ArcResolvedWarehouse, TableInfo, Option<StoragePermissions>), AuthZError> {
     let engines = request_metadata.engines();
     let referenced_by = effective_referenced_by(referenced_by, engines);
 
@@ -1386,7 +1381,7 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
 /// Returns an error if the commit fails or if a DB error occurs.
 /// This function will retry on concurrent update errors up to a maximum number of retries.
 async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
-    warehouse: Arc<ResolvedWarehouse>,
+    warehouse: ArcResolvedWarehouse,
     request: CommitTransactionRequest,
     event_ctx: APIEventCommitContext,
     state: ApiContext<State<A, C, S>>,
@@ -1556,7 +1551,7 @@ pub async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S:
 struct CommitAuthorizationResult<'a> {
     table_infos_with_actions:
         HashMap<TableIdent, (Arc<TabularInfo<TableId>>, &'a CatalogTableAction)>,
-    warehouse: Arc<ResolvedWarehouse>,
+    warehouse: ArcResolvedWarehouse,
 }
 
 /// Result of `commit_tables_with_authz`, indicating whether the operation
@@ -1822,21 +1817,21 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         .file_io(storage_secret_ref)
         .await?;
 
-    let write_futures: Vec<_> = commits
-        .iter()
-        .map(|commit| {
+    let new_metadata_locations: Vec<_> = commits.iter().map(|c| &c.new_metadata_location).collect();
+    delete_on_failure(&file_io, &new_metadata_locations, async {
+        // All writes finish before an error returns, so none lands after the cleanup.
+        futures::future::join_all(commits.iter().map(|commit| {
             write_file(
                 &file_io,
                 &commit.new_metadata_location,
                 &commit.new_metadata,
                 commit.new_compression_codec,
             )
-        })
-        .collect();
-    futures::future::try_join_all(write_futures).await?;
+        }))
+        .await
+        .into_iter()
+        .collect::<Result<(), _>>()?;
 
-    // Make changes in DB
-    let transaction_result = async {
         let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
         C::commit_table_transaction(
             warehouse_id,
@@ -1859,42 +1854,15 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
             return Err(ErrorModel::request_in_progress().into());
         }
 
-        transaction.commit().await?;
-        Result::<_, IcebergErrorResponse>::Ok(())
-    }
-    .await;
+        transaction.commit().await
+    })
+    .await?;
 
-    // If transaction fails, delete the metadata files we just wrote (best-effort), then
-    // return the original error.
-    if let Err(e) = transaction_result {
-        let delete_result = futures::future::join_all(
-            commits
-                .iter()
-                .map(|commit| delete_file(&file_io, &commit.new_metadata_location))
-                .collect::<Vec<_>>(),
-        )
+    if !expired_metadata_files.is_empty() {
+        cleanup_in_background(event_ctx.request_metadata().received_at(), async move {
+            delete_files(&file_io, &expired_metadata_files).await;
+        })
         .await;
-        // Log any delete errors, but return the original error
-        for r in delete_result {
-            if let Err(e) = r {
-                tracing::warn!("Failed to delete metadata file after failed commit: {e:?}");
-            }
-        }
-        return Err(e);
-    }
-
-    // Delete files in parallel - if one delete fails, we still want to delete the rest
-    let delete_results = futures::future::join_all(
-        expired_metadata_files
-            .iter()
-            .map(|location| delete_file(&file_io, location))
-            .collect::<Vec<_>>(),
-    )
-    .await;
-    for r in delete_results {
-        if let Err(e) = r {
-            tracing::warn!("Failed to delete expired metadata file: {e:?}");
-        }
     }
 
     Ok(Arc::new(commits))

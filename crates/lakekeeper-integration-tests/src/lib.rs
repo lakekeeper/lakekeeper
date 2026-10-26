@@ -456,3 +456,21 @@ where
         .await
         .unwrap_or_else(|_| panic!("{what}"));
 }
+
+/// Waits until a session of this database waits for a lock.
+///
+/// # Panics
+/// If none does within 10 seconds.
+pub async fn wait_for_a_lock_wait(pool: &sqlx::PgPool) {
+    eventually("a session waits for a lock", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+            > 0
+    })
+    .await;
+}

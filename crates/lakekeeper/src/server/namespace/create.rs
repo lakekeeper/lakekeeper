@@ -6,8 +6,8 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, NamespaceHierarchy,
-        ResolvedWarehouse,
+        ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps,
+        NamespaceHierarchy,
         authz::{
             AuthZError, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
             CatalogWarehouseAction,
@@ -22,7 +22,7 @@ pub(super) async fn authorize_namespace_create<C: CatalogStore, A: Authorizer>(
     new_namespace: &NamespaceIdent,
     catalog_state: C::State,
     properties: Arc<BTreeMap<String, String>>,
-) -> Result<(Arc<ResolvedWarehouse>, Option<NamespaceHierarchy>), AuthZError> {
+) -> Result<(ArcResolvedWarehouse, Option<NamespaceHierarchy>), AuthZError> {
     let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
     let name = new_namespace.as_ref().last().cloned().unwrap_or_default();

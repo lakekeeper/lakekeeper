@@ -24,7 +24,7 @@ The `storage-credential` of a GCS Warehouse has `"type": "gcs"` and one of these
 | `service-account-key` | A service account key, see [Service Account Key](#service-account-key) |
 | `gcp-system-identity` | The service account the Lakekeeper process runs as, see [GCP System Identity](#gcp-system-identity) |
 
-Either way, the service account needs access to the bucket, typically the Storage Admin role on it.
+Either way, the service account needs access to the objects of the bucket. The Storage Object User role (`roles/storage.objectUser`) on the bucket is enough, with or without hierarchical namespaces: Lakekeeper only reads, writes, lists and deletes objects, and the tokens it vends are downscoped to at most that role. Permissions to administer the bucket itself, such as those in Storage Admin, are not needed.
 
 ### Service Account Key
 
@@ -58,12 +58,14 @@ Create the key in the Google Cloud Console and pass it when creating the Warehou
 }
 ```
 
+Use the key as Google creates it. Lakekeeper supports only keys with the `universe_domain` `googleapis.com` and a private key in PKCS#8 format (`BEGIN PRIVATE KEY`). If your key starts with `BEGIN RSA PRIVATE KEY`, convert it with `openssl pkcs8 -topk8 -nocrypt`.
+
 ### GCP System Identity
 
 !!! warning
     Enabling GCP system identities grants Lakekeeper access to any storage location the service account has permissions for. Carefully review and limit the permissions of the service account to avoid unintended access to sensitive resources. Additionally, limit Warehouse creation permissions in Lakekeeper to users who are authorized to access all locations that the system identity can access.
 
-With a system identity, Lakekeeper authenticates with the service account the application or virtual machine runs as, either a Compute Engine default service account or a user-assigned one. The feature is disabled by default and must be enabled server-wide:
+With a system identity, Lakekeeper authenticates with the service account the application or virtual machine runs as, either a Compute Engine default service account or a user-assigned one. Lakekeeper finds this identity with Application Default Credentials: the file named in `GOOGLE_APPLICATION_CREDENTIALS`, else the gcloud default credentials file, else the metadata server of Compute Engine and GKE. If `GOOGLE_APPLICATION_CREDENTIALS` names a file that does not exist, Lakekeeper reports an error and does not use the metadata server. Lakekeeper does not read `GOOGLE_APPLICATION_CREDENTIALS_JSON` and reports an error while it is set: write the key to a file and set `GOOGLE_APPLICATION_CREDENTIALS` to its path. The feature is disabled by default and must be enabled server-wide:
 
 ```bash
 LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS=true
@@ -79,6 +81,12 @@ Then create the Warehouse with:
   }
 }
 ```
+
+## Network
+
+Lakekeeper needs a direct network connection to `storage.googleapis.com` on port 443. To vend credentials, it also connects to `oauth2.googleapis.com` and `sts.googleapis.com`. With a GCP system identity and no credentials file, it gets its tokens from the metadata server `metadata.google.internal`. The image needs a CA certificate bundle, see [SSL Dependencies](configuration.md#ssl-dependencies).
+
+Lakekeeper reads and writes object data over HTTPS. It reads object metadata, lists objects and deletes objects over gRPC (HTTP/2). The gRPC requests do not go through HTTP proxies (`HTTPS_PROXY`).
 
 ## CORS
 

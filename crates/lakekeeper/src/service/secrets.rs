@@ -183,7 +183,16 @@ fn update_cache_size_metric() {
     set_cache_size("secrets", SECRETS_CACHE.entry_count());
 }
 
-async fn secrets_cache_invalidate(secret_id: SecretId) {
+/// Drop every secret from this replica's cache.
+pub(crate) fn secrets_cache_invalidate_all() {
+    if CONFIG.cache.secrets.enabled {
+        tracing::debug!("Invalidating all secrets from cache");
+        SECRETS_CACHE.invalidate_all();
+        update_cache_size_metric();
+    }
+}
+
+pub(crate) async fn secrets_cache_invalidate(secret_id: SecretId) {
     if CONFIG.cache.secrets.enabled {
         tracing::debug!("Invalidating secret id {secret_id} from cache");
         // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare

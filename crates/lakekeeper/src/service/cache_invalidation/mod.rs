@@ -1,0 +1,27 @@
+//! Eviction of cache entries that another Lakekeeper instance changed.
+//!
+//! A write that changes cached data records the changed keys in a change log, in the same
+//! transaction. Every instance reads the log and evicts those keys from its own caches.
+
+mod change_set;
+mod evict;
+mod log;
+mod metrics;
+mod poller;
+mod receiver;
+
+pub use change_set::{CacheDomain, CacheKey, CacheKeyDecodeError, ChangeSet};
+pub(crate) use evict::evict_locally;
+pub use log::{
+    BoxedCacheChangeLog, CacheChangeLog, ChangeLogError, LoggedChange, PollOutcome, ResetReason,
+};
+pub use poller::background_tasks;
+pub use receiver::{
+    ArcCacheChangeReceiver, CacheChangeReceiver, CacheChangeReceiverError, CacheChangeReceivers,
+};
+
+/// Whether writes record their changed keys (`cache.invalidation.recording_enabled`).
+#[must_use]
+pub fn recording_enabled() -> bool {
+    crate::CONFIG.cache.invalidation.recording_enabled
+}

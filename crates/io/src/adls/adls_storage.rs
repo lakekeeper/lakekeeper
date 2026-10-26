@@ -10,7 +10,7 @@ use azure_core::{
     headers::{ETAG, HeaderName},
     request_options::IfMatchCondition,
 };
-use azure_storage::CloudLocation;
+use azure_storage::{CloudLocation, clients::ServiceType};
 use azure_storage_datalake::{
     clients::PathClient as _,
     prelude::{
@@ -27,6 +27,7 @@ use crate::{
     LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError,
     RemoveEmptyDirectoryOutcome, WriteError,
     adls::{AdlsLocation, adls_error::parse_error},
+    delete_limit::{DeleteEndpoint, DeleteLimit},
     delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
 };
 
@@ -42,6 +43,8 @@ const DEFAULT_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
 /// future is dropped on elapse; we still log the timeout so a partial file
 /// left behind is observable.
 const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
+/// Host suffix of `OneLake` locations.
+const ONELAKE_ENDPOINT_SUFFIX: &str = ".fabric.microsoft.com";
 
 impl AdlsStorage {
     /// Returns a [`FileSystemClient`] for the Azure Storage account.
@@ -137,31 +140,49 @@ impl LakekeeperStorage for AdlsStorage {
         // Group paths by account and filesystem
         let grouped_paths = group_paths_by_container(paths)?;
 
+        let endpoint = self
+            .cloud_location
+            .url(ServiceType::DataLake)
+            .map_err(|e| parse_error(e, self.cloud_location.account()))?;
         // Create futures for parallel deletion
         let mut delete_futures = Vec::new();
 
         // Create delete operations for each path
-        for ((_account, _filesystem), paths) in grouped_paths {
+        for ((_account, filesystem), paths) in grouped_paths {
             if paths.is_empty() {
                 continue; // Skip empty groups
             }
             let filesystem_client = self.get_filesystem_client(&paths[0])?;
+            // Azure throttles per account; OneLake serves all workspaces from one endpoint.
+            let limit = DeleteLimit::of(&DeleteEndpoint::Adls {
+                endpoint: endpoint.as_str(),
+                workspace: paths[0]
+                    .endpoint_suffix()
+                    .ends_with(ONELAKE_ENDPOINT_SUFFIX)
+                    .then_some(filesystem.as_str()),
+            });
 
             for path in paths {
                 let file_client = filesystem_client.get_file_client(path.blob_name());
                 let mut deletion_stream = file_client.delete().into_stream();
 
+                let limit = limit.clone();
                 let future = async move {
-                    let mut last_err = None;
-                    while let Some(result) = deletion_stream.next().await {
-                        let result = result
-                            .map_err(|e| parse_error(e, path.location().as_str()))
-                            .map(|_| ());
-                        let result = delete_not_found_is_ok(result);
-                        if let Err(e) = result {
-                            last_err = Some(e);
-                        }
-                    }
+                    let last_err = limit
+                        .run(async {
+                            let mut last_err = None;
+                            while let Some(result) = deletion_stream.next().await {
+                                let result = result
+                                    .map_err(|e| parse_error(e, path.location().as_str()))
+                                    .map(|_| ());
+                                let result = delete_not_found_is_ok(result);
+                                if let Err(e) = result {
+                                    last_err = Some(e);
+                                }
+                            }
+                            last_err
+                        })
+                        .await;
 
                     if let Some(e) = last_err {
                         Ok::<(AdlsLocation, Option<IOError>), DeleteBatchError>((path, Some(e)))
@@ -1056,5 +1077,94 @@ impl Drop for AdlsFileWrite {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, atomic::AtomicUsize};
+
+    use super::*;
+    use crate::{
+        adls::{AzureAuth, AzureSettings, AzureSharedAccessKeyAuth},
+        delete_limit::{DeleteEndpoint, DeleteLimit},
+    };
+
+    /// Storage of account `account` whose endpoint answers every request with `200 OK` and
+    /// counts the requests. Returns the endpoint's URL as well.
+    async fn counted_storage(account: &str) -> (AdlsStorage, String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new().fallback({
+            let requests = requests.clone();
+            move || {
+                requests.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(axum::http::StatusCode::OK)
+            }
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let storage = AzureSettings::builder()
+            .cloud_location(CloudLocation::Custom {
+                account: account.to_string(),
+                uri: endpoint.clone(),
+            })
+            .build()
+            .get_storage_client(&AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth {
+                key: "dGVzdC1zaGFyZWQta2V5".to_string(),
+            }))
+            .await
+            .unwrap();
+        (storage, format!("{endpoint}/"), requests)
+    }
+
+    #[tokio::test]
+    async fn batch_delete_waits_for_the_delete_limit_of_its_account() {
+        let (storage, endpoint, requests) = counted_storage("limitaccount").await;
+        let held = DeleteLimit::of(&DeleteEndpoint::Adls {
+            endpoint: &endpoint,
+            workspace: None,
+        })
+        .hold_all()
+        .await;
+
+        let delete = tokio::spawn(async move {
+            storage
+                .delete_batch(&[
+                    "abfss://filesystem@limitaccount.dfs.core.windows.net/key".to_string()
+                ])
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+
+        drop(held);
+        delete.await.unwrap().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn workspaces_of_one_endpoint_have_separate_delete_limits() {
+        let (storage, endpoint, requests) = counted_storage("onelake").await;
+        let _held_workspace = DeleteLimit::of(&DeleteEndpoint::Adls {
+            endpoint: &endpoint,
+            workspace: Some("workspace-a"),
+        })
+        .hold_all()
+        .await;
+        let _held_endpoint = DeleteLimit::of(&DeleteEndpoint::Adls {
+            endpoint: &endpoint,
+            workspace: None,
+        })
+        .hold_all()
+        .await;
+
+        let paths = ["abfss://workspace-b@onelake.dfs.fabric.microsoft.com/lh/key".to_string()];
+        let delete = storage.delete_batch(&paths);
+        tokio::time::timeout(Duration::from_secs(5), delete)
+            .await
+            .expect("the delete waited for the limit of another workspace")
+            .unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 }

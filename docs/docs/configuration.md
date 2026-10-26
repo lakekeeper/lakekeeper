@@ -51,7 +51,7 @@ The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe2
 | `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS` | `true` | `false` (direct system credential access disabled) | By default, when using AWS system credentials, users must specify an `assume-role-arn` for Lakekeeper to assume when accessing S3. Setting this option to `true` allows Lakekeeper to use system credentials directly without role assumption, meaning the system identity must have direct access to warehouse locations. |
 | `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | `true` | true (external ID required) | Controls whether an `external-id` is required when assuming a role with AWS system credentials. External IDs provide additional security when cross-account role assumption is used. |
 | `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` | `true` | `false` (Azure system credentials disabled) | Lakekeeper supports using Azure system identities (i.e. through `AZURE_*` environment variables or VM managed identities) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable Azure system identities, set `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`. |
-| `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` | `true` | `false` (GCP system credentials disabled) | Lakekeeper supports using GCP system identities (i.e. through `GOOGLE_APPLICATION_CREDENTIALS` environment variables or the Compute Engine Metadata Server) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable GCP system identities, set `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` to `true`. |
+| `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` | `true` | `false` (GCP system credentials disabled) | Lakekeeper supports using GCP system identities (the file named in the `GOOGLE_APPLICATION_CREDENTIALS` environment variable, the gcloud default credentials file, or the metadata server of Compute Engine and GKE) as storage credentials for warehouses. This feature is disabled by default to prevent accidental access to restricted storage locations. To enable GCP system identities, set `LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS` to `true`. |
 
 ### Persistence Store
 
@@ -132,7 +132,11 @@ Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge
 
 Every Lakekeeper process runs the built-in task-queue workers by default, including instances that serve the HTTP API. You do not need dedicated worker pods to process background tasks.
 
-To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They share the same catalog and database and process tasks without serving the API.
+To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They need the same configuration as the API pods, including `LAKEKEEPER__PG_ENCRYPTION_KEY`, and process tasks without serving the API. To start them only when tasks wait, see [Task Queue Demand](./monitoring.md#task-queue-demand).
+
+A task that fails is tried up to ten times in total; a try whose worker stops responding counts as failed. Each new try waits twice as long as the one before, starting at about 30 seconds and at most about an hour, so a task keeps being retried for about three hours.
+
+Some jobs run on a fixed cadence, such as the cleanup of old task logs. Every Lakekeeper instance queues these jobs when they are due, including instances that run no task-queue workers. A job never runs twice at the same time: if its previous run has not finished when the next one is due, the next one starts once the previous run has finished. Runs that fall due in the meantime are combined into that one run.
 
 To stop an instance from running a queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. To dedicate task processing entirely to headless workers, set all built-in worker counts to `0` on your API pods: `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`, `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`, and `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS`.
 
@@ -145,6 +149,24 @@ The following global configuration options are available:
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` | 2 | `2` | Number of workers spawned to purge table files after dropping a table with the purge option. |
 | `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
 | `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
+| `LAKEKEEPER__TASK_DRAIN_TIMEOUT` | 300s | 0s | How long running tasks may continue after a stop signal (SIGTERM or SIGINT) before Lakekeeper stops the workers. `0s` does not wait. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` | 180s | — | Stop the process after it ran no task for this long. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_MAX_LIFETIME` | 3600s | — | Stop the process this long after it started. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+
+#### Stopping Task Workers
+
+When Lakekeeper stops, it stops taking new tasks. If `LAKEKEEPER__TASK_DRAIN_TIMEOUT` is longer than 0s, it first lets running tasks finish. While it waits, the HTTP API, health checks, metrics and task heartbeats keep running. When no task runs any more, or the wait ends, Lakekeeper stops the workers and exits with code 0. A task that did not finish may be tried again later, depending on its retry limit.
+
+A stop signal (SIGTERM or SIGINT) waits up to `LAKEKEEPER__TASK_DRAIN_TIMEOUT`. If you set it longer than 0s, give the pod a longer grace period: set `terminationGracePeriodSeconds` in Kubernetes to the drain timeout plus about 30 seconds, plus the time of a preStop hook. Otherwise Kubernetes kills the process before it stops cleanly. A second stop signal stops the workers at once. A long drain timeout makes node drains and cluster-autoscaler scale-down slower. The cluster autoscaler waits at most 600 seconds for a pod by default.
+
+Headless workers can also stop on their own, for example when an autoscaler starts them for a backlog of tasks:
+
+- `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` stops the worker after it ran no task for this long.
+- `LAKEKEEPER__TASK_MAX_LIFETIME` stops the worker this long after it started. This is the time when it stops taking tasks. A task picked just before can keep the worker running until that task ends.
+
+These two wait for running tasks without a time limit. A stop signal during this wait limits it to `LAKEKEEPER__TASK_DRAIN_TIMEOUT` from the signal. Lakekeeper refuses to start if either is set on a process that serves the HTTP API, because the API would stop with the workers.
+
+Use these two settings only for workers that run as Jobs, for example from a KEDA ScaledJob. Kubernetes restarts the container of a Deployment even when it exits with code 0, so a Deployment would restart the worker again and again. The idle time counts the tasks of every queue the worker runs. Each built-in queue runs 2 workers by default, so on autoscaled workers set the `LAKEKEEPER__TASK_*_WORKERS` of all other queues to 0.
 
 ### NATS
 
@@ -166,13 +188,20 @@ Lakekeeper uses [rust-rdkafka](https://github.com/fede1024/rust-rdkafka) to enab
 The following features of rust-rdkafka are enabled:
 
 - tokio
-- ztstd
-- gssapi-vendored
+- zstd
 - curl-static
 - ssl-vendored
 - libz-static
 
-This means that all features of [librdkafka](https://github.com/confluentinc/librdkafka) are usable. All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
+Lakekeeper can connect to Kafka in these ways:
+
+- Without authentication (`security.protocol` `PLAINTEXT`).
+- With TLS, including client certificates (`SSL`).
+- With SASL, also over TLS (`SASL_PLAINTEXT` or `SASL_SSL`), using the mechanisms `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` or `OAUTHBEARER`. For `OAUTHBEARER`, set `sasl.oauthbearer.method` to `oidc`, so that the Kafka client fetches tokens from your identity provider.
+
+Kerberos (SASL mechanism `GSSAPI`) is not supported.
+
+All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
 
 To publish events to Kafka, set the following environment variables:
 
@@ -455,18 +484,34 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 
 Lakekeeper uses in-memory caches to speed up certain operations.
 
-Most cache entries' time-to-live is jittered downward by a small random fraction (up to 10%), so an entry lives 90–100% of the configured TTL. This desynchronizes expiry across replicas that warmed the same key at the same time, preventing a fleet-wide refresh stampede on the TTL boundary. The configured `..._TIME_TO_LIVE_SECS` remains the upper bound — jitter only ever shortens an entry's life, never extends it.
+Most cache entries' time-to-live is jittered downward by a small random fraction (up to 10%), so an entry lives 90–100% of the configured TTL. This desynchronizes expiry across instances that warmed the same key at the same time, preventing a fleet-wide refresh stampede on the TTL boundary. The configured `..._TIME_TO_LIVE_SECS` remains the upper bound — jitter only ever shortens an entry's life, never extends it.
 
-With a separate read replica (`LAKEKEEPER__PG_DATABASE_URL_READ`), an entry loaded right after a change can hold the replica's pre-change state, and it is served until it expires, for at most its TTL.
+**Cache Invalidation Across Instances**
+{: #cache-invalidation }
+
+When several Lakekeeper instances share one database, a change made through one instance reaches the caches of all instances within one poll interval, about a second with the default settings. This covers the warehouse, namespace, secrets, role, user assignments and role ancestors caches. The short-term credentials cache and the user cache are not covered: their entries stay until their time-to-live ends.
+
+The instance that makes a change removes the changed entries from its own caches at once. Every write that changes a cached entry also writes a change record to the database, in the same transaction. Each instance reads the new change records from the primary database every `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL` (default 1 second), through `LAKEKEEPER__PG_DATABASE_URL_WRITE`, and removes the changed entries. After `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE` (default 10 seconds), it removes them a second time: a read replica that is behind the primary can return old data, and the cache can store it again. If an instance cannot know which changes it missed, for example after a database failover, it empties all the caches listed above.
+
+If an instance cannot read the change records for a while, for example while it cannot reach the database, it removes the changed entries when it can read the change records again. Until then, an entry stays at most until its time-to-live ends. So the time-to-live, plus the delay of your read replicas, is the longest time a change needs to reach every instance. If a removed role assignment or role membership must not apply that long, lower `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` and `LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS` together, for example to `30`.
+
+| Configuration Key | Type | Default | Description |
+|-------------------|------|---------|-------------|
+| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__ENABLED`</nobr> | boolean | `true` | Read the change records and remove the entries that other instances changed. If `false`, this instance keeps entries that other instances changed until their time-to-live ends. |
+| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__RECORDING_ENABLED`</nobr> | boolean | `true` | Write a change record for every write that changes a cached entry. If `false`, other instances keep the entries this instance changed until their time-to-live ends. Set it to `false` only if writing the change records causes problems in the database. |
+| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL`</nobr> | ISO-8601 duration | `PT1S` | How often each instance reads the change records. A value outside 100 ms to 60 s is changed to the nearest limit, with a warning at startup. |
+| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE`</nobr> | ISO-8601 duration | `PT10S` | Time between the first and the second removal of a changed entry. Set it higher than the delay of your read replicas. A value above 60 s is lowered to 60 s, with a warning at startup. |
+
+See [Monitoring](./monitoring.md#cache-invalidation-metrics) for the metrics and [Production](./production.md) for database recommendations.
 
 **Short-Term Credentials (STC) Cache**
 
-When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
+When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times. These settings also apply to a separate cache for the credentials Lakekeeper signs S3 requests with when it assumes a role or uses its system identity, so it does not load new credentials for every signed request. Static keys of the system identity have no expiry; they are cached for 5 minutes.
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | `LAKEKEEPER__CACHE__STC__ENABLED` | `true` | `true` | Enable or disable the short-term credentials cache. |
-| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. |
+| `LAKEKEEPER__CACHE__STC__CAPACITY` | `10000` | `10000` | Maximum number of credential entries to cache, **per cache** — S3 vended credentials, S3 signing credentials, Azure, and GCP each maintain a separate cache. A deployment can hold up to this many entries in each cache it uses. |
 
 _Expiry Mechanism_: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 
@@ -486,7 +531,7 @@ Caches warehouse metadata to reduce database queries for warehouse lookups.
 | `LAKEKEEPER__CACHE__WAREHOUSE__CAPACITY`          | integer | `1000`  | Maximum number of warehouses to cache. Default: `1000` |
 | `LAKEKEEPER__CACHE__WAREHOUSE__TIME_TO_LIVE_SECS` | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
 
-If the cache is enabled, changes to Storage Profile may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. Warehouse metadata is guaranteed to be fresh for load table & view operations also for multi-worker deployments.
+Warehouse metadata is guaranteed to be fresh for load table & view operations also when several instances run.
 
 _Metrics_: The Warehouse cache exposes Prometheus metrics for monitoring:
 
@@ -504,7 +549,7 @@ Caches namespace metadata and hierarchies to reduce database queries for namespa
 | `LAKEKEEPER__CACHE__NAMESPACE__CAPACITY`          | integer | `1000`  | Maximum number of namespaces to cache. Default: `1000` |
 | `LAKEKEEPER__CACHE__NAMESPACE__TIME_TO_LIVE_SECS` | integer | `60`    | Time-to-live for cache entries in seconds. Default: `60` |
 
-If the cache is enabled, changes to namespace properties may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. The namespace cache stores both individual namespaces and their parent hierarchies for efficient lookups.
+The namespace cache stores both individual namespaces and their parent hierarchies for efficient lookups.
 
 _Metrics_: The Namespace cache exposes Prometheus metrics for monitoring:
 
@@ -538,8 +583,6 @@ Caches role metadata to reduce database queries for role lookups. The role cache
 | `LAKEKEEPER__CACHE__ROLE__CAPACITY`          | integer | `10000` | Maximum number of roles to cache. Default: `10000` |
 | `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
 
-If the cache is enabled, changes to role metadata may take up to the configured TTL (default: 120 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the cache is always up to date. The cache is automatically invalidated when roles are updated or deleted.
-
 _Metrics_: The Role cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="role"}`: Current number of entries in the cache
@@ -556,11 +599,17 @@ Caches the set of roles assigned to each user (`UserId → role assignments`). O
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
 | `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`; a larger value stops Lakekeeper at startup. Default: `120` (2 minutes) |
 
-Adding a user to a role or removing them, adding or removing a member role, deleting a role, rebinding a role's source system, and a role provider sync update the affected users' entries on the worker that handled the change. Other workers keep serving their entries until they expire, so the change reaches them within the TTL plus read-replica lag.
+These changes update the affected users' entries on all instances within one poll interval (default 1 second), see [Cache Invalidation Across Instances](#cache-invalidation):
 
-A **removed** assignment therefore keeps applying on other workers for up to the TTL. Even on the worker that handled the change, a read that starts just after the clear can still be served by a lagging read replica and cache what the replica saw. If that window is too wide for a multi-worker deployment, lower this TTL and `LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS` together, for example to `30`. To read from the database every time, set `ENABLED=false`; a TTL of `0` leaves the cache enabled with every entry already expired.
+- adding a user to a role or removing them
+- adding or removing a member role
+- deleting a role or rebinding its source system
+- deleting a user or a project
+- a role provider sync that changed a user's roles
 
-To remove a user's access on every worker at once, add a Cedar `forbid` policy for them, which applies on every worker within `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` (default 5 seconds), or restart the workers, which empties all caches. Cedar grants are not cached, so revoking a grant takes effect on every worker after read-replica lag.
+To read from the database every time, set `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__ENABLED=false`. A TTL of `0` leaves the cache enabled with every entry already expired.
+
+To remove a user's access on every instance without depending on cache invalidation, add a Cedar `forbid` policy for them, which applies on every instance within `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` (default 5 seconds), or restart the instances, which empties all caches. Cedar grants are not cached, so revoking a grant takes effect on every instance after read-replica lag.
 
 _Metrics_: The User Assignments cache exposes Prometheus metrics for monitoring:
 
@@ -591,9 +640,7 @@ Only authorizers that resolve role nesting from Lakekeeper's own role store use 
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
 | <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. A value above `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` is lowered to it, with a warning at startup. Default: `120` (2 minutes) |
 
-Adding or removing a member role, deleting a role, or rebinding a role's source system clears every entry on the worker that handled the request — not only the role named, since one edge changes the ancestors of everything nested below it. Other workers wait for their entries to expire, so a change takes effect within the TTL rather than immediately.
-
-The two directions are not equivalent: a **removed** membership stays visible for up to the TTL, so a policy written for the former parent keeps applying for that long. Two things can extend that window even on the worker that handled the write. A read already in flight when the clear happens is discarded rather than cached, but a read that starts just after it can still be served by a lagging read replica and cache what the replica saw. Shorten the TTL together with `LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS` if the window is too wide, or set `ENABLED=false` to read from the database every time.
+Adding or removing a member role, deleting a role, or rebinding a role's source system empties this cache on all instances within one poll interval (default 1 second), see [Cache Invalidation Across Instances](#cache-invalidation). It empties every entry, not only the role named, since one membership change changes the ancestors of every role nested below it. To read from the database every time, set `LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED=false`.
 
 _Metrics_: The Role Ancestors cache exposes Prometheus metrics for monitoring:
 
@@ -611,7 +658,7 @@ Caches each user's email (`UserId → email`). Read only when audit records carr
 | `LAKEKEEPER__CACHE__USER__CAPACITY`          | integer | `10000` | Maximum number of users held in memory. Default: `10000` |
 | `LAKEKEEPER__CACHE__USER__TIME_TO_LIVE_SECS` | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
 
-Creating, updating or deleting a user updates its entry on the worker that handled the change, including users written by first login and by role provider syncs. Other workers keep their entries until they expire, so an email set, changed or removed elsewhere reaches their audit records within the TTL.
+Creating, updating or deleting a user updates its entry on the instance that handled the change, including users written by first login and by role provider syncs. Other instances keep their entries until they expire, so an email set, changed or removed elsewhere reaches their audit records within the TTL.
 
 _Metrics_: The User cache exposes Prometheus metrics for monitoring:
 
@@ -632,17 +679,18 @@ Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeepe
 
 Lakekeeper validates outbound TLS connections against two root stores combined:
 
-- **Mozilla root CAs** bundled into the binary via `webpki-roots` / `webpki-root-certs`. Public endpoints (AWS, GCS, Azure, OIDC providers) work out of the box, including on minimal images with no system CA bundle (scratch, `distroless`, `ubi-micro`).
+- **Mozilla root CAs** bundled into the binary via `webpki-roots` / `webpki-root-certs`. Public endpoints (AWS, Azure, OIDC providers) work out of the box, including on minimal images with no system CA bundle (scratch, `distroless`, `ubi-micro`).
 - **System / custom CAs** loaded via `rustls-native-certs`, which respects `SSL_CERT_FILE` and `SSL_CERT_DIR`. Point these at a PEM bundle or directory to trust self-signed certificates (e.g. for MinIO, internal IdPs). When unset, the standard host paths are consulted (`/etc/ssl/certs/...`, `/etc/pki/tls/certs/...`, etc.).
 
 The certificate presented by an endpoint cannot itself be a CA — it must be an end-entity certificate, otherwise TLS handshakes fail with `CaUsedAsEndEntity`.
 
-Two code paths do _not_ use the bundled webpki roots and therefore require a system CA bundle at `/etc/ssl/certs/ca-certificates.crt` (or one of the other standard locations):
+These code paths do _not_ use the bundled webpki roots and therefore require a system CA bundle at `/etc/ssl/certs/ca-certificates.crt` (or one of the other standard locations):
 
+- **Google Cloud Storage** (via Google's Rust SDK).
 - **Vault** integration (via `vaultrs` → `rustls-platform-verifier`). You can also pass a PEM bundle explicitly through the Vault client configuration.
 - **Kafka** integration (via `librdkafka` / OpenSSL).
 
-The official `distroless` and `ubi` images ship a CA bundle, so these work without extra configuration. If you roll your own minimal image and use Vault or Kafka, install `ca-certificates` or copy a bundle to `/etc/ssl/certs/ca-certificates.crt`.
+The official `distroless` and `ubi` images ship a CA bundle, so these work without extra configuration. If you roll your own minimal image and use Google Cloud Storage, Vault or Kafka, install `ca-certificates` or copy a bundle to `/etc/ssl/certs/ca-certificates.crt`.
 
 ### Request Limits
 
@@ -679,16 +727,19 @@ The bound is applied to the raw list the client sent, before Lakekeeper decides 
 
 ### Maintenance Mode
 
-Captured at startup; not dynamic. While `read-only`:
+`LAKEKEEPER__MAINTENANCE_MODE` sets the mode when Lakekeeper starts. An instance admin can also switch a running Lakekeeper process into or out of read-only with `POST /management/v1/server/maintenance-mode` and a body of `{"mode": "read-only"}` or `{"mode": "off"}`. Switching back to `off` works only when `LAKEKEEPER__MAINTENANCE_MODE` is not `read-only` at startup. The call changes only the process that serves it, so call each pod on its own address, not through the Service. When the host name of the process is known, the response includes it in `hostname`; on Kubernetes this is usually the pod name. A restarted process starts in the mode the variable sets again. Pods that serve no API (`LAKEKEEPER__SERVE_HTTP_API=false`) cannot be switched this way: scale them down or restart them with `LAKEKEEPER__MAINTENANCE_MODE=read-only`.
 
-- Mutating requests (anything other than `GET`/`HEAD`/`OPTIONS`) on `/catalog/v1` and `/management/v1` return `503` with `Retry-After: 60` and `error.type = "MaintenanceModeError"`. `/health` is unaffected.
-- Built-in task queue workers are not started.
+While `read-only`:
+
+- Mutating requests (anything other than `GET`/`HEAD`/`OPTIONS`) on `/catalog/v1` and `/management/v1` return `503` with `Retry-After: 60` and `error.type = "MaintenanceModeError"`. Two exceptions: `POST /management/v1/server/maintenance-mode`, so read-only can be switched off again, and the `POST` requests below that only read. `/health` is unaffected.
+- Requests that only read keep working, even when they are sent as `POST`: searches, task listings, permission checks, endpoint statistics, table metrics reports and S3 request signing.
+- No new background tasks start. Tasks already running finish. With `LAKEKEEPER__MAINTENANCE_MODE=read-only`, built-in task queue workers are not started at all.
 - `GET /v1/config` skips user auto-registration.
 - `GET /health` exposes the current mode as `maintenance_mode` for operator fan-out checks.
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
-| `LAKEKEEPER__MAINTENANCE_MODE` | `read-only` | — | `off` (default) or `read-only`. Captured at startup; not dynamic. |
+| `LAKEKEEPER__MAINTENANCE_MODE` | `read-only` | `off` | `off` or `read-only`. Applies from startup. |
 
 ### Idempotency
 

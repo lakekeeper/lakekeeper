@@ -20,7 +20,7 @@
 //! grant on a parent resource is a grant on the parent. Resolving what a principal
 //! may *effectively* do is a separate question answered by the action-check API.
 
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
 
 use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -31,7 +31,7 @@ use super::{
     IsAllowedActionError, UserOrRole, UserOrRoleId,
 };
 use crate::{
-    api::{RequestMetadata, iceberg::v1::PaginationQuery},
+    api::{ArcRequestMetadata, RequestMetadata, iceberg::v1::PaginationQuery},
     service::{
         ApplyGrantsStoreError, CatalogStore, GenericTableId, GenericTabularInfo,
         NamespaceHierarchy, NamespaceId, ProjectId, ResolvedWarehouse, TableId, TableInfo,
@@ -1103,7 +1103,7 @@ pub(crate) async fn write_bootstrap_grants<C: CatalogStore, A: Authorizer>(
 /// unannounced — as any hard delete of a resource does.
 pub(crate) fn emit_bootstrap_grants_async(
     dispatcher: &EventDispatcher,
-    request_metadata: Arc<RequestMetadata>,
+    request_metadata: ArcRequestMetadata,
     created: Vec<GrantSpec>,
 ) {
     if created.is_empty() {

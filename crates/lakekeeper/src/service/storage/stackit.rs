@@ -228,6 +228,7 @@ impl StackitProfile {
             // AWS-only, and deliberately not exposed on the STACKIT profile.
             assume_role_arn: None,
             sts_session_tags: BTreeMap::new(),
+            sts_session_policy_principal: None,
             aws_kms_key_arn: None,
             // `s3a://` / `s3n://` are for migrating Hadoop tables; not a
             // STACKIT concern.

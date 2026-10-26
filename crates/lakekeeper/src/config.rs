@@ -85,6 +85,7 @@ pub(crate) fn get_config() -> DynAppConfig {
 
     validate_openid_provider_ids(&config);
     validate_required_claims(&config);
+    validate_task_drain(&config);
 
     if !config.openid_providers.is_empty() && config.openid_provider_uri.is_none() {
         tracing::warn!(
@@ -145,9 +146,30 @@ pub(crate) fn get_config() -> DynAppConfig {
     }
 
     validate_cache_ttls(&mut config);
+    validate_cache_invalidation(&mut config.cache.invalidation);
     warn_deprecated_cache_options(&config);
 
     config
+}
+
+/// The poll interval is kept between 100 ms and 60 s, the grace period at most 60 s.
+fn validate_cache_invalidation(config: &mut CacheInvalidation) {
+    let interval = config.poll_interval;
+    config.poll_interval = interval.clamp(Duration::from_millis(100), Duration::from_secs(60));
+    if config.poll_interval != interval {
+        tracing::warn!(
+            "LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL ({interval:?}) is outside 100 ms to \
+             60 s; using {:?}",
+            config.poll_interval
+        );
+    }
+    let grace = config.reevict_grace;
+    config.reevict_grace = grace.min(Duration::from_secs(60));
+    if config.reevict_grace != grace {
+        tracing::warn!(
+            "LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE ({grace:?}) is above 60 s; using 60 s"
+        );
+    }
 }
 
 fn warn_deprecated_cache_options(config: &DynAppConfig) {
@@ -225,6 +247,29 @@ fn validate_openid_provider_ids(config: &DynAppConfig) {
         assert!(
             idp_id != OIDC_IDP_ID,
             "Invalid OIDC provider '{idp_id}': IdP ID '{OIDC_IDP_ID}' is reserved"
+        );
+    }
+}
+
+/// Idle exit and max lifetime stop the process, so they would stop the HTTP API with the
+/// workers.
+fn validate_task_drain(config: &DynAppConfig) {
+    for (name, value) in [
+        (
+            "LAKEKEEPER__TASK_IDLE_EXIT_AFTER",
+            config.task_idle_exit_after,
+        ),
+        ("LAKEKEEPER__TASK_MAX_LIFETIME", config.task_max_lifetime),
+    ] {
+        let Some(value) = value else { continue };
+        assert!(
+            !config.serve_http_api,
+            "{name} is set, but this process serves the HTTP API, which would stop with the \
+             workers. Set it only on headless workers (LAKEKEEPER__SERVE_HTTP_API=false)."
+        );
+        assert!(
+            !value.is_zero(),
+            "{name} must be greater than 0. Leave it unset to turn it off."
         );
     }
 }
@@ -680,6 +725,29 @@ pub struct DynAppConfig {
     pub task_tabular_purge_workers: usize,
     /// Number of workers to spawn for cleaning task logs. (default: 2)
     pub task_log_cleanup_workers: usize,
+    /// How long the task workers may finish their running tasks after a stop signal before they
+    /// are stopped. Zero stops them without waiting. (default: 0)
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub task_drain_timeout: Duration,
+    /// Stop a headless worker after this long without a running task. Waits for running tasks
+    /// without a deadline. (default: off)
+    #[serde(
+        default,
+        deserialize_with = "optional_seconds_to_std_duration",
+        serialize_with = "serialize_optional_std_duration_as_ms"
+    )]
+    pub task_idle_exit_after: Option<Duration>,
+    /// Stop a headless worker this long after its start: it picks no more tasks and exits when
+    /// its running tasks end. (default: off)
+    #[serde(
+        default,
+        deserialize_with = "optional_seconds_to_std_duration",
+        serialize_with = "serialize_optional_std_duration_as_ms"
+    )]
+    pub task_max_lifetime: Option<Duration>,
     // ------------- Tabular -------------
     /// Delay in seconds after which a tabular will be deleted
     #[serde(
@@ -756,7 +824,10 @@ pub struct DynAppConfig {
     /// zero-downtime version upgrade: a rolling restart sets the flag on every
     /// pod, the operator then runs migrations against the database, and a
     /// second rolling restart removes the flag once new pods are ready. The
-    /// flag is captured once at startup and is not dynamic.
+    /// value is captured once at startup and acts as a floor: an instance admin
+    /// can switch a running process into read-only with
+    /// `POST /management/v1/server/maintenance-mode`, but not out of a
+    /// `read-only` set here (see [`crate::service::maintenance_mode`]).
     ///
     /// When `read-only`, mutating HTTP requests (anything other than GET, HEAD
     /// or OPTIONS) on `/catalog/v1` and `/management/v1` are rejected with
@@ -768,13 +839,15 @@ pub struct DynAppConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum MaintenanceMode {
     /// Normal operation.
     #[default]
     Off,
-    /// Reject mutating requests with 503, do not start built-in task queue
-    /// workers, suppress side-effecting writes on read endpoints.
+    /// Reject mutating requests with 503, pick no new tasks, suppress
+    /// side-effecting writes on read endpoints. When set by configuration,
+    /// built-in task queue workers are not started.
     ReadOnly,
 }
 
@@ -811,15 +884,38 @@ where
     D: Deserializer<'de>,
 {
     let buf = String::deserialize(deserializer)?;
-    Ok(if buf.ends_with("ms") {
-        Duration::from_millis(
-            u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
-        )
-    } else if buf.ends_with('s') {
-        Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
+    parse_std_duration(&buf).map_err(serde::de::Error::custom)
+}
+
+fn parse_std_duration(buf: &str) -> Result<Duration, std::num::ParseIntError> {
+    Ok(if let Some(millis) = buf.strip_suffix("ms") {
+        Duration::from_millis(u64::from_str(millis)?)
+    } else if let Some(secs) = buf.strip_suffix('s') {
+        Duration::from_secs(u64::from_str(secs)?)
     } else {
-        Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
+        Duration::from_secs(u64::from_str(buf)?)
     })
+}
+
+fn optional_seconds_to_std_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?
+        .map(|buf| parse_std_duration(&buf).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+fn serialize_optional_std_duration_as_ms<S>(
+    duration: &Option<Duration>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    duration
+        .map(|d| format!("{}ms", d.as_millis()))
+        .serialize(serializer)
 }
 
 pub(crate) fn serialize_std_duration_as_ms<S>(
@@ -1203,6 +1299,41 @@ pub(crate) struct Cache {
     pub(crate) role_ancestors: RoleAncestorsCache,
     /// User cache: `UserId → the user's email`, for audit email enrichment.
     pub(crate) user: UserCache,
+    /// Eviction of entries that another Lakekeeper instance changed.
+    pub(crate) invalidation: CacheInvalidation,
+}
+
+/// Eviction of cache entries that another Lakekeeper instance changed.
+///
+/// Every write that changes cached data records the changed keys in the database.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct CacheInvalidation {
+    /// Evict entries that other instances changed. Off, changed entries stay until their
+    /// time-to-live ends.
+    pub(crate) enabled: bool,
+    /// Record changed keys. Off, other instances keep changed entries until their
+    /// time-to-live ends. An emergency switch only.
+    pub(crate) recording_enabled: bool,
+    /// How often the change log is read (ISO-8601 duration, 100 ms to 60 s).
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub(crate) poll_interval: Duration,
+    /// How long after a change its entries are evicted a second time, for a read replica
+    /// that had not yet replayed the change at the first eviction (ISO-8601 duration, up to
+    /// 60 s).
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub(crate) reevict_grace: Duration,
+}
+
+impl Default for CacheInvalidation {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            recording_enabled: true,
+            poll_interval: Duration::from_secs(1),
+            reevict_grace: Duration::from_secs(10),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1409,6 +1540,9 @@ impl Default for DynAppConfig {
             task_soft_deletion_workers: 2,
             task_tabular_purge_workers: 2,
             task_log_cleanup_workers: 2,
+            task_drain_timeout: Duration::ZERO,
+            task_idle_exit_after: None,
+            task_max_lifetime: None,
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,
@@ -1890,6 +2024,78 @@ mod test {
     }
 
     #[test]
+    fn task_drain_settings_default_to_off() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert_eq!(config.task_drain_timeout, Duration::ZERO);
+            assert_eq!(config.task_idle_exit_after, None);
+            assert_eq!(config.task_max_lifetime, None);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn task_drain_settings_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
+            jail.set_env("LAKEKEEPER_TEST__TASK_DRAIN_TIMEOUT", "90s");
+            jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "180s");
+            jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "3600000ms");
+            let config = get_config();
+            assert_eq!(config.task_drain_timeout, Duration::from_secs(90));
+            assert_eq!(config.task_idle_exit_after, Some(Duration::from_secs(180)));
+            assert_eq!(config.task_max_lifetime, Some(Duration::from_secs(3600)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LAKEKEEPER__TASK_IDLE_EXIT_AFTER is set, but this process serves the HTTP API"
+    )]
+    fn task_idle_exit_is_rejected_with_the_http_api() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "180s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LAKEKEEPER__TASK_MAX_LIFETIME is set, but this process serves the HTTP API"
+    )]
+    fn task_max_lifetime_is_rejected_with_the_http_api() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "3600s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "LAKEKEEPER__TASK_IDLE_EXIT_AFTER must be greater than 0")]
+    fn task_idle_exit_of_zero_is_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
+            jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "0s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "LAKEKEEPER__TASK_MAX_LIFETIME must be greater than 0")]
+    fn task_max_lifetime_of_zero_is_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
+            jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "0ms");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_task_queue_config_millis() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__TASK_POLL_INTERVAL", "5ms");
@@ -2070,6 +2276,71 @@ mod test {
             assert!(!config.debug.log_authorization_header);
             Ok(())
         });
+    }
+
+    #[test]
+    fn cache_invalidation_settings() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.invalidation.enabled);
+            assert!(config.cache.invalidation.recording_enabled);
+            assert_eq!(
+                config.cache.invalidation.poll_interval,
+                Duration::from_secs(1)
+            );
+            assert_eq!(
+                config.cache.invalidation.reevict_grace,
+                Duration::from_secs(10)
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__INVALIDATION__ENABLED", "false");
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__INVALIDATION__POLL_INTERVAL",
+                "PT0.5S",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__INVALIDATION__REEVICT_GRACE",
+                "PT30S",
+            );
+            let config = get_config();
+            assert!(!config.cache.invalidation.enabled);
+            assert_eq!(
+                config.cache.invalidation.poll_interval,
+                Duration::from_millis(500)
+            );
+            assert_eq!(
+                config.cache.invalidation.reevict_grace,
+                Duration::from_secs(30)
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__INVALIDATION__REEVICT_GRACE",
+                "PT10M",
+            );
+            assert_eq!(
+                get_config().cache.invalidation.reevict_grace,
+                Duration::from_secs(60)
+            );
+            Ok(())
+        });
+
+        // The poll interval is kept between 100 ms and 60 s.
+        for (set, expected) in [
+            ("PT0.01S", Duration::from_millis(100)),
+            ("PT5M", Duration::from_secs(60)),
+        ] {
+            figment::Jail::expect_with(|jail| {
+                jail.set_env("LAKEKEEPER_TEST__CACHE__INVALIDATION__POLL_INTERVAL", set);
+                assert_eq!(get_config().cache.invalidation.poll_interval, expected);
+                Ok(())
+            });
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::{
         },
         management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
     },
-    config::{IdempotencyConfig, MaintenanceMode},
+    config::IdempotencyConfig,
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, SecretStore, State, Transaction, UserUpsertMode,
@@ -19,6 +19,7 @@ use crate::{
             Authorizer, AuthzWarehouseOps, CatalogWarehouseAction, RequireWarehouseActionError,
         },
         events::APIEventContext,
+        maintenance_mode::MAINTENANCE,
         request_project::parse_warehouse_arg,
     },
 };
@@ -39,11 +40,11 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
         // first-touch user-register side-effect so `GET /v1/config` stays a
         // pure read. Returning the catalog config itself is still valuable —
         // existing clients need it to keep reading.
-        let user_write = if matches!(CONFIG.maintenance_mode, MaintenanceMode::Off) {
+        let user_write = if MAINTENANCE.is_read_only() {
+            None
+        } else {
             maybe_register_user::<C>(&request_metadata, api_context.v1_state.catalog.clone())
                 .await?
-        } else {
-            None
         };
 
         let request_metadata_arc = Arc::new(request_metadata);

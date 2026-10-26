@@ -1,13 +1,32 @@
-import tomllib
+import json
+import re
+import subprocess
 
-def get_crate_version_parts():
-    with open("../../Cargo.toml", "rb") as f:
-        cargo_data = tomllib.load(f)
-    version_str = cargo_data["workspace"]["package"]["version"]
-    version_parts = [ int(x) for x in version_str.split(".") ]
-    if len(version_parts) < 2:
-        raise ValueError(f"Minor version not specified in {version_str}")
-    return version_parts
+RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+
+def last_release_in_history():
+    """The highest release tag (vX.Y.Z) in the history of HEAD.
+
+    On `main` this is the last release cut from `main`, on a `rel-X-Y` branch
+    the last release of that line. A release pull request has the history of
+    its base branch, so it gets the same answer as the branch it releases.
+    """
+    tags = subprocess.run(
+        ["git", "tag", "--merged", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    releases = [
+        tuple(int(part) for part in match.groups())
+        for match in map(RELEASE_TAG.match, tags)
+        if match
+    ]
+    if not releases:
+        raise ValueError("No release tag (vX.Y.Z) in the history of HEAD. Fetch the tags.")
+    return max(releases)
+
 
 def previous_minor_version_of(major, minor):
     if minor - 1 >= 0:
@@ -18,14 +37,15 @@ def previous_minor_version_of(major, minor):
         # Assume the latest release of the previous major version is tagged on quay as follows.
         return f"{major - 1}"
 
+
 if __name__ == "__main__":
-    crate_version_parts  = get_crate_version_parts()
-    prev_minor = previous_minor_version_of(crate_version_parts[0], crate_version_parts[1])
-    # Referencing tags for quay.io/lakekeeper/catalog
+    major, minor, _ = last_release_in_history()
+    # Referencing tags for quay.io/lakekeeper/catalog. Each `vX.Y` tag points to the
+    # highest patch of that release line. The test upgrades from the releases users
+    # come from: the newest patch of this line and of the minor before it.
     versions = [
-        "latest", # the latest version released to quay.io
-        f"v{prev_minor}"
+        f"v{major}.{minor}",
+        f"v{previous_minor_version_of(major, minor)}",
     ]
     # Print in the format expected by the migrations workflow.
-    print(f"initial-versions={versions}")
-
+    print(f"initial-versions={json.dumps(versions)}")

@@ -44,8 +44,9 @@ aws-lc-rs = "1"
 # `rustls` feature is excluded because it pulls in the legacy hyper-rustls 0.24 /
 # rustls 0.21 / rustls-webpki 0.101 stack (RUSTSEC-2026-0098). `default-https-client`
 # (also a default feature) provides the modern rustls 0.23 / hyper-rustls 0.27 path.
+# `sigv4a` is excluded: it serves only Multi-Region Access Points (unsupported here) and
+# pulls in crypto-bigint 0.5 (RUSTSEC-2026-0387).
 aws-sdk-s3 = { version = "1.121", default-features = false, features = [
-    "sigv4a",
     "http-1x",
     "default-https-client",
     "rt-tokio",
@@ -63,11 +64,13 @@ aws-smithy-types = { version = "1.3.4" }
 axum = { version = "0.8.1" }
 axum-extra = { version = "0.12.0", features = ["middleware"] }
 axum-macros = { version = "0.5.0" }
-axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
+axum-prometheus = { version = "0.9.0" }
 azure_core = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest",
     "enable_reqwest_rustls",
+    # Retry waits sleep on tokio; without it, each wait spawns an OS thread.
+    "tokio-sleep",
 ] }
 azure_identity = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
     "enable_reqwest",
@@ -96,17 +99,11 @@ figment = { version = "^0.10", features = ["env"] }
 figment_file_provider_adapter = "0.1.1"
 flate2 = "^1.0"
 futures = "^0.3"
-gcloud-token = "1.0.0"
-google-cloud-auth = { package = "gcloud-auth", version = "~1.2", features = [
-    "rustls-tls",
-    "jwt-aws-lc-rs",
-    "external-account",
-], default-features = false }
-google-cloud-storage = { package = "gcloud-storage", version = "~1.2", default-features = false, features = [
-    "rustls-tls",
-    "auth",
+google-cloud-auth = { version = "1.17", default-features = false, features = [
+    "default-rustls-provider",
 ] }
-google-cloud-token = { package = "token-source", version = "1.0" }
+google-cloud-gax = { version = "1.15" }
+google-cloud-storage = { version = "1.20" }
 headers = { version = "^0.4" }
 heck = "0.5.0"
 hmac = "0.12"
@@ -119,7 +116,7 @@ hyper-util = { version = "0.1.20", features = [
     "service",
     "tokio",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "a0d385821c75855acb654a017d945109b57f32b5" }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "261266c87b3990a6e9101fbcf5c75da18603ff0f" }
 inventory = "0.3.24"
 iso8601 = "0.6.2"
 itertools = "0.14.0"
@@ -153,7 +150,6 @@ quote = "1.0"
 rdkafka = { version = "0.38.0", default-features = false, features = [
     "tokio",
     "zstd",
-    "gssapi-vendored",
     "curl-static",
     "ssl-vendored",
     "libz-static",
@@ -165,8 +161,6 @@ reqwest = { version = "0.12.28", default-features = false, features = [
     "rustls-tls-native-roots",
     "rustls-tls-webpki-roots",
 ] }
-reqwest-middleware = "0.4"
-reqwest-retry = "0.8"
 schemars = { version = "1.2", features = ["derive"] }
 semver = "1.0.27"
 serde = { version = "^1.0", features = ["rc"] }
@@ -208,6 +202,7 @@ tokio-metrics = { version = "0.4.9", features = [
     "rt",
 ] }
 tokio-util = { version = "^0.7" }
+tonic = { version = "0.14", default-features = false }
 tower = { version = "^0.5" }
 tower-http = { version = "^0.6", features = [
     "catch-panic",
