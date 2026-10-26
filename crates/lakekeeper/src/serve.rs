@@ -207,7 +207,6 @@ pub struct ServeConfiguration<
 /// - If the service cannot bind to the specified address.
 /// - If the terms of service have not been accepted during bootstrap.
 /// - If a cache change receiver names a domain of Lakekeeper, or two name the same domain.
-/// - If idle exit or max lifetime is set while the process serves the HTTP API.
 pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     mut config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
@@ -225,7 +224,6 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
     }
 
     let drain_settings = DrainSettings::from_config();
-    drain_settings.validate(CONFIG.serve_http_api)?;
     let cancellation_token = CancellationToken::new();
 
     // Validate Authenticators and propagate their IDP IDs to the authorizer

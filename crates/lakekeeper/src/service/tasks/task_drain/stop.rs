@@ -40,29 +40,6 @@ impl DrainSettings {
             max_lifetime: crate::CONFIG.task_max_lifetime,
         }
     }
-
-    /// Idle exit and max lifetime would stop the HTTP API with the workers.
-    ///
-    /// # Errors
-    /// If either is set while the process serves the HTTP API, or is zero.
-    pub(crate) fn validate(&self, serve_http_api: bool) -> anyhow::Result<()> {
-        for (name, value) in [
-            ("LAKEKEEPER__TASK_IDLE_EXIT_AFTER", self.idle_exit_after),
-            ("LAKEKEEPER__TASK_MAX_LIFETIME", self.max_lifetime),
-        ] {
-            let Some(value) = value else { continue };
-            anyhow::ensure!(
-                !serve_http_api,
-                "{name} is set, but this process serves the HTTP API, which would stop with \
-                 the workers. Set it only on headless workers (LAKEKEEPER__SERVE_HTTP_API=false)."
-            );
-            anyhow::ensure!(
-                !value.is_zero(),
-                "{name} must be greater than 0. Leave it unset to turn it off."
-            );
-        }
-        Ok(())
-    }
 }
 
 /// What ended a process's work.
@@ -556,30 +533,5 @@ mod tests {
     fn picks_outside_a_runner_are_not_gated() {
         let permit = admit_pick().expect("outside a runner the gate is open");
         assert!(permit.control.is_none());
-    }
-
-    #[test]
-    fn idle_exit_and_lifetime_refuse_the_http_api_and_zero() {
-        let api = "this process serves the HTTP API";
-        let zero = "must be greater than 0";
-        for (settings, serve_http_api, expected) in [
-            (settings(0, None, None), true, None),
-            (settings(600, None, None), true, None),
-            (settings(0, Some(180), None), false, None),
-            (settings(0, Some(180), Some(3600)), false, None),
-            (settings(0, Some(180), None), true, Some(api)),
-            (settings(0, None, Some(3600)), true, Some(api)),
-            (settings(0, Some(0), None), false, Some(zero)),
-            (settings(0, None, Some(0)), false, Some(zero)),
-        ] {
-            let result = settings.validate(serve_http_api);
-            match expected {
-                None => assert!(result.is_ok(), "{settings:?}: {result:?}"),
-                Some(expected) => {
-                    let error = result.unwrap_err().to_string();
-                    assert!(error.contains(expected), "{settings:?}: {error}");
-                }
-            }
-        }
     }
 }

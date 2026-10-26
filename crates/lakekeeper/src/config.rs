@@ -85,6 +85,7 @@ pub(crate) fn get_config() -> DynAppConfig {
 
     validate_openid_provider_ids(&config);
     validate_required_claims(&config);
+    validate_task_drain(&config);
 
     if !config.openid_providers.is_empty() && config.openid_provider_uri.is_none() {
         tracing::warn!(
@@ -246,6 +247,29 @@ fn validate_openid_provider_ids(config: &DynAppConfig) {
         assert!(
             idp_id != OIDC_IDP_ID,
             "Invalid OIDC provider '{idp_id}': IdP ID '{OIDC_IDP_ID}' is reserved"
+        );
+    }
+}
+
+/// Idle exit and max lifetime stop the process, so they would stop the HTTP API with the
+/// workers.
+fn validate_task_drain(config: &DynAppConfig) {
+    for (name, value) in [
+        (
+            "LAKEKEEPER__TASK_IDLE_EXIT_AFTER",
+            config.task_idle_exit_after,
+        ),
+        ("LAKEKEEPER__TASK_MAX_LIFETIME", config.task_max_lifetime),
+    ] {
+        let Some(value) = value else { continue };
+        assert!(
+            !config.serve_http_api,
+            "{name} is set, but this process serves the HTTP API, which would stop with the \
+             workers. Set it only on headless workers (LAKEKEEPER__SERVE_HTTP_API=false)."
+        );
+        assert!(
+            !value.is_zero(),
+            "{name} must be greater than 0. Leave it unset to turn it off."
         );
     }
 }
@@ -2013,6 +2037,7 @@ mod test {
     #[test]
     fn task_drain_settings_from_env() {
         figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
             jail.set_env("LAKEKEEPER_TEST__TASK_DRAIN_TIMEOUT", "90s");
             jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "180s");
             jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "3600000ms");
@@ -2020,6 +2045,52 @@ mod test {
             assert_eq!(config.task_drain_timeout, Duration::from_secs(90));
             assert_eq!(config.task_idle_exit_after, Some(Duration::from_secs(180)));
             assert_eq!(config.task_max_lifetime, Some(Duration::from_secs(3600)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LAKEKEEPER__TASK_IDLE_EXIT_AFTER is set, but this process serves the HTTP API"
+    )]
+    fn task_idle_exit_is_rejected_with_the_http_api() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "180s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LAKEKEEPER__TASK_MAX_LIFETIME is set, but this process serves the HTTP API"
+    )]
+    fn task_max_lifetime_is_rejected_with_the_http_api() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "3600s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "LAKEKEEPER__TASK_IDLE_EXIT_AFTER must be greater than 0")]
+    fn task_idle_exit_of_zero_is_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
+            jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "0s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "LAKEKEEPER__TASK_MAX_LIFETIME must be greater than 0")]
+    fn task_max_lifetime_of_zero_is_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
+            jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "0ms");
+            let _config = get_config();
             Ok(())
         });
     }
