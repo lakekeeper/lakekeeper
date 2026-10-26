@@ -2295,7 +2295,7 @@ fn every_audit_record_example_in_the_docs_validates() {
 
 /// The gate and the emission name one target.
 ///
-/// `enabled()` asks the subscriber about a target, and the shapes write to one. If the two
+/// `log_enabled()` asks the subscriber about a target, and the shapes write to one. If the two
 /// differed, the gate would answer for a target nothing writes to.
 #[test]
 fn the_gate_and_the_emission_name_one_target() {
@@ -2305,7 +2305,7 @@ fn the_gate_and_the_emission_name_one_target() {
     assert_eq!(
         record.get("target").and_then(serde_json::Value::as_str),
         Some(crate::audit::AUDIT_TARGET),
-        "a record must be written to the target `enabled()` asks about"
+        "a record must be written to the target `log_enabled()` asks about"
     );
     assert!(
         !crate::audit::AUDIT_TARGET.contains("backends"),

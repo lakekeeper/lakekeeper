@@ -114,8 +114,8 @@ pub mod audit {
     pub use crate::service::events::backends::audit::{
         AUDIT_TARGET, ActorRecord, AnyWireStr, AuditEmitter, AuditJson, AuditPart, EmitterStamp,
         Kind, OperationRecord, OperationValues, OutcomeValues, RecordContextKey, RecordOrigin,
-        Registration, Vocabulary, Wire, WireKey, WireName, enabled, is_emitter_name,
-        is_major_minor, log_format, principal_with_known_email, warn_on_retired_audit_filter,
+        Registration, Vocabulary, Wire, WireKey, WireName, is_emitter_name, is_major_minor,
+        log_enabled, log_format, principal_with_known_email, warn_on_retired_audit_filter,
     };
     #[cfg(any(test, feature = "test-utils"))]
     pub use crate::service::events::backends::audit::{schema, validate};

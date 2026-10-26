@@ -298,7 +298,8 @@ impl EventDispatcher {
     ///
     /// Public, so an extension can dispatch its own records: build an
     /// [`OperationRecord`](crate::audit::OperationRecord) and call its `dispatch`, which
-    /// calls this while the audit trail is enabled. A listener error is logged, not returned.
+    /// calls this while the audit log records it (see [`crate::audit::log_enabled`]). A
+    /// listener error is logged, not returned.
     pub async fn operation_recorded(&self, event: types::OperationRecordedEvent) {
         dispatch_event!(self, operation_recorded, event);
     }
@@ -737,7 +738,9 @@ pub trait EventListener: Send + Sync + Debug + Display {
     /// or access, with no permission decision of its own, such as an admission rejection or
     /// a record an extension dispatched.
     ///
-    /// Fires only while the audit trail is enabled. Grant records are not delivered here:
+    /// Fires only while the audit log records operation records (see
+    /// [`crate::audit::log_enabled`]): with the audit trail enabled and a `tracing` filter
+    /// that keeps the audit target. Grant records are not delivered here:
     /// every listener receives the same grants through
     /// [`grants_changed`](Self::grants_changed).
     async fn operation_recorded(

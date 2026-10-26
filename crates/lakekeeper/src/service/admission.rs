@@ -248,7 +248,7 @@ impl AdmissionRejection {
     pub(crate) fn into_error(self) -> ErrorModel {
         let recorded_elsewhere = match self.kind {
             RejectionKind::Unavailable { .. } => true,
-            RejectionKind::Forbidden => crate::audit::enabled(),
+            RejectionKind::Forbidden => crate::audit::log_enabled(),
         };
         ErrorModel::builder()
             .message(self.message.into_owned())
@@ -534,7 +534,7 @@ impl AdmissionGates {
                     // Dispatched on a task of its own, like the authorization
                     // records: admission runs on every authenticated request, so
                     // a slow listener must not delay the rejection.
-                    if crate::audit::enabled() {
+                    if crate::audit::log_enabled() {
                         let record = crate::audit::OperationRecord::new(
                             AuditOperation::AdmissionDecided.as_wire(),
                             ctx.triggered_by,
