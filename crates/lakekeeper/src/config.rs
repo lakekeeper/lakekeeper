@@ -702,7 +702,7 @@ pub struct DynAppConfig {
     /// Number of workers to spawn for cleaning task logs. (default: 2)
     pub task_log_cleanup_workers: usize,
     /// How long the task workers may finish their running tasks after a stop signal before they
-    /// are cancelled. Zero cancels them at once. (default: 0)
+    /// are stopped. Zero stops them without waiting. (default: 0)
     #[serde(
         deserialize_with = "seconds_to_std_duration",
         serialize_with = "serialize_std_duration_as_ms"

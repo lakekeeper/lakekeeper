@@ -1,12 +1,15 @@
 //! Stopping the task workers of a process gracefully.
 //!
-//! A drain closes a gate that workers check before each pick, waits until no picked task runs,
-//! and only then lets the process cancel its workers. A worker counts as running a task from the
-//! pick that returned it until it polls again or ends.
+//! A drain closes a gate that every pick checks, waits until no picked task runs, and only then
+//! lets the process cancel its workers. A worker counts as running a task from the pick that
+//! returned it until it picks or polls again, or ends.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use std::{
+    cell::Cell,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use tokio::{sync::Notify, time::Instant};
@@ -50,9 +53,24 @@ impl TaskRunnerControl {
     }
 
     fn task_ended(&self) {
+        // Set before the counter drops: an idle timer that sees no running task reads this end.
         *self.lock_last_activity() = Instant::now();
         self.running.fetch_sub(1, Ordering::SeqCst);
         self.changed.notify_waiters();
+    }
+}
+
+#[cfg(any(feature = "router", feature = "test-utils"))]
+impl TaskRunnerControl {
+    /// Picks return nothing more; polling workers wait until they are cancelled.
+    pub(crate) fn stop_picking(&self) {
+        self.stop_picking.store(true, Ordering::SeqCst);
+        self.changed.notify_waiters();
+    }
+
+    /// Tasks the workers picked and have not ended.
+    pub(crate) fn running_tasks(&self) -> usize {
+        self.running.load(Ordering::SeqCst)
     }
 }
 
@@ -63,12 +81,12 @@ tokio::task_local! {
 /// One worker of a runner. Ends the worker's task when the worker ends or panics.
 struct WorkerSlot {
     control: ArcTaskRunnerControl,
-    busy: AtomicBool,
+    busy: Cell<bool>,
 }
 
 impl Drop for WorkerSlot {
     fn drop(&mut self) {
-        if *self.busy.get_mut() {
+        if self.busy.get() {
             self.control.task_ended();
         }
     }
@@ -82,74 +100,69 @@ pub(crate) fn run_as_worker<F: Future>(
     WORKER.scope(
         WorkerSlot {
             control,
-            busy: AtomicBool::new(false),
+            busy: Cell::new(false),
         },
         worker,
     )
 }
 
-/// Whether a worker may pick.
-pub(crate) enum PickAdmission {
-    /// Pick, then report a picked task with [`PickPermit::task_picked`]. `None` outside a runner.
-    Open(Option<PickPermit>),
-    /// The runner stopped picking.
-    Closed,
-}
-
-/// A pick in flight, counted until dropped.
+/// A pick in flight, counted until dropped. Counts nothing outside a runner.
 pub(crate) struct PickPermit {
-    control: ArcTaskRunnerControl,
+    control: Option<ArcTaskRunnerControl>,
 }
 
 impl PickPermit {
-    /// The pick returned a task: the worker runs it until it polls again.
+    /// The pick returned a task: the worker runs it until it picks or polls again.
     pub(crate) fn task_picked(self) {
-        let was_busy = WORKER.try_with(|slot| slot.busy.swap(true, Ordering::SeqCst));
-        debug_assert!(was_busy.is_ok(), "a permit exists only inside a worker");
+        let Some(control) = &self.control else {
+            return;
+        };
+        let was_busy = WORKER.try_with(|slot| slot.busy.replace(true));
+        debug_assert!(
+            was_busy.is_ok(),
+            "a counted permit exists only inside a worker"
+        );
         if was_busy == Ok(false) {
-            self.control.task_started();
+            control.task_started();
         }
     }
 }
 
 impl Drop for PickPermit {
     fn drop(&mut self) {
-        self.control.in_pick.fetch_sub(1, Ordering::SeqCst);
-        self.control.changed.notify_waiters();
+        if let Some(control) = &self.control {
+            control.in_pick.fetch_sub(1, Ordering::SeqCst);
+            control.changed.notify_waiters();
+        }
     }
 }
 
-/// Called when a worker polls for a task: the task it picked before has ended.
+/// Called when a worker picks or polls: the task it picked before has ended.
 pub(crate) fn end_task() {
     let _outside_a_runner = WORKER.try_with(|slot| {
-        if slot.busy.swap(false, Ordering::SeqCst) {
+        if slot.busy.replace(false) {
             slot.control.task_ended();
         }
     });
 }
 
-/// Called by a worker before each pick. Admits the pick unless its runner stopped picking. The
+/// Called before each pick. Returns `None` if the runner of this worker stopped picking. The
 /// pick is counted before the gate is read, so a drain either sees it or the worker sees the
 /// closed gate.
-pub(crate) fn admit_pick() -> PickAdmission {
+pub(crate) fn admit_pick() -> Option<PickPermit> {
     WORKER
         .try_with(|slot| {
             let control = &slot.control;
             control.in_pick.fetch_add(1, Ordering::SeqCst);
             let permit = PickPermit {
-                control: Arc::clone(control),
+                control: Some(Arc::clone(control)),
             };
-            if control.stop_picking.load(Ordering::SeqCst) {
-                drop(permit);
-                PickAdmission::Closed
-            } else {
-                PickAdmission::Open(Some(permit))
-            }
+            (!control.stop_picking.load(Ordering::SeqCst)).then_some(permit)
         })
-        .unwrap_or(PickAdmission::Open(None))
+        .unwrap_or(Some(PickPermit { control: None }))
 }
 
-/// A task runner for tests outside this crate: runs futures as its workers and drains them.
+/// A task runner for tests outside this crate: runs futures as its workers.
 #[cfg(feature = "test-utils")]
 #[derive(Debug, Clone, Default)]
 pub struct TestTaskRunner {
@@ -166,16 +179,16 @@ impl TestTaskRunner {
     /// Tasks the workers picked and have not ended.
     #[must_use]
     pub fn running_tasks(&self) -> usize {
-        self.control.running.load(Ordering::SeqCst)
+        self.control.running_tasks()
     }
 
     /// Closes the gate: the workers pick nothing more.
     pub fn stop_picking(&self) {
-        self.control.stop_picking.store(true, Ordering::SeqCst);
+        self.control.stop_picking();
     }
 }
 
 #[cfg(feature = "router")]
 mod stop;
 #[cfg(feature = "router")]
-pub(crate) use stop::{DrainSettings, StopReason, stop_signals, wait_for_stop_and_drain};
+pub(crate) use stop::{DrainSettings, stop_signals, wait_for_stop_and_drain};

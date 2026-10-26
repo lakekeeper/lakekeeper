@@ -32,8 +32,7 @@ use crate::{
         tasks::{
             TaskQueueRegistry,
             task_drain::{
-                ArcTaskRunnerControl, DrainSettings, StopReason, stop_signals,
-                wait_for_stop_and_drain,
+                ArcTaskRunnerControl, DrainSettings, stop_signals, wait_for_stop_and_drain,
             },
         },
     },
@@ -248,7 +247,7 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
         drain_settings,
         cancellation_token.clone(),
     );
-    service_ids.insert(stop_service.id, "Shutdown Signal Handler".to_string());
+    service_ids.insert(stop_service.id, "Shutdown Handler".to_string());
 
     // Endpoint statistics TX
     let (endpoint_statistics_tx, endpoint_statistics_rx) = tokio::sync::mpsc::channel(1000);
@@ -367,17 +366,7 @@ fn spawn_stop_service(
     let control = Arc::clone(&task_control);
     let mut signals = stop_signals();
     let handle = service_futures.spawn(async move {
-        let reason =
-            wait_for_stop_and_drain(&control, drain_settings, &mut signals, &cancellation_token)
-                .await;
-        match reason {
-            StopReason::Signal => tracing::info!("Shutdown signal received"),
-            StopReason::Idle => tracing::info!("No task ran for the idle exit time, stopping"),
-            StopReason::Lifetime => tracing::info!("Max lifetime reached, stopping"),
-            StopReason::Cancelled => {
-                tracing::info!("Shutdown signal function terminating due to external cancellation");
-            }
-        }
+        wait_for_stop_and_drain(&control, drain_settings, &mut signals, &cancellation_token).await;
         Ok(())
     });
     StopService {

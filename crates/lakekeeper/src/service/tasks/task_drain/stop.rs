@@ -7,21 +7,12 @@ use tokio::time::Instant;
 use super::TaskRunnerControl;
 
 impl TaskRunnerControl {
-    /// Workers pick nothing more; they wait in their poll until they are cancelled.
-    pub(crate) fn stop_picking(&self) {
-        self.stop_picking.store(true, Ordering::SeqCst);
-        self.changed.notify_waiters();
-    }
-
     /// Picking stopped, no pick is in flight and no picked task runs.
     pub(crate) fn is_drained(&self) -> bool {
+        // `in_pick` before `running`: a pick raises `running` before it lowers `in_pick`.
         self.stop_picking.load(Ordering::SeqCst)
             && self.in_pick.load(Ordering::SeqCst) == 0
             && self.running.load(Ordering::SeqCst) == 0
-    }
-
-    pub(crate) fn running_tasks(&self) -> usize {
-        self.running.load(Ordering::SeqCst)
     }
 
     /// When the last task ended or was picked, `None` while a task runs.
@@ -127,7 +118,7 @@ pub(crate) fn stop_signals() -> tokio::sync::mpsc::UnboundedReceiver<()> {
 
 /// Waits for a signal, the idle timer or the lifetime timer, then drains: workers stop picking,
 /// and this returns once no picked task runs. A drain after a signal waits at most
-/// `drain_timeout`, and a zero timeout skips it. A drain after a timer waits without a deadline
+/// `drain_timeout`; with a zero timeout, workers stop picking and this returns at once. A drain after a timer waits without a deadline
 /// until a signal caps it at `drain_timeout` from then. A second signal or a cancellation of
 /// `cancellation_token` returns at once.
 pub(crate) async fn wait_for_stop_and_drain(
@@ -139,15 +130,24 @@ pub(crate) async fn wait_for_stop_and_drain(
     let lifetime_end = settings.max_lifetime.map(|d| Instant::now() + d);
     let reason = tokio::select! {
         Some(()) = signals.recv() => StopReason::Signal,
-        () = cancellation_token.cancelled() => return StopReason::Cancelled,
+        () = cancellation_token.cancelled() => StopReason::Cancelled,
         () = sleep_until(lifetime_end) => StopReason::Lifetime,
         () = wait_until_idle(control, settings.idle_exit_after) => StopReason::Idle,
     };
+    match reason {
+        StopReason::Signal => tracing::info!("Shutdown signal received"),
+        StopReason::Idle => tracing::info!("No task ran for the idle exit time, stopping"),
+        StopReason::Lifetime => tracing::info!("Max lifetime reached, stopping"),
+        StopReason::Cancelled => {
+            tracing::info!("Shutdown handler terminating due to external cancellation");
+            return reason;
+        }
+    }
+    control.stop_picking();
     if reason == StopReason::Signal && settings.drain_timeout.is_zero() {
         return reason;
     }
 
-    control.stop_picking();
     let mut signalled = reason == StopReason::Signal;
     let mut deadline = signalled.then(|| Instant::now() + settings.drain_timeout);
     tracing::info!(
@@ -172,7 +172,7 @@ pub(crate) async fn wait_for_stop_and_drain(
             () = changed => {}
             Some(()) = signals.recv() => {
                 if signalled {
-                    tracing::info!("Second stop signal: cancelling running tasks now");
+                    tracing::info!("Second stop signal: stopping the task workers now");
                     return reason;
                 }
                 signalled = true;
@@ -180,17 +180,20 @@ pub(crate) async fn wait_for_stop_and_drain(
                 deadline = Some(deadline.map_or(capped, |d| d.min(capped)));
                 tracing::info!(
                     timeout_seconds = settings.drain_timeout.as_secs(),
-                    "Stop signal during the drain: running tasks are cancelled after the drain timeout"
+                    "Stop signal during the drain: the task workers stop after the drain timeout"
                 );
             }
             () = sleep_until(deadline) => {
                 tracing::warn!(
                     running_tasks = control.running_tasks(),
-                    "Drain timeout reached: cancelling running tasks"
+                    "Drain timeout reached: stopping the task workers"
                 );
                 return reason;
             }
-            () = cancellation_token.cancelled() => return StopReason::Cancelled,
+            () = cancellation_token.cancelled() => {
+                tracing::info!("Shutdown handler terminating due to external cancellation");
+                return StopReason::Cancelled;
+            }
             _ = progress.tick() => tracing::info!(
                 running_tasks = control.running_tasks(),
                 seconds_left = deadline.map(|d| d.saturating_duration_since(Instant::now()).as_secs()),
@@ -229,7 +232,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        super::{ArcTaskRunnerControl, PickAdmission, admit_pick, end_task, run_as_worker},
+        super::{ArcTaskRunnerControl, admit_pick, end_task, run_as_worker},
         *,
     };
     use crate::CancellationToken;
@@ -256,13 +259,10 @@ mod tests {
         tokio::spawn(run_as_worker(Arc::clone(control), async move {
             loop {
                 end_task();
-                let permit = match admit_pick() {
-                    PickAdmission::Open(permit) => permit.expect("inside a runner"),
-                    PickAdmission::Closed => {
-                        tokio::select! {
-                            () = cancellation_token.cancelled() => return,
-                            () = tokio::time::sleep(Duration::from_secs(1)) => continue,
-                        }
+                let Some(permit) = admit_pick() else {
+                    tokio::select! {
+                        () = cancellation_token.cancelled() => return,
+                        () = tokio::time::sleep(Duration::from_secs(1)) => continue,
                     }
                 };
                 let task = work.try_recv().ok();
@@ -328,6 +328,29 @@ mod tests {
         }
     }
 
+    /// Starts a drain of `control`; resolves to the reason and the whole seconds from the start
+    /// to the drain's end.
+    fn start_drain(
+        control: &ArcTaskRunnerControl,
+        settings: DrainSettings,
+    ) -> (
+        tokio::task::JoinHandle<(StopReason, u64)>,
+        tokio::sync::mpsc::UnboundedSender<()>,
+        CancellationToken,
+    ) {
+        let control = Arc::clone(control);
+        let (signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        let token = CancellationToken::new();
+        let drain_token = token.clone();
+        let drain = tokio::spawn(async move {
+            let start = Instant::now();
+            let reason =
+                wait_for_stop_and_drain(&control, settings, &mut signal_rx, &drain_token).await;
+            (reason, (Instant::now() - start).as_secs())
+        });
+        (drain, signals, token)
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_signal_with_zero_drain_timeout_returns_at_once() {
         let mut h = Harness::new();
@@ -337,16 +360,17 @@ mod tests {
         h.signals.send(()).unwrap();
         assert_eq!(drain.await.unwrap(), (StopReason::Signal, 2));
         assert_eq!(h.control.running_tasks(), 1);
+        assert!(h.control.stop_picking.load(Ordering::SeqCst));
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_signal_drain_waits_for_the_running_task() {
         let mut h = Harness::new();
         h.work.send(30).unwrap();
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         let drain = h.start(settings(60, None, None));
         h.signals.send(()).unwrap();
-        // The task was picked at about 0 s and ends at 30 s; the worker then polls again.
+        // The task was picked at 0 s and ends at 30 s, before the first progress tick at 31 s.
         assert_eq!(drain.await.unwrap(), (StopReason::Signal, 30));
         assert_eq!(h.finished.try_recv().unwrap(), 30);
         // A task queued during the drain is not picked.
@@ -403,37 +427,19 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_task_picked_at_the_idle_edge_runs_to_its_end() {
         let control = ArcTaskRunnerControl::default();
-        let token = CancellationToken::new();
-        let (_signals, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
         // A pick is in flight when the idle timer fires.
         let (pick_tx, pick_rx) = tokio::sync::oneshot::channel::<()>();
         let (ended_tx, mut ended_rx) = tokio::sync::mpsc::unbounded_channel();
         let worker = tokio::spawn(run_as_worker(Arc::clone(&control), async move {
-            let PickAdmission::Open(Some(permit)) = admit_pick() else {
-                panic!("the gate is open before the timer fires")
-            };
+            let permit = admit_pick().expect("the gate is open before the timer fires");
             pick_rx.await.unwrap();
             permit.task_picked();
             tokio::time::sleep(Duration::from_secs(40)).await;
             ended_tx.send(()).unwrap();
             end_task();
-            assert!(matches!(admit_pick(), PickAdmission::Closed));
+            assert!(admit_pick().is_none());
         }));
-        let drain = {
-            let control = Arc::clone(&control);
-            let token = token.clone();
-            tokio::spawn(async move {
-                let start = Instant::now();
-                let reason = wait_for_stop_and_drain(
-                    &control,
-                    settings(0, Some(10), None),
-                    &mut signal_rx,
-                    &token,
-                )
-                .await;
-                (reason, (Instant::now() - start).as_secs())
-            })
-        };
+        let (drain, _signals, _token) = start_drain(&control, settings(0, Some(10), None));
         tokio::time::sleep(Duration::from_secs(11)).await;
         assert!(!drain.is_finished());
         pick_tx.send(()).unwrap();
@@ -473,7 +479,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn cancellation_ends_the_wait_and_the_drain() {
+    async fn cancellation_ends_the_wait() {
         let mut h = Harness::new();
         let drain = h.start(settings(0, None, None));
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -482,13 +488,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn cancellation_ends_the_drain() {
+        let control = ArcTaskRunnerControl::default();
+        // Like the built-in workers, this one does not watch the token while its task runs.
+        let _worker = tokio::spawn(run_as_worker(Arc::clone(&control), async {
+            admit_pick().expect("the gate is open").task_picked();
+            std::future::pending::<()>().await;
+        }));
+        let (drain, signals, token) = start_drain(&control, settings(600, None, None));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        signals.send(()).unwrap();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        token.cancel();
+        assert_eq!(drain.await.unwrap(), (StopReason::Cancelled, 5));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_panicking_worker_ends_its_task() {
         let control = ArcTaskRunnerControl::default();
         let worker = tokio::spawn(run_as_worker(Arc::clone(&control), async {
-            let PickAdmission::Open(Some(permit)) = admit_pick() else {
-                panic!("the gate is open")
-            };
-            permit.task_picked();
+            admit_pick().expect("the gate is open").task_picked();
             panic!("the task panicked");
         }));
         assert!(worker.await.unwrap_err().is_panic());
@@ -497,9 +516,46 @@ mod tests {
         assert!(control.is_drained());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn an_empty_pick_in_flight_ends_the_drain() {
+        let control = ArcTaskRunnerControl::default();
+        let (pick_tx, pick_rx) = tokio::sync::oneshot::channel::<()>();
+        let _worker = tokio::spawn(run_as_worker(Arc::clone(&control), async move {
+            let permit = admit_pick().expect("the gate is open");
+            pick_rx.await.unwrap();
+            // The pick returned no task.
+            drop(permit);
+            std::future::pending::<()>().await;
+        }));
+        let (drain, signals, _token) = start_drain(&control, settings(600, None, None));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        signals.send(()).unwrap();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        pick_tx.send(()).unwrap();
+        assert_eq!(drain.await.unwrap(), (StopReason::Signal, 5));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_worker_that_panics_during_the_drain_ends_the_drain() {
+        let control = ArcTaskRunnerControl::default();
+        let (panic_tx, panic_rx) = tokio::sync::oneshot::channel::<()>();
+        let _worker = tokio::spawn(run_as_worker(Arc::clone(&control), async move {
+            admit_pick().expect("the gate is open").task_picked();
+            panic_rx.await.unwrap();
+            panic!("the task panicked");
+        }));
+        let (drain, signals, _token) = start_drain(&control, settings(600, None, None));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        signals.send(()).unwrap();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        panic_tx.send(()).unwrap();
+        assert_eq!(drain.await.unwrap(), (StopReason::Signal, 5));
+    }
+
     #[test]
     fn picks_outside_a_runner_are_not_gated() {
-        assert!(matches!(admit_pick(), PickAdmission::Open(None)));
+        let permit = admit_pick().expect("outside a runner the gate is open");
+        assert!(permit.control.is_none());
     }
 
     #[test]

@@ -5583,4 +5583,67 @@ mod test {
             .unwrap();
         assert_eq!(task.task_id(), third);
     }
+
+    /// A worker that picks once and never polls again, like a run-once Job: its task runs until
+    /// the worker ends, and a closed gate lets the pick return nothing.
+    #[sqlx::test]
+    async fn test_a_single_pick_in_a_worker_is_counted_and_gated(pool: PgPool) {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct Config {}
+        impl TaskConfig for Config {
+            fn queue_name() -> &'static TaskQueueName {
+                &QUEUE_NAME
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(3600)
+            }
+        }
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct Empty {}
+        impl TaskData for Empty {}
+        impl TaskExecutionDetails for Empty {}
+        static QUEUE_NAME: LazyLock<TaskQueueName> =
+            LazyLock::new(|| "test-drain-single-pick".into());
+        type Specialized = SpecializedTask<Config, Empty, Empty>;
+
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let first = queue_with_demand(&pool, &QUEUE_NAME, warehouse_id, &project_id, None, 2).await;
+        let second =
+            queue_with_demand(&pool, &QUEUE_NAME, warehouse_id, &project_id, None, 1).await;
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let runner = lakekeeper::service::tasks::TestTaskRunner::default();
+
+        let worker_runner = runner.clone();
+        let worker_state = state.clone();
+        runner
+            .run_as_worker(async move {
+                let task = Specialized::pick_new_task::<PostgresBackend>(worker_state)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(task.task_id(), first);
+                assert_eq!(worker_runner.running_tasks(), 1);
+            })
+            .await;
+        assert_eq!(runner.running_tasks(), 0);
+
+        runner.stop_picking();
+        runner
+            .run_as_worker(async move {
+                let task = Specialized::pick_new_task::<PostgresBackend>(state)
+                    .await
+                    .unwrap();
+                assert!(task.is_none());
+            })
+            .await;
+        assert_eq!(runner.running_tasks(), 0);
+
+        // The gate left the second task due.
+        let task = pick_task(&pool, &QUEUE_NAME, &[], chrono::Duration::seconds(3600))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.task_id(), second);
+    }
 }

@@ -1201,6 +1201,12 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
 
     /// Pick a new task from the queue. If no task is available, returns None.
     ///
+    /// Inside a worker of a [`TaskQueuesRunner`], a returned task counts as running until the
+    /// worker picks or polls again, or its future ends. A worker runs one task at a time: finish
+    /// the task before picking or polling again, as the next pick ends it. While the process
+    /// drains its workers, this picks nothing. Outside a runner, picks are neither gated nor
+    /// counted.
+    ///
     /// # Errors
     /// Returns an error if the task cannot be picked from the queue or if
     /// deserialization of the queue configuration or task data fails.
@@ -1223,6 +1229,10 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         catalog_state: C::State,
         resource_demand: TaskResourceDemandRange,
     ) -> crate::api::Result<Option<Self>> {
+        task_drain::end_task();
+        let Some(permit) = task_drain::admit_pick() else {
+            return Ok(None);
+        };
         let legacy_queue_names = Q::legacy_queue_names();
         let request = PickTaskRequest::builder()
             .queue_name(Q::queue_name())
@@ -1264,6 +1274,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     return Ok(None);
                 }
             };
+            permit.task_picked();
             Ok(Some(Self {
                 task_metadata: task.task_metadata,
                 id: task.id,
@@ -1281,6 +1292,10 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// Continuously poll for a new task in the queue until a task is found.
     /// Picks nothing while this process is in read-only maintenance mode or drains its workers.
     /// Returns None if cancellation is requested.
+    ///
+    /// A returned task counts as running as described in [`Self::pick_new_task`]. Call this
+    /// inside the future of the [`TaskQueueWorkerFn`], not in a task spawned from it: a spawned
+    /// task is outside the worker, so its picks are neither gated nor counted.
     pub async fn poll_for_new_task<C: CatalogStore>(
         catalog_state: C::State,
         poll_interval: &Duration,
@@ -1298,12 +1313,16 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     /// [`Self::poll_for_new_task`] limited to tasks whose resource demand lies in the range
     /// `resource_demand` returns. It is called before each pick, so the range can follow the
     /// worker's free capacity.
+    ///
+    /// Finish the previously returned task before polling again: the poll ends it, and a drain
+    /// then no longer waits for it. Call this inside the future of the [`TaskQueueWorkerFn`].
     pub async fn poll_for_new_task_with_resource_demand<C: CatalogStore>(
         catalog_state: C::State,
         mut resource_demand: impl FnMut() -> TaskResourceDemandRange,
         poll_interval: &Duration,
         cancellation_token: tokio_util::sync::CancellationToken,
     ) -> Option<Self> {
+        // Ends the previous task before a wait in read-only maintenance mode.
         task_drain::end_task();
         loop {
             if wait_until_writable(&MAINTENANCE, *poll_interval, &cancellation_token).await
@@ -1315,15 +1334,6 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 );
                 return None;
             }
-            let task_drain::PickAdmission::Open(permit) = task_drain::admit_pick() else {
-                tokio::select! {
-                    () = cancellation_token.cancelled() => {
-                        tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
-                        return None;
-                    }
-                    () = tokio::time::sleep(*poll_interval) => continue,
-                }
-            };
             // Not raced against cancellation: a pick dropped mid-flight can leave a task it claimed
             // running until its heartbeat times out, or, while its `BEGIN` is in flight, return its
             // connection to the pool inside an open transaction.
@@ -1335,7 +1345,6 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             {
                 Ok(task) => task,
                 Err(e) => {
-                    drop(permit);
                     tracing::error!(
                         "Failed to pick new task from queue `{}`. Retrying in 5s. Error: {e}",
                         Q::queue_name()
@@ -1351,7 +1360,6 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             };
 
             let Some(task) = task else {
-                drop(permit);
                 let jitter = { fastrand::u64(0..500) };
                 tokio::select! {
                     () = cancellation_token.cancelled() => {
@@ -1362,9 +1370,6 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 }
             };
 
-            if let Some(permit) = permit {
-                permit.task_picked();
-            }
             tracing::debug!("Picked up `{}` task {}.", task.id, Q::queue_name());
             return Some(task);
         }
