@@ -312,8 +312,9 @@ mod tests {
         let failing: CountFn = {
             let calls = Arc::clone(&calls);
             Arc::new(move |_| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
                     Err(CatalogBackendError::new_unexpected(std::io::Error::other(
                         "database down",
                     )))

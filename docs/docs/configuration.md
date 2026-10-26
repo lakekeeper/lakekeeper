@@ -132,7 +132,7 @@ Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge
 
 Every Lakekeeper process runs the built-in task-queue workers by default, including instances that serve the HTTP API. You do not need dedicated worker pods to process background tasks.
 
-To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They share the same catalog and database and process tasks without serving the API.
+To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They need the same configuration as the API pods, including `LAKEKEEPER__PG_ENCRYPTION_KEY`, and process tasks without serving the API. To start them only when tasks wait, see [Task Queue Demand](./monitoring.md#task-queue-demand).
 
 A task that fails is tried up to ten times in total; a try whose worker stops responding counts as failed. Each new try waits twice as long as the one before, starting at about 30 seconds and at most about an hour, so a task keeps being retried for about three hours.
 

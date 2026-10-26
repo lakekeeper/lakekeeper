@@ -204,7 +204,7 @@ Decisions are cached per `(subject, check)` and report as `cache_type="admission
 
 ## Prometheus Integration
 
-Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS__PORT` (defaults: `0.0.0.0:9000`). The bind address `0.0.0.0` means "listen on all interfaces" — it is not a valid scrape target. Configure Prometheus to scrape a reachable address such as `http://localhost:9000/metrics` or `http://<service-or-pod-ip>:9000/metrics`. The metrics port also serves `/health` and the [task queue demand](#task-queue-demand).
+Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS__PORT` (defaults: `0.0.0.0:9000`). The bind address `0.0.0.0` means "listen on all interfaces" — it is not a valid scrape target. Configure Prometheus to scrape a reachable address such as `http://localhost:9000/metrics` or `http://<service-or-pod-ip>:9000/metrics`. The metrics port also serves the [task queue demand](#task-queue-demand).
 
 | Variable                                                      | Description  |
 |---------------------------------------------------------------|--------------|
@@ -220,22 +220,38 @@ scrape_configs:
 
 ## Task Queue Demand
 
-An autoscaler can ask Lakekeeper how many workers the tasks of a queue need. The metrics port answers `GET /task-queue/<queue>/demand`, for example `http://<service-or-pod-ip>:9000/task-queue/tabular_purge/demand`. The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots` and `remove_orphan_files`. The answer looks like this:
+Lakekeeper can tell an autoscaler, such as [KEDA](https://keda.sh/docs/latest/scalers/metrics-api/), how many tasks of a queue wait or run. This lets you run worker pods only while there are tasks.
+
+The metrics port (default `9000`) answers `GET /task-queue/<queue>/demand`:
 
 ```json
 {"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2}
 ```
 
-- `due` counts the tasks that wait and can start now.
-- `running` counts the tasks that are running now.
-- `heartbeat-expired` counts tasks whose worker stopped sending heartbeats. The next worker that polls the queue ends that attempt. The queue's retry rules then decide whether the task runs again.
-- `demand` is the sum of the three. Use it as the scaling value, for example with the [KEDA Metrics API scaler](https://keda.sh/docs/latest/scalers/metrics-api/) and `valueLocation: demand`.
+We recommend scaling on `demand`. It adds up the tasks that wait to start (`due`), the tasks that run (`running`), and the tasks whose worker stopped responding (`heartbeat-expired`). Each pod reuses an answer for 5 seconds, so frequent requests do not load the database.
 
-A queue can group its tasks into classes. Name the class with `?class=<name>` to count only its tasks. Without `class`, the answer counts the whole queue. An unknown queue or class returns `404`. A pod in read-only [maintenance mode](./configuration.md#maintenance-mode) answers `0` for every queue and class, so the autoscaler starts no new workers. The mode applies to each process on its own: switch every pod behind the Service that the autoscaler calls.
+The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots` and `remove_orphan_files`.
 
-To start workers as Jobs with a KEDA ScaledJob, point the scaler's `url` at the metrics port of the pods that serve the API, through their Service. With the Lakekeeper Helm chart, the catalog Service includes the metrics port only if `catalog.prometheus.setScrapeAnnotations` is `true`. Workers that are scaled to zero cannot answer. Set `targetValue` to the number of tasks that one worker Job runs at the same time, which is the queue's worker count in that Job, for example `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`. Keep `scalingStrategy.strategy` at `default`: `demand` includes the running tasks, and `default` subtracts the Jobs that already run. With `accurate` or `eager`, KEDA starts too many Jobs. `running` counts the tasks of every worker, so run the queue only on the autoscaled workers, and set its worker count to `0` on the API pods. [Stopping Task Workers](./configuration.md#stopping-task-workers) explains how worker Jobs end. With a KEDA ScaledObject, the number of pods is `demand` divided by `targetValue`, rounded up.
+A trigger of a KEDA ScaledJob looks like this:
 
-All replicas read the same database, so replicas with the same configuration and the same maintenance mode give the same answer. Each replica keeps an answer for 5 seconds, so frequent requests do not load the database. The endpoint has no authentication, like `/metrics`, and shows only counts, no project, warehouse or table names. Do not expose the metrics port outside the cluster.
+```yaml
+triggers:
+  - type: metrics-api
+    metadata:
+      url: "http://<service>.<namespace>.svc:9000/task-queue/tabular_purge/demand"
+      valueLocation: "demand"
+      targetValue: "2"
+```
+
+We recommend these settings:
+
+- `url`: the Service of the Lakekeeper pods that serve the API, because workers that are scaled to zero cannot answer. Include the namespace, because KEDA sends the request from its own namespace. With the Lakekeeper Helm chart, the Service includes the metrics port if `catalog.prometheus.setScrapeAnnotations` is `true`.
+- `targetValue`: the number of tasks that one worker pod runs at the same time. This is the queue's worker count on that pod, for example `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` (default `2`).
+- `scalingStrategy.strategy`: `default`, which KEDA also uses if you set none. With `accurate` or `eager`, KEDA may start more workers than needed.
+- `LAKEKEEPER__TASK_*_WORKERS` of the queue on the API pods: `0`, so that only the autoscaled workers run the queue. Otherwise KEDA also counts the tasks that the API pods run, and starts workers for them.
+- `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` on the headless workers: a short time such as `180s`, so that a worker Job ends when no tasks are left. See [Stopping Task Workers](./configuration.md#stopping-task-workers).
+
+When all API pods are in read-only [maintenance mode](./configuration.md#maintenance-mode), the endpoint answers `0`, so KEDA starts no new workers. Workers that already run keep taking tasks. Like `/metrics`, the endpoint has no authentication and shows only counts. We recommend keeping the metrics port inside the cluster.
 
 ## Database (Postgres) Monitoring
 
