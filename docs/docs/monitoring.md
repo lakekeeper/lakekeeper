@@ -228,7 +228,7 @@ An autoscaler can ask Lakekeeper how many workers the tasks of a queue need. The
 
 - `due` counts the tasks that wait and can start now.
 - `running` counts the tasks that run.
-- `heartbeat-expired` counts tasks whose worker stopped sending heartbeats. The next worker that polls the queue ends that try, and the task is tried again later.
+- `heartbeat-expired` counts tasks whose worker stopped sending heartbeats. The next worker that polls the queue ends that attempt. The queue's retry rules then decide whether the task runs again.
 - `demand` is the sum of the three. Use it as the scaling value, for example with the [KEDA Metrics API scaler](https://keda.sh/docs/latest/scalers/metrics-api/) and `valueLocation: demand`.
 
 Some queues group their tasks into classes, for example size classes of workers. Name the class with `?class=<name>` to count only its tasks. Without `class`, the answer counts the whole queue. An unknown queue or class returns `404`, also on a pod that does not have the class configuration. In read-only maintenance mode every answer is `0`, for every queue and class, because no worker starts tasks then.
