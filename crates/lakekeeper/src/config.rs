@@ -85,6 +85,7 @@ pub(crate) fn get_config() -> DynAppConfig {
 
     validate_openid_provider_ids(&config);
     validate_required_claims(&config);
+    validate_task_drain(&config);
 
     if !config.openid_providers.is_empty() && config.openid_provider_uri.is_none() {
         tracing::warn!(
@@ -246,6 +247,29 @@ fn validate_openid_provider_ids(config: &DynAppConfig) {
         assert!(
             idp_id != OIDC_IDP_ID,
             "Invalid OIDC provider '{idp_id}': IdP ID '{OIDC_IDP_ID}' is reserved"
+        );
+    }
+}
+
+/// Idle exit and max lifetime stop the process, so they would stop the HTTP API with the
+/// workers.
+fn validate_task_drain(config: &DynAppConfig) {
+    for (name, value) in [
+        (
+            "LAKEKEEPER__TASK_IDLE_EXIT_AFTER",
+            config.task_idle_exit_after,
+        ),
+        ("LAKEKEEPER__TASK_MAX_LIFETIME", config.task_max_lifetime),
+    ] {
+        let Some(value) = value else { continue };
+        assert!(
+            !config.serve_http_api,
+            "{name} is set, but this process serves the HTTP API, which would stop with the \
+             workers. Set it only on headless workers (LAKEKEEPER__SERVE_HTTP_API=false)."
+        );
+        assert!(
+            !value.is_zero(),
+            "{name} must be greater than 0. Leave it unset to turn it off."
         );
     }
 }
@@ -701,6 +725,29 @@ pub struct DynAppConfig {
     pub task_tabular_purge_workers: usize,
     /// Number of workers to spawn for cleaning task logs. (default: 2)
     pub task_log_cleanup_workers: usize,
+    /// How long the task workers may finish their running tasks after a stop signal before they
+    /// are stopped. Zero stops them without waiting. (default: 0)
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub task_drain_timeout: Duration,
+    /// Stop a headless worker after this long without a running task. Waits for running tasks
+    /// without a deadline. (default: off)
+    #[serde(
+        default,
+        deserialize_with = "optional_seconds_to_std_duration",
+        serialize_with = "serialize_optional_std_duration_as_ms"
+    )]
+    pub task_idle_exit_after: Option<Duration>,
+    /// Stop a headless worker this long after its start: it picks no more tasks and exits when
+    /// its running tasks end. (default: off)
+    #[serde(
+        default,
+        deserialize_with = "optional_seconds_to_std_duration",
+        serialize_with = "serialize_optional_std_duration_as_ms"
+    )]
+    pub task_max_lifetime: Option<Duration>,
     // ------------- Tabular -------------
     /// Delay in seconds after which a tabular will be deleted
     #[serde(
@@ -837,15 +884,38 @@ where
     D: Deserializer<'de>,
 {
     let buf = String::deserialize(deserializer)?;
-    Ok(if buf.ends_with("ms") {
-        Duration::from_millis(
-            u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
-        )
-    } else if buf.ends_with('s') {
-        Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
+    parse_std_duration(&buf).map_err(serde::de::Error::custom)
+}
+
+fn parse_std_duration(buf: &str) -> Result<Duration, std::num::ParseIntError> {
+    Ok(if let Some(millis) = buf.strip_suffix("ms") {
+        Duration::from_millis(u64::from_str(millis)?)
+    } else if let Some(secs) = buf.strip_suffix('s') {
+        Duration::from_secs(u64::from_str(secs)?)
     } else {
-        Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
+        Duration::from_secs(u64::from_str(buf)?)
     })
+}
+
+fn optional_seconds_to_std_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?
+        .map(|buf| parse_std_duration(&buf).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+fn serialize_optional_std_duration_as_ms<S>(
+    duration: &Option<Duration>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    duration
+        .map(|d| format!("{}ms", d.as_millis()))
+        .serialize(serializer)
 }
 
 pub(crate) fn serialize_std_duration_as_ms<S>(
@@ -1470,6 +1540,9 @@ impl Default for DynAppConfig {
             task_soft_deletion_workers: 2,
             task_tabular_purge_workers: 2,
             task_log_cleanup_workers: 2,
+            task_drain_timeout: Duration::ZERO,
+            task_idle_exit_after: None,
+            task_max_lifetime: None,
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,
@@ -1948,6 +2021,78 @@ mod test {
     fn reserved_namespaces_should_contains_default_values() {
         assert!(CONFIG.reserved_namespaces.contains("system"));
         assert!(CONFIG.reserved_namespaces.contains("examples"));
+    }
+
+    #[test]
+    fn task_drain_settings_default_to_off() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert_eq!(config.task_drain_timeout, Duration::ZERO);
+            assert_eq!(config.task_idle_exit_after, None);
+            assert_eq!(config.task_max_lifetime, None);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn task_drain_settings_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
+            jail.set_env("LAKEKEEPER_TEST__TASK_DRAIN_TIMEOUT", "90s");
+            jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "180s");
+            jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "3600000ms");
+            let config = get_config();
+            assert_eq!(config.task_drain_timeout, Duration::from_secs(90));
+            assert_eq!(config.task_idle_exit_after, Some(Duration::from_secs(180)));
+            assert_eq!(config.task_max_lifetime, Some(Duration::from_secs(3600)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LAKEKEEPER__TASK_IDLE_EXIT_AFTER is set, but this process serves the HTTP API"
+    )]
+    fn task_idle_exit_is_rejected_with_the_http_api() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "180s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LAKEKEEPER__TASK_MAX_LIFETIME is set, but this process serves the HTTP API"
+    )]
+    fn task_max_lifetime_is_rejected_with_the_http_api() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "3600s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "LAKEKEEPER__TASK_IDLE_EXIT_AFTER must be greater than 0")]
+    fn task_idle_exit_of_zero_is_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
+            jail.set_env("LAKEKEEPER_TEST__TASK_IDLE_EXIT_AFTER", "0s");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "LAKEKEEPER__TASK_MAX_LIFETIME must be greater than 0")]
+    fn task_max_lifetime_of_zero_is_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SERVE_HTTP_API", "false");
+            jail.set_env("LAKEKEEPER_TEST__TASK_MAX_LIFETIME", "0ms");
+            let _config = get_config();
+            Ok(())
+        });
     }
 
     #[test]
