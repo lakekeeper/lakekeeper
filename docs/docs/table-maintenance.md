@@ -84,27 +84,28 @@ Configuration can be set via the Management UI or REST API endpoints:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `enable-remove-orphan-files` | boolean | `false` | Master switch for the warehouse. When `false`, no tables are scheduled unless they set `lakekeeper.remove-orphan-files.enabled=true`. |
-| `default-older-than-ms` | integer | `604800000` (7 days) | Minimum file age before deletion. **24-hour safety floor enforced at task pickup** (see below). Override per table with `lakekeeper.remove-orphan-files.older-than-ms`. |
+| `default-older-than-ms` | integer | `604800000` (7 days) | Minimum file age before deletion. Must be at least 24 hours, unless `disable-min-older-than-check` is `true` (see below). Override per table with `lakekeeper.remove-orphan-files.older-than-ms`. |
 | `target-reclaim-bytes` | integer | `1073741824` (1 GiB) | Adaptive scheduler target: the next run is timed to reclaim roughly this many bytes based on the last run's observed rate. Clamped to [1 day, `maximum-interval-seconds`]. |
 | `maximum-interval-seconds` | integer | `7776000` (90 days) | Upper bound on the adaptive next-run interval. Idle tables get a safety check at this cadence. Must be ≥ 86400 (1 day). |
 | `max-run-time-seconds` | integer | `3600` (1 hour) | Wall-clock timeout for a single task attempt. Must be ≥ 60. |
 | `dry-run` | boolean | `false` | Identify orphans but do not delete. Useful for previewing what a run would remove. |
-| `disable-min-older-than-check` | boolean | `false` | Bypass the 24h floor on `default-older-than-ms`. Set only for dev/test setups that genuinely need sub-day retention. |
+| `disable-min-older-than-check` | boolean | `false` | Allow a `default-older-than-ms` below 24 hours. Set it only for development and test setups. It does not apply to the table property `lakekeeper.remove-orphan-files.older-than-ms`. |
 
 ### Table-Level Overrides
 
 Individual tables can override warehouse settings using these Iceberg table properties:
 
 - `lakekeeper.remove-orphan-files.enabled` — `true` includes a table even when the warehouse master switch is off; `false` excludes it.
-- `lakekeeper.remove-orphan-files.older-than-ms` — per-table deletion-age threshold. Not subject to the 24h safety floor; use only for known-stale tables.
-- `lakekeeper.remove-orphan-files.dry-run` — per-table dry-run. Safer mode wins: if the warehouse is dry-run, the table cannot downgrade to live.
+- `lakekeeper.remove-orphan-files.older-than-ms` — per-table deletion-age threshold. A value below 24 hours is raised to 24 hours, unless the table also sets `lakekeeper.remove-orphan-files.disable-min-older-than-check=true`.
+- `lakekeeper.remove-orphan-files.disable-min-older-than-check` — `true` lets this table use an `older-than-ms` below 24 hours. Remove orphan files then also deletes files that writers uploaded but did not commit yet. We recommend setting it only while nothing writes to the table, and removing both properties after the cleanup.
+- `lakekeeper.remove-orphan-files.dry-run` — `true` makes the runs of this table dry runs, `false` lets them delete. Any other value also gives a dry run, so a typo never deletes files. If the warehouse config sets `dry-run`, a table cannot turn it off.
 
 ### Safety Mechanisms
 
 - **`gc.enabled` check**: Tables with `gc.enabled=false` are excluded. Attempting to remove orphan files on such a table returns an error immediately.
 - **Encrypted tables skipped**: Tables using Iceberg native encryption (`encryption.key-id` set) are skipped. Identifying the referenced-file set requires reading manifests, which Lakekeeper cannot decrypt; running anyway risks deleting live data. Skipped tables are recorded as a successful (skipped) run; manually scheduling one returns an error immediately.
-- **24h safety floor on `default-older-than-ms`**: At task pickup, the worker refuses to run with a queue-config retention shorter than 24 hours, returning `RemoveOrphanFilesRetentionTooShort`. A typo like `default-older-than-ms: 6000` (six seconds) would otherwise delete in-flight writer uploads. Mirrors Spark/Iceberg's `retentionDurationCheck.enabled=false` escape — set `disable-min-older-than-check=true` to override.
-- **Unknown age preservation**: Files where the storage backend does not report a last-modified timestamp are skipped (counted as `skipped_unknown_age_count` in the result).
+- **24-hour minimum retention**: Saving a queue config with a `default-older-than-ms` below 24 hours fails with `RemoveOrphanFilesRetentionTooShort`, unless the same request sets `disable-min-older-than-check: true`. A typo like `default-older-than-ms: 6000` (six seconds) would otherwise delete files that writers uploaded but did not commit yet. A table value of `lakekeeper.remove-orphan-files.older-than-ms` below 24 hours is raised to 24 hours, unless the table sets `lakekeeper.remove-orphan-files.disable-min-older-than-check=true`. The run result shows the retention that the run used in `older-than-ms`.
+- **Unknown age preservation**: Files where the storage backend does not report a last-modified timestamp are skipped (counted as `skipped-unknown-age-count` in the result).
 
 ### Recommended Usage
 
