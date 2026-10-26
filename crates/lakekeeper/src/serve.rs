@@ -15,6 +15,7 @@ use crate::{
         },
         router::{RouterArgs, new_full_router, new_health_router, serve as service_serve},
     },
+    metrics::MetricsServer,
     service::{
         CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
         admission::AdmissionGates,
@@ -448,16 +449,13 @@ async fn serve_inner<
     };
 
     // Metrics server
-    let (layer, metrics_future) = crate::metrics::get_axum_layer_and_install_recorder(
-        CONFIG.metrics.port,
-        cancellation_token.clone(),
-    )
-    .map_err(|e| {
-        anyhow!(e).context(format!(
-            "Failed to start metrics server on port: {}",
-            CONFIG.metrics.port
-        ))
-    })?;
+    let (layer, metrics_server) =
+        crate::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics.port).map_err(|e| {
+            anyhow!(e).context(format!(
+                "Failed to start metrics server on port: {}",
+                CONFIG.metrics.port
+            ))
+        })?;
 
     // Endpoint stats
     let tracker = EndpointStatisticsTracker::new(
@@ -579,11 +577,11 @@ async fn serve_inner<
 
     // ---- Launch background services ----
     // Metrics server:
-    let metrics_handle = service_futures.spawn(async move {
-        metrics_future
-            .await
-            .map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
-    });
+    let metrics_handle = service_futures.spawn(serve_metrics(
+        metrics_server,
+        &state.v1_state,
+        cancellation_token.clone(),
+    ));
     service_ids.insert(metrics_handle.id(), "Metrics Server".to_string());
 
     // Periodic health checks:
@@ -662,25 +660,25 @@ async fn serve_inner<
             Ok(())
         });
         service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
+    }
 
-        // Writes, so skipped in read-only maintenance.
-        if !skip_built_in_queues_for_maintenance {
-            let materializer_catalog_state = state.v1_state.catalog.clone();
-            let materializer_cancellation_token = cancellation_token.clone();
-            let materializer_abort_handle = service_futures.spawn(async move {
-                crate::service::tasks::task_schedule::task_schedule_materializer::<C>(
-                    materializer_catalog_state,
-                    CONFIG.task_poll_interval,
-                    materializer_cancellation_token,
-                )
-                .await;
-                Ok(())
-            });
-            service_ids.insert(
-                materializer_abort_handle.id(),
-                "Task Schedule Materializer".to_string(),
-            );
-        }
+    // Writes, so skipped in read-only maintenance. Runs also without task workers.
+    if !skip_built_in_queues_for_maintenance {
+        let materializer_catalog_state = state.v1_state.catalog.clone();
+        let materializer_cancellation_token = cancellation_token.clone();
+        let materializer_abort_handle = service_futures.spawn(async move {
+            crate::service::tasks::task_schedule::task_schedule_materializer::<C>(
+                materializer_catalog_state,
+                CONFIG.task_poll_interval,
+                materializer_cancellation_token,
+            )
+            .await;
+            Ok(())
+        });
+        service_ids.insert(
+            materializer_abort_handle.id(),
+            "Task Schedule Materializer".to_string(),
+        );
     }
 
     // HTTP Server / Axum. Serves the full API, or just `/health` in headless
@@ -712,6 +710,24 @@ async fn serve_inner<
     } else {
         tracing::error!("No services were started, exiting.");
         Ok(())
+    }
+}
+
+/// Serves the metrics port, with the task queue demand route.
+fn serve_metrics<A: Authorizer, C: CatalogStore, S: SecretStore>(
+    metrics_server: MetricsServer,
+    state: &State<A, C, S>,
+    cancellation_token: CancellationToken,
+) -> impl Future<Output = anyhow::Result<()>> + use<A, C, S> {
+    let routes = crate::api::task_queue_demand::router::<C>(
+        state.catalog.clone(),
+        state.registered_task_queues.clone(),
+    );
+    let metrics_future = metrics_server.serve(routes, cancellation_token);
+    async move {
+        metrics_future
+            .await
+            .map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
     }
 }
 

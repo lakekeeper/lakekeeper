@@ -52,9 +52,10 @@ use crate::{
         tasks::{
             CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
             ProjectTaskScheduleState, RetryDecision, Task, TaskAttemptId, TaskCheckState,
-            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueName, TaskResolveScope,
-            TaskSchedule, TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError,
-            TaskScheduleUpsert, TriggerTaskScheduleError, UpsertTaskScheduleError,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueDemand,
+            TaskQueueDemandRequest, TaskQueueName, TaskResolveScope, TaskSchedule,
+            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
+            TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -1602,6 +1603,11 @@ where
         request: PickTaskRequest<'_>,
         state: Self::State,
     ) -> Result<Option<Task>>;
+
+    async fn task_queue_demand_impl(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<TaskQueueDemand, CatalogBackendError>;
 
     async fn resolve_tasks_impl(
         scope: TaskResolveScope,
