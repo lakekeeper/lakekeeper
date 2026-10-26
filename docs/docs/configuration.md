@@ -136,7 +136,7 @@ To scale workers independently of the API, run additional headless instances wit
 
 A task that fails is tried up to ten times in total; a try whose worker stops responding counts as failed. Each new try waits twice as long as the one before, starting at about 30 seconds and at most about an hour, so a task keeps being retried for about three hours.
 
-Some jobs run on a fixed cadence, such as the cleanup of old task logs. Every instance that runs task-queue workers also queues these jobs when they are due. A job never runs twice at the same time: if its previous run has not finished when the next one is due, the next one starts once the previous run has finished. Runs that fall due in the meantime are combined into that one run.
+Some jobs run on a fixed cadence, such as the cleanup of old task logs. Every Lakekeeper instance queues these jobs when they are due, including instances that run no task-queue workers. A job never runs twice at the same time: if its previous run has not finished when the next one is due, the next one starts once the previous run has finished. Runs that fall due in the meantime are combined into that one run.
 
 To stop an instance from running a queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. To dedicate task processing entirely to headless workers, set all built-in worker counts to `0` on your API pods: `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`, `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`, and `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS`.
 

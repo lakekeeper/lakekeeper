@@ -123,17 +123,26 @@ fn task_schedule_id_from_db(
 /// shortened to it; a negative one counts as zero.
 const MAX_RETRY_BACKOFF: chrono::Duration = chrono::Duration::days(36_500);
 
-fn pg_interval(duration: chrono::Duration) -> Result<PgInterval, ErrorModel> {
+#[derive(thiserror::Error, Debug)]
+#[error("Duration does not fit a Postgres interval")]
+struct IntervalOverflowError;
+
+impl From<IntervalOverflowError> for IcebergErrorResponse {
+    fn from(e: IntervalOverflowError) -> Self {
+        ErrorModel::internal(
+            "Could not convert duration into microseconds. Integer overflow, this is a bug.",
+            "InternalError",
+            Some(Box::new(e)),
+        )
+        .into()
+    }
+}
+
+fn pg_interval(duration: chrono::Duration) -> Result<PgInterval, IntervalOverflowError> {
     Ok(PgInterval {
         months: 0,
         days: 0,
-        microseconds: duration.num_microseconds().ok_or_else(|| {
-            ErrorModel::internal(
-                "Could not convert duration into microseconds. Integer overflow, this is a bug.",
-                "InternalError",
-                None,
-            )
-        })?,
+        microseconds: duration.num_microseconds().ok_or(IntervalOverflowError)?,
     })
 }
 
@@ -757,7 +766,7 @@ fn demand_bounds(range: TaskResourceDemandRange) -> (i64, i64) {
 pub(crate) async fn task_queue_demand(
     pool: &PgPool,
     request: TaskQueueDemandRequest<'_>,
-) -> Result<TaskQueueDemand, IcebergErrorResponse> {
+) -> Result<TaskQueueDemand, CatalogBackendError> {
     let TaskQueueDemandRequest {
         queue_name,
         legacy_queue_names,
@@ -807,11 +816,15 @@ pub(crate) async fn task_queue_demand(
         queue_name,
         above,
         at_most,
-        pg_interval(default_max_time_since_last_heartbeat)?,
+        pg_interval(default_max_time_since_last_heartbeat)
+            .map_err(CatalogBackendError::new_unexpected)?,
     )
     .fetch_one(pool)
     .await
-    .map_err(|e| e.into_error_model(format!("Failed to count the '{queue_name}' tasks")))?;
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail(format!("Failed to count the '{queue_name}' tasks"))
+    })?;
     Ok(TaskQueueDemand {
         due: counts.due,
         heartbeat_expired: counts.heartbeat_expired,
@@ -5722,16 +5735,20 @@ mod test {
         assert_eq!(task.task_id(), second);
     }
 
-    /// Marks a task as picked, with its last heartbeat `heartbeat_seconds_ago` seconds ago.
-    async fn set_picked(pool: &PgPool, task_id: TaskId, status: &str, heartbeat_seconds_ago: i64) {
+    /// Marks a task as picked, with its last heartbeat `heartbeat_age` ago.
+    async fn set_picked(
+        pool: &PgPool,
+        task_id: TaskId,
+        status: &str,
+        heartbeat_age: chrono::Duration,
+    ) {
         sqlx::query(
             "UPDATE task SET status = $2::task_intermediate_status, attempt = 1, \
-             picked_up_at = now(), last_heartbeat_at = now() - $3 * interval '1 second' \
-             WHERE task_id = $1",
+             picked_up_at = now(), last_heartbeat_at = now() - $3 WHERE task_id = $1",
         )
         .bind(*task_id)
         .bind(status)
-        .bind(heartbeat_seconds_ago)
+        .bind(heartbeat_age)
         .execute(pool)
         .await
         .unwrap();
@@ -5787,13 +5804,19 @@ mod test {
         queue(&q, Some(5), -10).await;
         // Running with a live heartbeat, asked to stop, and with an expired heartbeat.
         let running = queue(&q, Some(5), 2).await;
-        set_picked(&pool, running, "running", 0).await;
+        set_picked(&pool, running, "running", chrono::Duration::zero()).await;
         let stopping = queue(&q, Some(15), 2).await;
-        set_picked(&pool, stopping, "should-stop", 10).await;
+        set_picked(
+            &pool,
+            stopping,
+            "should-stop",
+            chrono::Duration::seconds(10),
+        )
+        .await;
         let expired = queue(&q, Some(10), 2).await;
-        set_picked(&pool, expired, "running", 3600).await;
+        set_picked(&pool, expired, "running", chrono::Duration::hours(1)).await;
         let live = queue(&q, Some(30), 2).await;
-        set_picked(&pool, live, "running", 30).await;
+        set_picked(&pool, live, "running", chrono::Duration::seconds(30)).await;
 
         // A second project whose heartbeat timeout is 1 second: the same 30 seconds are expired.
         let second_project = Arc::new(ProjectId::from_db_unchecked(Uuid::now_v7().to_string()));
@@ -5834,7 +5857,7 @@ mod test {
         .pop()
         .unwrap()
         .task_id;
-        set_picked(&pool, second, "running", 30).await;
+        set_picked(&pool, second, "running", chrono::Duration::seconds(30)).await;
 
         let small = TaskResourceDemandRange::builder().at_most(10).build();
         let medium = TaskResourceDemandRange::builder()
@@ -5859,6 +5882,25 @@ mod test {
                 demand_in(&pool, &q, &legacy_names, range).await,
                 expected,
                 "{range:?} {legacy_names:?}"
+            );
+        }
+
+        // Each pick fails one of the two attempts counted as expired; with no backoff it is due again.
+        for expired_left in [1, 0] {
+            let picked = pick_task_with_retry_policy(
+                &pool,
+                &q,
+                &[&legacy],
+                chrono::Duration::minutes(5),
+                TEST_RETRY_POLICY,
+                TaskResourceDemandRange::builder().above(1000).build(),
+            )
+            .await
+            .unwrap();
+            assert!(picked.is_none());
+            assert_eq!(
+                demand_in(&pool, &q, &[&legacy], TaskResourceDemandRange::default()).await,
+                (7 + 2 - expired_left, expired_left, 3)
             );
         }
     }
@@ -5924,8 +5966,6 @@ mod test {
         assert!(!pick.contains("Filter:"), "{pick}");
 
         // The due branch of `task_queue_demand`.
-        let range_in_index_any =
-            range_in_index.replace("(queue_name = $1)", "(queue_name = ANY ($1))");
         let count = generic_plan(
             &pool,
             "SELECT COUNT(*) FROM task t \
@@ -5934,8 +5974,15 @@ mod test {
             "('{compaction}', 100, 200)",
         )
         .await;
-        assert!(count.contains("task_queue_name_status_idx"), "{count}");
-        assert!(count.contains(&range_in_index_any), "{count}");
+        assert!(
+            count.contains("Index Only Scan using task_queue_name_status_idx"),
+            "{count}"
+        );
+        // An index-only scan prints the range on the index's expression column.
+        let range_in_index_only = "Index Cond: ((queue_name = ANY ($1)) AND (status = 'scheduled'::task_intermediate_status) \
+             AND (scheduled_for <= now()) AND ((COALESCE(resource_demand, '0'::bigint)) > $2) \
+             AND ((COALESCE(resource_demand, '0'::bigint)) <= $3))";
+        assert!(count.contains(range_in_index_only), "{count}");
         assert!(!count.contains("Filter:"), "{count}");
     }
 }

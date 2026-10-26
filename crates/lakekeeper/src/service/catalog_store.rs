@@ -1607,7 +1607,7 @@ where
     async fn task_queue_demand_impl(
         request: TaskQueueDemandRequest<'_>,
         state: Self::State,
-    ) -> Result<TaskQueueDemand>;
+    ) -> std::result::Result<TaskQueueDemand, CatalogBackendError>;
 
     async fn resolve_tasks_impl(
         scope: TaskResolveScope,

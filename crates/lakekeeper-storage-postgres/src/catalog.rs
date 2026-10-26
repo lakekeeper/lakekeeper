@@ -1355,7 +1355,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn task_queue_demand_impl(
         request: TaskQueueDemandRequest<'_>,
         state: Self::State,
-    ) -> Result<TaskQueueDemand> {
+    ) -> std::result::Result<TaskQueueDemand, CatalogBackendError> {
         task_queue_demand(&state.read_pool(), request).await
     }
 

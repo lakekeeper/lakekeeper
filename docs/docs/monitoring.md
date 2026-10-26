@@ -220,20 +220,22 @@ scrape_configs:
 
 ## Task Queue Demand
 
-An autoscaler can ask Lakekeeper how many workers the tasks of a queue need. The metrics port answers `GET /task-queue/<queue>/demand`, for example `http://<service-or-pod-ip>:9000/task-queue/compaction/demand?class=small`. The answer looks like this:
+An autoscaler can ask Lakekeeper how many workers the tasks of a queue need. The metrics port answers `GET /task-queue/<queue>/demand`, for example `http://<service-or-pod-ip>:9000/task-queue/tabular_purge/demand`. The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots` and `remove_orphan_files`. The answer looks like this:
 
 ```json
 {"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2}
 ```
 
 - `due` counts the tasks that wait and can start now.
-- `running` counts the tasks that run.
+- `running` counts the tasks that are running now.
 - `heartbeat-expired` counts tasks whose worker stopped sending heartbeats. The next worker that polls the queue ends that attempt. The queue's retry rules then decide whether the task runs again.
 - `demand` is the sum of the three. Use it as the scaling value, for example with the [KEDA Metrics API scaler](https://keda.sh/docs/latest/scalers/metrics-api/) and `valueLocation: demand`.
 
-Some queues group their tasks into classes, for example size classes of workers. Name the class with `?class=<name>` to count only its tasks. Without `class`, the answer counts the whole queue. An unknown queue or class returns `404`, also on a pod that does not have the class configuration. In read-only maintenance mode every answer is `0`, for every queue and class, because no worker starts tasks then.
+A queue can group its tasks into classes. Name the class with `?class=<name>` to count only its tasks. Without `class`, the answer counts the whole queue. An unknown queue or class returns `404`. A pod in read-only [maintenance mode](./configuration.md#maintenance-mode) answers `0` for every queue and class, so the autoscaler starts no new workers. The mode applies to each process on its own: switch every pod behind the Service that the autoscaler calls.
 
-All replicas read the same database, so every replica with the same queue and class configuration gives the same answer. Each replica keeps an answer for 5 seconds, so frequent requests do not load the database. The endpoint has no authentication, like `/metrics`, and shows only counts, no project, warehouse or table names. Do not expose the metrics port outside the cluster.
+To start workers as Jobs with a KEDA ScaledJob, point the scaler's `url` at the metrics port of the pods that serve the API, through their Service. With the Lakekeeper Helm chart, the catalog Service includes the metrics port only if `catalog.prometheus.setScrapeAnnotations` is `true`. Workers that are scaled to zero cannot answer. Set `targetValue` to the number of tasks that one worker Job runs at the same time, which is the queue's worker count in that Job, for example `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`. Keep `scalingStrategy.strategy` at `default`: `demand` includes the running tasks, and `default` subtracts the Jobs that already run. With `accurate` or `eager`, KEDA starts too many Jobs. `running` counts the tasks of every worker, so run the queue only on the autoscaled workers, and set its worker count to `0` on the API pods. [Stopping Task Workers](./configuration.md#stopping-task-workers) explains how worker Jobs end. With a KEDA ScaledObject, the number of pods is `demand` divided by `targetValue`, rounded up.
+
+All replicas read the same database, so replicas with the same configuration and the same maintenance mode give the same answer. Each replica keeps an answer for 5 seconds, so frequent requests do not load the database. The endpoint has no authentication, like `/metrics`, and shows only counts, no project, warehouse or table names. Do not expose the metrics port outside the cluster.
 
 ## Database (Postgres) Monitoring
 

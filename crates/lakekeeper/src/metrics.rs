@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin};
 
+use anyhow::Context;
 use axum::response::IntoResponse;
 use axum_prometheus::{
     AXUM_HTTP_REQUESTS_DURATION_SECONDS, EndpointLabel, PREFIXED_HTTP_REQUESTS_DURATION_SECONDS,
@@ -99,7 +100,7 @@ impl MetricsServer {
             let result = axum::serve(listener, metrics_router(handle, routes))
                 .with_graceful_shutdown(async move { token.cancelled().await })
                 .await
-                .map_err(|e| anyhow::anyhow!("Metrics exporter failed: {e:?}"));
+                .context("Metrics exporter failed");
             if cancellation_token.is_cancelled() {
                 tracing::info!(port, "Metrics exporter cancelled");
             }

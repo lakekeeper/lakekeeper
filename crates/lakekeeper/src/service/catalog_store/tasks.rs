@@ -180,7 +180,7 @@ where
     async fn task_queue_demand(
         request: TaskQueueDemandRequest<'_>,
         state: Self::State,
-    ) -> Result<TaskQueueDemand> {
+    ) -> std::result::Result<TaskQueueDemand, CatalogBackendError> {
         Self::task_queue_demand_impl(request, state).await
     }
 

@@ -13,7 +13,7 @@ use axum::{
 use futures::future::BoxFuture;
 
 use crate::service::{
-    CatalogStore, CatalogTaskOps,
+    CatalogBackendError, CatalogStore, CatalogTaskOps,
     maintenance_mode::{MAINTENANCE, MaintenanceSwitch},
     tasks::{
         DemandTarget, RegisteredTaskQueues, TaskQueueDemand, TaskQueueDemandRequest, TaskQueueName,
@@ -24,7 +24,9 @@ use crate::service::{
 const DEMAND_CACHE_TTL: Duration = Duration::from_secs(5);
 
 type CountFn = Arc<
-    dyn Fn(DemandTarget) -> BoxFuture<'static, crate::api::Result<TaskQueueDemand>> + Send + Sync,
+    dyn Fn(DemandTarget) -> BoxFuture<'static, Result<TaskQueueDemand, CatalogBackendError>>
+        + Send
+        + Sync,
 >;
 
 #[derive(Clone)]
@@ -312,12 +314,9 @@ mod tests {
             Arc::new(move |_| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Box::pin(async {
-                    Err(iceberg_ext::catalog::rest::ErrorModel::internal(
+                    Err(CatalogBackendError::new_unexpected(std::io::Error::other(
                         "database down",
-                        "DatabaseError",
-                        None,
-                    )
-                    .into())
+                    )))
                 })
             })
         };

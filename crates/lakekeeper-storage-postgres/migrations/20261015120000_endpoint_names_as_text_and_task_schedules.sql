@@ -163,10 +163,11 @@ ALTER TABLE task_log
     DROP CONSTRAINT IF EXISTS task_log_resource_demand_check,
     ADD CONSTRAINT task_log_resource_demand_check CHECK (resource_demand >= 0) NOT VALID;
 
--- Picks and demand counts of one resource demand range skip other ranges in the index.
+-- Picks and demand counts check the resource demand range on index entries, without reading the rows of other ranges; INCLUDE lets due counts read only the index.
 DROP INDEX IF EXISTS task_queue_name_status_idx;
 CREATE INDEX task_queue_name_status_idx
-    ON task (queue_name, status, scheduled_for, task_id, (COALESCE(resource_demand, 0)));
+    ON task (queue_name, status, scheduled_for, task_id, (COALESCE(resource_demand, 0)))
+    INCLUDE (resource_demand);
 
 -- ---- Endpoint names as text: swap ----
 

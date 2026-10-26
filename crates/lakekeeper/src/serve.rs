@@ -660,25 +660,25 @@ async fn serve_inner<
             Ok(())
         });
         service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
+    }
 
-        // Writes, so skipped in read-only maintenance.
-        if !skip_built_in_queues_for_maintenance {
-            let materializer_catalog_state = state.v1_state.catalog.clone();
-            let materializer_cancellation_token = cancellation_token.clone();
-            let materializer_abort_handle = service_futures.spawn(async move {
-                crate::service::tasks::task_schedule::task_schedule_materializer::<C>(
-                    materializer_catalog_state,
-                    CONFIG.task_poll_interval,
-                    materializer_cancellation_token,
-                )
-                .await;
-                Ok(())
-            });
-            service_ids.insert(
-                materializer_abort_handle.id(),
-                "Task Schedule Materializer".to_string(),
-            );
-        }
+    // Writes, so skipped in read-only maintenance. Runs also without task workers.
+    if !skip_built_in_queues_for_maintenance {
+        let materializer_catalog_state = state.v1_state.catalog.clone();
+        let materializer_cancellation_token = cancellation_token.clone();
+        let materializer_abort_handle = service_futures.spawn(async move {
+            crate::service::tasks::task_schedule::task_schedule_materializer::<C>(
+                materializer_catalog_state,
+                CONFIG.task_poll_interval,
+                materializer_cancellation_token,
+            )
+            .await;
+            Ok(())
+        });
+        service_ids.insert(
+            materializer_abort_handle.id(),
+            "Task Schedule Materializer".to_string(),
+        );
     }
 
     // HTTP Server / Axum. Serves the full API, or just `/health` in headless
