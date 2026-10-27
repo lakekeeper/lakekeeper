@@ -110,7 +110,7 @@ Follow `crates/lakekeeper/src/api/management/v1/lakekeeper_actions.rs` as the re
 - Everything this log names is `lower_snake_case`. The attribute checks values and keys; record and part field names are checked in review.
 - Never add a `_ =>` arm to an `action_descriptor` match: a new action would emit no context.
 - A fixture must describe a record the server can produce: build it from `action_descriptor()` or the handler's `event_actions()`. Add one for every new emission path, and extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record shape.
-- Never suppress a log line because "the audit record covers it" without asking `crate::audit::enabled()` first.
+- Never suppress a log line because "the audit record covers it" without asking `crate::audit::log_enabled()` first.
 - After a change: `just update-audit-fixtures` and `just update-audit-schema`, review both diffs, commit, then run `just check-audit-format` (it reads `HEAD`). Never edit `AUDIT_FORMAT`, the fixtures or `docs/docs/audit/schema.json` by hand.
 
 ## Rules

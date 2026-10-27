@@ -21,7 +21,7 @@ use enrichment::Enrichment;
 pub use enrichment::principal_with_known_email;
 pub use part::{
     AUDIT_TARGET, AnyWireStr, AuditPart, Kind, OperationValues, OutcomeValues, RecordContextKey,
-    Registration, Vocabulary, Wire, WireKey, WireName, enabled, warn_on_retired_audit_filter,
+    Registration, Vocabulary, Wire, WireKey, WireName, log_enabled, warn_on_retired_audit_filter,
 };
 use parts::include_user_email;
 pub use parts::{
@@ -38,7 +38,7 @@ use crate::{
         authz::UserOrRoleId,
         events::{
             AuthorizationFailedEvent, AuthorizationSucceededEvent, EventCatalog, EventListener,
-            GrantsChangedEvent, IdempotentReplayEvent,
+            GrantsChangedEvent, IdempotentReplayEvent, OperationRecordedEvent,
         },
     },
 };
@@ -195,7 +195,7 @@ impl Vocabulary for iceberg_ext::catalog::TableUpdateKind {
 
 /// The audit backend: renders events into audit records and writes them as log lines.
 ///
-/// One method per event kind it records. Each asks [`crate::audit::enabled`] before it does
+/// One method per event kind it records. Each asks [`crate::audit::log_enabled`] before it does
 /// any work, then assembles the record's shape from the event ([`assemble`]) and calls the
 /// shape's `emit()`; nothing else in this crate writes an audit record.
 ///
@@ -265,7 +265,7 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
         ),
     ] {
         for spec in specs {
-            OperationRecord::new(
+            let record = OperationRecord::new(
                 operation.as_wire(),
                 RecordOrigin::of_request(&event.request_metadata, actor()),
                 AuditOutcome::Success.as_wire(),
@@ -276,7 +276,8 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
                 &spec.resource,
             ))
             .message(message)
-            .emit();
+            .into_event();
+            shapes::write_operation_record(record);
         }
     }
 }
@@ -284,7 +285,7 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
 #[async_trait::async_trait]
 impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
-        if !enabled() {
+        if !log_enabled() {
             return Ok(());
         }
         let named = assemble::NamedPrincipals::of(&event.actions, &event.authorizations);
@@ -305,7 +306,7 @@ impl EventListener for AuditEventListener {
     /// the grants. The records of a deleted user's grants carry no
     /// email for that user: the delete cleared it before they are written.
     async fn grants_changed(&self, event: GrantsChangedEvent) -> anyhow::Result<()> {
-        if !enabled() {
+        if !log_enabled() {
             return Ok(());
         }
         let names_a_role = event
@@ -342,7 +343,7 @@ impl EventListener for AuditEventListener {
         &self,
         event: AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
-        if !enabled() {
+        if !log_enabled() {
             return Ok(());
         }
         let named = assemble::NamedPrincipals::of(&event.actions, &event.authorizations);
@@ -358,12 +359,21 @@ impl EventListener for AuditEventListener {
     /// query finds the original request and every replay of it. No `decision`: no
     /// authorization ran, the mutation had already happened.
     async fn idempotent_replay_served(&self, event: IdempotentReplayEvent) -> anyhow::Result<()> {
-        if !enabled() {
+        if !log_enabled() {
             return Ok(());
         }
         let named = assemble::NamedPrincipals::of(&event.actions, &[]);
         let enrichment = self.enrichment(&event.request_metadata, &named).await;
         assemble::replay(&event, &enrichment).emit("Idempotent replay served");
+        Ok(())
+    }
+
+    /// An operation record, written as it was built: it needs no enrichment.
+    async fn operation_recorded(&self, event: OperationRecordedEvent) -> anyhow::Result<()> {
+        if !log_enabled() {
+            return Ok(());
+        }
+        shapes::write_operation_record(event);
         Ok(())
     }
 }

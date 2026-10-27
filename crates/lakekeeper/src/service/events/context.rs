@@ -1497,7 +1497,7 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
 
         // The audit record carries the same denial in more detail. Suppress the plain error
         // line only when that record reaches the log; otherwise it is the only trace.
-        if crate::audit::enabled() {
+        if crate::audit::log_enabled() {
             error.skip_log = true;
         }
 
