@@ -48,7 +48,7 @@ Query engines disagree on identifier case — and they disagree in the worst pos
 | Athena (Spark) | **Always lowercased** | **Quoted still lowercased** | **Always lowercase** |
 | Snowflake | **Uppercased** | `"..."` preserves case | **Uppercase** (unquoted), preserved (quoted) |
 | PyIceberg | N/A (programmatic) | N/A | **Exactly as provided** |
-| OLake Go | N/A (replicates source names) | N/A | **Lowercase**, special characters replaced by `_` |
+| OLake Go | N/A | N/A | **Lowercase**, special characters replaced by `_` |
 
 Notice the conflict: Spark sends `monthly_revenue`, Snowflake sends `MONTHLY_REVENUE`, and PyIceberg sends whatever the user typed. With a case-sensitive catalog, **the same table has three different names depending on which engine created it** — and none of them can find each other's tables.
 
