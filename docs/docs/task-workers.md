@@ -10,7 +10,7 @@ Lakekeeper runs background work in task-queue workers, for example purging the f
 
 1. The API pods run no workers of the queue. On their metrics port they report the [task queue demand](./monitoring.md#task-queue-demand): how many tasks of the queue wait or run.
 2. A KEDA ScaledJob reads the demand and starts worker Jobs.
-3. Each Job runs Lakekeeper without the HTTP API (`LAKEKEEPER__SERVE_HTTP_API=false`). It takes tasks until it had no task for `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` or reached `LAKEKEEPER__TASK_MAX_LIFETIME`, and then exits with code 0, so the Job completes. See [Stopping Task Workers](./configuration.md#stopping-task-workers).
+3. Each Job runs Lakekeeper without the HTTP API (`LAKEKEEPER__SERVE_HTTP_API=false`). It takes tasks until it had no task for `LAKEKEEPER__TASK_IDLE_EXIT_AFTER`, and then exits with code 0, so the Job completes. See [Stopping Task Workers](./configuration.md#stopping-task-workers).
 
 We recommend one ScaledJob per queue. Set the queue's `LAKEKEEPER__TASK_*_WORKERS` to `0` on the API pods, and on the workers set the worker counts of all other queues to `0`.
 
@@ -39,7 +39,7 @@ spec:
             image: quay.io/lakekeeper/catalog:<version>
             args: ["serve"]
             env:
-              # Also add the database, secret and storage settings of the API pods.
+              # Also add the database, secret, storage and authorization settings of the API pods.
               - name: LAKEKEEPER__SERVE_HTTP_API
                 value: "false"
               - name: LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS
@@ -48,10 +48,12 @@ spec:
                 value: "0"
               - name: LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS
                 value: "0"
+              - name: LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS
+                value: "0"
+              - name: LAKEKEEPER__TASK_REMOVE_ORPHAN_FILES_WORKERS
+                value: "0"
               - name: LAKEKEEPER__TASK_IDLE_EXIT_AFTER
                 value: "180s"
-              - name: LAKEKEEPER__TASK_MAX_LIFETIME
-                value: "3600s"
   triggers:
     - type: metrics-api
       metadata:
@@ -61,6 +63,8 @@ spec:
 ```
 
 `targetValue` is the number of tasks one worker pod runs at the same time, here `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`. With `restartPolicy: Never` and `backoffLimit: 0`, Kubernetes does not restart a worker that failed. The task queue tries the task again, and KEDA starts a new Job while tasks wait. [Task Queue Demand](./monitoring.md#task-queue-demand) lists the queue names and further recommended settings.
+
+We recommend leaving `LAKEKEEPER__TASK_MAX_LIFETIME` unset on these workers. A worker that reached it takes no new tasks while it finishes a long task, but KEDA still counts it, so other due tasks can wait for that task.
 
 ## Size Classes { .lkp }
 
@@ -81,13 +85,14 @@ A worker that is stopped in the middle of a task, for example on a spot node, ca
 
 ## Alerting
 
-A task waits as long as no worker takes it, for example when KEDA does not run, the ScaledJob reached `maxReplicaCount`, or worker pods cannot be scheduled. We recommend an alert on the age of the oldest due task of each queue, for example when it is older than one hour. This query returns the age in seconds; you can run it as a custom query of `postgres_exporter` or CloudNativePG (see [Database Monitoring](./monitoring.md#database-postgres-monitoring)):
+A task waits as long as no worker takes it, for example when KEDA does not run, the ScaledJob reached `maxReplicaCount`, or worker pods cannot be scheduled. We recommend an alert on the age of the oldest due task of each queue, for example when it is older than one hour. A running task counts from its last heartbeat, so the alert also covers a task whose worker stopped. This query returns the age in seconds; you can run it as a custom query of `postgres_exporter` or CloudNativePG (see [Database Monitoring](./monitoring.md#database-postgres-monitoring)):
 
 ```sql
-SELECT queue_name, EXTRACT(EPOCH FROM now() - MIN(scheduled_for)) AS oldest_due_seconds
+SELECT queue_name,
+    EXTRACT(EPOCH FROM now() - MIN(CASE WHEN status = 'scheduled' THEN scheduled_for ELSE last_heartbeat_at END)) AS oldest_due_seconds
 FROM task
-WHERE status = 'scheduled' AND scheduled_for <= now()
+WHERE (status = 'scheduled' AND scheduled_for <= now()) OR status IN ('running', 'should-stop')
 GROUP BY queue_name;
 ```
 
-If you set `LAKEKEEPER__PG_SCHEMA`, write the schema before the table name.
+If you set `LAKEKEEPER__PG_SCHEMA`, write the schema in double quotes before the table name, for example `"lakekeeper".task`.
