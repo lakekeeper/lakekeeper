@@ -37,8 +37,9 @@ pub struct TaskQueueDemand {
     pub heartbeat_expired: i64,
     /// Running or asked to stop, with a live heartbeat.
     pub running: i64,
-    /// `scheduled_for` of the longest waiting due task. `None` if no task is due.
-    pub oldest_due_scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
+    /// Since when the longest waiting task can be taken: the `scheduled_for` of a due task, or
+    /// when the heartbeat of a heartbeat-expired task expired. `None` if no task is either.
+    pub oldest_due_since: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl TaskQueueDemand {
@@ -48,11 +49,11 @@ impl TaskQueueDemand {
         self.due + self.heartbeat_expired + self.running
     }
 
-    /// How long the longest waiting due task has waited at `now`, in whole seconds. `None` if no
-    /// task is due.
+    /// How long the longest waiting due or heartbeat-expired task has waited at `now`, in whole
+    /// seconds. `None` if no task is either.
     #[must_use]
     pub fn oldest_due_seconds(&self, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
-        self.oldest_due_scheduled_for
+        self.oldest_due_since
             .map(|scheduled_for| (now - scheduled_for).num_seconds().max(0))
     }
 }
@@ -74,7 +75,7 @@ mod tests {
         let scheduled_for = chrono::DateTime::from_timestamp(1_000_000, 0).unwrap();
         let demand = TaskQueueDemand {
             due: 1,
-            oldest_due_scheduled_for: Some(scheduled_for),
+            oldest_due_since: Some(scheduled_for),
             ..TaskQueueDemand::default()
         };
         for (now, expected) in [

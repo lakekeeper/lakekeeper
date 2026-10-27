@@ -763,7 +763,7 @@ fn demand_bounds(range: TaskResourceDemandRange) -> (i64, i64) {
 }
 
 /// Count the due, heartbeat-expired and running tasks of a queue in a resource demand range, and
-/// find the longest waiting due task.
+/// find since when the longest waiting due or heartbeat-expired task can be taken.
 pub(crate) async fn task_queue_demand(
     pool: &PgPool,
     request: TaskQueueDemandRequest<'_>,
@@ -786,10 +786,10 @@ pub(crate) async fn task_queue_demand(
             COUNT(*) FILTER (WHERE s.state = 'due') AS "due!",
             COUNT(*) FILTER (WHERE s.state = 'expired') AS "heartbeat_expired!",
             COUNT(*) FILTER (WHERE s.state = 'running') AS "running!",
-            MIN(s.scheduled_for) AS "oldest_due_scheduled_for"
+            MIN(s.due_since) AS "oldest_due_since"
         FROM (
             -- What a pick can take now, as in `pick_task_with_retry_policy`.
-            SELECT 'due' AS state, t.scheduled_for
+            SELECT 'due' AS state, t.scheduled_for AS due_since
             FROM task t
             WHERE t.queue_name = ANY($1) AND t.status = 'scheduled' AND t.scheduled_for <= now()
                 AND COALESCE(t.resource_demand, 0) > $3
@@ -799,7 +799,9 @@ pub(crate) async fn task_queue_demand(
             SELECT CASE
                 WHEN now() - t.last_heartbeat_at > COALESCE(tc.max_time_since_last_heartbeat, $5)
                 THEN 'expired' ELSE 'running' END,
-                NULL
+                -- The next pick fails an expired attempt, so it waits from when it expired.
+                CASE WHEN now() - t.last_heartbeat_at > COALESCE(tc.max_time_since_last_heartbeat, $5)
+                THEN t.last_heartbeat_at + COALESCE(tc.max_time_since_last_heartbeat, $5) END
             FROM task t
             LEFT JOIN LATERAL (
                 SELECT cfg.max_time_since_last_heartbeat
@@ -832,7 +834,7 @@ pub(crate) async fn task_queue_demand(
         due: counts.due,
         heartbeat_expired: counts.heartbeat_expired,
         running: counts.running,
-        oldest_due_scheduled_for: counts.oldest_due_scheduled_for,
+        oldest_due_since: counts.oldest_due_since,
     })
 }
 
@@ -5930,7 +5932,7 @@ mod test {
     }
 
     #[sqlx::test]
-    async fn test_task_queue_demand_finds_the_oldest_due_task(pool: PgPool) {
+    async fn test_task_queue_demand_finds_the_longest_waiting_task(pool: PgPool) {
         use chrono::SubsecRound;
 
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -5950,7 +5952,7 @@ mod test {
                 )
                 .await
                 .unwrap()
-                .oldest_due_scheduled_for
+                .oldest_due_since
             }
         };
         let small = TaskResourceDemandRange::builder().at_most(10).build();
@@ -5992,6 +5994,52 @@ mod test {
         );
         assert_eq!(oldest_due(small).await, Some(minutes_ago(7)));
         assert_eq!(oldest_due(large).await, Some(minutes_ago(9)));
+
+        // Its worker stopped 20 minutes ago. With the default timeout of 5 minutes, the next pick
+        // could fail it since 15 minutes ago.
+        let stalled = queue(&q, Some(5), minutes_ago(90)).await;
+        sqlx::query(
+            "UPDATE task SET status = 'running', attempt = 1, picked_up_at = $2, \
+             last_heartbeat_at = $2 WHERE task_id = $1",
+        )
+        .bind(*stalled)
+        .bind(minutes_ago(20))
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            oldest_due(TaskResourceDemandRange::default()).await,
+            Some(minutes_ago(15))
+        );
+        assert_eq!(oldest_due(small).await, Some(minutes_ago(15)));
+        assert_eq!(oldest_due(large).await, Some(minutes_ago(9)));
+
+        // The queue's configured timeout applies: since 8 minutes ago with 12 minutes, and not
+        // expired with 30 minutes.
+        for (timeout_minutes, expected_small) in [(12, minutes_ago(8)), (30, minutes_ago(7))] {
+            let mut conn = pool.acquire().await.unwrap();
+            set_task_queue_config(
+                &mut conn,
+                &q,
+                project_id.clone(),
+                Some(warehouse_id),
+                &SetTaskQueueConfigRequest {
+                    queue_config: QueueConfig::from_json(serde_json::json!({})),
+                    max_seconds_since_last_heartbeat: Some(timeout_minutes * 60),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                oldest_due(TaskResourceDemandRange::default()).await,
+                Some(minutes_ago(9))
+            );
+            assert_eq!(
+                oldest_due(small).await,
+                Some(expected_small),
+                "{timeout_minutes}"
+            );
+        }
     }
 
     /// Plan of `sql` as a generic plan, with sequential and bitmap scans off.

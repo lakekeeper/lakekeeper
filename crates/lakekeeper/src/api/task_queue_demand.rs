@@ -1,7 +1,8 @@
 //! `GET /task-queue/{queue_name}/demand` on the metrics port: how many workers a queue's tasks
 //! need, for autoscalers such as KEDA. Counts only, without authentication.
 //!
-//! Also samples how long the oldest due task of each queue and demand class has waited, into
+//! Also samples how long the longest waiting due or heartbeat-expired task of each queue and
+//! demand class has waited, into
 //! [`METRIC_OLDEST_DUE_AGE`].
 
 use std::{
@@ -31,8 +32,8 @@ use crate::service::{
 /// How long a count is served from memory. Bounds the database load whatever the request rate.
 const DEMAND_CACHE_TTL: Duration = Duration::from_secs(5);
 
-/// Seconds the oldest due task of a queue has waited, by `queue_name` and `class`; 0 if no task
-/// is due. `class` is empty for the whole queue.
+/// Seconds the longest waiting due or heartbeat-expired task of a queue has waited, by
+/// `queue_name` and `class`; 0 if no task is either. `class` is empty for the whole queue.
 pub(crate) const METRIC_OLDEST_DUE_AGE: &str = "lakekeeper_task_queue_oldest_due_age_seconds";
 
 /// How often [`METRIC_OLDEST_DUE_AGE`] is sampled.
@@ -42,7 +43,7 @@ static OLDEST_DUE_AGE_DESCRIBED: LazyLock<()> = LazyLock::new(|| {
     metrics::describe_gauge!(
         METRIC_OLDEST_DUE_AGE,
         metrics::Unit::Seconds,
-        "Seconds the oldest due task of a task queue has waited, by queue and demand class; 0 if no task is due"
+        "Seconds the longest waiting due or heartbeat-expired task of a task queue has waited, by queue and demand class; 0 if no task is either"
     );
 });
 
@@ -84,7 +85,8 @@ struct DemandResponse {
     due: i64,
     heartbeat_expired: i64,
     running: i64,
-    /// Seconds the oldest due task has waited. `None` if no task is due.
+    /// Seconds the longest waiting due or heartbeat-expired task has waited. `None` if no task
+    /// is either.
     oldest_due_seconds: Option<i64>,
 }
 
@@ -187,7 +189,8 @@ impl QueueDemand {
         }
     }
 
-    /// Seconds the oldest due task has waited, by queue and class; 0 if no task is due.
+    /// Seconds the longest waiting due or heartbeat-expired task has waited, by queue and class;
+    /// 0 if no task is either.
     async fn oldest_due_ages(
         &self,
     ) -> Result<Vec<(&'static TaskQueueName, String, i64)>, DemandError> {
@@ -309,7 +312,7 @@ mod tests {
                     due,
                     heartbeat_expired: 2,
                     running: 3,
-                    oldest_due_scheduled_for: Some(test_now() - chrono::Duration::seconds(due)),
+                    oldest_due_since: Some(test_now() - chrono::Duration::seconds(due)),
                 })
             })
         })
