@@ -584,6 +584,24 @@ async fn serve_inner<
     ));
     service_ids.insert(metrics_handle.id(), "Metrics Server".to_string());
 
+    // How long tasks wait. Headless workers come and go with the autoscaler, so they add no
+    // series or queries.
+    if CONFIG.serve_http_api {
+        let sampler = crate::api::task_queue_demand::OldestDueSampler::new::<C>(
+            state.v1_state.catalog.clone(),
+            state.v1_state.registered_task_queues.clone(),
+        );
+        let sampler_cancellation_token = cancellation_token.clone();
+        let sampler_abort_handle = service_futures.spawn(async move {
+            sampler.run(sampler_cancellation_token).await;
+            Ok(())
+        });
+        service_ids.insert(
+            sampler_abort_handle.id(),
+            "Oldest Due Task Sampler".to_string(),
+        );
+    }
+
     // Periodic health checks:
     let health_abort_handles =
         health_provider.spawn_update_health_checks(service_futures, &cancellation_token);
@@ -713,36 +731,21 @@ async fn serve_inner<
     }
 }
 
-/// Serves the metrics port, with the task queue demand route. A process that serves the HTTP API
-/// also samples the oldest due task of each task queue.
+/// Serves the metrics port, with the task queue demand route.
 fn serve_metrics<A: Authorizer, C: CatalogStore, S: SecretStore>(
     metrics_server: MetricsServer,
     state: &State<A, C, S>,
     cancellation_token: CancellationToken,
 ) -> impl Future<Output = anyhow::Result<()>> + use<A, C, S> {
-    let demand = crate::api::task_queue_demand::QueueDemand::new::<C>(
+    let routes = crate::api::task_queue_demand::router::<C>(
         state.catalog.clone(),
         state.registered_task_queues.clone(),
     );
-    // Headless workers come and go with the autoscaler, so they do not add series or queries.
-    let sampler = CONFIG
-        .serve_http_api
-        .then(|| demand.clone().sample_oldest_due_age());
-    let metrics_future = metrics_server.serve(demand.router(), cancellation_token);
+    let metrics_future = metrics_server.serve(routes, cancellation_token);
     async move {
-        let sample = async {
-            match sampler {
-                Some(sampler) => sampler.await,
-                None => std::future::pending().await,
-            }
-        };
-        // The sampler runs in this future, so it stops whenever the metrics server stops.
-        tokio::select! {
-            result = metrics_future => {
-                result.map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
-            }
-            never = sample => match never {},
-        }
+        metrics_future
+            .await
+            .map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
     }
 }
 

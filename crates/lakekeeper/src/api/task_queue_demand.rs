@@ -1,9 +1,7 @@
 //! `GET /task-queue/{queue_name}/demand` on the metrics port: how many workers a queue's tasks
 //! need, for autoscalers such as KEDA. Counts only, without authentication.
 //!
-//! Also samples how long the longest waiting due or heartbeat-expired task of each queue and
-//! demand class has waited, into
-//! [`METRIC_OLDEST_DUE_AGE`].
+//! [`OldestDueSampler`] reports how long tasks wait, in [`METRIC_OLDEST_DUE_AGE`].
 
 use std::{
     sync::{Arc, LazyLock},
@@ -20,12 +18,15 @@ use axum::{
 use axum_prometheus::metrics;
 use futures::future::BoxFuture;
 
-use crate::service::{
-    CatalogBackendError, CatalogStore, CatalogTaskOps,
-    maintenance_mode::{MAINTENANCE, MaintenanceSwitch},
-    tasks::{
-        DemandLookupError, DemandTarget, RegisteredTaskQueues, TaskQueueDemand,
-        TaskQueueDemandRequest, TaskQueueName,
+use crate::{
+    CancellationToken,
+    service::{
+        CatalogBackendError, CatalogStore, CatalogTaskOps,
+        maintenance_mode::{MAINTENANCE, MaintenanceSwitch},
+        tasks::{
+            DemandLookupError, DemandTarget, RegisteredTaskQueues, TaskQueueDemand,
+            TaskQueueDemandRequest, TaskQueueName,
+        },
     },
 };
 
@@ -33,17 +34,26 @@ use crate::service::{
 const DEMAND_CACHE_TTL: Duration = Duration::from_secs(5);
 
 /// Seconds the longest waiting due or heartbeat-expired task of a queue has waited, by
-/// `queue_name` and `class`; 0 if no task is either. `class` is empty for the whole queue.
+/// `queue_name` and `class`; 0 if no task is either, `NaN` if the last sample failed. `class` is
+/// empty for the whole queue.
 pub(crate) const METRIC_OLDEST_DUE_AGE: &str = "lakekeeper_task_queue_oldest_due_age_seconds";
+/// Unix time of the last sample of [`METRIC_OLDEST_DUE_AGE`] in which every queue and class
+/// succeeded.
+pub(crate) const METRIC_OLDEST_DUE_LAST_SUCCESS: &str =
+    "lakekeeper_task_queue_oldest_due_last_success_timestamp_seconds";
 
-/// How often [`METRIC_OLDEST_DUE_AGE`] is sampled.
+/// How often [`METRIC_OLDEST_DUE_AGE`] is sampled, and how long one queue and class may take.
 const OLDEST_DUE_SAMPLE_INTERVAL: Duration = Duration::from_secs(15);
 
-static OLDEST_DUE_AGE_DESCRIBED: LazyLock<()> = LazyLock::new(|| {
+/// Registers the descriptions of the oldest-due metrics exactly once.
+static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
     metrics::describe_gauge!(
         METRIC_OLDEST_DUE_AGE,
-        metrics::Unit::Seconds,
-        "Seconds the longest waiting due or heartbeat-expired task of a task queue has waited, by queue and demand class; 0 if no task is either"
+        "Seconds the longest waiting due or heartbeat-expired task of a task queue has waited, by queue and class; 0 if no task waits, NaN if the last sample failed"
+    );
+    metrics::describe_gauge!(
+        METRIC_OLDEST_DUE_LAST_SUCCESS,
+        "Unix time of the last sample of lakekeeper_task_queue_oldest_due_age_seconds in which every queue and class succeeded"
     );
 });
 
@@ -53,23 +63,21 @@ type CountFn = Arc<
         + Sync,
 >;
 
-/// Counts the demand of task queues, for the demand route and the oldest-due gauge.
+type OldestDueFn = Arc<
+    dyn Fn(
+            DemandTarget,
+        )
+            -> BoxFuture<'static, Result<Option<chrono::DateTime<chrono::Utc>>, CatalogBackendError>>
+        + Send
+        + Sync,
+>;
+
 #[derive(Clone)]
-pub(crate) struct QueueDemand {
+struct DemandState {
     queues: RegisteredTaskQueues,
     count: CountFn,
     maintenance: &'static MaintenanceSwitch,
     cache: moka::future::Cache<(&'static TaskQueueName, Option<String>), TaskQueueDemand>,
-    /// The clock the age of the oldest due task is measured with.
-    now: fn() -> chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, thiserror::Error)]
-enum DemandError {
-    #[error(transparent)]
-    Lookup(#[from] DemandLookupError),
-    #[error("Failed to count the tasks")]
-    Count(#[source] Arc<CatalogBackendError>),
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -77,7 +85,7 @@ struct DemandQuery {
     class: Option<String>,
 }
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct DemandResponse {
     /// `due + heartbeat-expired + running`.
@@ -102,133 +110,199 @@ impl DemandResponse {
     }
 }
 
-impl QueueDemand {
-    /// Counts with the catalog `C`.
+/// The request of a demand target.
+fn demand_request(target: &DemandTarget) -> TaskQueueDemandRequest<'_> {
+    TaskQueueDemandRequest::builder()
+        .queue_name(target.queue_name)
+        .legacy_queue_names(&target.legacy_queue_names)
+        .default_max_time_since_last_heartbeat(target.max_time_since_last_heartbeat)
+        .resource_demand(target.resource_demand)
+        .build()
+}
+
+/// The demand route, counting with the catalog `C`.
+pub(crate) fn router<C: CatalogStore>(
+    catalog_state: C::State,
+    queues: RegisteredTaskQueues,
+) -> Router {
+    let count: CountFn = Arc::new(move |target: DemandTarget| {
+        let catalog_state = catalog_state.clone();
+        Box::pin(async move { C::task_queue_demand(demand_request(&target), catalog_state).await })
+    });
+    router_with(queues, count, &MAINTENANCE)
+}
+
+fn router_with(
+    queues: RegisteredTaskQueues,
+    count: CountFn,
+    maintenance: &'static MaintenanceSwitch,
+) -> Router {
+    let state = DemandState {
+        queues,
+        count,
+        maintenance,
+        cache: moka::future::Cache::builder()
+            .max_capacity(1000)
+            .time_to_live(DEMAND_CACHE_TTL)
+            .build(),
+    };
+    Router::new()
+        .route("/task-queue/{queue_name}/demand", get(queue_demand))
+        .with_state(state)
+}
+
+async fn queue_demand(
+    State(state): State<DemandState>,
+    Path(queue_name): Path<String>,
+    Query(DemandQuery { class }): Query<DemandQuery>,
+) -> Response {
+    // No worker starts in read-only maintenance mode, so no task can be picked. Checked first:
+    // such a process does not register the built-in queues.
+    if state.maintenance.is_read_only() {
+        let none = DemandResponse::new(TaskQueueDemand::default(), chrono::Utc::now());
+        return Json(none).into_response();
+    }
+    let target = match state
+        .queues
+        .demand_target(&TaskQueueName::from(queue_name), class.as_deref())
+        .await
+    {
+        Ok(target) => target,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+    let key = (target.queue_name, class);
+    match state.cache.try_get_with(key, (state.count)(target)).await {
+        Ok(demand) => Json(DemandResponse::new(demand, chrono::Utc::now())).into_response(),
+        Err(error) => {
+            tracing::warn!(?error, "Failed to count the demand of a task queue");
+            (StatusCode::SERVICE_UNAVAILABLE, "Failed to count the tasks").into_response()
+        }
+    }
+}
+
+/// Sets [`METRIC_OLDEST_DUE_AGE`] for each registered queue as a whole and for each of its
+/// demand classes, with a statement that does not count the tasks.
+pub(crate) struct OldestDueSampler {
+    queues: RegisteredTaskQueues,
+    oldest_due: OldestDueFn,
+    maintenance: &'static MaintenanceSwitch,
+}
+
+/// One sample of all queues and classes.
+#[derive(Debug, PartialEq)]
+struct OldestDueSample {
+    /// Seconds, by queue and class. `NaN` where the sample failed.
+    ages: Vec<(&'static TaskQueueName, String, f64)>,
+    /// When the sample was taken, if every queue and class succeeded.
+    succeeded_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SampleError {
+    #[error(transparent)]
+    Lookup(#[from] DemandLookupError),
+    #[error(transparent)]
+    Query(#[from] CatalogBackendError),
+    #[error("No answer within {OLDEST_DUE_SAMPLE_INTERVAL:?}")]
+    Timeout,
+}
+
+impl OldestDueSampler {
+    /// Samples with the catalog `C`.
     pub(crate) fn new<C: CatalogStore>(
         catalog_state: C::State,
         queues: RegisteredTaskQueues,
     ) -> Self {
-        let count: CountFn = Arc::new(move |target: DemandTarget| {
+        let oldest_due: OldestDueFn = Arc::new(move |target: DemandTarget| {
             let catalog_state = catalog_state.clone();
             Box::pin(async move {
-                let request = TaskQueueDemandRequest::builder()
-                    .queue_name(target.queue_name)
-                    .legacy_queue_names(&target.legacy_queue_names)
-                    .default_max_time_since_last_heartbeat(target.max_time_since_last_heartbeat)
-                    .resource_demand(target.resource_demand)
-                    .build();
-                C::task_queue_demand(request, catalog_state).await
+                C::task_queue_oldest_due(demand_request(&target), catalog_state).await
             })
         });
-        Self::with(queues, count, &MAINTENANCE, chrono::Utc::now)
-    }
-
-    fn with(
-        queues: RegisteredTaskQueues,
-        count: CountFn,
-        maintenance: &'static MaintenanceSwitch,
-        now: fn() -> chrono::DateTime<chrono::Utc>,
-    ) -> Self {
         Self {
             queues,
-            count,
-            maintenance,
-            cache: moka::future::Cache::builder()
-                .max_capacity(1000)
-                .time_to_live(DEMAND_CACHE_TTL)
-                .build(),
-            now,
+            oldest_due,
+            maintenance: &MAINTENANCE,
         }
     }
 
-    /// The demand route.
-    pub(crate) fn router(self) -> Router {
-        Router::new()
-            .route("/task-queue/{queue_name}/demand", get(queue_demand))
-            .with_state(self)
-    }
-
-    /// The demand of `class` of the queue, or of the whole queue without a class.
-    async fn demand(
-        &self,
-        queue_name: &TaskQueueName,
-        class: Option<String>,
-    ) -> Result<TaskQueueDemand, DemandError> {
-        // No worker starts in read-only maintenance mode, so no task can be picked. Checked
-        // first: such a process does not register the built-in queues.
-        if self.maintenance.is_read_only() {
-            return Ok(TaskQueueDemand::default());
-        }
-        let target = self
-            .queues
-            .demand_target(queue_name, class.as_deref())
-            .await?;
-        let key = (target.queue_name, class);
-        self.cache
-            .try_get_with(key, (self.count)(target))
-            .await
-            .map_err(DemandError::Count)
-    }
-
-    /// Sets [`METRIC_OLDEST_DUE_AGE`] every [`OLDEST_DUE_SAMPLE_INTERVAL`], for each registered
-    /// queue as a whole and for each of its demand classes. Runs until dropped.
-    pub(crate) async fn sample_oldest_due_age(self) -> std::convert::Infallible {
+    /// Samples every [`OLDEST_DUE_SAMPLE_INTERVAL`] until cancelled.
+    pub(crate) async fn run(self, cancellation_token: CancellationToken) {
         let mut ticker = tokio::time::interval(OLDEST_DUE_SAMPLE_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            ticker.tick().await;
-            record_oldest_due_ages(&self.oldest_due_ages().await);
-        }
-    }
-
-    /// Seconds the longest waiting due or heartbeat-expired task has waited, by queue and class;
-    /// 0 if no task is either. Leaves out a queue and class whose count failed.
-    async fn oldest_due_ages(&self) -> Vec<(&'static TaskQueueName, String, i64)> {
-        let mut ages = Vec::new();
-        for (queue_name, class) in self.queues.demand_keys().await {
-            match self.demand(queue_name, class.clone()).await {
-                Ok(demand) => {
-                    let age = demand.oldest_due_seconds((self.now)()).unwrap_or(0);
-                    ages.push((queue_name, class.unwrap_or_default(), age));
-                }
-                Err(error) => tracing::warn!(
-                    ?error,
-                    %queue_name,
-                    ?class,
-                    "Failed to sample the oldest due task of a task queue"
-                ),
+            let sample = async {
+                ticker.tick().await;
+                self.sample(chrono::Utc::now()).await
+            };
+            tokio::select! {
+                () = cancellation_token.cancelled() => break,
+                sample = sample => record_oldest_due_sample(&sample),
             }
         }
-        ages
+        tracing::info!("Oldest due task sampler cancelled");
+    }
+
+    /// How long the longest waiting due or heartbeat-expired task of each queue and class has
+    /// waited at `now`.
+    async fn sample(&self, now: chrono::DateTime<chrono::Utc>) -> OldestDueSample {
+        let mut ages = Vec::new();
+        let mut succeeded = true;
+        for (queue_name, class) in self.queues.demand_keys().await {
+            let oldest_due_since = tokio::time::timeout(
+                OLDEST_DUE_SAMPLE_INTERVAL,
+                self.oldest_due_since(queue_name, class.as_deref()),
+            )
+            .await
+            .unwrap_or(Err(SampleError::Timeout));
+            let age = match oldest_due_since {
+                Ok(since) => since.map_or(0.0, |since| (now - since).as_seconds_f64().max(0.0)),
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        %queue_name,
+                        ?class,
+                        "Failed to sample the oldest due task of a task queue"
+                    );
+                    succeeded = false;
+                    f64::NAN
+                }
+            };
+            ages.push((queue_name, class.unwrap_or_default(), age));
+        }
+        OldestDueSample {
+            ages,
+            succeeded_at: succeeded.then_some(now),
+        }
+    }
+
+    async fn oldest_due_since(
+        &self,
+        queue_name: &TaskQueueName,
+        class: Option<&str>,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, SampleError> {
+        // No worker starts in read-only maintenance mode, so no task can be picked.
+        if self.maintenance.is_read_only() {
+            return Ok(None);
+        }
+        let target = self.queues.demand_target(queue_name, class).await?;
+        Ok((self.oldest_due)(target).await?)
     }
 }
 
-fn record_oldest_due_ages(ages: &[(&'static TaskQueueName, String, i64)]) {
-    let () = *OLDEST_DUE_AGE_DESCRIBED;
-    for (queue_name, class, age) in ages {
+fn record_oldest_due_sample(sample: &OldestDueSample) {
+    let () = &*METRICS_INITIALIZED;
+    for (queue_name, class, age) in &sample.ages {
         metrics::gauge!(
             METRIC_OLDEST_DUE_AGE,
-            "queue_name" => queue_name.as_str().to_string(),
+            "queue_name" => queue_name.as_str(),
             "class" => class.clone()
         )
-        .set(f64::from(i32::try_from(*age).unwrap_or(i32::MAX)));
+        .set(*age);
     }
-}
-
-async fn queue_demand(
-    State(state): State<QueueDemand>,
-    Path(queue_name): Path<String>,
-    Query(DemandQuery { class }): Query<DemandQuery>,
-) -> Response {
-    match state.demand(&TaskQueueName::from(queue_name), class).await {
-        Ok(demand) => Json(DemandResponse::new(demand, (state.now)())).into_response(),
-        Err(DemandError::Lookup(error)) => {
-            (StatusCode::NOT_FOUND, error.to_string()).into_response()
-        }
-        Err(error @ DemandError::Count(_)) => {
-            tracing::warn!(?error, "Failed to count the demand of a task queue");
-            (StatusCode::SERVICE_UNAVAILABLE, error.to_string()).into_response()
-        }
+    if let Some(succeeded_at) = sample.succeeded_at {
+        metrics::gauge!(METRIC_OLDEST_DUE_LAST_SUCCESS)
+            .set((succeeded_at - chrono::DateTime::UNIX_EPOCH).as_seconds_f64());
     }
 }
 
@@ -236,7 +310,7 @@ async fn queue_demand(
 mod tests {
     use std::sync::{
         LazyLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     use http_body_util::BodyExt;
@@ -311,30 +385,11 @@ mod tests {
                     due,
                     heartbeat_expired: 2,
                     running: 3,
-                    oldest_due_since: Some(test_now() - chrono::Duration::seconds(due)),
+                    // The answer is less than a second later.
+                    oldest_due_since: Some(chrono::Utc::now() - chrono::Duration::seconds(due)),
                 })
             })
         })
-    }
-
-    fn test_now() -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp(1_000_000_000, 0).unwrap()
-    }
-
-    fn demand_with(
-        queues: RegisteredTaskQueues,
-        count: CountFn,
-        maintenance: &'static MaintenanceSwitch,
-    ) -> QueueDemand {
-        QueueDemand::with(queues, count, maintenance, test_now)
-    }
-
-    fn router_with(
-        queues: RegisteredTaskQueues,
-        count: CountFn,
-        maintenance: &'static MaintenanceSwitch,
-    ) -> Router {
-        demand_with(queues, count, maintenance).router()
     }
 
     async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
@@ -461,90 +516,139 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
-    /// The gauge lines of `ages`, as the metrics port renders them.
-    fn rendered_oldest_due_ages(ages: &[(&'static TaskQueueName, String, i64)]) -> Vec<String> {
+    fn sample_time() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_000_000_000, 0).unwrap()
+    }
+
+    /// Answers that the oldest due task waits since the upper bound of the range in seconds
+    /// before [`sample_time`]. The whole queue fails while `whole_fails` is set, and the class
+    /// never answers while `class_hangs` is set.
+    fn oldest_due(whole_fails: &Arc<AtomicBool>, class_hangs: &Arc<AtomicBool>) -> OldestDueFn {
+        let whole_fails = Arc::clone(whole_fails);
+        let class_hangs = Arc::clone(class_hangs);
+        Arc::new(move |target: DemandTarget| {
+            let at_most = target.resource_demand.at_most;
+            let fails = at_most.is_none() && whole_fails.load(Ordering::SeqCst);
+            let hangs = at_most.is_some() && class_hangs.load(Ordering::SeqCst);
+            Box::pin(async move {
+                if hangs {
+                    futures::future::pending::<()>().await;
+                }
+                if fails {
+                    return Err(CatalogBackendError::new_unexpected(std::io::Error::other(
+                        "database down",
+                    )));
+                }
+                let seconds = at_most.unwrap_or(1000);
+                Ok(Some(sample_time() - chrono::Duration::seconds(seconds)))
+            })
+        })
+    }
+
+    async fn sampler(
+        oldest_due: OldestDueFn,
+        maintenance: &'static MaintenanceSwitch,
+    ) -> OldestDueSampler {
+        OldestDueSampler {
+            queues: queues().await,
+            oldest_due,
+            maintenance,
+        }
+    }
+
+    /// The oldest-due lines of the metrics port after recording `samples` in order.
+    fn rendered(samples: &[OldestDueSample]) -> Vec<String> {
         let recorder =
             axum_prometheus::metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
-        metrics::with_local_recorder(&recorder, || record_oldest_due_ages(ages));
+        metrics::with_local_recorder(&recorder, || {
+            for sample in samples {
+                record_oldest_due_sample(sample);
+            }
+        });
         let mut lines: Vec<_> = recorder
             .handle()
             .render()
             .lines()
-            .filter(|line| line.starts_with(METRIC_OLDEST_DUE_AGE))
+            .filter(|line| line.starts_with("lakekeeper_task_queue_oldest_due"))
             .map(str::to_string)
             .collect();
         lines.sort_unstable();
         lines
     }
 
+    const WHOLE: &str =
+        r#"lakekeeper_task_queue_oldest_due_age_seconds{queue_name="demand-endpoint",class=""}"#;
+    const SMALL: &str = r#"lakekeeper_task_queue_oldest_due_age_seconds{queue_name="demand-endpoint",class="small"}"#;
+    const LAST_SUCCESS: &str = "lakekeeper_task_queue_oldest_due_last_success_timestamp_seconds";
+
     #[tokio::test]
     async fn the_oldest_due_age_is_sampled_per_queue_and_class() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let demand = demand_with(queues().await, counting(&calls), &OFF);
-        let ages = demand.oldest_due_ages().await;
+        let ok = Arc::new(AtomicBool::new(false));
+        let sampler = sampler(oldest_due(&ok, &ok), &OFF).await;
+        let later = sample_time() + chrono::Duration::milliseconds(500);
         assert_eq!(
-            rendered_oldest_due_ages(&ages),
+            rendered(&[sampler.sample(later).await]),
             vec![
-                r#"lakekeeper_task_queue_oldest_due_age_seconds{queue_name="demand-endpoint",class=""} 1000"#,
-                r#"lakekeeper_task_queue_oldest_due_age_seconds{queue_name="demand-endpoint",class="small"} 10"#,
+                format!("{WHOLE} 1000.5"),
+                format!("{SMALL} 10.5"),
+                format!("{LAST_SUCCESS} 1000000000.5"),
             ]
         );
-        // The demand route answers from the counts of the sample.
-        let router = demand.router();
-        assert_eq!(
-            get(&router, "/task-queue/demand-endpoint/demand?class=small").await,
-            (
-                StatusCode::OK,
-                r#"{"demand":15,"due":10,"heartbeat-expired":2,"running":3,"oldest-due-seconds":10}"#
-                    .to_string()
-            )
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
     async fn without_a_due_task_the_oldest_due_age_is_zero() {
-        let none_due: CountFn = Arc::new(|_| Box::pin(async { Ok(TaskQueueDemand::default()) }));
-        let calls = Arc::new(AtomicUsize::new(0));
-        for demand in [
-            demand_with(queues().await, none_due, &OFF),
-            demand_with(queues().await, counting(&calls), &READ_ONLY),
+        let ok = Arc::new(AtomicBool::new(false));
+        let none_due: OldestDueFn = Arc::new(|_| Box::pin(async { Ok(None) }));
+        for sampler in [
+            sampler(none_due, &OFF).await,
+            sampler(oldest_due(&ok, &ok), &READ_ONLY).await,
         ] {
-            let ages = demand.oldest_due_ages().await;
             assert_eq!(
-                rendered_oldest_due_ages(&ages),
+                rendered(&[sampler.sample(sample_time()).await]),
                 vec![
-                    r#"lakekeeper_task_queue_oldest_due_age_seconds{queue_name="demand-endpoint",class=""} 0"#,
-                    r#"lakekeeper_task_queue_oldest_due_age_seconds{queue_name="demand-endpoint",class="small"} 0"#,
+                    format!("{WHOLE} 0"),
+                    format!("{SMALL} 0"),
+                    format!("{LAST_SUCCESS} 1000000000"),
                 ]
             );
         }
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
-    #[tokio::test]
-    async fn a_failed_count_leaves_out_only_its_queue_and_class() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let count = counting(&calls);
-        // The count of the whole queue fails, the count of the class succeeds.
-        let whole_fails: CountFn = Arc::new(move |target: DemandTarget| {
-            if target.resource_demand.at_most.is_none() {
-                Box::pin(async {
-                    Err(CatalogBackendError::new_unexpected(std::io::Error::other(
-                        "database down",
-                    )))
-                })
-            } else {
-                count(target)
-            }
-        });
-        let demand = demand_with(queues().await, whole_fails, &OFF);
+    /// A failed or hanging sample replaces the earlier value with `NaN`, and the time of the last
+    /// success stays.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_sample_is_nan_and_keeps_the_last_success() {
+        let whole_fails = Arc::new(AtomicBool::new(false));
+        let class_hangs = Arc::new(AtomicBool::new(false));
+        let sampler = sampler(oldest_due(&whole_fails, &class_hangs), &OFF).await;
+        let first = sampler.sample(sample_time()).await;
+        let later = sample_time() + chrono::Duration::seconds(15);
+
+        whole_fails.store(true, Ordering::SeqCst);
+        let whole_failed = sampler.sample(later).await;
         assert_eq!(
-            rendered_oldest_due_ages(&demand.oldest_due_ages().await),
+            rendered(&[first, whole_failed]),
             vec![
-                r#"lakekeeper_task_queue_oldest_due_age_seconds{queue_name="demand-endpoint",class="small"} 10"#,
+                format!("{WHOLE} NaN"),
+                format!("{SMALL} 25"),
+                format!("{LAST_SUCCESS} 1000000000"),
             ]
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        whole_fails.store(false, Ordering::SeqCst);
+        let first = sampler.sample(sample_time()).await;
+        class_hangs.store(true, Ordering::SeqCst);
+        let started = tokio::time::Instant::now();
+        let class_hung = sampler.sample(later).await;
+        assert_eq!(started.elapsed(), OLDEST_DUE_SAMPLE_INTERVAL);
+        assert_eq!(
+            rendered(&[first, class_hung]),
+            vec![
+                format!("{WHOLE} 1015"),
+                format!("{SMALL} NaN"),
+                format!("{LAST_SUCCESS} 1000000000"),
+            ]
+        );
     }
 }

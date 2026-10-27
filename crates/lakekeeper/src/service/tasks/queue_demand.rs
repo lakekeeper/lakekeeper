@@ -54,7 +54,7 @@ impl TaskQueueDemand {
     #[must_use]
     pub fn oldest_due_seconds(&self, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
         self.oldest_due_since
-            .map(|scheduled_for| (now - scheduled_for).num_seconds().max(0))
+            .map(|since| (now - since).num_seconds().max(0))
     }
 }
 
@@ -71,24 +71,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_oldest_due_task_waited_since_it_was_scheduled() {
-        let scheduled_for = chrono::DateTime::from_timestamp(1_000_000, 0).unwrap();
+    fn the_oldest_due_task_waited_since_it_could_be_taken() {
+        let since = chrono::DateTime::from_timestamp(1_000_000, 0).unwrap();
         let demand = TaskQueueDemand {
             due: 1,
-            oldest_due_since: Some(scheduled_for),
+            oldest_due_since: Some(since),
             ..TaskQueueDemand::default()
         };
         for (now, expected) in [
-            (scheduled_for + chrono::Duration::milliseconds(90_999), 90),
-            (scheduled_for, 0),
+            (since + chrono::Duration::milliseconds(90_999), 90),
+            (since, 0),
             // The database's clock is ahead.
-            (scheduled_for - chrono::Duration::seconds(2), 0),
+            (since - chrono::Duration::seconds(2), 0),
         ] {
             assert_eq!(demand.oldest_due_seconds(now), Some(expected), "{now}");
         }
-        assert_eq!(
-            TaskQueueDemand::default().oldest_due_seconds(scheduled_for),
-            None
-        );
+        assert_eq!(TaskQueueDemand::default().oldest_due_seconds(since), None);
     }
 }

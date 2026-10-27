@@ -184,6 +184,20 @@ where
         Self::task_queue_demand_impl(request, state).await
     }
 
+    /// [`TaskQueueDemand::oldest_due_since`] of the request's queue and range, without counting
+    /// the tasks. `None` if no task is due or heartbeat-expired.
+    #[tracing::instrument(
+        name = "catalog_task_queue_oldest_due",
+        skip(request, state),
+        fields(queue_name = %request.queue_name, resource_demand = ?request.resource_demand)
+    )]
+    async fn task_queue_oldest_due(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<Option<chrono::DateTime<chrono::Utc>>, CatalogBackendError> {
+        Self::task_queue_oldest_due_impl(request, state).await
+    }
+
     async fn record_task_success(
         id: TaskAttemptId,
         message: Option<&str>,
