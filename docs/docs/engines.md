@@ -463,7 +463,7 @@ The following docker compose examples are available for starrocks:
 
 ## OLake Go { #olake .engine data-icon="olake" }
 
-[OLake Go](https://olake.io/) is an open-source tool that replicates databases such as PostgreSQL, MySQL, MongoDB and SQL Server into Apache Iceberg tables, with a full load followed by change data capture (CDC). OLake Go has a dedicated `lakekeeper` catalog type. For S3 warehouses with STS enabled, OLake Go uses the credentials that Lakekeeper vends, so it needs no storage credentials of its own.
+[OLake Go](https://olake.io/) is an open-source tool that replicates databases such as [PostgreSQL](https://olake.io/docs/connectors/postgres), [MySQL](https://olake.io/docs/connectors/mysql), [MongoDB](https://olake.io/docs/connectors/mongodb) and [SQL Server](https://olake.io/docs/connectors/mssql) into Apache Iceberg tables, with a full load followed by change data capture (CDC). OLake Go has a dedicated `lakekeeper` catalog type. For S3 warehouses with STS enabled, OLake Go uses the credentials that Lakekeeper vends, so it needs no storage credentials of its own.
 
 For a hands-on setup, the [OLake Go quickstart](https://olake.io/docs/getting-started/quickstart) starts the OLake UI with Docker Compose.
 
