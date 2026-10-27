@@ -14,6 +14,8 @@ Lakekeeper runs background work in task-queue workers, for example purging the f
 
 We recommend one ScaledJob per queue. Set the queue's `LAKEKEEPER__TASK_*_WORKERS` to `0` on the API pods, and on the workers set the worker counts of all other queues to `0`.
 
+The demand comes from the API pods. While none of them is available, KEDA starts no workers. We recommend at least two API pods and a PodDisruptionBudget, so that a node drain or an upgrade does not stop the workers from starting.
+
 ## Example
 
 A ScaledJob for the `tabular_purge` queue:
