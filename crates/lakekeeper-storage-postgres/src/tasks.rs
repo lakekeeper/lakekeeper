@@ -762,7 +762,8 @@ fn demand_bounds(range: TaskResourceDemandRange) -> (i64, i64) {
     (range.above.unwrap_or(-1), range.at_most.unwrap_or(i64::MAX))
 }
 
-/// Count the due, heartbeat-expired and running tasks of a queue in a resource demand range.
+/// Count the due, heartbeat-expired and running tasks of a queue in a resource demand range, and
+/// find the longest waiting due task.
 pub(crate) async fn task_queue_demand(
     pool: &PgPool,
     request: TaskQueueDemandRequest<'_>,
@@ -784,10 +785,11 @@ pub(crate) async fn task_queue_demand(
         SELECT
             COUNT(*) FILTER (WHERE s.state = 'due') AS "due!",
             COUNT(*) FILTER (WHERE s.state = 'expired') AS "heartbeat_expired!",
-            COUNT(*) FILTER (WHERE s.state = 'running') AS "running!"
+            COUNT(*) FILTER (WHERE s.state = 'running') AS "running!",
+            MIN(s.scheduled_for) AS "oldest_due_scheduled_for"
         FROM (
             -- What a pick can take now, as in `pick_task_with_retry_policy`.
-            SELECT 'due' AS state
+            SELECT 'due' AS state, t.scheduled_for
             FROM task t
             WHERE t.queue_name = ANY($1) AND t.status = 'scheduled' AND t.scheduled_for <= now()
                 AND COALESCE(t.resource_demand, 0) > $3
@@ -796,7 +798,8 @@ pub(crate) async fn task_queue_demand(
             -- The heartbeat timeout as in `fail_timed_out_attempt`.
             SELECT CASE
                 WHEN now() - t.last_heartbeat_at > COALESCE(tc.max_time_since_last_heartbeat, $5)
-                THEN 'expired' ELSE 'running' END
+                THEN 'expired' ELSE 'running' END,
+                NULL
             FROM task t
             LEFT JOIN LATERAL (
                 SELECT cfg.max_time_since_last_heartbeat
@@ -829,6 +832,7 @@ pub(crate) async fn task_queue_demand(
         due: counts.due,
         heartbeat_expired: counts.heartbeat_expired,
         running: counts.running,
+        oldest_due_scheduled_for: counts.oldest_due_scheduled_for,
     })
 }
 
@@ -3039,6 +3043,26 @@ mod test {
         resource_demand: Option<i64>,
         minutes_ago: i64,
     ) -> TaskId {
+        queue_scheduled_for(
+            pool,
+            queue_name,
+            warehouse_id,
+            project_id,
+            resource_demand,
+            Utc::now() - chrono::Duration::minutes(minutes_ago),
+        )
+        .await
+    }
+
+    /// Queue a table task with `resource_demand`, due at `scheduled_for`.
+    async fn queue_scheduled_for(
+        pool: &PgPool,
+        queue_name: &TaskQueueName,
+        warehouse_id: WarehouseId,
+        project_id: &ArcProjectId,
+        resource_demand: Option<i64>,
+        scheduled_for: DateTime<Utc>,
+    ) -> TaskId {
         let mut conn = pool.acquire().await.unwrap();
         queue_task_batch(
             &mut conn,
@@ -3048,7 +3072,7 @@ mod test {
                     resource_demand,
                     project_id: project_id.clone(),
                     parent_task_id: None,
-                    scheduled_for: Some(Utc::now() - chrono::Duration::minutes(minutes_ago)),
+                    scheduled_for: Some(scheduled_for),
                     entity: TaskEntity::EntityInWarehouse {
                         warehouse_id,
                         entity_id: WarehouseTaskEntityId::Table {
@@ -5905,6 +5929,71 @@ mod test {
         }
     }
 
+    #[sqlx::test]
+    async fn test_task_queue_demand_finds_the_oldest_due_task(pool: PgPool) {
+        use chrono::SubsecRound;
+
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let q = generate_tq_name();
+        let other = generate_tq_name();
+        let oldest_due = |range| {
+            let pool = pool.clone();
+            let q = q.clone();
+            async move {
+                task_queue_demand(
+                    &pool,
+                    TaskQueueDemandRequest::builder()
+                        .queue_name(&q)
+                        .default_max_time_since_last_heartbeat(chrono::Duration::minutes(5))
+                        .resource_demand(range)
+                        .build(),
+                )
+                .await
+                .unwrap()
+                .oldest_due_scheduled_for
+            }
+        };
+        let small = TaskResourceDemandRange::builder().at_most(10).build();
+        let large = TaskResourceDemandRange::builder().above(10).build();
+        assert_eq!(oldest_due(TaskResourceDemandRange::default()).await, None);
+
+        // Postgres keeps microseconds.
+        let now = Utc::now().trunc_subsecs(6);
+        let minutes_ago = |m| now - chrono::Duration::minutes(m);
+        let queue = |name: &TaskQueueName, demand: Option<i64>, scheduled_for| {
+            let pool = pool.clone();
+            let name = name.clone();
+            let project_id = project_id.clone();
+            async move {
+                queue_scheduled_for(
+                    &pool,
+                    &name,
+                    warehouse_id,
+                    &project_id,
+                    demand,
+                    scheduled_for,
+                )
+                .await
+            }
+        };
+        // Older, but running; in another queue; not due yet.
+        let running = queue(&q, Some(5), minutes_ago(60)).await;
+        set_picked(&pool, running, "running", chrono::Duration::zero()).await;
+        queue(&other, Some(5), minutes_ago(30)).await;
+        queue(&q, Some(5), minutes_ago(-10)).await;
+        assert_eq!(oldest_due(TaskResourceDemandRange::default()).await, None);
+
+        queue(&q, None, minutes_ago(3)).await;
+        queue(&q, Some(5), minutes_ago(7)).await;
+        queue(&q, Some(15), minutes_ago(9)).await;
+        assert_eq!(
+            oldest_due(TaskResourceDemandRange::default()).await,
+            Some(minutes_ago(9))
+        );
+        assert_eq!(oldest_due(small).await, Some(minutes_ago(7)));
+        assert_eq!(oldest_due(large).await, Some(minutes_ago(9)));
+    }
+
     /// Plan of `sql` as a generic plan, with sequential and bitmap scans off.
     async fn generic_plan(pool: &PgPool, sql: &str, args: &str) -> String {
         let mut transaction = pool.begin().await.unwrap();
@@ -5968,7 +6057,7 @@ mod test {
         // The due branch of `task_queue_demand`.
         let count = generic_plan(
             &pool,
-            "SELECT COUNT(*) FROM task t \
+            "SELECT COUNT(*), MIN(t.scheduled_for) FROM task t \
              WHERE t.queue_name = ANY($1) AND t.status = 'scheduled' AND t.scheduled_for <= now() \
              AND COALESCE(t.resource_demand, 0) > $2 AND COALESCE(t.resource_demand, 0) <= $3",
             "('{compaction}', 100, 200)",

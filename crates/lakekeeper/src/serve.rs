@@ -713,21 +713,29 @@ async fn serve_inner<
     }
 }
 
-/// Serves the metrics port, with the task queue demand route.
+/// Serves the metrics port, with the task queue demand route. A process that serves the HTTP API
+/// also samples the oldest due task of each task queue.
 fn serve_metrics<A: Authorizer, C: CatalogStore, S: SecretStore>(
     metrics_server: MetricsServer,
     state: &State<A, C, S>,
     cancellation_token: CancellationToken,
 ) -> impl Future<Output = anyhow::Result<()>> + use<A, C, S> {
-    let routes = crate::api::task_queue_demand::router::<C>(
+    let demand = crate::api::task_queue_demand::QueueDemand::new::<C>(
         state.catalog.clone(),
         state.registered_task_queues.clone(),
     );
-    let metrics_future = metrics_server.serve(routes, cancellation_token);
+    // Headless workers come and go with the autoscaler, so they do not add series or queries.
+    let sampler = CONFIG
+        .serve_http_api
+        .then(|| demand.clone().sample_oldest_due_age());
+    let metrics_future = metrics_server.serve(demand.router(), cancellation_token);
     async move {
-        metrics_future
-            .await
-            .map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
+        let sampler = sampler.map(tokio::spawn);
+        let result = metrics_future.await;
+        if let Some(sampler) = sampler {
+            sampler.abort();
+        }
+        result.map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
     }
 }
 

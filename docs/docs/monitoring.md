@@ -225,10 +225,12 @@ Lakekeeper can tell an autoscaler, such as [KEDA](https://keda.sh/docs/latest/sc
 The metrics port (default `9000`) answers `GET /task-queue/<queue>/demand`:
 
 ```json
-{"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2}
+{"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2, "oldest-due-seconds": 95}
 ```
 
 We recommend scaling on `demand`. It adds up the tasks that wait to start (`due`), the tasks that run (`running`), and the tasks whose worker stopped responding (`heartbeat-expired`). Each pod reuses an answer for 5 seconds, so frequent requests do not load the database.
+
+`oldest-due-seconds` is how long the oldest due task has waited, or `null` if no task is due. Every pod that serves the API also reports it every 15 seconds in the gauge `lakekeeper_task_queue_oldest_due_age_seconds`, with the labels `queue_name` and `class`, and with the value `0` if no task is due. `class` is empty for the whole queue and names a size class of the queue otherwise. All pods read the same tasks, so use `max` over the pods in dashboards and alerts. We recommend an alert if a queue's oldest due task waits longer than one hour: `max by (queue_name) (lakekeeper_task_queue_oldest_due_age_seconds{class=""}) > 3600`.
 
 The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots` and `remove_orphan_files`.
 

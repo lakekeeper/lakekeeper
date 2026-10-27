@@ -37,6 +37,8 @@ pub struct TaskQueueDemand {
     pub heartbeat_expired: i64,
     /// Running or asked to stop, with a live heartbeat.
     pub running: i64,
+    /// `scheduled_for` of the longest waiting due task. `None` if no task is due.
+    pub oldest_due_scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl TaskQueueDemand {
@@ -44,6 +46,14 @@ impl TaskQueueDemand {
     #[must_use]
     pub fn demand(&self) -> i64 {
         self.due + self.heartbeat_expired + self.running
+    }
+
+    /// How long the longest waiting due task has waited at `now`, in whole seconds. `None` if no
+    /// task is due.
+    #[must_use]
+    pub fn oldest_due_seconds(&self, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
+        self.oldest_due_scheduled_for
+            .map(|scheduled_for| (now - scheduled_for).num_seconds().max(0))
     }
 }
 
@@ -53,4 +63,31 @@ pub(crate) fn is_valid_demand_class_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_oldest_due_task_waited_since_it_was_scheduled() {
+        let scheduled_for = chrono::DateTime::from_timestamp(1_000_000, 0).unwrap();
+        let demand = TaskQueueDemand {
+            due: 1,
+            oldest_due_scheduled_for: Some(scheduled_for),
+            ..TaskQueueDemand::default()
+        };
+        for (now, expected) in [
+            (scheduled_for + chrono::Duration::milliseconds(90_999), 90),
+            (scheduled_for, 0),
+            // The database's clock is ahead.
+            (scheduled_for - chrono::Duration::seconds(2), 0),
+        ] {
+            assert_eq!(demand.oldest_due_seconds(now), Some(expected), "{now}");
+        }
+        assert_eq!(
+            TaskQueueDemand::default().oldest_due_seconds(scheduled_for),
+            None
+        );
+    }
 }

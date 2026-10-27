@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            COUNT(*) FILTER (WHERE s.state = 'due') AS \"due!\",\n            COUNT(*) FILTER (WHERE s.state = 'expired') AS \"heartbeat_expired!\",\n            COUNT(*) FILTER (WHERE s.state = 'running') AS \"running!\",\n            MIN(s.scheduled_for) AS \"oldest_due_scheduled_for\"\n        FROM (\n            -- What a pick can take now, as in `pick_task_with_retry_policy`.\n            SELECT 'due' AS state, t.scheduled_for\n            FROM task t\n            WHERE t.queue_name = ANY($1) AND t.status = 'scheduled' AND t.scheduled_for <= now()\n                AND COALESCE(t.resource_demand, 0) > $3\n                AND COALESCE(t.resource_demand, 0) <= $4\n            UNION ALL\n            -- The heartbeat timeout as in `fail_timed_out_attempt`.\n            SELECT CASE\n                WHEN now() - t.last_heartbeat_at > COALESCE(tc.max_time_since_last_heartbeat, $5)\n                THEN 'expired' ELSE 'running' END,\n                NULL\n            FROM task t\n            LEFT JOIN LATERAL (\n                SELECT cfg.max_time_since_last_heartbeat\n                FROM task_config cfg\n                WHERE cfg.queue_name = ANY($1)\n                    AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))\n                    AND cfg.project_id = t.project_id\n                ORDER BY (cfg.queue_name = $2) DESC\n                LIMIT 1\n            ) tc ON true\n            WHERE t.queue_name = ANY($1) AND t.status IN ('running', 'should-stop')\n                AND COALESCE(t.resource_demand, 0) > $3\n                AND COALESCE(t.resource_demand, 0) <= $4\n        ) s\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "due!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "heartbeat_expired!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "running!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "oldest_due_scheduled_for",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Text",
+        "Int8",
+        "Int8",
+        "Interval"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "bcc033fe63db1bf37ceb9c8f735c7625b916ef8de6a89e7f316b7c6ac0c9bb4e"
+}
