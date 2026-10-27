@@ -6,7 +6,7 @@ description: "Connect Spark, Trino, StarRocks, DuckDB, Athena, Flink, PyIceberg 
 
 In this page we document how query engines can be configured to connect to Lakekeeper. Please also check the documentation of your query engine to obtain additional information. All Query engines that support the Apache Iceberg REST Catalog (IRC) also support Lakekeeper.
 
-The page also covers tools that load data into Lakekeeper: [OLake Go](#olake) replicates databases with change data capture, and [RisingWave](#risingwave) and [Apache Fluss](#apache-fluss) write streaming data into Iceberg tables.
+The page also covers tools that load data into Lakekeeper: [OLake Go](https://olake.io/) replicates databases with change data capture, and [RisingWave](#risingwave) and [Apache Fluss](#apache-fluss) write streaming data into Iceberg tables.
 
 If Lakekeeper Authorization is enabled, Lakekeeper enforces permissions based on the `sub` field in the received tokens. For query engines used by a single user, the user should use its own credentials to log-in to Lakekeeper.
 
