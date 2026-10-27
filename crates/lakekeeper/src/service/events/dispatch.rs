@@ -85,6 +85,25 @@ macro_rules! dispatch_event {
     }};
 }
 
+/// Run `dispatch` up to its first `Pending`, here on the caller's path, and spawn the rest.
+///
+/// [`dispatch_event!`] polls every listener on its first poll, so a listener that keeps the
+/// [`EventListener`] contract has finished when this returns: its record is written before the
+/// caller answers the request. A listener that is still waiting continues on a spawned task
+/// with the caller's span, so it never delays the caller.
+///
+/// # Panics
+///
+/// If `dispatch` does not finish on its first poll and no Tokio runtime is running.
+pub(crate) fn dispatch_inline_or_spawn(dispatch: impl Future<Output = ()> + Send + 'static) {
+    use tracing::Instrument as _;
+
+    let mut dispatch = Box::pin(dispatch.instrument(tracing::Span::current()));
+    if dispatch.as_mut().now_or_never().is_none() {
+        tokio::spawn(dispatch);
+    }
+}
+
 /// Collection of event listeners invoked after successful operations.
 ///
 /// Cloning an `EventDispatcher` produces a second handle that shares the same

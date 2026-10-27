@@ -87,7 +87,7 @@ where
         .finish();
 
     tracing::subscriber::with_default(subscriber, || {
-        block_on_with_spawned(emit()).expect("emitting an audit event must not fail");
+        futures::executor::block_on(emit()).expect("emitting an audit event must not fail");
     });
 
     let bytes = logs.0.lock().expect("log buffer poisoned").clone();
