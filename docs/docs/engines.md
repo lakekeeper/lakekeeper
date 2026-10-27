@@ -1,10 +1,12 @@
 ---
-description: "Connect Spark, Trino, StarRocks, DuckDB, Athena, Flink, PyIceberg and other query engines to Lakekeeper's Iceberg REST Catalog with per-user permissions."
+description: "Connect Spark, Trino, StarRocks, DuckDB, Athena, Flink, PyIceberg and other query engines, and ingestion tools such as OLake Go, to Lakekeeper's Iceberg REST Catalog with per-user permissions."
 ---
 
 # Query Engines
 
 In this page we document how query engines can be configured to connect to Lakekeeper. Please also check the documentation of your query engine to obtain additional information. All Query engines that support the Apache Iceberg REST Catalog (IRC) also support Lakekeeper.
+
+The page also covers tools that load data into Lakekeeper: [OLake Go](#olake) replicates databases with change data capture, and [RisingWave](#risingwave) and [Apache Fluss](#apache-fluss) write streaming data into Iceberg tables.
 
 If Lakekeeper Authorization is enabled, Lakekeeper enforces permissions based on the `sub` field in the received tokens. For query engines used by a single user, the user should use its own credentials to log-in to Lakekeeper.
 
@@ -459,24 +461,63 @@ The following docker compose examples are available for starrocks:
     -- You can also create tables, INSERT INTO them, and query them just like you would any other SQL database.
     ```
 
-## OLake { .engine data-icon="olake" }
+## OLake Go { #olake .engine data-icon="olake" }
 
-OLake is an open-source, quick and scalable tool for replicating Databases to Apache Iceberg or Data Lakehouses written in Go. Visit the [Olake Iceberg Documentation](https://olake.io/docs/writers/iceberg/catalog/rest#rest-catalog) for the full documentation, and additional information on Olake.
+[OLake Go](https://olake.io/) is an open-source tool that replicates databases such as PostgreSQL, MySQL, MongoDB and SQL Server into Apache Iceberg tables, with a full load followed by change data capture (CDC). OLake Go has a dedicated `lakekeeper` catalog type. For S3 warehouses with STS enabled, OLake Go uses the credentials that Lakekeeper vends, so it needs no storage credentials of its own.
 
-=== "S3-Compatible"
+For a hands-on setup, the [OLake Go quickstart](https://olake.io/docs/getting-started/quickstart) starts the OLake UI with Docker Compose.
+
+Configure Lakekeeper as the destination in the OLake UI, or in the `destination.json` file of the OLake CLI. `iceberg_s3_path` holds the name of the Lakekeeper warehouse. For a warehouse outside the default project, write `<project-id>/<warehouse-name>`:
+
+=== "Without Authentication"
 
     ```json
     {
-    "type": "ICEBERG",
-        "writer": {
-            "catalog_type": "rest",
-            "normalization": false,
-            "rest_catalog_url": "http://localhost:8181/catalog",
-            "iceberg_s3_path": "warehouse",
-            "iceberg_db": "ICEBERG_DATABASE_NAME"
-        }
+      "type": "ICEBERG",
+      "writer": {
+        "catalog_type": "lakekeeper",
+        "rest_auth_type": "None",
+        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+        "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>"
+      }
     }
     ```
+
+=== "OAuth2"
+
+    ```json
+    {
+      "type": "ICEBERG",
+      "writer": {
+        "catalog_type": "lakekeeper",
+        "rest_auth_type": "OAuth2",
+        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+        "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>",
+        "oauth2_uri": "<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>",
+        "credential": "<Client-ID>:<Client-Secret>",
+        "scope": "<Scopes to request from the IdP, i.e. lakekeeper>"
+      }
+    }
+    ```
+
+=== "Token"
+
+    ```json
+    {
+      "type": "ICEBERG",
+      "writer": {
+        "catalog_type": "lakekeeper",
+        "rest_auth_type": "Token",
+        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+        "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>",
+        "token": "<Access token for Lakekeeper>"
+      }
+    }
+    ```
+
+The OLake UI asks for the same settings. For all options, see the [OLake Go Lakekeeper documentation](https://olake.io/docs/writers/iceberg/catalog/rest?rest-catalog=lakekeeper).
+
+By default, OLake Go writes the tables of a source schema to the namespace `<source type>_<database>_<schema>`. It writes namespace and table names in lower case and replaces special characters with `_`. For example, the schema `public` of the PostgreSQL database `shop` becomes the namespace `postgres_shop_public`.
 
 ## RisingWave { .engine data-icon="risingwave" }
 

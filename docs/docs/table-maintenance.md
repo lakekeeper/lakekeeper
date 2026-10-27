@@ -18,6 +18,8 @@ Lakekeeper automatically expires old table snapshots based on configurable age a
 
 Expire snapshots can be configured per warehouse and optionally overridden at the table level using Iceberg table properties.
 
+Tables that receive frequent small commits collect snapshots fast. This is typical for tables written by change data capture (CDC) tools such as [OLake Go](engines.md#olake), which commit at least one snapshot for every sync that carries changes.
+
 ### Configuration
 
 Configuration can be set via the Management UI or REST API endpoints:
