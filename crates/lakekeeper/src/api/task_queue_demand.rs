@@ -177,30 +177,29 @@ impl QueueDemand {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            match self.oldest_due_ages().await {
-                Ok(ages) => record_oldest_due_ages(&ages),
-                Err(error) => {
-                    tracing::warn!(
-                        ?error,
-                        "Failed to sample the oldest due task of task queues"
-                    );
-                }
-            }
+            record_oldest_due_ages(&self.oldest_due_ages().await);
         }
     }
 
     /// Seconds the longest waiting due or heartbeat-expired task has waited, by queue and class;
-    /// 0 if no task is either.
-    async fn oldest_due_ages(
-        &self,
-    ) -> Result<Vec<(&'static TaskQueueName, String, i64)>, DemandError> {
+    /// 0 if no task is either. Leaves out a queue and class whose count failed.
+    async fn oldest_due_ages(&self) -> Vec<(&'static TaskQueueName, String, i64)> {
         let mut ages = Vec::new();
         for (queue_name, class) in self.queues.demand_keys().await {
-            let demand = self.demand(queue_name, class.clone()).await?;
-            let age = demand.oldest_due_seconds((self.now)()).unwrap_or(0);
-            ages.push((queue_name, class.unwrap_or_default(), age));
+            match self.demand(queue_name, class.clone()).await {
+                Ok(demand) => {
+                    let age = demand.oldest_due_seconds((self.now)()).unwrap_or(0);
+                    ages.push((queue_name, class.unwrap_or_default(), age));
+                }
+                Err(error) => tracing::warn!(
+                    ?error,
+                    %queue_name,
+                    ?class,
+                    "Failed to sample the oldest due task of a task queue"
+                ),
+            }
         }
-        Ok(ages)
+        ages
     }
 }
 
@@ -482,7 +481,7 @@ mod tests {
     async fn the_oldest_due_age_is_sampled_per_queue_and_class() {
         let calls = Arc::new(AtomicUsize::new(0));
         let demand = demand_with(queues().await, counting(&calls), &OFF);
-        let ages = demand.oldest_due_ages().await.unwrap();
+        let ages = demand.oldest_due_ages().await;
         assert_eq!(
             rendered_oldest_due_ages(&ages),
             vec![
@@ -511,7 +510,7 @@ mod tests {
             demand_with(queues().await, none_due, &OFF),
             demand_with(queues().await, counting(&calls), &READ_ONLY),
         ] {
-            let ages = demand.oldest_due_ages().await.unwrap();
+            let ages = demand.oldest_due_ages().await;
             assert_eq!(
                 rendered_oldest_due_ages(&ages),
                 vec![
@@ -521,5 +520,31 @@ mod tests {
             );
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_count_leaves_out_only_its_queue_and_class() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = counting(&calls);
+        // The count of the whole queue fails, the count of the class succeeds.
+        let whole_fails: CountFn = Arc::new(move |target: DemandTarget| {
+            if target.resource_demand.at_most.is_none() {
+                Box::pin(async {
+                    Err(CatalogBackendError::new_unexpected(std::io::Error::other(
+                        "database down",
+                    )))
+                })
+            } else {
+                count(target)
+            }
+        });
+        let demand = demand_with(queues().await, whole_fails, &OFF);
+        assert_eq!(
+            rendered_oldest_due_ages(&demand.oldest_due_ages().await),
+            vec![
+                r#"lakekeeper_task_queue_oldest_due_age_seconds{queue_name="demand-endpoint",class="small"} 10"#,
+            ]
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
