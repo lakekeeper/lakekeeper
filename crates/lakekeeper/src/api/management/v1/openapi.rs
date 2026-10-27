@@ -276,21 +276,21 @@ pub fn api_doc<A: Authorizer>(
 ///
 /// `StorageCredential` is the one union of this shape: its members are
 /// `allOf: [{$ref: S3Credential}, {type: <const>}]`, and `S3Credential` (like
-/// `AzCredential` and `GcsCredential`) is itself a `oneOf`. Two levels of union
-/// cannot survive into a generated client — a generator asked to compose a
-/// `oneOf` into an object flattens it into one struct carrying every branch's
-/// fields, and an `OpenAPI` `discriminator` can name only one property, so the
-/// nesting cannot be described away either.
+/// `StackitCredential`, `AzCredential` and `GcsCredential`) is itself a
+/// `oneOf`. Two levels of union cannot survive into a generated client — a
+/// generator asked to compose a `oneOf` into an object flattens it into one
+/// struct carrying every branch's fields, and an `OpenAPI` `discriminator` can
+/// name only one property, so the nesting cannot be described away either.
 ///
 /// The fix is to multiply the levels out: every (outer variant × inner variant)
-/// pair becomes one flat leaf carrying the inner payload plus *both* tags. Nine
-/// leaves here — four S3, three Azure, two GCS.
+/// pair becomes one flat leaf carrying the inner payload plus *both* tags. Ten
+/// leaves here — four S3, one STACKIT, three Azure, two GCS.
 ///
 /// This only produces a usable union because one property still identifies a
-/// leaf on its own: `credential-type` values happen to be unique across all
-/// three providers. `type` alone would not work (`s3` maps to four leaves). If
-/// a future credential reuses a `credential-type` value under a different
-/// `type`, no single discriminator exists and this pass leaves the union
+/// leaf on its own: `credential-type` values are unique across all providers.
+/// `type` alone would not work (`s3` maps to four leaves). If a future
+/// credential reuses a `credential-type` value under a different `type`, no
+/// single discriminator exists and this pass leaves the union
 /// untouched rather than emitting something misleading — the union then falls
 /// back to needing downstream preprocessing, as it did before this pass.
 ///
@@ -857,8 +857,8 @@ fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
 ///   members are `allOf: [{$ref: S3Credential}, {type: <const>}]`, and
 ///   `S3Credential` is itself a `oneOf`). One discriminator cannot select
 ///   across two levels.
-/// - the inner unions themselves (`S3Credential`, `AzCredential`,
-///   `GcsCredential`). Rewriting their members to `$ref`s independently leaves
+/// - the inner unions themselves (`S3Credential`, `StackitCredential`,
+///   `AzCredential`, `GcsCredential`). Rewriting their members to `$ref`s independently leaves
 ///   the parent composing something it can no longer flatten, and the generated
 ///   client does not compile.
 fn unions_left_intact(
@@ -1924,6 +1924,106 @@ mod spec_integrity_tests {
         assert_no_self_references(&spec, "management");
         assert_discriminators_are_consistent(&spec, "management");
         assert_union_members_are_named(&spec, "management");
+    }
+
+    /// A union's discriminator property and its mapping, with targets reduced
+    /// to component names.
+    fn discriminator<'a>(
+        spec: &'a Value,
+        name: &str,
+    ) -> (&'a str, std::collections::BTreeMap<&'a str, &'a str>) {
+        let discriminator = schemas(spec)
+            .get(name)
+            .and_then(|schema| schema.get("discriminator"))
+            .unwrap_or_else(|| panic!("`{name}` has no discriminator"));
+        let mapping = discriminator["mapping"]
+            .as_object()
+            .unwrap_or_else(|| panic!("`{name}` has a discriminator with no mapping"))
+            .iter()
+            .map(|(value, target)| {
+                let target = target.as_str().expect("mapping target must be a string");
+                (
+                    value.as_str(),
+                    target.trim_start_matches("#/components/schemas/"),
+                )
+            })
+            .collect();
+        let property = discriminator["propertyName"]
+            .as_str()
+            .unwrap_or_else(|| panic!("`{name}` has a discriminator without a propertyName"));
+        (property, mapping)
+    }
+
+    /// `credential-type` must identify a `StorageCredential` leaf on its own.
+    /// A value reused across providers makes `expand_unions_composing_unions`
+    /// leave `StorageCredential` nested, and `unions_left_intact` then publishes
+    /// every provider union inline too — reported only as a log warning.
+    #[test]
+    fn storage_credential_unions_are_flattened_and_discriminated() {
+        use std::collections::BTreeMap;
+
+        let spec = management_spec();
+        assert_eq!(
+            discriminator(&spec, "StorageCredential"),
+            (
+                "credential-type",
+                BTreeMap::from([
+                    ("access-key", "StorageCredentialAccessKey"),
+                    ("aliyun-oss", "StorageCredentialAliyunOss"),
+                    ("aws-system-identity", "StorageCredentialAwsSystemIdentity"),
+                    (
+                        "azure-system-identity",
+                        "StorageCredentialAzureSystemIdentity"
+                    ),
+                    ("client-credentials", "StorageCredentialClientCredentials"),
+                    ("cloudflare-r2", "StorageCredentialCloudflareR2"),
+                    ("gcp-system-identity", "StorageCredentialGcpSystemIdentity"),
+                    ("service-account-key", "StorageCredentialServiceAccountKey"),
+                    ("shared-access-key", "StorageCredentialSharedAccessKey"),
+                    ("stackit-access-key", "StorageCredentialStackitAccessKey"),
+                ])
+            )
+        );
+        assert_eq!(
+            discriminator(&spec, "S3Credential"),
+            (
+                "credential-type",
+                BTreeMap::from([
+                    ("access-key", "S3CredentialAccessKey"),
+                    ("aliyun-oss", "S3CredentialAliyunOss"),
+                    ("aws-system-identity", "S3CredentialAwsSystemIdentity"),
+                    ("cloudflare-r2", "S3CredentialCloudflareR2"),
+                ])
+            )
+        );
+        assert_eq!(
+            discriminator(&spec, "StackitCredential"),
+            (
+                "credential-type",
+                BTreeMap::from([("stackit-access-key", "StackitCredentialAccessKey")])
+            )
+        );
+        assert_eq!(
+            discriminator(&spec, "AzCredential"),
+            (
+                "credential-type",
+                BTreeMap::from([
+                    ("azure-system-identity", "AzCredentialManagedIdentity"),
+                    ("client-credentials", "AzCredentialClientCredentials"),
+                    ("shared-access-key", "AzCredentialSharedAccessKey"),
+                ])
+            )
+        );
+        assert_eq!(
+            discriminator(&spec, "GcsCredential"),
+            (
+                "credential-type",
+                BTreeMap::from([
+                    ("gcp-system-identity", "GcsCredentialSystemIdentity"),
+                    ("service-account-key", "GcsCredentialServiceAccountKey"),
+                ])
+            )
+        );
     }
 
     #[test]

@@ -37,7 +37,7 @@ Select the service that holds your bucket. When the endpoint is derived, Lakekee
 
 ## Credentials
 
-Lakekeeper authenticates with an access key created inside a STACKIT credentials group, as `"type": "stackit"` with `"credential-type": "access-key"`. The same group is assumed via STS to vend downscoped credentials; set its URN as `credentials-group-urn`. The URN uses the credentials group's ID, not its display name.
+Lakekeeper authenticates with an access key created inside a STACKIT credentials group, as `"type": "stackit"` with `"credential-type": "stackit-access-key"`. The same group is assumed via STS to vend downscoped credentials; set its URN as `credentials-group-urn`. The URN uses the credentials group's ID, not its display name.
 
 To be assumed, the group needs a trust policy allowing `sts:AssumeRole`. The principal is the group's URN with `:group/` replaced by `:user/`. Set it through the STACKIT API, authenticated with a STACKIT service account token. `<group-uuid>` is the credentials group's ID as the STACKIT API lists it, a UUID, which differs from the `credentials-group-<id>` part of its URN:
 
