@@ -517,7 +517,7 @@ Configure Lakekeeper as the destination in the OLake UI, or in the `destination.
 
 The OLake UI asks for the same settings. For all options, see the [OLake Go Lakekeeper documentation](https://olake.io/docs/writers/iceberg/catalog/rest?rest-catalog=lakekeeper).
 
-By default, OLake Go writes the tables of a source schema to the namespace `<source type>_<database>_<schema>`. It writes namespace and table names in lower case and replaces special characters with `_`. For example, the schema `public` of the PostgreSQL database `shop` becomes the namespace `postgres_shop_public`.
+By default, OLake Go writes the tables of a source schema to the namespace `<source type>_<database>_<schema>`. It writes generated namespace and table names in lower case and replaces special characters with `_`. Explicit `destination_table` values are used as configured and are not lowercased or sanitized. For example, the schema `public` of the PostgreSQL database `shop` becomes the namespace `postgres_shop_public`.
 
 ## RisingWave { .engine data-icon="risingwave" }
 
