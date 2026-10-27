@@ -476,7 +476,7 @@ Configure Lakekeeper as the destination in the OLake UI, or in the `destination.
       "type": "ICEBERG",
       "writer": {
         "catalog_type": "lakekeeper",
-        "rest_auth_type": "None",
+        "rest_auth_type": "none",
         "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
         "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>"
       }
@@ -490,7 +490,7 @@ Configure Lakekeeper as the destination in the OLake UI, or in the `destination.
       "type": "ICEBERG",
       "writer": {
         "catalog_type": "lakekeeper",
-        "rest_auth_type": "OAuth2",
+        "rest_auth_type": "oauth2",
         "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
         "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>",
         "oauth2_uri": "<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>",
@@ -507,7 +507,7 @@ Configure Lakekeeper as the destination in the OLake UI, or in the `destination.
       "type": "ICEBERG",
       "writer": {
         "catalog_type": "lakekeeper",
-        "rest_auth_type": "Token",
+        "rest_auth_type": "token",
         "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
         "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>",
         "token": "<Access token for Lakekeeper>"
