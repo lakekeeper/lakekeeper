@@ -132,11 +132,11 @@ Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge
 
 Every Lakekeeper process runs the built-in task-queue workers by default, including instances that serve the HTTP API. You do not need dedicated worker pods to process background tasks.
 
-To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They share the same catalog and database and process tasks without serving the API.
+To scale workers independently of the API, run additional headless instances with `LAKEKEEPER__SERVE_HTTP_API=false` (see [General](#general)). They need the same configuration as the API pods, including `LAKEKEEPER__PG_ENCRYPTION_KEY`, and process tasks without serving the API. To start them only when tasks wait, see [Task Queue Demand](./monitoring.md#task-queue-demand).
 
 A task that fails is tried up to ten times in total; a try whose worker stops responding counts as failed. Each new try waits twice as long as the one before, starting at about 30 seconds and at most about an hour, so a task keeps being retried for about three hours.
 
-Some jobs run on a fixed cadence, such as the cleanup of old task logs. Every instance that runs task-queue workers also queues these jobs when they are due. A job never runs twice at the same time: if its previous run has not finished when the next one is due, the next one starts once the previous run has finished. Runs that fall due in the meantime are combined into that one run.
+Some jobs run on a fixed cadence, such as the cleanup of old task logs. Every Lakekeeper instance queues these jobs when they are due, including instances that run no task-queue workers. A job never runs twice at the same time: if its previous run has not finished when the next one is due, the next one starts once the previous run has finished. Runs that fall due in the meantime are combined into that one run.
 
 To stop an instance from running a queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. To dedicate task processing entirely to headless workers, set all built-in worker counts to `0` on your API pods: `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`, `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`, and `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS`.
 
@@ -149,6 +149,24 @@ The following global configuration options are available:
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` | 2 | `2` | Number of workers spawned to purge table files after dropping a table with the purge option. |
 | `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
 | `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
+| `LAKEKEEPER__TASK_DRAIN_TIMEOUT` | 300s | 0s | How long running tasks may continue after a stop signal (SIGTERM or SIGINT) before Lakekeeper stops the workers. `0s` does not wait. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` | 180s | — | Stop the process after it ran no task for this long. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_MAX_LIFETIME` | 3600s | — | Stop the process this long after it started. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+
+#### Stopping Task Workers
+
+When Lakekeeper stops, it stops taking new tasks. If `LAKEKEEPER__TASK_DRAIN_TIMEOUT` is longer than 0s, it first lets running tasks finish. While it waits, the HTTP API, health checks, metrics and task heartbeats keep running. When no task runs any more, or the wait ends, Lakekeeper stops the workers and exits with code 0. A task that did not finish may be tried again later, depending on its retry limit.
+
+A stop signal (SIGTERM or SIGINT) waits up to `LAKEKEEPER__TASK_DRAIN_TIMEOUT`. If you set it longer than 0s, give the pod a longer grace period: set `terminationGracePeriodSeconds` in Kubernetes to the drain timeout plus about 30 seconds, plus the time of a preStop hook. Otherwise Kubernetes kills the process before it stops cleanly. A second stop signal stops the workers at once. A long drain timeout makes node drains and cluster-autoscaler scale-down slower. The cluster autoscaler waits at most 600 seconds for a pod by default.
+
+Headless workers can also stop on their own, for example when an autoscaler starts them for a backlog of tasks:
+
+- `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` stops the worker after it ran no task for this long.
+- `LAKEKEEPER__TASK_MAX_LIFETIME` stops the worker this long after it started. This is the time when it stops taking tasks. A task picked just before can keep the worker running until that task ends.
+
+These two wait for running tasks without a time limit. A stop signal during this wait limits it to `LAKEKEEPER__TASK_DRAIN_TIMEOUT` from the signal. Lakekeeper refuses to start if either is set on a process that serves the HTTP API, because the API would stop with the workers.
+
+Use these two settings only for workers that run as Jobs, for example from a KEDA ScaledJob. Kubernetes restarts the container of a Deployment even when it exits with code 0, so a Deployment would restart the worker again and again. The idle time counts the tasks of every queue the worker runs. Each built-in queue runs 2 workers by default, so on autoscaled workers set the `LAKEKEEPER__TASK_*_WORKERS` of all other queues to 0.
 
 ### NATS
 

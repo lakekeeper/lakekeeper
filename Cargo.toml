@@ -64,11 +64,13 @@ aws-smithy-types = { version = "1.3.4" }
 axum = { version = "0.8.1" }
 axum-extra = { version = "0.12.0", features = ["middleware"] }
 axum-macros = { version = "0.5.0" }
-axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
+axum-prometheus = { version = "0.9.0" }
 azure_core = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest",
     "enable_reqwest_rustls",
+    # Retry waits sleep on tokio; without it, each wait spawns an OS thread.
+    "tokio-sleep",
 ] }
 azure_identity = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
     "enable_reqwest",

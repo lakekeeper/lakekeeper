@@ -116,7 +116,8 @@ webpki-root-certs = { workspace = true, optional = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 aws-lc-rs = { workspace = true }
-axum = { workspace = true }
+# The GCS tests serve gRPC, which needs HTTP/2.
+axum = { workspace = true, features = ["http2"] }
 fastrand = { workspace = true }
 futures = { workspace = true }
 pastey = { workspace = true }

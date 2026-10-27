@@ -29,6 +29,12 @@ use tryhard::{RetryPolicy, backoff_strategies::BackoffStrategy};
 
 #[cfg(feature = "storage-adls")]
 pub mod adls;
+#[cfg(any(
+    feature = "storage-s3",
+    feature = "storage-adls",
+    feature = "storage-gcs"
+))]
+mod delete_limit;
 #[cfg(feature = "storage-gcs")]
 pub mod gcs;
 mod location;

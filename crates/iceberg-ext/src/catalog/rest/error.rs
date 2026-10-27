@@ -331,15 +331,18 @@ impl ErrorModel {
         // Map external IO errors (e.g., from S3) to appropriate HTTP status codes.
         // We use PRECONDITION_FAILED (412) for most delegation/dependency errors
         // to avoid leaking internal architecture details or confusing clients about
-        // where auth/permission issues occurred.
+        // where auth/permission issues occurred. Transient storage failures are
+        // SERVICE_UNAVAILABLE (503). Iceberg clients may retry a 503, older ones even
+        // a commit without an idempotency key, so a storage error must only be
+        // returned before the catalog commit.
         let code = match io_error.kind() {
             lakekeeper_io::ErrorKind::Unexpected => StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             lakekeeper_io::ErrorKind::NotFound => StatusCode::BAD_REQUEST.as_u16(),
             lakekeeper_io::ErrorKind::RequestTimeout
             | lakekeeper_io::ErrorKind::ServiceUnavailable
-            | lakekeeper_io::ErrorKind::ConfigInvalid
+            | lakekeeper_io::ErrorKind::RateLimited => StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            lakekeeper_io::ErrorKind::ConfigInvalid
             | lakekeeper_io::ErrorKind::PermissionDenied
-            | lakekeeper_io::ErrorKind::RateLimited
             | lakekeeper_io::ErrorKind::ConditionNotMatch
             | lakekeeper_io::ErrorKind::CredentialsExpired => {
                 StatusCode::PRECONDITION_FAILED.as_u16()
@@ -659,5 +662,23 @@ mod tests {
         assert_eq!(parsed.error.stack.len(), 2);
         assert_eq!(parsed.error.stack[0], "user detail");
         assert!(parsed.error.stack[1].starts_with("Error ID: "));
+    }
+
+    #[test]
+    fn transient_storage_errors_are_service_unavailable() {
+        use lakekeeper_io::{ErrorKind, IOError};
+
+        let code = |kind| {
+            ErrorModel::from_io_error(
+                IOError::new(kind, "storage failed", "s3://bucket/key".to_string()),
+                "detail",
+            )
+            .code
+        };
+        assert_eq!(code(ErrorKind::RequestTimeout), 503);
+        assert_eq!(code(ErrorKind::ServiceUnavailable), 503);
+        assert_eq!(code(ErrorKind::RateLimited), 503);
+        assert_eq!(code(ErrorKind::PermissionDenied), 412);
+        assert_eq!(code(ErrorKind::Unexpected), 500);
     }
 }

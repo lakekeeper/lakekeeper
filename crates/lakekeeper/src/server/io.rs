@@ -1,3 +1,5 @@
+use std::sync::{Arc, LazyLock};
+
 use futures::{StreamExt, stream::BoxStream};
 use iceberg::spec::TableMetadata;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
@@ -5,9 +7,11 @@ use lakekeeper_io::{
     DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
 };
 use serde::Serialize;
+use tokio::sync::Semaphore;
 
 use super::compression_codec::CompressionCodec;
 use crate::{
+    CONFIG,
     api::{ErrorModel, Result},
     service::COMMIT_STATE_UNKNOWN_ERROR_TYPE,
 };
@@ -34,10 +38,99 @@ pub(crate) async fn delete_file(
     io.delete(location.as_str()).await.map_err(Into::into)
 }
 
+/// How long a request waits for its best-effort cleanup before it responds.
+const CLEANUP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Most background cleanups that run at once in this process. It bounds the connections they
+/// hold when the storage slows down while commits keep arriving.
+const MAX_BACKGROUND_CLEANUPS: usize = 256;
+
+static BACKGROUND_CLEANUPS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_BACKGROUND_CLEANUPS)));
+
+/// Runs a best-effort `cleanup` of a request that arrived at `received_at` with
+/// [`spawn_cleanup`], and waits for it at most until [`cleanup_deadline`] with [`CLEANUP_WAIT`].
+/// A cleanup that takes longer continues in the background, so a slow or retried delete does not
+/// decide the response.
+pub(crate) async fn cleanup_in_background(
+    received_at: tokio::time::Instant,
+    cleanup: impl Future<Output = ()> + Send + 'static,
+) {
+    if let Some(cleanup) = spawn_cleanup(cleanup) {
+        let _ = tokio::time::timeout_at(request_cleanup_deadline(received_at), cleanup).await;
+    }
+}
+
+/// Runs a best-effort `cleanup` of a request that arrived at `received_at` until
+/// [`cleanup_deadline`] with [`CLEANUP_WAIT`], and stops it there. Returns whether it finished.
+/// For a cleanup that must end before the client can send its next request.
+pub(crate) async fn cleanup_before_response(
+    received_at: tokio::time::Instant,
+    cleanup: impl Future<Output = ()>,
+) -> bool {
+    tokio::time::timeout_at(request_cleanup_deadline(received_at), cleanup)
+        .await
+        .is_ok()
+}
+
+/// Runs a best-effort `cleanup` in the background. If [`MAX_BACKGROUND_CLEANUPS`] cleanups are
+/// running, it is skipped and the files it would delete stay in storage.
+pub(crate) fn spawn_cleanup(
+    cleanup: impl Future<Output = ()> + Send + 'static,
+) -> Option<tokio::task::JoinHandle<()>> {
+    spawn_limited(&BACKGROUND_CLEANUPS, cleanup)
+}
+
+fn spawn_limited(
+    limit: &Arc<Semaphore>,
+    cleanup: impl Future<Output = ()> + Send + 'static,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let Ok(permit) = Arc::clone(limit).try_acquire_owned() else {
+        tracing::warn!(
+            "Skipped a best-effort cleanup because too many cleanups are running. The files it would delete stay in storage."
+        );
+        return None;
+    };
+    let cleanup = tracing::Instrument::in_current_span(async move {
+        cleanup.await;
+        drop(permit);
+    });
+    Some(tokio::spawn(cleanup))
+}
+
+fn request_cleanup_deadline(received_at: tokio::time::Instant) -> tokio::time::Instant {
+    cleanup_deadline(
+        tokio::time::Instant::now(),
+        CLEANUP_WAIT,
+        received_at,
+        CONFIG.max_request_time,
+    )
+}
+
+/// `wait` from `now`, ending by five sixths of the request limit from the request's arrival so
+/// that a slow backend cannot time out the response of a committed change.
+pub(crate) fn cleanup_deadline(
+    now: tokio::time::Instant,
+    wait: std::time::Duration,
+    received_at: tokio::time::Instant,
+    request_limit: std::time::Duration,
+) -> tokio::time::Instant {
+    // Divided first so that an effectively unbounded limit cannot overflow.
+    [
+        now.checked_add(wait),
+        received_at.checked_add(request_limit / 6 * 5),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or_else(crate::service::storage::validation::far_future)
+}
+
 /// Run `change`, which commits the files written to `locations`. If it fails, delete them, best
-/// effort, unless the commit may have been applied.
+/// effort, unless the commit may have been applied. Nothing refers to the files, so the error
+/// returns without waiting for the delete, which runs with [`spawn_cleanup`].
 pub(crate) async fn delete_on_failure<T>(
-    io: &impl LakekeeperStorage,
+    io: &(impl LakekeeperStorage + Clone + 'static),
     locations: &[&Location],
     change: impl Future<Output = Result<T>>,
 ) -> Result<T> {
@@ -49,7 +142,9 @@ pub(crate) async fn delete_on_failure<T>(
                 "Commit may have been applied, keeping its new metadata files"
             );
         } else {
-            delete_files(io, locations.iter().copied()).await;
+            let io = io.clone();
+            let locations: Vec<Location> = locations.iter().map(|l| (*l).clone()).collect();
+            spawn_cleanup(async move { delete_files(&io, &locations).await });
         }
     }
     result
@@ -222,10 +317,110 @@ impl From<IOErrorExt> for IcebergErrorResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
     use futures::StreamExt;
 
     use super::*;
     use crate::service::storage::{StorageCredential, StorageProfile};
+
+    #[test]
+    fn the_cleanup_deadline_fits_the_request_limit() {
+        let limit = Duration::from_secs(30);
+        let received_at = tokio::time::Instant::now();
+        let at = |secs| received_at + Duration::from_secs(secs);
+        let wait = Duration::from_secs(10);
+        // Early in the request the cleanup gets its wait.
+        assert_eq!(cleanup_deadline(at(1), wait, received_at, limit), at(11));
+        // Late in the request it ends at five sixths of the limit.
+        assert_eq!(cleanup_deadline(at(20), wait, received_at, limit), at(25));
+        // An unbounded limit does not overflow, and the wait applies.
+        assert_eq!(
+            cleanup_deadline(at(0), wait, received_at, Duration::MAX),
+            at(10)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_cleanup_finishes_after_the_request_stops_waiting() {
+        let done = Arc::new(AtomicBool::new(false));
+        let start = tokio::time::Instant::now();
+        cleanup_in_background(start, {
+            let done = done.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                done.store(true, Ordering::SeqCst);
+            }
+        })
+        .await;
+
+        assert_eq!(start.elapsed(), CLEANUP_WAIT);
+        assert!(!done.load(Ordering::SeqCst));
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cleanup_late_in_the_request_stops_waiting_before_the_request_limit() {
+        let start = tokio::time::Instant::now();
+        // Five sixths of the request limit end 2 s from now.
+        let received_at = (start + Duration::from_secs(2))
+            .checked_sub(CONFIG.max_request_time / 6 * 5)
+            .unwrap();
+        cleanup_in_background(received_at, tokio::time::sleep(Duration::from_secs(20))).await;
+
+        assert_eq!(start.elapsed(), Duration::from_secs(2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cleanup_beyond_the_limit_is_skipped() {
+        let limit = Arc::new(Semaphore::new(1));
+        let running = spawn_limited(&limit, tokio::time::sleep(Duration::from_secs(20))).unwrap();
+        assert!(spawn_limited(&limit, async {}).is_none());
+
+        running.await.unwrap();
+        assert!(spawn_limited(&limit, async {}).is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cleanup_before_the_response_stops_at_the_deadline() {
+        let done = Arc::new(AtomicBool::new(false));
+        let start = tokio::time::Instant::now();
+        let finished = cleanup_before_response(start, {
+            let done = done.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                done.store(true, Ordering::SeqCst);
+            }
+        })
+        .await;
+
+        assert!(!finished);
+        assert_eq!(start.elapsed(), CLEANUP_WAIT);
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        assert!(!done.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fast_cleanup_finishes_before_the_request_responds() {
+        let done = Arc::new(AtomicBool::new(false));
+        cleanup_in_background(tokio::time::Instant::now(), {
+            let done = done.clone();
+            async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                done.store(true, Ordering::SeqCst);
+            }
+        })
+        .await;
+
+        assert!(done.load(Ordering::SeqCst));
+    }
 
     async fn test_list_and_remove_all(cred: StorageCredential, profile: StorageProfile) {
         async fn list_simple(io: &impl LakekeeperStorage, location: &Location) -> Vec<Location> {
