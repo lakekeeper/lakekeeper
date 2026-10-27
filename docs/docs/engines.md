@@ -461,7 +461,7 @@ The following docker compose examples are available for starrocks:
     -- You can also create tables, INSERT INTO them, and query them just like you would any other SQL database.
     ```
 
-## OLake Go { #olake .engine data-icon="olake" }
+## [OLake Go](https://olake.io/) { #olake .engine data-icon="olake" }
 
 [OLake Go](https://olake.io/) is a high-performance, open-source EL (Extract–Load) platform that bridges operational databases — including [PostgreSQL](https://olake.io/docs/connectors/postgres), [MySQL](https://olake.io/docs/connectors/mysql), [MongoDB](https://olake.io/docs/connectors/mongodb), and [SQL Server](https://olake.io/docs/connectors/mssql) — and open lakehouse storage, writing Apache Iceberg tables or Parquet files on Amazon S3, enabling organizations to replicate data at scale with minimal overhead. Supporting Incremental Sync, Change Data Capture (CDC), and stateful, resumable syncs, OLake Go ensures your tables remain fresh, organized, and optimized for analytics. OLake Go has a dedicated `lakekeeper` catalog type. For S3 warehouses with STS enabled, OLake Go uses the credentials that Lakekeeper vends, so it needs no storage credentials of its own.
 
