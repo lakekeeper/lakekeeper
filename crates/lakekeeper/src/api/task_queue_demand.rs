@@ -172,7 +172,7 @@ impl QueueDemand {
 
     /// Sets [`METRIC_OLDEST_DUE_AGE`] every [`OLDEST_DUE_SAMPLE_INTERVAL`], for each registered
     /// queue as a whole and for each of its demand classes. Runs until dropped.
-    pub(crate) async fn sample_oldest_due_age(self) {
+    pub(crate) async fn sample_oldest_due_age(self) -> std::convert::Infallible {
         let mut ticker = tokio::time::interval(OLDEST_DUE_SAMPLE_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {

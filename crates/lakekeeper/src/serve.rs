@@ -730,12 +730,19 @@ fn serve_metrics<A: Authorizer, C: CatalogStore, S: SecretStore>(
         .then(|| demand.clone().sample_oldest_due_age());
     let metrics_future = metrics_server.serve(demand.router(), cancellation_token);
     async move {
-        let sampler = sampler.map(tokio::spawn);
-        let result = metrics_future.await;
-        if let Some(sampler) = sampler {
-            sampler.abort();
+        let sample = async {
+            match sampler {
+                Some(sampler) => sampler.await,
+                None => std::future::pending().await,
+            }
+        };
+        // The sampler runs in this future, so it stops whenever the metrics server stops.
+        tokio::select! {
+            result = metrics_future => {
+                result.map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
+            }
+            never = sample => match never {},
         }
-        result.map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
     }
 }
 
