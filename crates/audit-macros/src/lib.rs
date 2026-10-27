@@ -687,7 +687,7 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
             /// The switch is checked before serializing, so a disabled trail costs nothing,
             /// and it applies to every record whatever built it.
             pub(crate) fn emit(self, message: &'static str) {
-                if !crate::audit::enabled() {
+                if !crate::audit::log_enabled() {
                     return;
                 }
                 #(let #fields = ::lakekeeper::audit::AuditJson::present(&self.#fields);)*
