@@ -308,6 +308,7 @@ pub(crate) fn supported_endpoints() -> &'static [String] {
 /// warehouses that allow remote signing. It has to be advertised somewhere
 /// though: the route is the endpoint `remote-signing-config` implies, and a
 /// client that gates calls on this list would otherwise never make one.
+#[cfg(feature = "s3-signer")]
 pub(crate) fn supported_endpoints_with_signing() -> &'static [String] {
     static ENDPOINTS: LazyLock<Vec<String>> = LazyLock::new(|| {
         let mut endpoints = SUPPORTED_ENDPOINTS.clone();
@@ -319,6 +320,13 @@ pub(crate) fn supported_endpoints_with_signing() -> &'static [String] {
         endpoints
     });
     &ENDPOINTS
+}
+
+/// [`supported_endpoints`] alone: without `s3-signer` the signing route is not
+/// mounted, so advertising it would send clients to a missing route.
+#[cfg(not(feature = "s3-signer"))]
+pub(crate) fn supported_endpoints_with_signing() -> &'static [String] {
+    supported_endpoints()
 }
 
 #[cfg(test)]
@@ -343,10 +351,15 @@ mod test {
             "/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister",
             "/v1/{prefix}/namespaces/{namespace}/register-view",
         ];
+        // Mounted, and so advertised, only with `s3-signer`.
+        let signing = crate::api::endpoints::SignEndpoint::S3RequestByTableName
+            .path()
+            .trim_start_matches("/catalog");
         // Check that openapi endpoints are in the supported endpoints
         paths
             .into_iter()
             .filter(|(path, _)| !unsupported.contains(&path.as_str()))
+            .filter(|(path, _)| cfg!(feature = "s3-signer") || path.as_str() != signing)
             .for_each(|(path, vals)| {
                 let methods = vals.as_object().unwrap();
                 methods
@@ -368,6 +381,18 @@ mod test {
                 "endpoint {endpoint} is unsupported endpoint"
             );
         }
+    }
+
+    #[test]
+    fn signing_route_is_advertised_only_when_mounted() {
+        let signing = crate::api::endpoints::SignEndpoint::S3RequestByTableName
+            .as_http_route()
+            .replace(" /catalog/", " /");
+        assert_eq!(
+            super::supported_endpoints_with_signing().contains(&signing),
+            cfg!(feature = "s3-signer")
+        );
+        assert!(!super::supported_endpoints().contains(&signing));
     }
 
     #[test]
