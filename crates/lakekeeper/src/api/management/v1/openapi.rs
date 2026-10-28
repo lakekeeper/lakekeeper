@@ -1920,6 +1920,60 @@ pub mod spec_integrity {
         }
     }
 
+    /// No union member may compose another union, directly or through `allOf`.
+    ///
+    /// A generator asked to compose a union into an object flattens it into one
+    /// struct carrying every branch's fields. `expand_unions_composing_unions`
+    /// multiplies the nesting it recognises out and warns where it cannot; this
+    /// catches nesting it does not look at, such as an `anyOf` inner union.
+    fn assert_no_union_composes_a_union(spec: &Value, label: &str) {
+        let schemas = schemas(spec);
+        let is_union =
+            |schema: &Value| schema.get("oneOf").is_some() || schema.get("anyOf").is_some();
+        for (name, schema) in schemas.iter().filter(|(_, schema)| is_union(schema)) {
+            let members = ["oneOf", "anyOf"]
+                .into_iter()
+                .filter_map(|key| schema.get(key).and_then(Value::as_array))
+                .flatten();
+            for (index, member) in members.enumerate() {
+                let mut composed = BTreeSet::new();
+                composed_schemas(schemas, member, &mut composed);
+                let nested = composed
+                    .into_iter()
+                    .filter(|composed| is_union(&schemas[*composed]))
+                    .collect::<Vec<_>>();
+                assert!(
+                    nested.is_empty(),
+                    "{label}: `{name}` member {index} composes the union(s) {nested:?}, which a \
+                     generator flattens into one struct"
+                );
+            }
+        }
+    }
+
+    /// The component schemas `node` composes: its `$ref` target and,
+    /// recursively, every `allOf` branch of `node` and of that target.
+    fn composed_schemas<'a>(
+        schemas: &'a serde_json::Map<String, Value>,
+        node: &'a Value,
+        out: &mut BTreeSet<&'a str>,
+    ) {
+        if let Some((name, schema)) = node.get("$ref").and_then(Value::as_str).and_then(|target| {
+            schemas.get_key_value(target.trim_start_matches("#/components/schemas/"))
+        }) && out.insert(name.as_str())
+        {
+            composed_schemas(schemas, schema, out);
+        }
+        for branch in node
+            .get("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            composed_schemas(schemas, branch, out);
+        }
+    }
+
     /// Assert every invariant above on `spec`, naming it `label` in failures.
     ///
     /// # Panics
@@ -1929,6 +1983,7 @@ pub mod spec_integrity {
         assert_no_self_references(spec, label);
         assert_discriminators_are_consistent(spec, label);
         assert_union_members_are_named(spec, label);
+        assert_no_union_composes_a_union(spec, label);
     }
 
     /// The unions in `components/schemas` published without a discriminator.
