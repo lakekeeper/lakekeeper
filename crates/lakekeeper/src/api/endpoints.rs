@@ -724,6 +724,14 @@ mod test {
             "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
             "management/v1/project/task-queue/task_log_cleanup/config",
         ];
+        // Upstream Iceberg REST routes Lakekeeper does not serve. They are in the vendored
+        // spec and absent from the `Endpoint` enum.
+        let unserved_catalog_paths = [
+            "catalog/v1/{prefix}/namespaces/{namespace}/functions",
+            "catalog/v1/{prefix}/namespaces/{namespace}/functions/{function}",
+            "catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister",
+            "catalog/v1/{prefix}/namespaces/{namespace}/register-view",
+        ];
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
         let catalog_yaml = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml");
@@ -796,8 +804,17 @@ mod test {
         // Extract endpoints from Endpoints enum
         let mut actual_endpoints = HashSet::new();
         for endpoint in Endpoint::iter() {
+            // Permission routes are per-authorizer. Of the signing routes, only the per-table
+            // one is in the Iceberg spec.
             if matches!(endpoint, Endpoint::PermissionV1(_))
-                || matches!(endpoint, Endpoint::Sign(_))
+                || matches!(
+                    endpoint,
+                    Endpoint::Sign(
+                        SignEndpoint::S3RequestGlobal
+                            | SignEndpoint::S3RequestPrefix
+                            | SignEndpoint::S3RequestTabular
+                    )
+                )
             {
                 continue;
             }
@@ -824,6 +841,13 @@ mod test {
             actual_endpoints.insert((method.clone(), normalized_path.to_string()));
         }
 
+        for path in unserved_catalog_paths {
+            assert!(
+                !actual_endpoints.iter().any(|(_method, p)| p == path),
+                "{path} is in the Endpoints enum; remove it from `unserved_catalog_paths`"
+            );
+        }
+
         // Find missing endpoints
         let missing_endpoints: Vec<_> = expected_endpoints.difference(&actual_endpoints).collect();
 
@@ -837,6 +861,8 @@ mod test {
             // We remove the parameterized endpoints with {queue_name} and expand them using actually
             // registered queues
             .filter(|(_method, path)| !exempt_config_paths.contains(&path.as_str()))
+            // Upstream routes Lakekeeper does not serve
+            .filter(|(_method, path)| !unserved_catalog_paths.contains(&path.as_str()))
             .collect::<Vec<_>>();
 
         if !missing_endpoints.is_empty() {

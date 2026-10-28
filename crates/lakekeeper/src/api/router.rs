@@ -107,8 +107,25 @@ static ICEBERG_OPENAPI_SPEC_YAML: std::sync::LazyLock<serde_json::Value> =
         let mut yaml_str =
             include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
         yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
-        serde_norway::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
+        served_spec(
+            serde_norway::from_str(&yaml_str)
+                .expect("Failed to parse Iceberg API model V1 as JSON"),
+        )
     });
+
+/// The spec as served: the per-table signing route is listed only when
+/// `s3-signer` mounts it.
+#[cfg(feature = "open-api")]
+fn served_spec(mut spec: serde_json::Value) -> serde_json::Value {
+    if !cfg!(feature = "s3-signer")
+        && let Some(paths) = spec
+            .get_mut("paths")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        paths.remove(crate::api::endpoints::SignEndpoint::S3RequestByTableName.path());
+    }
+    spec
+}
 
 pub struct RouterArgs<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
     pub authenticator: Option<N>,
@@ -988,5 +1005,17 @@ mod test {
     #[test]
     fn test_openapi_spec_can_be_parsed() {
         let _ = super::ICEBERG_OPENAPI_SPEC_YAML.clone();
+    }
+
+    #[cfg(feature = "open-api")]
+    #[test]
+    fn served_spec_lists_signing_only_when_mounted() {
+        let signing = crate::api::endpoints::SignEndpoint::S3RequestByTableName.path();
+        assert_eq!(
+            super::ICEBERG_OPENAPI_SPEC_YAML["paths"]
+                .get(signing)
+                .is_some(),
+            cfg!(feature = "s3-signer")
+        );
     }
 }
