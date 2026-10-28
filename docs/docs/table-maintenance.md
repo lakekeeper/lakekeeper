@@ -126,6 +126,6 @@ For production workloads, we recommend running remove orphan files workers in de
 
 Lakekeeper does not run compaction. To merge small data files and rewrite delete files into full data files, use an external compaction tool that connects to Lakekeeper as a REST catalog.
 
-[OLake Fusion](https://olake.io/olake-fusion) is a self-hosted, open-source tool that automates compaction for Apache Iceberg tables and supports Lakekeeper as a catalog. It merges small files, converts delete files, and schedules tiered compaction runs through a web UI. Tables written by CDC tools such as [OLake Go](engines.md#olake) accumulate small files and delete files quickly, so compaction is especially important for them.
+[OLake Fusion](https://olake.io/olake-fusion) is a self-hosted, open-source tool that automates compaction for Apache Iceberg tables. It merges small files, converts equality deletes into position deletes, and runs tiered compaction on a per-table schedule. Tables written by CDC tools such as [OLake Go](engines.md#olake) accumulate small files and delete files quickly, so compaction is especially important for them.
 
 Spark, Trino, and PyIceberg can also run compaction directly against Lakekeeper using their own built-in compaction commands.
