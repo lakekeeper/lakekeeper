@@ -4317,3 +4317,33 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "open-api"))]
+mod openapi_tests {
+    use std::collections::BTreeSet;
+
+    use lakekeeper::api::management::v1::openapi::spec_integrity::{
+        assert_internally_consistent, management_spec, undiscriminated_unions, warnings_while,
+    };
+
+    use crate::OpenFGAAuthorizer;
+
+    /// The document `just update-management-openapi` publishes.
+    #[test]
+    fn published_management_spec_is_internally_consistent() {
+        let (spec, warnings) = warnings_while(management_spec::<OpenFGAAuthorizer>);
+        assert_internally_consistent(&spec, "management");
+        assert_eq!(
+            undiscriminated_unions(&spec),
+            BTreeSet::from([
+                "CatalogActionCheckOperation",
+                "CheckOperation",
+                "NamespaceIdentOrUuid",
+                "SubtreeGrantPrincipal",
+                "SubtreeGrantPrivileges",
+                "TabularIdentOrUuid",
+            ])
+        );
+        assert_eq!(warnings, Vec::<String>::new());
+    }
+}

@@ -1444,13 +1444,13 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
-// This is a two-level union: `type` selects s3/az/gcs here, and
-// `credential-type` then selects within `S3Credential` / `AzCredential` /
-// `GcsCredential`, which are unions in their own right. On the wire that is
-// `{"type": "s3", "credential-type": "access-key", ...}`.
+// This is a two-level union: `type` selects s3/stackit/az/gcs here, and
+// `credential-type` then selects within `S3Credential` / `StackitCredential` /
+// `AzCredential` / `GcsCredential`, which are unions in their own right. On the
+// wire that is `{"type": "s3", "credential-type": "access-key", ...}`.
 //
 // Nested unions cannot survive into a generated client, so `api_doc()`
-// multiplies the two levels out into nine flat leaves — see
+// multiplies the two levels out into ten flat leaves — see
 // `expand_unions_composing_unions`. Adding a credential variant here needs no
 // change there; the expansion is derived.
 //
@@ -1489,7 +1489,7 @@ pub enum StorageCredential {
     /// use lakekeeper::service::storage::StorageCredential;
     /// let cred: StorageCredential = serde_json::from_str(r#"{
     ///     "type": "stackit",
-    ///     "credential-type": "access-key",
+    ///     "credential-type": "stackit-access-key",
     ///     "access-key-id": "...",
     ///     "secret-access-key": "..."
     ///   }"#).unwrap();
@@ -1571,6 +1571,8 @@ pub enum StorageCredentialType {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum StackitCredentialType {
+    // Matches `StackitCredential::AccessKey`.
+    #[serde(rename = "stackit-access-key", alias = "access-key")]
     AccessKey,
 }
 
