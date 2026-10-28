@@ -1164,7 +1164,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "0.21.0"
-source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=18771034b91a47259952bffcf2b3d624cd5f8232#18771034b91a47259952bffcf2b3d624cd5f8232"
+source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=bbdb4946ff486feec05506240358a8e4e9a074e8#bbdb4946ff486feec05506240358a8e4e9a074e8"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1193,7 +1193,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "0.21.0"
-source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=18771034b91a47259952bffcf2b3d624cd5f8232#18771034b91a47259952bffcf2b3d624cd5f8232"
+source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=bbdb4946ff486feec05506240358a8e4e9a074e8#bbdb4946ff486feec05506240358a8e4e9a074e8"
 dependencies = [
  "async-lock",
  "async-process",
@@ -1212,7 +1212,7 @@ dependencies = [
 [[package]]
 name = "azure_storage"
 version = "0.21.0"
-source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=18771034b91a47259952bffcf2b3d624cd5f8232#18771034b91a47259952bffcf2b3d624cd5f8232"
+source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=bbdb4946ff486feec05506240358a8e4e9a074e8#bbdb4946ff486feec05506240358a8e4e9a074e8"
 dependencies = [
  "RustyXML",
  "async-lock",
@@ -1230,7 +1230,7 @@ dependencies = [
 [[package]]
 name = "azure_storage_blobs"
 version = "0.21.0"
-source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=18771034b91a47259952bffcf2b3d624cd5f8232#18771034b91a47259952bffcf2b3d624cd5f8232"
+source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=bbdb4946ff486feec05506240358a8e4e9a074e8#bbdb4946ff486feec05506240358a8e4e9a074e8"
 dependencies = [
  "RustyXML",
  "azure_core",
@@ -1250,7 +1250,7 @@ dependencies = [
 [[package]]
 name = "azure_storage_datalake"
 version = "0.21.0"
-source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=18771034b91a47259952bffcf2b3d624cd5f8232#18771034b91a47259952bffcf2b3d624cd5f8232"
+source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=bbdb4946ff486feec05506240358a8e4e9a074e8#bbdb4946ff486feec05506240358a8e4e9a074e8"
 dependencies = [
  "async-trait",
  "azure_core",
@@ -1267,7 +1267,7 @@ dependencies = [
 [[package]]
 name = "azure_svc_blobstorage"
 version = "0.21.0"
-source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=18771034b91a47259952bffcf2b3d624cd5f8232#18771034b91a47259952bffcf2b3d624cd5f8232"
+source = "git+https://github.com/lakekeeper/azure-sdk-for-rust.git?rev=bbdb4946ff486feec05506240358a8e4e9a074e8#bbdb4946ff486feec05506240358a8e4e9a074e8"
 dependencies = [
  "azure_core",
  "bytes",
