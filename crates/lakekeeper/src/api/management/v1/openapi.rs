@@ -1925,28 +1925,66 @@ pub mod spec_integrity {
     /// A generator asked to compose a union into an object flattens it into one
     /// struct carrying every branch's fields. `expand_unions_composing_unions`
     /// multiplies the nesting it recognises out and warns where it cannot; this
-    /// catches nesting it does not look at, such as an `anyOf` inner union.
+    /// catches nesting it does not look at, such as an `anyOf` inner union or a
+    /// union inside a property.
     fn assert_no_union_composes_a_union(spec: &Value, label: &str) {
         let schemas = schemas(spec);
-        for (name, schema) in schemas.iter().filter(|(_, schema)| is_union(schema)) {
-            let members = ["oneOf", "anyOf"]
-                .into_iter()
-                .filter_map(|key| schema.get(key).and_then(Value::as_array))
-                .flatten();
-            for (index, member) in members.enumerate() {
+        let mut unions = Vec::new();
+        union_nodes(spec, "", &mut unions);
+        for (path, union) in unions {
+            for (index, member) in union_members(union).enumerate() {
                 let mut nested = Vec::new();
                 composed_unions(schemas, member, "member", &mut BTreeSet::new(), &mut nested);
                 assert!(
                     nested.is_empty(),
-                    "{label}: `{name}` member {index} composes the union(s) {nested:?}, which a \
+                    "{label}: `{path}` member {index} composes the union(s) {nested:?}, which a \
                      generator flattens into one struct"
                 );
             }
         }
     }
 
+    /// Every union in `node`, at any depth, except a nullable wrapper.
+    ///
+    /// utoipa publishes `Option<T>` as `oneOf: [{type: null}, T]`, which
+    /// generators read as an optional `T`, so a wrapper may hold a union.
+    /// Unions inside a wrapper are still collected.
+    fn union_nodes<'a>(node: &'a Value, path: &str, out: &mut Vec<(String, &'a Value)>) {
+        match node {
+            Value::Object(map) => {
+                if is_union(node) && !is_nullable_wrapper(node) {
+                    out.push((path.to_string(), node));
+                }
+                for (key, value) in map {
+                    union_nodes(value, &format!("{path}.{key}"), out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    union_nodes(item, &format!("{path}[{index}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn is_union(schema: &Value) -> bool {
         schema.get("oneOf").is_some() || schema.get("anyOf").is_some()
+    }
+
+    fn union_members(schema: &Value) -> impl Iterator<Item = &Value> {
+        ["oneOf", "anyOf"]
+            .into_iter()
+            .filter_map(|key| schema.get(key).and_then(Value::as_array))
+            .flatten()
+    }
+
+    fn is_nullable_wrapper(schema: &Value) -> bool {
+        let members = union_members(schema).collect::<Vec<_>>();
+        members.len() == 2
+            && members
+                .iter()
+                .any(|member| member.get("type").and_then(Value::as_str) == Some("null"))
     }
 
     /// Collect the unions `node` composes: `node` itself, its `$ref` target and,
