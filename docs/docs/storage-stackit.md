@@ -71,7 +71,7 @@ A POST request to `/management/v1/warehouse` to create a warehouse on the data p
   "delete-profile": { "type": "hard" },
   "storage-credential": {
     "type": "stackit",
-    "credential-type": "access-key",
+    "credential-type": "stackit-access-key",
     "access-key-id": "...",
     "secret-access-key": "..."
   },
