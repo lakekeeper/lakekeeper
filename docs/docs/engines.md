@@ -467,7 +467,7 @@ The following docker compose examples are available for starrocks:
 
 For a hands-on setup, the [OLake Go quickstart](https://olake.io/docs/getting-started/quickstart) starts the OLake UI with Docker Compose.
 
-Configure Lakekeeper as the destination in the OLake UI, or in the `destination.json` file of the OLake CLI. `iceberg_s3_path` holds the name of the Lakekeeper warehouse. For a warehouse outside the default project, write `<project-id>/<warehouse-name>`:
+Configure Lakekeeper as the destination in the OLake UI, or in the `destination.json` file of the OLake CLI. `iceberg_s3_path` holds the name of the Lakekeeper warehouse:
 
 === "Without Authentication"
 
