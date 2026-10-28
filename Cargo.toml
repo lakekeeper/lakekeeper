@@ -65,26 +65,26 @@ axum = { version = "0.8.1" }
 axum-extra = { version = "0.12.0", features = ["middleware"] }
 axum-macros = { version = "0.5.0" }
 axum-prometheus = { version = "0.9.0" }
-azure_core = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+azure_core = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "bbdb4946ff486feec05506240358a8e4e9a074e8", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest",
     "enable_reqwest_rustls",
     # Retry waits sleep on tokio; without it, each wait spawns an OS thread.
     "tokio-sleep",
 ] }
-azure_identity = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+azure_identity = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "bbdb4946ff486feec05506240358a8e4e9a074e8", default-features = false, features = [
     "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
-azure_storage = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+azure_storage = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "bbdb4946ff486feec05506240358a8e4e9a074e8", default-features = false, features = [
     "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
-azure_storage_blobs = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+azure_storage_blobs = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "bbdb4946ff486feec05506240358a8e4e9a074e8", default-features = false, features = [
     "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
-azure_storage_datalake = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+azure_storage_datalake = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "bbdb4946ff486feec05506240358a8e4e9a074e8", default-features = false, features = [
     "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
@@ -116,7 +116,7 @@ hyper-util = { version = "0.1.20", features = [
     "service",
     "tokio",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "1154cee7b1f92cafe8bce9a8676fe0d304d5e1f2" }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2e822e59603fc57dcb689eed03ee0a7469c78417" }
 inventory = "0.3.24"
 iso8601 = "0.6.2"
 itertools = "0.14.0"
