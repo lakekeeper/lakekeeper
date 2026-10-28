@@ -3350,7 +3350,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=2e822e59603fc57dcb689eed03ee0a7469c78417#2e822e59603fc57dcb689eed03ee0a7469c78417"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=1ba309628b0ba64fb753c8560ed374ff43e20dda#1ba309628b0ba64fb753c8560ed374ff43e20dda"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3436,7 +3436,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=2e822e59603fc57dcb689eed03ee0a7469c78417#2e822e59603fc57dcb689eed03ee0a7469c78417"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=1ba309628b0ba64fb753c8560ed374ff43e20dda#1ba309628b0ba64fb753c8560ed374ff43e20dda"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5557,7 +5557,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -5613,7 +5613,7 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe500dc80e757a75e1e8fb7290e448d62dfba3105ece1d058579cb00b58151cd"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "prost",
  "prost-build",
  "prost-types",
@@ -6831,7 +6831,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
