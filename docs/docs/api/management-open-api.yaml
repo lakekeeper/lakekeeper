@@ -16017,7 +16017,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/StorageLayoutDefault'
         - $ref: '#/components/schemas/StorageLayoutTabularOnly'
-        - $ref: '#/components/schemas/StorageLayoutFullHierarchyVariant'
+        - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
       description: |-
         Controls how namespace and tabular paths are constructed under the warehouse base location.
 
@@ -16039,7 +16039,7 @@ components:
         propertyName: type
         mapping:
           default: '#/components/schemas/StorageLayoutDefault'
-          full-hierarchy: '#/components/schemas/StorageLayoutFullHierarchyVariant'
+          full-hierarchy: '#/components/schemas/StorageLayoutFullHierarchy'
           tabular-only: '#/components/schemas/StorageLayoutTabularOnly'
     StorageLayoutDefault:
       type: object
@@ -16064,7 +16064,7 @@ components:
           $ref: '#/components/schemas/StorageLayoutTabularTemplate'
       example:
         tabular: '{name}-{uuid}'
-    StorageLayoutFullHierarchy:
+    StorageLayoutFull:
       type: object
       description: |-
         One directory per namespace level, one per tabular.
@@ -16082,9 +16082,9 @@ components:
       example:
         namespace: '{name}-{uuid}'
         tabular: '{name}-{uuid}'
-    StorageLayoutFullHierarchyVariant:
+    StorageLayoutFullHierarchy:
       allOf:
-        - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
+        - $ref: '#/components/schemas/StorageLayoutFull'
         - type: object
           required:
             - type
