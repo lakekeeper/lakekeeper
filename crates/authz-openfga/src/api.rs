@@ -4323,10 +4323,11 @@ mod openapi_tests {
     use std::collections::BTreeSet;
 
     use lakekeeper::api::management::v1::openapi::spec_integrity::{
-        assert_internally_consistent, management_spec, undiscriminated_unions, warnings_while,
+        assert_internally_consistent, assert_matches_schema, management_spec,
+        undiscriminated_unions, warnings_while,
     };
 
-    use crate::OpenFGAAuthorizer;
+    use crate::{OpenFGAAuthorizer, relations::WarehouseAssignment};
 
     /// The document `just update-management-openapi` publishes.
     #[test]
@@ -4345,5 +4346,18 @@ mod openapi_tests {
             ])
         );
         assert_eq!(warnings, Vec::<String>::new());
+    }
+
+    /// An assignment names a user or a role on the same object as its tag.
+    #[test]
+    fn published_assignments_match_the_wire_format() {
+        assert_matches_schema::<WarehouseAssignment>(
+            &management_spec::<OpenFGAAuthorizer>(),
+            "WarehouseAssignment",
+            &[
+                serde_json::json!({"type": "ownership", "user": "oidc~my_user"}),
+                serde_json::json!({"type": "select", "role": "01f2fdfc-81fc-444d-8368-5b6701566e35"}),
+            ],
+        );
     }
 }
