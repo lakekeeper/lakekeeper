@@ -348,6 +348,27 @@ pub(crate) async fn remove_snapshot_log_entries(
     Ok(())
 }
 
+/// Replaces the stored snapshot log of a table with `snapshots`, in order.
+pub(crate) async fn replace_snapshot_log(
+    snapshots: impl ExactSizeIterator<Item = &SnapshotLog>,
+    transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+) -> Result<(), InternalBackendErrors> {
+    sqlx::query!(
+        r#"DELETE FROM table_snapshot_log WHERE warehouse_id = $1 AND table_id = $2"#,
+        *warehouse_id,
+        *table_id,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Failed to clear snapshot log")
+    })?;
+    insert_snapshot_log(snapshots, transaction, warehouse_id, table_id).await
+}
+
 pub(crate) async fn insert_snapshot_log(
     snapshots: impl ExactSizeIterator<Item = &SnapshotLog>,
     transaction: &mut Transaction<'_, Postgres>,

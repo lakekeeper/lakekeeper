@@ -178,6 +178,7 @@ pub(crate) async fn load_table_with_flags<
         table_metadata,
         metadata_location,
         warehouse_version,
+        snapshot_removal_fence: _,
     } = load_table_inner::<C>(
         warehouse_id,
         event_ctx.resolved().table.table_id(),

@@ -6272,6 +6272,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/rollback-compaction-policy:
+    post:
+      tags:
+        - warehouse
+      summary: Update Rollback-Compaction Policy
+      description: |-
+        Enables or disables transparent commit (rollback-compaction-on-conflict) for a warehouse.
+        When enabled, a writer's commit that would otherwise fail optimistic-concurrency
+        validation solely because of intervening rollbackable compaction snapshots reaps those
+        snapshots and rebases the writer on top, so the writer wins over compaction.
+      operationId: update_warehouse_rollback_compaction_policy
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetWarehouseRollbackCompactionPolicyRequest'
+        required: true
+      responses:
+        '200':
+          description: Rollback-compaction policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/search-tabular:
     post:
       tags:
@@ -10121,6 +10158,23 @@ components:
         protected:
           type: boolean
           description: Whether the warehouse is protected from being deleted.
+        rollback-compaction-max-age-seconds:
+          type: integer
+          format: int64
+          description: A compaction snapshot older than this many seconds is not rolled back.
+          minimum: 0
+        rollback-compaction-on-conflict:
+          type: boolean
+          description: |-
+            Whether transparent commit (rollback-compaction-on-conflict) is enabled for this
+            warehouse. When `true`, a writer's commit that would fail optimistic-concurrency
+            validation solely because of intervening rollbackable compaction snapshots reaps those
+            snapshots and rebases the writer on top, so the writer wins over compaction.
+        rollback-compaction-snapshot-removal-fence-seconds:
+          type: integer
+          format: int64
+          description: Seconds a compaction rollback and a snapshot-removal commit on one table are kept apart.
+          minimum: 0
         status:
           $ref: '#/components/schemas/WarehouseStatus'
           description: Whether the warehouse is active.
@@ -12740,6 +12794,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionControlAllTasks'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionSetRollbackCompactionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetEndpointStatistics'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
@@ -12773,6 +12828,7 @@ components:
           revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
+          set_rollback_compaction_policy: '#/components/schemas/LakekeeperWarehouseActionSetRollbackCompactionPolicy'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
           use: '#/components/schemas/LakekeeperWarehouseActionUse'
     LakekeeperWarehouseActionAcceptMovedNamespace:
@@ -12933,6 +12989,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindControlAllTasks'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetRollbackCompactionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetEndpointStatistics'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
@@ -12966,6 +13023,7 @@ components:
           revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionKindRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
+          set_rollback_compaction_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetRollbackCompactionPolicy'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
           use: '#/components/schemas/LakekeeperWarehouseActionKindUse'
     LakekeeperWarehouseActionKindAcceptMovedNamespace:
@@ -13184,6 +13242,15 @@ components:
           type: string
           enum:
             - set_protection
+    LakekeeperWarehouseActionKindSetRollbackCompactionPolicy:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - set_rollback_compaction_policy
     LakekeeperWarehouseActionKindUpdateStorage:
       type: object
       required:
@@ -13340,6 +13407,15 @@ components:
           type: string
           enum:
             - set_protection
+    LakekeeperWarehouseActionSetRollbackCompactionPolicy:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - set_rollback_compaction_policy
     LakekeeperWarehouseActionUpdateStorage:
       type: object
       required:
@@ -15545,6 +15621,36 @@ components:
           description: |-
             New managed-by marker. Use `self-managed` to clear. Setting or clearing the
             marker requires instance-admin privilege.
+    SetWarehouseRollbackCompactionPolicyRequest:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+          description: |-
+            When `true`, a writer's commit that would fail optimistic-concurrency validation solely
+            because of intervening rollbackable compaction snapshots reaps those snapshots and
+            rebases the writer on top, so the writer wins over compaction ("transparent commit").
+        max-compaction-age-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            A compaction snapshot older than this many seconds is not rolled back; the writer gets
+            a normal concurrency failure. Defaults to 86400 (24 hours).
+          minimum: 1
+        snapshot-removal-fence-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            For this many seconds after a compaction was rolled back, a commit that removes
+            snapshots (such as an expire-snapshots run) gets a retryable conflict. For this many
+            seconds after such a commit, no compaction is rolled back. Defaults to 60.
+          minimum: 1
     SoftDeletionQueueConfig:
       type: object
       description: Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.
@@ -17686,6 +17792,7 @@ components:
         - control_all_tasks
         - set_protection
         - set_format_version_policy
+        - set_rollback_compaction_policy
         - get_endpoint_statistics
     WarehouseAssignment:
       oneOf:

@@ -4,13 +4,14 @@ use std::{
     sync::Arc,
 };
 
+use axum_prometheus::metrics;
 use futures::FutureExt;
 use http::StatusCode;
 use iceberg::{
     NamespaceIdent, TableUpdate,
     spec::{
-        MetadataLog, SchemaId, TableMetadata, TableMetadataBuildResult, TableMetadataRef,
-        TableProperties,
+        MetadataLog, SchemaId, TableMetadata, TableMetadataBuildResult, TableMetadataBuilder,
+        TableMetadataRef, TableProperties,
     },
 };
 use iceberg_ext::{
@@ -31,6 +32,7 @@ pub mod create_table;
 pub(crate) mod etag;
 pub mod load_table;
 mod rename_table;
+pub(crate) mod transparent_commit;
 
 pub(crate) use authorize_load::*;
 
@@ -73,9 +75,10 @@ use crate::{
     service::{
         ArcResolvedWarehouse, AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
         CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
-        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit,
-        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed,
-        TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        CatalogTabularOps, CatalogWarehouseOps, CommitSnapshotRemovals, NamedEntity,
+        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
+        TabularId, TabularIdentBorrowed, TabularInfo, TabularListFlags, TabularNotFound,
+        Transaction, WarehouseStatus,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
@@ -1670,6 +1673,181 @@ async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
     })
 }
 
+/// Apply a single table's commit, transparently reaping rollbackable compaction snapshots when
+/// the commit would otherwise fail optimistic-concurrency validation.
+///
+/// On the happy path this is exactly [`apply_commit`]. When the warehouse has opted into
+/// transparent commit and the commit fails with a concurrency conflict, this consults
+/// [`transparent_commit::plan_compaction_reap`]; if a safe reap exists it rewinds the offending
+/// compaction snapshots via [`TableMetadata::rollback_branch_to_snapshot`] and re-applies the
+/// writer's unmodified commit on top of the rewound base. Any failure along the reap path falls
+/// back to the original conflict error, so the writer sees a normal OCC failure and retries.
+///
+/// Returns the build result together with the reap plan that was applied, if any.
+fn apply_commit_maybe_reaping(
+    previous: &crate::service::LoadTableResponse,
+    requirements: &[iceberg::TableRequirement],
+    updates: &[TableUpdate],
+    warehouse: &ResolvedWarehouse,
+    table_id: crate::service::TableId,
+) -> Result<(
+    TableMetadataBuildResult,
+    Option<transparent_commit::ReapPlan>,
+)> {
+    let original = match apply_commit(
+        previous.table_metadata.clone(),
+        previous.metadata_location.as_ref(),
+        requirements,
+        updates.to_vec(),
+    ) {
+        Ok(result) => return Ok((result, None)),
+        Err(e) => e,
+    };
+
+    // Only conflict failures are candidates for reaping, and only when the warehouse opted in.
+    let policy = warehouse.rollback_compaction_policy;
+    if !policy.enabled || original.error.r#type != *"CatalogCommitConflicts" {
+        return Err(original);
+    }
+    if transparent_commit::reap_fenced(
+        &previous.snapshot_removal_fence,
+        policy.snapshot_removal_fence(),
+    ) {
+        tracing::debug!(
+            warehouse_id = %warehouse.warehouse_id,
+            %table_id,
+            "transparent-commit: declining to reap compaction, snapshots were removed recently",
+        );
+        return Err(original);
+    }
+
+    let Some(plan) = transparent_commit::plan_compaction_reap(
+        &previous.table_metadata,
+        requirements,
+        updates,
+        transparent_commit::ReapAgeLimit {
+            now_ms: chrono::Utc::now().timestamp_millis(),
+            max_compaction_age_seconds: policy.max_compaction_age_seconds,
+        },
+    ) else {
+        return Err(original);
+    };
+
+    let Some(result) =
+        apply_commit_on_reaped_base(previous, requirements, updates, &plan, warehouse, table_id)
+    else {
+        return Err(original);
+    };
+    metrics::counter!(
+        "lakekeeper_transparent_commit_reaps_total",
+        "warehouse" => warehouse.warehouse_id.to_string(),
+    )
+    .increment(1);
+    tracing::info!(
+        warehouse_id = %warehouse.warehouse_id,
+        %table_id,
+        branch = %plan.branch,
+        expected_base_snapshot_id = plan.expected_base_snapshot_id,
+        reaped_snapshot_ids = ?plan.reaped_snapshot_ids,
+        "transparent-commit: reaped compaction snapshots so the writer wins",
+    );
+    Ok((result, Some(plan)))
+}
+
+/// Rewind the compaction snapshots of `plan` and re-apply the writer's commit on the restored
+/// base. Returns `None` and logs the cause if either step fails.
+fn apply_commit_on_reaped_base(
+    previous: &crate::service::LoadTableResponse,
+    requirements: &[iceberg::TableRequirement],
+    updates: &[TableUpdate],
+    plan: &transparent_commit::ReapPlan,
+    warehouse: &ResolvedWarehouse,
+    table_id: crate::service::TableId,
+) -> Option<TableMetadataBuildResult> {
+    // Rewind the offending compaction snapshots, then re-apply the writer's commit on the
+    // restored base. We build the rewound metadata with a `None` metadata location so this
+    // intermediate build adds no metadata-log entry; the subsequent `apply_commit` then records
+    // exactly one new entry. `rollback_branch_to_snapshot` leaves the metadata log untouched, so
+    // the persisted diff (computed against the real stored metadata) still sees the reaped
+    // snapshots removed.
+    let rebased =
+        match TableMetadataBuilder::new_from_metadata(previous.table_metadata.clone(), None)
+            .rollback_branch_to_snapshot(&plan.branch, plan.expected_base_snapshot_id)
+            .and_then(TableMetadataBuilder::build)
+        {
+            Ok(build_result) => build_result.metadata,
+            Err(e) => {
+                tracing::warn!(
+                    warehouse_id = %warehouse.warehouse_id,
+                    %table_id,
+                    error = %e,
+                    "transparent-commit: rollback rebase failed; falling back to conflict",
+                );
+                return None;
+            }
+        };
+
+    apply_commit(
+        rebased,
+        previous.metadata_location.as_ref(),
+        requirements,
+        updates.to_vec(),
+    )
+    .inspect_err(|e| {
+        tracing::warn!(
+            warehouse_id = %warehouse.warehouse_id,
+            %table_id,
+            error = %e,
+            "transparent-commit: re-apply after rebase failed; falling back to conflict",
+        );
+    })
+    .ok()
+}
+
+/// Returns whether `updates` remove snapshots. Fails with a retryable conflict while the
+/// table's snapshot-removal fence is active.
+fn ensure_snapshot_removal_not_fenced(
+    updates: &[TableUpdate],
+    previous: &crate::service::LoadTableResponse,
+    warehouse: &ResolvedWarehouse,
+) -> Result<bool> {
+    let removed_snapshots = transparent_commit::removes_snapshots(updates);
+    if removed_snapshots
+        && transparent_commit::snapshot_removal_fenced(
+            &previous.snapshot_removal_fence,
+            warehouse
+                .rollback_compaction_policy
+                .snapshot_removal_fence(),
+        )
+    {
+        return Err(ErrorModel::conflict(
+            "A compaction of this table was rolled back recently. Retry the snapshot removal with freshly loaded table metadata.",
+            "CommitFailedException",
+            None,
+        )
+        .into());
+    }
+    Ok(removed_snapshots)
+}
+
+/// The updates a commit records. After a reap, the synthesized `RemoveSnapshots` precede the
+/// writer's own updates, so events, contract verifiers and update-kind flags observe a truthful
+/// change list. The persisted diff is computed separately from the metadata.
+fn recorded_commit_updates(
+    reap_plan: Option<&transparent_commit::ReapPlan>,
+    updates: &[TableUpdate],
+) -> Arc<Vec<TableUpdate>> {
+    let synthesized = reap_plan
+        .map(transparent_commit::synthesized_reap_updates)
+        .unwrap_or_default();
+    Arc::new(
+        synthesized
+            .into_iter()
+            .chain(updates.iter().cloned())
+            .collect(),
+    )
+}
+
 // Extract the core commit logic to a separate function for retry purposes
 #[allow(clippy::too_many_lines)]
 async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
@@ -1734,15 +1912,24 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                 &change.updates,
                 &warehouse.allowed_format_versions,
             )?;
-            let TableMetadataBuildResult {
-                metadata: new_metadata,
-                changes: _,
-                expired_metadata_logs: this_expired,
-            } = apply_commit(
-                previous_table_metadata.table_metadata.clone(),
-                previous_table_metadata.metadata_location.as_ref(),
+            let removed_snapshots = ensure_snapshot_removal_not_fenced(
+                &change.updates,
+                &previous_table_metadata,
+                warehouse,
+            )?;
+            let (
+                TableMetadataBuildResult {
+                    metadata: new_metadata,
+                    changes: _,
+                    expired_metadata_logs: this_expired,
+                },
+                reap_plan,
+            ) = apply_commit_maybe_reaping(
+                &previous_table_metadata,
                 &change.requirements,
-                change.updates.clone(),
+                &change.updates,
+                warehouse,
+                table_id,
             )?;
 
             let number_expired_metadata_log_entries = this_expired.len();
@@ -1784,10 +1971,14 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                 table_info,
                 new_compression_codec,
                 previous_metadata_location: previous_table_metadata.metadata_location,
-                updates: Arc::new(change.updates.clone()),
+                updates: recorded_commit_updates(reap_plan.as_ref(), &change.updates),
                 previous_metadata: Arc::new(previous_table_metadata.table_metadata),
                 number_expired_metadata_log_entries,
                 number_added_metadata_log_entries,
+                snapshot_removals: CommitSnapshotRemovals {
+                    reaped_compaction: reap_plan.is_some(),
+                    removed_snapshots,
+                },
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1939,6 +2130,7 @@ pub struct CommitContext {
     pub number_expired_metadata_log_entries: usize,
     pub number_added_metadata_log_entries: usize,
     pub table_info: Arc<TableInfo>,
+    pub snapshot_removals: CommitSnapshotRemovals,
 }
 
 impl CommitContext {
@@ -1956,8 +2148,29 @@ impl CommitContext {
             new_metadata_location: self.new_metadata_location.clone(),
             previous_metadata_location: self.previous_metadata_location.clone(),
             updates: self.updates.clone(),
+            snapshot_removals: self.snapshot_removals,
         }
     }
+}
+
+/// The incremental snapshot-log diff expresses "oldest entries removed, one new head appended".
+/// A commit that removes entries elsewhere (a rolled-back compaction drops the newest ones)
+/// needs the stored log replaced with the new one.
+fn snapshot_log_needs_rewrite(
+    previous_metadata: &TableMetadata,
+    new_metadata: &TableMetadata,
+    head_of_snapshot_log_changed: bool,
+    n_removed_snapshot_log: usize,
+) -> bool {
+    let new_history = new_metadata.history();
+    let retained_snapshot_log = &new_history[..new_history
+        .len()
+        .saturating_sub(usize::from(head_of_snapshot_log_changed))];
+    previous_metadata
+        .history()
+        .get(n_removed_snapshot_log..)
+        .unwrap_or_default()
+        != retained_snapshot_log
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2054,6 +2267,13 @@ pub fn calculate_diffs(
             .saturating_sub(usize::from(head_of_snapshot_log_changed)),
     );
 
+    let rewrite_snapshot_log = snapshot_log_needs_rewrite(
+        previous_metadata,
+        new_metadata,
+        head_of_snapshot_log_changed,
+        n_removed_snapshot_log,
+    );
+
     let old_stats = previous_metadata
         .statistics_iter()
         .map(|s| s.snapshot_id)
@@ -2119,6 +2339,7 @@ pub fn calculate_diffs(
         default_sort_order_id,
         head_of_snapshot_log_changed,
         n_removed_snapshot_log,
+        rewrite_snapshot_log,
         expired_metadata_logs,
         added_metadata_log,
         added_stats,
@@ -2145,6 +2366,9 @@ pub struct TableMetadataDiffs {
     pub default_sort_order_id: Option<i64>,
     pub head_of_snapshot_log_changed: bool,
     pub n_removed_snapshot_log: usize,
+    /// The stored snapshot log must be replaced with the new metadata's history;
+    /// `head_of_snapshot_log_changed` and `n_removed_snapshot_log` do not apply.
+    pub rewrite_snapshot_log: bool,
     pub expired_metadata_logs: usize,
     pub added_metadata_log: usize,
     pub added_stats: Vec<i64>,
@@ -2361,7 +2585,7 @@ pub fn parse_table_property_updates(
 mod unit_tests {
     use std::{collections::HashMap, str::FromStr};
 
-    use iceberg::{TableUpdate, spec::FormatVersion};
+    use iceberg::{TableRequirement, TableUpdate, spec::FormatVersion};
     use lakekeeper_io::Location;
     use uuid::Uuid;
 
@@ -2395,6 +2619,196 @@ mod unit_tests {
             Some("eu-central-1"),
             "the storage config must survive the merge: {merged:?}"
         );
+    }
+
+    mod transparent_commit_integration {
+        use iceberg::spec::{
+            NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
+            SnapshotRetention, SortOrder, Summary, TableMetadata, TableMetadataBuilder, Type,
+            UnboundPartitionSpec,
+        };
+
+        use super::*;
+        use crate::service::{
+            LoadTableResponse, NamespaceId, ResolvedWarehouse, RollbackCompactionPolicy, TableId,
+        };
+
+        const MAIN: &str = "main";
+
+        fn branch(id: i64) -> SnapshotReference {
+            SnapshotReference {
+                snapshot_id: id,
+                retention: SnapshotRetention::Branch {
+                    min_snapshots_to_keep: None,
+                    max_snapshot_age_ms: None,
+                    max_ref_age_ms: None,
+                },
+            }
+        }
+
+        fn snap(
+            id: i64,
+            parent: Option<i64>,
+            seq: i64,
+            ts: i64,
+            op: Operation,
+            marker: bool,
+        ) -> Snapshot {
+            let props = if marker {
+                vec![("lakekeeper.rollbackable".to_string(), "true".to_string())]
+            } else {
+                vec![]
+            };
+            Snapshot::builder()
+                .with_snapshot_id(id)
+                .with_parent_snapshot_id(parent)
+                .with_sequence_number(seq)
+                .with_timestamp_ms(ts)
+                .with_schema_id(0)
+                .with_manifest_list(format!("/snap-{id}.avro"))
+                .with_summary(Summary {
+                    operation: op,
+                    additional_properties: props.into_iter().collect(),
+                })
+                .build()
+        }
+
+        /// Metadata at snapshot A(seq1) with a rollbackable compaction C(seq2) landed on top.
+        fn metadata_a_then_compaction(marker: bool) -> TableMetadata {
+            let schema = Schema::builder()
+                .with_fields(vec![
+                    NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                ])
+                .build()
+                .unwrap();
+            let after_a = TableMetadataBuilder::new(
+                schema,
+                UnboundPartitionSpec::builder().build(),
+                SortOrder::unsorted_order(),
+                "s3://bucket/table".to_string(),
+                FormatVersion::V2,
+                HashMap::new(),
+            )
+            .unwrap()
+            .add_snapshot(snap(1, None, 1, 1000, Operation::Append, false))
+            .unwrap()
+            .set_ref(MAIN, branch(1))
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
+            after_a
+                .into_builder(Some("s3://bucket/table/metadata/m0.json".to_string()))
+                .set_branch_snapshot(snap(2, Some(1), 2, 2000, Operation::Replace, marker), MAIN)
+                .unwrap()
+                .build()
+                .unwrap()
+                .metadata
+        }
+
+        fn load_response(metadata: TableMetadata) -> LoadTableResponse {
+            LoadTableResponse {
+                table_id: TableId::from(metadata.uuid()),
+                namespace_id: NamespaceId::new_random(),
+                table_metadata: metadata,
+                metadata_location: Some(
+                    Location::from_str("s3://bucket/table/metadata/m1.json").unwrap(),
+                ),
+                warehouse_version: crate::service::WarehouseVersion::from(0),
+                snapshot_removal_fence: crate::service::SnapshotRemovalFence::default(),
+            }
+        }
+
+        /// Writer appending W(seq2) on top of the base it expects (snapshot A = 1).
+        fn writer() -> (Vec<TableRequirement>, Vec<TableUpdate>) {
+            (
+                vec![TableRequirement::RefSnapshotIdMatch {
+                    r#ref: MAIN.to_string(),
+                    snapshot_id: Some(1),
+                }],
+                vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snap(3, Some(1), 2, 3000, Operation::Delete, false),
+                    },
+                    TableUpdate::SetSnapshotRef {
+                        ref_name: MAIN.to_string(),
+                        reference: branch(3),
+                    },
+                ],
+            )
+        }
+
+        fn warehouse_with_flag(enabled: bool) -> ResolvedWarehouse {
+            let mut wh = ResolvedWarehouse::new_random();
+            // Test snapshots are timestamped near the Unix epoch.
+            wh.rollback_compaction_policy = RollbackCompactionPolicy {
+                enabled,
+                max_compaction_age_seconds: u64::MAX,
+                ..RollbackCompactionPolicy::default()
+            };
+            wh
+        }
+
+        #[test]
+        fn reaps_and_rebases_writer_when_enabled() {
+            let load = load_response(metadata_a_then_compaction(true));
+            let table_id = load.table_id;
+            let (reqs, updates) = writer();
+            let (result, plan) = apply_commit_maybe_reaping(
+                &load,
+                &reqs,
+                &updates,
+                &warehouse_with_flag(true),
+                table_id,
+            )
+            .expect("writer should win");
+            let plan = plan.expect("a reap plan should have been applied");
+            assert_eq!(plan.reaped_snapshot_ids, vec![2]);
+            // The compaction snapshot is gone; the writer's snapshot is the new tip on top of A.
+            assert!(result.metadata.snapshot_by_id(2).is_none());
+            assert_eq!(result.metadata.current_snapshot_id(), Some(3));
+            assert_eq!(
+                result
+                    .metadata
+                    .snapshot_by_id(3)
+                    .unwrap()
+                    .parent_snapshot_id(),
+                Some(1)
+            );
+            assert!(result.metadata.snapshot_by_id(1).is_some());
+        }
+
+        #[test]
+        fn falls_back_to_conflict_when_flag_disabled() {
+            let load = load_response(metadata_a_then_compaction(true));
+            let table_id = load.table_id;
+            let (reqs, updates) = writer();
+            let err = apply_commit_maybe_reaping(
+                &load,
+                &reqs,
+                &updates,
+                &warehouse_with_flag(false),
+                table_id,
+            )
+            .unwrap_err();
+            assert_eq!(err.error.r#type, "CatalogCommitConflicts");
+        }
+
+        #[test]
+        fn falls_back_to_conflict_when_marker_absent() {
+            let load = load_response(metadata_a_then_compaction(false));
+            let table_id = load.table_id;
+            let (reqs, updates) = writer();
+            let err = apply_commit_maybe_reaping(
+                &load,
+                &reqs,
+                &updates,
+                &warehouse_with_flag(true),
+                table_id,
+            )
+            .unwrap_err();
+            assert_eq!(err.error.r#type, "CatalogCommitConflicts");
+        }
     }
     use crate::{
         WarehouseId,

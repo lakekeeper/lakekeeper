@@ -29,6 +29,28 @@ pub struct LoadTableResponse {
     pub table_metadata: TableMetadata,
     pub metadata_location: Option<Location>,
     pub warehouse_version: WarehouseVersion,
+    /// Recent snapshot removals on the table, as of the load.
+    pub snapshot_removal_fence: SnapshotRemovalFence,
+}
+
+/// Time since snapshots were last removed from a table, measured on the catalog database's
+/// clock. Transparent commit uses it to keep a compaction rollback and a client's snapshot
+/// expiration apart. See [`crate::server::tables::transparent_commit`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SnapshotRemovalFence {
+    /// Time since a commit last rolled back a compaction. `None` if none ever did.
+    pub since_last_reap: Option<chrono::Duration>,
+    /// Time since a commit last removed snapshots the client listed. `None` if none ever did.
+    pub since_last_snapshot_removal: Option<chrono::Duration>,
+}
+
+/// Snapshot removals of one commit, recorded for the [`SnapshotRemovalFence`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CommitSnapshotRemovals {
+    /// The commit rolled back a compaction.
+    pub reaped_compaction: bool,
+    /// The client's updates remove snapshots.
+    pub removed_snapshots: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +60,7 @@ pub struct TableCommit {
     pub previous_metadata_location: Option<Location>,
     pub updates: Arc<Vec<TableUpdate>>,
     pub diffs: TableMetadataDiffs,
+    pub snapshot_removals: CommitSnapshotRemovals,
 }
 
 #[derive(Debug, Clone)]

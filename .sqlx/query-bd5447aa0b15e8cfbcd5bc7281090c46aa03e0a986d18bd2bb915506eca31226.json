@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT \n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            allowed_format_versions,\n            default_format_version,\n            managed_by as \"managed_by: ManagedBy\",\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_id = $1\n        ",
+  "query": "WITH\n            whi AS (INSERT INTO warehouse (\n                                   warehouse_id,\n                                   warehouse_name,\n                                   project_id,\n                                   storage_profile,\n                                   storage_secret_id,\n                                   status,\n                                   tabular_expiration_seconds,\n                                   tabular_delete_mode,\n                                   allowed_format_versions,\n                                   default_format_version,\n                                   managed_by)\n                                -- COALESCE keeps the column's own default as the\n                                -- fallback for callers that do not pick an id.\n                                VALUES (COALESCE($10, uuid_generate_v1mc()), $1, $2, $3, $4, 'active', $5, $6, $7, $8, $9)\n                                RETURNING\n                                    project_id,\n                                    warehouse_id,\n                                    warehouse_name,\n                                    storage_profile as \"storage_profile: Json<StorageProfile>\",\n                                    storage_secret_id,\n                                    status AS \"status: WarehouseStatus\",\n                                    tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                                    tabular_expiration_seconds,\n                                    protected,\n                                    allowed_format_versions,\n                                    default_format_version,\n                                    rollback_compaction_on_conflict,\n                                    rollback_compaction_max_age_seconds,\n                                    rollback_compaction_fence_seconds,\n                                    managed_by as \"managed_by: ManagedBy\",\n                                    updated_at,\n                                    version),\n            whs AS (INSERT INTO warehouse_statistics (number_of_views,\n                                                      number_of_tables,\n                                                      warehouse_id)\n                     VALUES (0, 0, (SELECT warehouse_id FROM whi)))\n            SELECT\n                *\n            FROM whi",
   "describe": {
     "columns": [
       {
@@ -146,6 +146,39 @@
       },
       {
         "ordinal": 11,
+        "name": "rollback_compaction_on_conflict",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_on_conflict"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "rollback_compaction_max_age_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_max_age_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "rollback_compaction_fence_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "rollback_compaction_fence_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -166,7 +199,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 15,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -177,7 +210,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 16,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -190,6 +223,35 @@
     ],
     "parameters": {
       "Left": [
+        "Text",
+        "Text",
+        "Jsonb",
+        "Uuid",
+        "Int8",
+        {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        },
+        "Int2Array",
+        "Int2",
+        {
+          "Custom": {
+            "name": "managed_by",
+            "kind": {
+              "Enum": [
+                "self-managed",
+                "instance-admin"
+              ]
+            }
+          }
+        },
         "Uuid"
       ]
     },
@@ -206,9 +268,12 @@
       false,
       true,
       false,
+      false,
+      false,
+      false,
       true,
       false
     ]
   },
-  "hash": "0d2a55d329c42b0a5b62687b042e3b2a243ee703043cbfe92de863e432826d44"
+  "hash": "bd5447aa0b15e8cfbcd5bc7281090c46aa03e0a986d18bd2bb915506eca31226"
 }
