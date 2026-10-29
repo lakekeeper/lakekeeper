@@ -276,21 +276,21 @@ pub fn api_doc<A: Authorizer>(
 ///
 /// `StorageCredential` is the one union of this shape: its members are
 /// `allOf: [{$ref: S3Credential}, {type: <const>}]`, and `S3Credential` (like
-/// `AzCredential` and `GcsCredential`) is itself a `oneOf`. Two levels of union
-/// cannot survive into a generated client — a generator asked to compose a
-/// `oneOf` into an object flattens it into one struct carrying every branch's
-/// fields, and an `OpenAPI` `discriminator` can name only one property, so the
-/// nesting cannot be described away either.
+/// `StackitCredential`, `AzCredential` and `GcsCredential`) is itself a
+/// `oneOf`. Two levels of union cannot survive into a generated client — a
+/// generator asked to compose a `oneOf` into an object flattens it into one
+/// struct carrying every branch's fields, and an `OpenAPI` `discriminator` can
+/// name only one property, so the nesting cannot be described away either.
 ///
 /// The fix is to multiply the levels out: every (outer variant × inner variant)
-/// pair becomes one flat leaf carrying the inner payload plus *both* tags. Nine
-/// leaves here — four S3, three Azure, two GCS.
+/// pair becomes one flat leaf carrying the inner payload plus *both* tags. Ten
+/// leaves here — four S3, one STACKIT, three Azure, two GCS.
 ///
 /// This only produces a usable union because one property still identifies a
-/// leaf on its own: `credential-type` values happen to be unique across all
-/// three providers. `type` alone would not work (`s3` maps to four leaves). If
-/// a future credential reuses a `credential-type` value under a different
-/// `type`, no single discriminator exists and this pass leaves the union
+/// leaf on its own: `credential-type` values are unique across all providers.
+/// `type` alone would not work (`s3` maps to four leaves). If a future
+/// credential reuses a `credential-type` value under a different `type`, no
+/// single discriminator exists and this pass leaves the union
 /// untouched rather than emitting something misleading — the union then falls
 /// back to needing downstream preprocessing, as it did before this pass.
 ///
@@ -857,8 +857,8 @@ fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
 ///   members are `allOf: [{$ref: S3Credential}, {type: <const>}]`, and
 ///   `S3Credential` is itself a `oneOf`). One discriminator cannot select
 ///   across two levels.
-/// - the inner unions themselves (`S3Credential`, `AzCredential`,
-///   `GcsCredential`). Rewriting their members to `$ref`s independently leaves
+/// - the inner unions themselves (`S3Credential`, `StackitCredential`,
+///   `AzCredential`, `GcsCredential`). Rewriting their members to `$ref`s independently leaves
 ///   the parent composing something it can no longer flatten, and the generated
 ///   client does not compile.
 fn unions_left_intact(
@@ -1006,9 +1006,8 @@ fn name_anonymous_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
                 // A component already holds the derived name, and the variant
                 // usually *composes* that component (`allOf: [{$ref: X}, {tag}]`),
                 // so hoisting under it would replace `X` with a schema that
-                // references itself. `StorageLayout::Full` is exactly this case:
-                // the tag `full-hierarchy` derives the name of the struct the
-                // variant wraps.
+                // references itself: a tag that spells the name of the struct
+                // its variant wraps.
                 tracing::warn!(
                     union = %parent_name,
                     "OpenAPI: `{preferred}`, the name derived for a variant of `{parent_name}`, \
@@ -1702,28 +1701,32 @@ mod name_allocation_tests {
 /// those edits can leave the document internally inconsistent in a way that
 /// still serialises fine and only surfaces as a broken generated client, so the
 /// invariants are asserted here rather than discovered downstream.
-#[cfg(test)]
-mod spec_integrity_tests {
+///
+/// Public under `test-utils` so an authorizer crate can check the document it
+/// contributes schemas to.
+#[cfg(any(test, feature = "test-utils"))]
+pub mod spec_integrity {
+    use std::{
+        collections::BTreeSet,
+        sync::{Arc, Mutex},
+    };
+
     use serde_json::Value;
 
     use super::api_doc;
-    use crate::service::{authz::AllowAllAuthorizer, tasks};
+    use crate::service::{authz::Authorizer, tasks};
 
-    fn management_spec() -> Value {
+    /// The management document as `management-openapi` publishes it for `A`.
+    ///
+    /// # Panics
+    /// If the document does not serialise.
+    #[must_use]
+    pub fn management_spec<A: Authorizer>() -> Value {
         let queue_configs = tasks::BUILT_IN_API_CONFIGS.iter().collect::<Vec<_>>();
         let project_queue_configs = tasks::BUILT_IN_PROJECT_API_CONFIGS
             .iter()
             .collect::<Vec<_>>();
-        serde_json::to_value(api_doc::<AllowAllAuthorizer>(
-            &queue_configs,
-            &project_queue_configs,
-            &[],
-        ))
-        .expect("the generated document must serialise")
-    }
-
-    fn generic_table_spec() -> Value {
-        serde_json::to_value(crate::api::data::v1::generic_tables::api_doc())
+        serde_json::to_value(api_doc::<A>(&queue_configs, &project_queue_configs, &[]))
             .expect("the generated document must serialise")
     }
 
@@ -1917,21 +1920,288 @@ mod spec_integrity_tests {
         }
     }
 
-    #[test]
-    fn management_spec_is_internally_consistent() {
-        let spec = management_spec();
-        assert_refs_resolve(&spec, "management");
-        assert_no_self_references(&spec, "management");
-        assert_discriminators_are_consistent(&spec, "management");
-        assert_union_members_are_named(&spec, "management");
+    /// No union member may compose another union, directly or through `allOf`.
+    ///
+    /// A generator asked to compose a union into an object flattens it into one
+    /// struct carrying every branch's fields. `expand_unions_composing_unions`
+    /// multiplies the nesting it recognises out and warns where it cannot; this
+    /// catches nesting it does not look at, such as an `anyOf` inner union or a
+    /// union inside a property.
+    fn assert_no_union_composes_a_union(spec: &Value, label: &str) {
+        let schemas = schemas(spec);
+        let mut unions = Vec::new();
+        union_nodes(spec, "", &mut unions);
+        for (path, union) in unions {
+            for (index, member) in union_members(union).enumerate() {
+                let mut nested = Vec::new();
+                composed_unions(schemas, member, "member", &mut BTreeSet::new(), &mut nested);
+                assert!(
+                    nested.is_empty(),
+                    "{label}: `{path}` member {index} composes the union(s) {nested:?}, which a \
+                     generator flattens into one struct"
+                );
+            }
+        }
     }
 
-    #[test]
-    fn generic_table_spec_is_internally_consistent() {
-        let spec = generic_table_spec();
-        assert_refs_resolve(&spec, "generic-table");
-        assert_no_self_references(&spec, "generic-table");
-        assert_discriminators_are_consistent(&spec, "generic-table");
-        assert_union_members_are_named(&spec, "generic-table");
+    /// Every union in `node`, at any depth, except a nullable wrapper.
+    ///
+    /// utoipa publishes `Option<T>` as `oneOf: [{type: null}, T]`, which
+    /// generators read as an optional `T`, so a wrapper may hold a union.
+    /// Unions inside a wrapper are still collected.
+    fn union_nodes<'a>(node: &'a Value, path: &str, out: &mut Vec<(String, &'a Value)>) {
+        match node {
+            Value::Object(map) => {
+                if is_union(node) && !is_nullable_wrapper(node) {
+                    out.push((path.to_string(), node));
+                }
+                for (key, value) in map {
+                    union_nodes(value, &format!("{path}.{key}"), out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    union_nodes(item, &format!("{path}[{index}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn is_union(schema: &Value) -> bool {
+        schema.get("oneOf").is_some() || schema.get("anyOf").is_some()
+    }
+
+    fn union_members(schema: &Value) -> impl Iterator<Item = &Value> {
+        ["oneOf", "anyOf"]
+            .into_iter()
+            .filter_map(|key| schema.get(key).and_then(Value::as_array))
+            .flatten()
+    }
+
+    fn is_nullable_wrapper(schema: &Value) -> bool {
+        let members = union_members(schema).collect::<Vec<_>>();
+        members.len() == 2
+            && members
+                .iter()
+                .any(|member| member.get("type").and_then(Value::as_str) == Some("null"))
+    }
+
+    /// Collect the unions `node` composes: `node` itself, its `$ref` target and,
+    /// recursively, every `allOf` branch of `node` and of that target. A
+    /// component is reported by name, an inline schema by its `path`.
+    fn composed_unions<'a>(
+        schemas: &'a serde_json::Map<String, Value>,
+        node: &'a Value,
+        path: &str,
+        visited: &mut BTreeSet<&'a str>,
+        out: &mut Vec<String>,
+    ) {
+        if is_union(node) {
+            out.push(path.to_string());
+        }
+        if let Some((name, schema)) = node.get("$ref").and_then(Value::as_str).and_then(|target| {
+            schemas.get_key_value(target.trim_start_matches("#/components/schemas/"))
+        }) && visited.insert(name.as_str())
+        {
+            composed_unions(schemas, schema, name, visited, out);
+        }
+        for (index, branch) in node
+            .get("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            composed_unions(
+                schemas,
+                branch,
+                &format!("{path}.allOf[{index}]"),
+                visited,
+                out,
+            );
+        }
+    }
+
+    /// Assert every invariant above on `spec`, naming it `label` in failures.
+    ///
+    /// # Panics
+    /// On the first invariant `spec` violates.
+    pub fn assert_internally_consistent(spec: &Value, label: &str) {
+        assert_refs_resolve(spec, label);
+        assert_no_self_references(spec, label);
+        assert_discriminators_are_consistent(spec, label);
+        assert_union_members_are_named(spec, label);
+        assert_no_union_composes_a_union(spec, label);
+    }
+
+    /// The unions in `components/schemas` published without a discriminator.
+    ///
+    /// A pass that cannot discriminate a union logs a warning and publishes it
+    /// as is. Only externally tagged and untagged enums belong here: no member
+    /// carries a tag property, so members are told apart by which keys are
+    /// present.
+    ///
+    /// # Panics
+    /// If `components/schemas` is not an object.
+    #[must_use]
+    pub fn undiscriminated_unions(spec: &Value) -> BTreeSet<&str> {
+        schemas(spec)
+            .iter()
+            .filter(|(_, schema)| is_union(schema) && schema.get("discriminator").is_none())
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    /// Assert that each payload, as `T` serialises it after reading it, is
+    /// valid against the component schema `name` of `spec`.
+    ///
+    /// The passes rewrite unions after utoipa derives them, so the document can
+    /// stay internally consistent while it stops describing what the server
+    /// sends and accepts. `oneOf` requires exactly one member to match, so this
+    /// also catches two members that accept the same payload.
+    ///
+    /// # Panics
+    /// If a payload is not a `T`, or `T`'s form of it does not match `name`.
+    pub fn assert_matches_schema<T: serde::Serialize + serde::de::DeserializeOwned>(
+        spec: &Value,
+        name: &str,
+        payloads: &[Value],
+    ) {
+        let root = serde_json::json!({
+            "$ref": format!("#/components/schemas/{name}"),
+            "components": spec["components"],
+        });
+        let validator = jsonschema::validator_for(&root)
+            .unwrap_or_else(|e| panic!("`{name}` is not a valid JSON schema: {e}"));
+        for payload in payloads {
+            let value = serde_json::from_value::<T>(payload.clone())
+                .unwrap_or_else(|e| panic!("{payload} does not deserialise: {e}"));
+            let wire = serde_json::to_value(value).expect("the value must serialise");
+            let errors = validator
+                .iter_errors(&wire)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>();
+            assert!(
+                errors.is_empty(),
+                "{wire} does not match `{name}`: {errors:?}"
+            );
+        }
+    }
+
+    /// Run `f` and return the warnings and errors it logged on this thread, one
+    /// line each.
+    ///
+    /// The passes report every union they refuse or rename as a warning, and the
+    /// document still serialises, so a warning is the only sign of a degraded
+    /// spec.
+    ///
+    /// # Panics
+    /// If writing a log line panicked.
+    pub fn warnings_while<T>(f: impl FnOnce() -> T) -> (T, Vec<String>) {
+        let buffer = LogBuffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        let value = tracing::subscriber::with_default(subscriber, f);
+        let lines = String::from_utf8_lossy(&buffer.0.lock().expect("log buffer poisoned"))
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect();
+        (value, lines)
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("log buffer poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::service::authz::AllowAllAuthorizer;
+
+        fn generic_table_spec() -> Value {
+            serde_json::to_value(crate::api::data::v1::generic_tables::api_doc())
+                .expect("the generated document must serialise")
+        }
+
+        #[test]
+        fn management_spec_is_internally_consistent() {
+            let (spec, warnings) = warnings_while(management_spec::<AllowAllAuthorizer>);
+            assert_internally_consistent(&spec, "management");
+            assert_eq!(
+                undiscriminated_unions(&spec),
+                BTreeSet::from([
+                    "CatalogActionCheckOperation",
+                    "NamespaceIdentOrUuid",
+                    "SubtreeGrantPrincipal",
+                    "SubtreeGrantPrivileges",
+                    "TabularIdentOrUuid",
+                ])
+            );
+            assert_eq!(warnings, Vec::<String>::new());
+        }
+
+        /// The unions the passes flatten or rename still describe the wire
+        /// format, one payload per provider for the credentials.
+        #[test]
+        fn management_spec_matches_the_wire_format() {
+            use serde_json::json;
+
+            use crate::service::storage::{StorageCredential, storage_layout::StorageLayout};
+
+            let spec = management_spec::<AllowAllAuthorizer>();
+            assert_matches_schema::<StorageCredential>(
+                &spec,
+                "StorageCredential",
+                &[
+                    json!({"type": "s3", "credential-type": "access-key",
+                           "access-key-id": "id", "secret-access-key": "secret"}),
+                    json!({"type": "stackit", "credential-type": "stackit-access-key",
+                           "access-key-id": "id", "secret-access-key": "secret"}),
+                    // Read as `stackit-access-key`.
+                    json!({"type": "stackit", "credential-type": "access-key",
+                           "access-key-id": "id", "secret-access-key": "secret"}),
+                    json!({"type": "az", "credential-type": "client-credentials",
+                           "client-id": "id", "client-secret": "secret", "tenant-id": "tenant"}),
+                    json!({"type": "gcs", "credential-type": "gcp-system-identity"}),
+                ],
+            );
+            assert_matches_schema::<StorageLayout>(
+                &spec,
+                "StorageLayout",
+                &[
+                    json!({"type": "default"}),
+                    json!({"type": "tabular-only", "tabular": "{name}-{uuid}"}),
+                    json!({"type": "full-hierarchy",
+                           "namespace": "{name}-{uuid}", "tabular": "{name}-{uuid}"}),
+                ],
+            );
+        }
+
+        #[test]
+        fn generic_table_spec_is_internally_consistent() {
+            let (spec, warnings) = warnings_while(generic_table_spec);
+            assert_internally_consistent(&spec, "generic-table");
+            assert_eq!(undiscriminated_unions(&spec), BTreeSet::new());
+            assert_eq!(warnings, Vec::<String>::new());
+        }
     }
 }

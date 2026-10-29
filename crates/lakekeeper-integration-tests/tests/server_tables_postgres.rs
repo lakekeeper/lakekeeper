@@ -1581,6 +1581,128 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
     assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 }
 
+/// Expiry plans its `RemoveSnapshots` on a table state; a tag created on one of those snapshots
+/// before the expiry commits must survive. The server refuses the stale expiry with a conflict,
+/// so the client reloads and plans again, and the tag and its snapshot stay.
+#[sqlx::test]
+async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pg_pool).await;
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let mut metadata = (*table.metadata).clone();
+    for snapshot_id in [1, 2] {
+        let snapshot = Snapshot::builder()
+            .with_snapshot_id(snapshot_id)
+            .with_parent_snapshot_id((snapshot_id > 1).then_some(snapshot_id - 1))
+            .with_timestamp_ms(metadata.last_updated_ms() + 1)
+            .with_sequence_number(snapshot_id)
+            .with_schema_id(0)
+            .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            })
+            .build();
+        commit_table_changes(
+            &ctx,
+            &ns_params,
+            &table_ident,
+            vec![
+                TableUpdate::AddSnapshot { snapshot },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: MAIN_BRANCH.to_string(),
+                    reference: create_snapshot_reference(snapshot_id),
+                },
+            ],
+        )
+        .await;
+        metadata = (*load_table(&ctx, &ns_params, "tab-1").await.metadata).clone();
+    }
+
+    // The expiry plans on a table without tags: snapshot 1 is unreferenced.
+    let stale_expiry = metadata
+        .clone()
+        .into_builder(None)
+        .remove_snapshots(&[1])
+        .build()
+        .unwrap()
+        .changes;
+    assert_eq!(
+        stale_expiry,
+        vec![TableUpdate::RemoveSnapshots {
+            snapshot_ids: vec![1]
+        }]
+    );
+
+    let tag = SnapshotReference {
+        snapshot_id: 1,
+        retention: SnapshotRetention::Tag {
+            max_ref_age_ms: None,
+        },
+    };
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![TableUpdate::SetSnapshotRef {
+            ref_name: "keep".to_string(),
+            reference: tag.clone(),
+        }],
+    )
+    .await;
+
+    let err = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: stale_expiry,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
+    assert_eq!(err.error.r#type, "CommitFailedException");
+
+    let reloaded = load_table(&ctx, &ns_params, "tab-1").await.metadata;
+    assert_eq!(reloaded.refs().get("keep"), Some(&tag));
+    assert_eq!(
+        reloaded
+            .snapshots()
+            .map(|s| s.snapshot_id())
+            .sorted()
+            .collect_vec(),
+        vec![1, 2]
+    );
+
+    // Removing the tag by name in the same commit is an intended drop.
+    let expiry = (*reloaded)
+        .clone()
+        .into_builder(None)
+        .remove_ref("keep")
+        .remove_snapshots(&[1])
+        .build()
+        .unwrap()
+        .changes;
+    commit_table_changes(&ctx, &ns_params, &table_ident, expiry).await;
+    let expired = load_table(&ctx, &ns_params, "tab-1").await.metadata;
+    assert_eq!(
+        expired.refs().keys().collect_vec(),
+        vec![&MAIN_BRANCH.to_string()]
+    );
+    assert_eq!(
+        expired.snapshots().map(|s| s.snapshot_id()).collect_vec(),
+        vec![2]
+    );
+}
+
 async fn commit_test_setup(
     pool: PgPool,
 ) -> (

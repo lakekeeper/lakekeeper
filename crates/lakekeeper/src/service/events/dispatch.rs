@@ -85,6 +85,25 @@ macro_rules! dispatch_event {
     }};
 }
 
+/// Run `dispatch` up to its first `Pending`, here on the caller's path, and spawn the rest.
+///
+/// [`dispatch_event!`] polls every listener on its first poll, so a listener that keeps the
+/// [`EventListener`] contract has finished when this returns: its record is written before the
+/// caller answers the request. A listener that is still waiting continues on a spawned task
+/// with the caller's span, so it never delays the caller.
+///
+/// # Panics
+///
+/// If `dispatch` does not finish on its first poll and no Tokio runtime is running.
+pub(crate) fn dispatch_inline_or_spawn(dispatch: impl Future<Output = ()> + Send + 'static) {
+    use tracing::Instrument as _;
+
+    let mut dispatch = Box::pin(dispatch.instrument(tracing::Span::current()));
+    if dispatch.as_mut().now_or_never().is_none() {
+        tokio::spawn(dispatch);
+    }
+}
+
 /// Collection of event listeners invoked after successful operations.
 ///
 /// Cloning an `EventDispatcher` produces a second handle that shares the same
@@ -292,6 +311,16 @@ impl EventDispatcher {
 
     pub(crate) async fn idempotent_replay_served(&self, event: types::IdempotentReplayEvent) {
         dispatch_event!(self, idempotent_replay_served, event);
+    }
+
+    /// Hand an operation record to every listener.
+    ///
+    /// Public, so an extension can dispatch its own records: build an
+    /// [`OperationRecord`](crate::audit::OperationRecord) and call its `dispatch`, which
+    /// calls this while the audit log records it (see [`crate::audit::log_enabled`]). A
+    /// listener error is logged, not returned.
+    pub async fn operation_recorded(&self, event: types::OperationRecordedEvent) {
+        dispatch_event!(self, operation_recorded, event);
     }
 
     // ===== Role Events =====
@@ -720,6 +749,22 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn idempotent_replay_served(
         &self,
         _event: types::IdempotentReplayEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked for every operation record: something the system did that touches identity
+    /// or access, with no permission decision of its own, such as an admission rejection or
+    /// a record an extension dispatched.
+    ///
+    /// Fires only while the audit log records operation records (see
+    /// [`crate::audit::log_enabled`]): with the audit trail enabled and a `tracing` filter
+    /// that keeps the audit target. Grant records are not delivered here:
+    /// every listener receives the same grants through
+    /// [`grants_changed`](Self::grants_changed).
+    async fn operation_recorded(
+        &self,
+        _event: types::OperationRecordedEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

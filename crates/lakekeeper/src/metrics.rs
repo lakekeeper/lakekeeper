@@ -1,5 +1,7 @@
 use std::{future::Future, pin::Pin};
 
+use anyhow::Context;
+use axum::response::IntoResponse;
 use axum_prometheus::{
     AXUM_HTTP_REQUESTS_DURATION_SECONDS, EndpointLabel, PREFIXED_HTTP_REQUESTS_DURATION_SECONDS,
     PrometheusMetricLayer, PrometheusMetricLayerBuilder, metrics,
@@ -51,17 +53,96 @@ pub fn build_metric_layer(handle: PrometheusHandle) -> PrometheusMetricLayer<'st
     layer
 }
 
+/// How often histograms are drained into their buckets.
+const UPKEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The metrics port: bound, not yet serving.
+#[derive(Debug)]
+#[must_use = "the metrics port serves nothing until `serve` runs"]
+pub struct MetricsServer {
+    handle: PrometheusHandle,
+    listener: std::net::TcpListener,
+    port: u16,
+}
+
+impl MetricsServer {
+    /// Serves the metrics on `/metrics` and on every path `routes` does not match, and `OK` on
+    /// `/health`. Also drains histograms and reports Tokio runtime metrics until cancelled.
+    ///
+    /// # Errors
+    /// The future fails if the listener cannot be used by Tokio or the server stops on an error.
+    #[must_use]
+    pub fn serve(
+        self,
+        routes: axum::Router,
+        cancellation_token: crate::CancellationToken,
+    ) -> ExporterFuture {
+        let Self {
+            handle,
+            listener,
+            port,
+        } = self;
+        Box::pin(async move {
+            let listener = tokio::net::TcpListener::from_std(listener)?;
+            let upkeep_handle = handle.clone();
+            let upkeep = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(UPKEEP_INTERVAL).await;
+                    upkeep_handle.run_upkeep();
+                }
+            });
+            let runtime_metrics_reporter = tokio::spawn(
+                tokio_metrics::RuntimeMetricsReporterBuilder::default()
+                    .with_interval(CONFIG.metrics.tokio.report_interval)
+                    .describe_and_run(),
+            );
+            let token = cancellation_token.clone();
+            let result = axum::serve(listener, metrics_router(handle, routes))
+                .with_graceful_shutdown(async move { token.cancelled().await })
+                .await
+                .context("Metrics exporter failed");
+            if cancellation_token.is_cancelled() {
+                tracing::info!(port, "Metrics exporter cancelled");
+            }
+            upkeep.abort();
+            runtime_metrics_reporter.abort();
+            let _ = runtime_metrics_reporter.await;
+            result
+        })
+    }
+}
+
+/// `routes` plus the Prometheus text on `/metrics` and as fallback, and `OK` on `/health`.
+pub(crate) fn metrics_router(handle: PrometheusHandle, routes: axum::Router) -> axum::Router {
+    let render = move || {
+        let handle = handle.clone();
+        async move {
+            match tokio::task::spawn_blocking(move || handle.render()).await {
+                Ok(text) => ([(http::header::CONTENT_TYPE, "text/plain")], text).into_response(),
+                Err(e) => {
+                    tracing::error!(?e, "Failed to render metrics");
+                    http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
+            }
+        }
+    };
+    routes
+        .route("/health", axum::routing::any(|| async { "OK" }))
+        .route("/metrics", axum::routing::any(render.clone()))
+        .fallback(render)
+}
+
 /// Creates `PrometheusRecorder` and installs it as the global metrics recorder. Also creates a
-/// `PrometheusMetricLayer` (which captures axum requests), a Tokio Runtime Metrics recorder (which captures tokio runtime metrics),
-/// and an `ExporterFuture` that serves metrics on a given port.
+/// `PrometheusMetricLayer` (which captures axum requests) and binds the metrics port.
 ///
 /// # Errors
-/// Fails if the `PrometheusBuilder` fails to build.
+/// Fails if the `PrometheusBuilder` fails to build or the port cannot be bound.
 pub fn get_axum_layer_and_install_recorder(
     metrics_port: u16,
-    cancellation_token: crate::CancellationToken,
-) -> anyhow::Result<(PrometheusMetricLayer<'static>, ExporterFuture)> {
-    let (recorder, exporter) = PrometheusBuilder::new()
+) -> anyhow::Result<(PrometheusMetricLayer<'static>, MetricsServer)> {
+    let listener = std::net::TcpListener::bind((CONFIG.bind_ip, metrics_port))?;
+    listener.set_nonblocking(true)?;
+    let recorder = PrometheusBuilder::new()
         .set_buckets_for_metric(
             Matcher::Full(
                 PREFIXED_HTTP_REQUESTS_DURATION_SECONDS
@@ -80,34 +161,65 @@ pub fn get_axum_layer_and_install_recorder(
             Matcher::Prefix("lakekeeper_admission".to_string()),
             utils::SECONDS_DURATION_BUCKETS,
         )?
-        .with_http_listener((CONFIG.bind_ip, metrics_port))
-        .build()?;
+        .build_recorder();
     let handle = recorder.handle();
     metrics::set_global_recorder(recorder)?;
 
-    let runtime_metrics_reporter_handle = tokio::task::spawn(
-        tokio_metrics::RuntimeMetricsReporterBuilder::default()
-            .with_interval(CONFIG.metrics.tokio.report_interval)
-            .describe_and_run(),
-    );
-
-    let layer = build_metric_layer(handle);
-
     Ok((
-        layer,
-        Box::pin(async move {
-            let result = tokio::select! {
-                () = cancellation_token.cancelled() => {
-                    tracing::info!(port = metrics_port, "Metrics exporter cancelled");
-                    Ok(())
-                },
-                r = exporter => {
-                    r.map_err(|e| anyhow::anyhow!("Metrics exporter failed: {e:?}"))
-                }
-            };
-            runtime_metrics_reporter_handle.abort();
-            let _ = runtime_metrics_reporter_handle.await;
-            result
-        }),
+        build_metric_layer(handle.clone()),
+        MetricsServer {
+            handle,
+            listener,
+            port: metrics_port,
+        },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    async fn get(router: &axum::Router, uri: &str) -> (http::StatusCode, String) {
+        let response = router
+            .clone()
+            .oneshot(
+                http::Request::get(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn every_path_but_health_and_own_routes_serves_the_metrics() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        metrics::with_local_recorder(&recorder, || {
+            metrics::counter!("demo_requests_total").increment(3);
+        });
+        let own_routes =
+            axum::Router::new().route("/own", axum::routing::get(|| async { "own route" }));
+        let router = metrics_router(recorder.handle(), own_routes);
+
+        let metrics_text = "# TYPE demo_requests_total counter\ndemo_requests_total 3\n\n";
+        for (uri, expected) in [
+            ("/metrics", metrics_text),
+            ("/", metrics_text),
+            ("/anything/else", metrics_text),
+            ("/health", "OK"),
+            ("/own", "own route"),
+        ] {
+            assert_eq!(
+                get(&router, uri).await,
+                (http::StatusCode::OK, expected.to_string()),
+                "{uri}"
+            );
+        }
+    }
 }
