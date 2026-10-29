@@ -322,22 +322,6 @@ pub struct SetWarehouseRollbackCompactionPolicyRequest {
     pub snapshot_removal_fence_seconds: Option<std::num::NonZeroU64>,
 }
 
-impl From<&SetWarehouseRollbackCompactionPolicyRequest> for RollbackCompactionPolicy {
-    fn from(request: &SetWarehouseRollbackCompactionPolicyRequest) -> Self {
-        Self {
-            enabled: request.enabled,
-            max_compaction_age_seconds: request.max_compaction_age_seconds.map_or(
-                RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS,
-                std::num::NonZeroU64::get,
-            ),
-            snapshot_removal_fence_seconds: request.snapshot_removal_fence_seconds.map_or(
-                RollbackCompactionPolicy::DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS,
-                std::num::NonZeroU64::get,
-            ),
-        }
-    }
-}
-
 fn default_rollback_compaction_max_age_seconds() -> u64 {
     RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS
 }
@@ -1690,6 +1674,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetWarehouseResponse> {
+        let policy = validate_rollback_compaction_policy(&request)?;
+
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
@@ -1730,12 +1716,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
-        let updated_warehouse = C::set_warehouse_rollback_compaction_policy(
-            warehouse_id,
-            RollbackCompactionPolicy::from(&request),
-            &mut transaction,
-        )
-        .await?;
+        let updated_warehouse =
+            C::set_warehouse_rollback_compaction_policy(warehouse_id, policy, &mut transaction)
+                .await?;
         transaction.commit().await?;
 
         event_ctx.emit_warehouse_rollback_compaction_policy_set(
@@ -2823,6 +2806,43 @@ fn validate_format_version_policy(
     })
 }
 
+/// Validate a rollback-compaction policy request and convert it into the domain type.
+///
+/// Omitted durations take their defaults. Durations above `i64::MAX` seconds are rejected,
+/// because the catalog stores them as signed 64-bit integers.
+fn validate_rollback_compaction_policy(
+    request: &SetWarehouseRollbackCompactionPolicyRequest,
+) -> Result<RollbackCompactionPolicy> {
+    fn seconds(value: Option<std::num::NonZeroU64>, default: u64, field: &str) -> Result<u64> {
+        let Some(value) = value else {
+            return Ok(default);
+        };
+        if i64::try_from(value.get()).is_err() {
+            return Err(ErrorModel::bad_request(
+                format!("{field} must not exceed {}", i64::MAX),
+                "RollbackCompactionPolicyValueTooLarge",
+                None,
+            )
+            .into());
+        }
+        Ok(value.get())
+    }
+
+    Ok(RollbackCompactionPolicy {
+        enabled: request.enabled,
+        max_compaction_age_seconds: seconds(
+            request.max_compaction_age_seconds,
+            RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS,
+            "max-compaction-age-seconds",
+        )?,
+        snapshot_removal_fence_seconds: seconds(
+            request.snapshot_removal_fence_seconds,
+            RollbackCompactionPolicy::DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS,
+            "snapshot-removal-fence-seconds",
+        )?,
+    })
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
@@ -3199,5 +3219,55 @@ mod test {
         assert_eq!(s3_profile.bucket, "test");
         assert_eq!(s3_profile.region, "dummy");
         assert_eq!(s3_profile.path_style_access, Some(true));
+    }
+
+    #[test]
+    fn rollback_compaction_policy_applies_defaults() {
+        let request: super::SetWarehouseRollbackCompactionPolicyRequest =
+            serde_json::from_value(serde_json::json!({"enabled": true})).unwrap();
+        let policy = super::validate_rollback_compaction_policy(&request).unwrap();
+        assert_eq!(
+            policy,
+            crate::service::RollbackCompactionPolicy {
+                enabled: true,
+                max_compaction_age_seconds: 86_400,
+                snapshot_removal_fence_seconds: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn rollback_compaction_policy_accepts_i64_max() {
+        let request: super::SetWarehouseRollbackCompactionPolicyRequest =
+            serde_json::from_value(serde_json::json!({
+                "enabled": true,
+                "max-compaction-age-seconds": i64::MAX,
+                "snapshot-removal-fence-seconds": i64::MAX,
+            }))
+            .unwrap();
+        let policy = super::validate_rollback_compaction_policy(&request).unwrap();
+        assert_eq!(policy.max_compaction_age_seconds, i64::MAX.unsigned_abs());
+        assert_eq!(
+            policy.snapshot_removal_fence_seconds,
+            i64::MAX.unsigned_abs()
+        );
+    }
+
+    #[test]
+    fn rollback_compaction_policy_rejects_values_above_i64_max() {
+        for field in [
+            "max-compaction-age-seconds",
+            "snapshot-removal-fence-seconds",
+        ] {
+            let request: super::SetWarehouseRollbackCompactionPolicyRequest =
+                serde_json::from_value(serde_json::json!({
+                    "enabled": true,
+                    field: i64::MAX.unsigned_abs() + 1,
+                }))
+                .unwrap();
+            let err = super::validate_rollback_compaction_policy(&request).unwrap_err();
+            assert_eq!(err.error.code, 400, "{field}");
+            assert_eq!(err.error.r#type, "RollbackCompactionPolicyValueTooLarge");
+        }
     }
 }

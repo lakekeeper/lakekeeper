@@ -164,10 +164,10 @@ fn plan_compaction_reap_inner(
     }
 
     // 2. The writer's updates must be a single clean snapshot append to the asserted branch:
-    //    exactly one AddSnapshot, exactly one SetSnapshotRef naming `branch`, and no snapshot or
-    //    ref removals. Anything else is not the shape we can safely rebase.
+    //    exactly one AddSnapshot, exactly one SetSnapshotRef pointing `branch` at that snapshot,
+    //    and no snapshot or ref removals. Anything else is not the shape we can safely rebase.
     let mut added_snapshot: Option<&Snapshot> = None;
-    let mut set_ref_branch: Option<&str> = None;
+    let mut set_ref: Option<(&str, i64)> = None;
     let mut set_ref_count = 0usize;
     for update in updates {
         match update {
@@ -177,9 +177,12 @@ fn plan_compaction_reap_inner(
                 }
                 added_snapshot = Some(snapshot);
             }
-            TableUpdate::SetSnapshotRef { ref_name, .. } => {
+            TableUpdate::SetSnapshotRef {
+                ref_name,
+                reference,
+            } => {
                 set_ref_count += 1;
-                set_ref_branch = Some(ref_name);
+                set_ref = Some((ref_name, reference.snapshot_id));
             }
             TableUpdate::RemoveSnapshots { .. } | TableUpdate::RemoveSnapshotRef { .. } => {
                 return Err(ReapRejection::UnexpectedUpdateShape);
@@ -188,13 +191,13 @@ fn plan_compaction_reap_inner(
         }
     }
     let added_snapshot = added_snapshot.ok_or(ReapRejection::UnexpectedUpdateShape)?;
-    if set_ref_count != 1 || set_ref_branch != Some(branch.as_str()) {
+    if set_ref_count != 1 || set_ref != Some((branch.as_str(), added_snapshot.snapshot_id())) {
         return Err(ReapRejection::UnexpectedUpdateShape);
     }
-    // The writer snapshot must append directly onto the rewound base. The iceberg builder does not
-    // require `parent_snapshot_id` to reference an existing snapshot, so a parent pointing at a
-    // reaped compaction snapshot would leave the rebased branch with a dangling parent instead of a
-    // clean append to `expected_base`.
+    // The writer snapshot must have `expected_base` as its parent, so the rebased branch is a clean
+    // append to the rewound base. This rejects a missing parent and any other parent. The iceberg
+    // builder accepts a `parent_snapshot_id` that names no existing snapshot, so a parent that
+    // names a reaped compaction snapshot would leave the rebased branch with a dangling parent.
     if added_snapshot.parent_snapshot_id() != Some(expected_base) {
         return Err(ReapRejection::UnexpectedUpdateShape);
     }
@@ -604,9 +607,22 @@ mod tests {
     }
 
     #[test]
+    fn declines_set_ref_not_targeting_added_snapshot() {
+        // The branch update points at the existing snapshot 1, which would leave the writer's
+        // snapshot 3 unreferenced.
+        let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
+        let (reqs, mut updates) = writer(1, 3, 2);
+        let TableUpdate::SetSnapshotRef { reference, .. } = &mut updates[1] else {
+            unreachable!("writer() puts SetSnapshotRef second");
+        };
+        reference.snapshot_id = 1;
+        assert!(plan(&md, &reqs, &updates).is_none());
+    }
+
+    #[test]
     fn declines_writer_snapshot_not_parented_on_base() {
         // Writer asserts base 1 but its snapshot parents off the reaped compaction 2. Accepting it
-        // would leave the rebased branch with a dangling parent instead of a clean append to 1.
+        // would leave the rebased branch with a dangling parent.
         let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
         let (reqs, mut updates) = writer(1, 3, 2);
         updates[0] = TableUpdate::AddSnapshot {

@@ -374,6 +374,40 @@ fn validate_commit_count(commits: &[TableCommit]) -> Result<(), TooManyUpdatesIn
     Ok(())
 }
 
+/// Replaces the stored snapshot log with the new history when `rewrite_snapshot_log` is set.
+/// Otherwise appends the new head and removes the `n_removed_snapshot_log` oldest entries.
+async fn apply_snapshot_log_changes(
+    transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+    new_metadata: &TableMetadata,
+    rewrite_snapshot_log: bool,
+    head_of_snapshot_log_changed: bool,
+    n_removed_snapshot_log: usize,
+) -> Result<(), InternalBackendErrors> {
+    if rewrite_snapshot_log {
+        return common::replace_snapshot_log(
+            new_metadata.history().iter(),
+            transaction,
+            warehouse_id,
+            table_id,
+        )
+        .await;
+    }
+
+    if head_of_snapshot_log_changed && let Some(snap) = new_metadata.history().last() {
+        common::insert_snapshot_log([snap].into_iter(), transaction, warehouse_id, table_id)
+            .await?;
+    }
+
+    // no deps technically enforced
+    if n_removed_snapshot_log > 0 {
+        remove_snapshot_log_entries(n_removed_snapshot_log, transaction, warehouse_id, table_id)
+            .await?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 async fn apply_metadata_changes(
     transaction: &mut Transaction<'_, Postgres>,
@@ -489,33 +523,16 @@ async fn apply_metadata_changes(
     }
 
     // Must run after insert_snapshots, technically not enforced
-    if diffs.rewrite_snapshot_log {
-        common::replace_snapshot_log(
-            new_metadata.history().iter(),
-            transaction,
-            warehouse_id,
-            table_id,
-        )
-        .await?;
-    } else {
-        if diffs.head_of_snapshot_log_changed
-            && let Some(snap) = new_metadata.history().last()
-        {
-            common::insert_snapshot_log([snap].into_iter(), transaction, warehouse_id, table_id)
-                .await?;
-        }
-
-        // no deps technically enforced
-        if diffs.n_removed_snapshot_log > 0 {
-            remove_snapshot_log_entries(
-                diffs.n_removed_snapshot_log,
-                transaction,
-                warehouse_id,
-                table_id,
-            )
-            .await?;
-        }
-    }
+    apply_snapshot_log_changes(
+        transaction,
+        warehouse_id,
+        table_id,
+        new_metadata,
+        diffs.rewrite_snapshot_log,
+        diffs.head_of_snapshot_log_changed,
+        diffs.n_removed_snapshot_log,
+    )
+    .await?;
 
     // no deps technically enforced
     if diffs.expired_metadata_logs > 0 {
