@@ -1719,7 +1719,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx.resolve(warehouse);
 
         // ------------------- Business Logic -------------------
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
             event_ctx.action(),
@@ -1733,11 +1733,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let updated_warehouse = C::set_warehouse_rollback_compaction_policy(
             warehouse_id,
             RollbackCompactionPolicy::from(&request),
-            transaction.transaction(),
+            &mut transaction,
         )
         .await?;
         transaction.commit().await?;
-        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_rollback_compaction_policy_set(
             Arc::new(request),

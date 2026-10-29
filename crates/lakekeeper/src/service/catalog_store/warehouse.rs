@@ -1225,11 +1225,16 @@ where
     async fn set_warehouse_rollback_compaction_policy(
         warehouse_id: WarehouseId,
         policy: RollbackCompactionPolicy,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        transaction: &mut WriteTransaction<Self>,
     ) -> std::result::Result<ArcResolvedWarehouse, SetWarehouseRollbackCompactionPolicyError> {
-        Self::set_warehouse_rollback_compaction_policy_impl(warehouse_id, policy, transaction)
-            .await
-            .map(Arc::new)
+        let warehouse = Self::set_warehouse_rollback_compaction_policy_impl(
+            warehouse_id,
+            policy,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.record(CacheKey::Warehouse(warehouse_id));
+        Ok(Arc::new(warehouse))
     }
 }
 
