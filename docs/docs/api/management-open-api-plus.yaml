@@ -8529,6 +8529,127 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/optimize/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_optimize
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOptimizeQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_optimize
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetOptimizeQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/optimize/schedule:
+    post:
+      tags:
+        - tasks
+      summary: Schedule a task for an entity.
+      description: |-
+        Pre-checks run against the warehouse config and target entity
+        properties before the task is enqueued. A failure surfaces as `400`
+        with a specific error code (see the operator guide for the full set
+        of pre-check codes).
+
+        When a task is already active for the same (warehouse, entity,
+        queue) triple, the call returns `409 TaskAlreadyActive` with the
+        existing `task-id` in the body — chain to `POST /task/control`
+        with `run-now` or `run-at` to retime it without an extra
+        `task/list` round-trip.
+      operationId: schedule_task_optimize
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleOptimizeTaskRequest'
+        required: true
+      responses:
+        '200':
+          description: Task scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleTaskResponse'
+        '400':
+          description: Pre-check failed (e.g. scheduling disabled at the warehouse, entity opted out, unsupported entity type) or the request violates a shape limit (e.g. scheduled-for too far in the future).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '404':
+          description: Target entity not found in this warehouse.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '409':
+          description: A task is already active for this (warehouse, entity, queue). The error message includes the existing task-id; retime or cancel via POST /task/control.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task-queue/remove_orphan_files/config:
     get:
       tags:
@@ -9600,45 +9721,54 @@ components:
             client's own cache. Under `dry-run`, the version read before the write.
     AzCredential:
       oneOf:
-        - type: object
-          title: AzCredentialClientCredentials
-          required:
-            - client-id
-            - tenant-id
-            - client-secret
-            - credential-type
-          properties:
-            client-id:
-              type: string
-            client-secret:
-              type: string
-            credential-type:
-              type: string
-              enum:
-                - client-credentials
-            tenant-id:
-              type: string
-        - type: object
-          title: AzCredentialSharedAccessKey
-          required:
-            - key
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - shared-access-key
-            key:
-              type: string
-        - type: object
-          title: AzCredentialManagedIdentity
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - azure-system-identity
+        - $ref: '#/components/schemas/AzCredentialClientCredentials'
+        - $ref: '#/components/schemas/AzCredentialSharedAccessKey'
+        - $ref: '#/components/schemas/AzCredentialManagedIdentity'
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          azure-system-identity: '#/components/schemas/AzCredentialManagedIdentity'
+          client-credentials: '#/components/schemas/AzCredentialClientCredentials'
+          shared-access-key: '#/components/schemas/AzCredentialSharedAccessKey'
+    AzCredentialClientCredentials:
+      type: object
+      required:
+        - client-id
+        - tenant-id
+        - client-secret
+        - credential-type
+      properties:
+        client-id:
+          type: string
+        client-secret:
+          type: string
+        credential-type:
+          type: string
+          enum:
+            - client-credentials
+        tenant-id:
+          type: string
+    AzCredentialManagedIdentity:
+      type: object
+      required:
+        - credential-type
+      properties:
+        credential-type:
+          type: string
+          enum:
+            - azure-system-identity
+    AzCredentialSharedAccessKey:
+      type: object
+      required:
+        - key
+        - credential-type
+      properties:
+        credential-type:
+          type: string
+          enum:
+            - shared-access-key
+        key:
+          type: string
     AzCredentialType:
       type: string
       description: The type of Azure credential.
@@ -11063,36 +11193,8 @@ components:
           default: 1
     GcsCredential:
       oneOf:
-        - type: object
-          title: GcsCredentialServiceAccountKey
-          description: |-
-            Service Account Key
-
-            The key is the JSON object obtained when creating a service account key in the GCP console.
-          required:
-            - key
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - service-account-key
-            key:
-              $ref: '#/components/schemas/GcsServiceKey'
-        - type: object
-          title: GcsCredentialSystemIdentity
-          description: |-
-            GCP System Identity
-
-            Use the service account that the application is running as.
-            This can be a Compute Engine default service account or a user-assigned service account.
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - gcp-system-identity
+        - $ref: '#/components/schemas/GcsCredentialServiceAccountKey'
+        - $ref: '#/components/schemas/GcsCredentialSystemIdentity'
       description: |-
         GCS Credentials
 
@@ -11113,6 +11215,41 @@ components:
               "universe_domain": "googleapis.com"
             }
         ```
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          gcp-system-identity: '#/components/schemas/GcsCredentialSystemIdentity'
+          service-account-key: '#/components/schemas/GcsCredentialServiceAccountKey'
+    GcsCredentialServiceAccountKey:
+      type: object
+      description: |-
+        Service Account Key
+
+        The key is the JSON object obtained when creating a service account key in the GCP console.
+      required:
+        - key
+        - credential-type
+      properties:
+        credential-type:
+          type: string
+          enum:
+            - service-account-key
+        key:
+          $ref: '#/components/schemas/GcsServiceKey'
+    GcsCredentialSystemIdentity:
+      type: object
+      description: |-
+        GCP System Identity
+
+        Use the service account that the application is running as.
+        This can be a Compute Engine default service account or a user-assigned service account.
+      required:
+        - credential-type
+      properties:
+        credential-type:
+          type: string
+          enum:
+            - gcp-system-identity
     GcsCredentialType:
       type: string
       description: The type of GCS credential.
@@ -11585,6 +11722,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OpenFGAWarehouseAction'
+    GetOptimizeQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/OptimizeQueueConfig'
     GetProjectAccessResponse:
       type: object
       required:
@@ -16004,6 +16153,54 @@ components:
         - grant_manage_grants
         - grant_manage_tags
         - change_ownership
+    OptimizeQueueConfig:
+      type: object
+      description: |-
+        Warehouse-level configuration of the optimize queue. `enabled` turns every step on; a step's
+        own switch overrides it. A table overrides both with `lakekeeper.optimize.enabled` and the
+        step properties `lakekeeper.compaction.enabled` and `lakekeeper.rewrite-manifests.enabled`.
+      properties:
+        enable-compaction:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Turns data-file compaction, and the position-delete rewrite and dangling-delete removal
+            that follow it, on or off for the warehouse; unset follows `enabled`. A table overrides it
+            with `lakekeeper.compaction.enabled`. Default: unset.
+        enable-rewrite-manifests:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Turns manifest rewrite on or off for the warehouse; unset follows `enabled`. A table
+            overrides it with `lakekeeper.rewrite-manifests.enabled`. Default: unset.
+        enabled:
+          type: boolean
+          description: |-
+            Optimizes every table of the warehouse: compaction, then position-delete rewrite and
+            dangling-delete removal where compaction needs them, then manifest rewrite. A table can
+            turn optimize on or off with the property `lakekeeper.optimize.enabled`. Default: false.
+          default: false
+        target-file-size-bytes:
+          type: integer
+          format: int64
+          description: |-
+            Size of the data and position-delete files the steps write, for tables that do not set
+            `write.target-file-size-bytes` (32 MiB to 2 GiB; a table value outside this range is
+            moved to the nearest limit). Default: 536870912 (512 MiB).
+          default: 536870912
+          maximum: 2147483648
+          minimum: 33554432
+        target-manifest-size-bytes:
+          type: integer
+          format: int64
+          description: |-
+            Size of the manifests manifest rewrite writes, for tables that do not set
+            `commit.manifest.target-size-bytes` (1 MiB to 256 MiB). Default: 8388608 (8 MiB).
+          default: 8388608
+          maximum: 268435456
+          minimum: 1048576
     PolicyEffect:
       type: string
       description: Whether a determining policy permits or forbids.
@@ -16445,28 +16642,24 @@ components:
           format: int64
           description: |-
             Only remove files older than this duration (in milliseconds).
-            Defaults to 604800000 (7 days). **24-hour safety floor** is
-            enforced at task pickup (`RemoveOrphanFilesRetentionTooShort`
-            error code); values below it cause the worker to refuse to
-            run, unless `disable-min-older-than-check` is set on this same
-            config. Mirrors Spark's `retentionDurationCheck.enabled =
-            false` escape.
-
-            Negative, zero, or sub-day values still deserialize cleanly —
-            the runtime check is what blocks them. Out-of-range i64 values
-            that don't fit in `chrono::TimeDelta` fall back to a zero
-            duration rather than panicking.
+            Defaults to 604800000 (7 days). Must be at least 86400000
+            (24 hours) when the config is saved, unless
+            `disable-min-older-than-check: true` is set in the same request
+            (`RemoveOrphanFilesRetentionTooShort` error code). A stored config
+            with a lower value fails at task pickup with the same code.
           default: 604800000
         disable-min-older-than-check:
           type: boolean
           description: |-
             Bypass the 24-hour minimum on `default-older-than-ms`. When
-            `false` (the default), the worker refuses to run a task whose
-            configured retention is shorter than 24h — a typo like
+            `false` (the default), saving a config with a retention shorter
+            than 24h fails, and the worker refuses to run a task whose stored
+            retention is shorter — a typo like
             `default-older-than-ms: 6000` (6 seconds) would otherwise
             silently delete in-flight writer uploads. Set to `true` only
-            when you genuinely need sub-day retention (dev/test). Mirrors
-            Spark's `retentionDurationCheck.enabled = false` escape.
+            when you genuinely need sub-day retention (dev/test). It does
+            not change table values; a table uses its own
+            `lakekeeper.remove-orphan-files.disable-min-older-than-check`.
           default: false
         dry-run:
           type: boolean
@@ -17031,70 +17224,81 @@ components:
             This is used to fetch downscoped temporary credentials for vended credentials.
     S3Credential:
       oneOf:
-        - allOf:
-            - $ref: '#/components/schemas/S3AccessKeyCredential'
-              description: Authenticate to AWS using access-key and secret-key.
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - access-key
-          title: S3CredentialAccessKey
+        - $ref: '#/components/schemas/S3CredentialAccessKey'
+        - $ref: '#/components/schemas/S3CredentialAwsSystemIdentity'
+        - $ref: '#/components/schemas/S3CredentialCloudflareR2'
+        - $ref: '#/components/schemas/S3CredentialAliyunOss'
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          access-key: '#/components/schemas/S3CredentialAccessKey'
+          aliyun-oss: '#/components/schemas/S3CredentialAliyunOss'
+          aws-system-identity: '#/components/schemas/S3CredentialAwsSystemIdentity'
+          cloudflare-r2: '#/components/schemas/S3CredentialCloudflareR2'
+    S3CredentialAccessKey:
+      allOf:
+        - $ref: '#/components/schemas/S3AccessKeyCredential'
           description: Authenticate to AWS using access-key and secret-key.
-        - allOf:
-            - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
-              description: |-
-                Authenticate to AWS using the identity configured on the system
-                 that runs lakekeeper. The AWS SDK is used to load the credentials.
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - aws-system-identity
-          title: S3CredentialAwsSystemIdentity
-          description: |-
-            Authenticate to AWS using the identity configured on the system
-             that runs lakekeeper. The AWS SDK is used to load the credentials.
-        - allOf:
-            - $ref: '#/components/schemas/S3CloudflareR2Credential'
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - cloudflare-r2
-          title: S3CredentialCloudflareR2
-        - allOf:
-            - $ref: '#/components/schemas/S3AccessKeyCredential'
-              description: |-
-                **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
-                future release.
-
-                Authenticate to Alibaba Cloud OSS using access-key and secret-key.
-                Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - aliyun-oss
-          title: S3CredentialAliyunOss
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - access-key
+      description: Authenticate to AWS using access-key and secret-key.
+    S3CredentialAliyunOss:
+      allOf:
+        - $ref: '#/components/schemas/S3AccessKeyCredential'
           description: |-
             **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
             future release.
 
             Authenticate to Alibaba Cloud OSS using access-key and secret-key.
             Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - aliyun-oss
+      description: |-
+        **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+        future release.
+
+        Authenticate to Alibaba Cloud OSS using access-key and secret-key.
+        Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+    S3CredentialAwsSystemIdentity:
+      allOf:
+        - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
+          description: |-
+            Authenticate to AWS using the identity configured on the system
+             that runs lakekeeper. The AWS SDK is used to load the credentials.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - aws-system-identity
+      description: |-
+        Authenticate to AWS using the identity configured on the system
+         that runs lakekeeper. The AWS SDK is used to load the credentials.
+    S3CredentialCloudflareR2:
+      allOf:
+        - $ref: '#/components/schemas/S3CloudflareR2Credential'
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - cloudflare-r2
     S3CredentialType:
       type: string
       description: The type of S3 credential.
@@ -17280,6 +17484,49 @@ components:
           description: |-
             Entity to schedule the task for. Unsupported entity types return
             `400` from the pre-check.
+        scheduled-for:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            When the task should run. Omit (or pass `null`) to run on the next
+            worker poll. RFC 3339 / ISO 8601 format. Must be within roughly one
+            year of now; further-out values return
+            `400 ScheduledForTooFarInFuture`.
+          example: 2026-12-31T23:59:59Z
+    ScheduleOptimizeTaskRequest:
+      type: object
+      description: Request body for scheduling a task.
+      required:
+        - entity
+      properties:
+        entity:
+          $ref: '#/components/schemas/WarehouseTaskEntityId'
+          description: |-
+            Entity to schedule the task for. Unsupported entity types return
+            `400` from the pre-check.
+        payload:
+          type: object
+          description: The payload a manual schedule accepts. Any other key is rejected.
+          properties:
+            steps:
+              type:
+                - array
+                - 'null'
+              items:
+                type: string
+                description: A step of an optimize run, in run order.
+                enum:
+                  - compaction
+                  - rewrite-position-deletes
+                  - remove-dangling-deletes
+                  - rewrite-manifests
+              description: |-
+                The steps to run, whatever their triggers say; the switches of the warehouse and the
+                table still apply. Default: compaction and manifest rewrite, with the position-delete
+                rewrite and dangling-delete removal following compaction as in an automatic run.
+          additionalProperties: false
         scheduled-for:
           type:
             - string
@@ -17781,6 +18028,18 @@ components:
       properties:
         managed-access:
           type: boolean
+    SetOptimizeQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/OptimizeQueueConfig'
     SetPredefinedPoliciesRequest:
       type: object
       description: Enablement changes to apply to one scope's predefined policies.
@@ -17894,29 +18153,34 @@ components:
           description: Secret shown once when the access key was created.
     StackitCredential:
       oneOf:
-        - allOf:
-            - $ref: '#/components/schemas/StackitAccessKeyCredential'
-              description: Access key and secret, created inside a STACKIT credentials group.
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - access-key
-          title: StackitCredentialAccessKey
-          description: Access key and secret, created inside a STACKIT credentials group.
+        - $ref: '#/components/schemas/StackitCredentialAccessKey'
       description: |-
         Credentials for STACKIT Object Storage.
 
         Its own enum rather than a reuse of `S3Credential`, so STACKIT can gain
         authentication methods without inheriting AWS-only ones.
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          stackit-access-key: '#/components/schemas/StackitCredentialAccessKey'
+    StackitCredentialAccessKey:
+      allOf:
+        - $ref: '#/components/schemas/StackitAccessKeyCredential'
+          description: Access key and secret, created inside a STACKIT credentials group.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - stackit-access-key
+      description: Access key and secret, created inside a STACKIT credentials group.
     StackitCredentialType:
       type: string
       description: The type of STACKIT credential.
       enum:
-        - access-key
+        - stackit-access-key
     StackitProfile:
       type: object
       description: Storage profile for STACKIT Object Storage.
@@ -18016,187 +18280,255 @@ components:
         - data-platform
     StorageCredential:
       oneOf:
-        - allOf:
-            - $ref: '#/components/schemas/S3Credential'
-              description: |-
-                Credentials for S3 storage
-
-                Example payload in the code-snippet below:
-
-                ```
-                use lakekeeper::service::storage::StorageCredential;
-                let cred: StorageCredential = serde_json::from_str(r#"{
-                    "type": "s3",
-                    "credential-type": "access-key",
-                    "access-key-id": "minio-root-user",
-                    "secret-access-key": "minio-root-password"
-                  }"#).unwrap();
-                ```
-            - type: object
-              required:
-                - type
-              properties:
-                type:
-                  type: string
-                  enum:
-                    - s3
-          title: StorageCredentialS3
-          description: |-
-            Credentials for S3 storage
-
-            Example payload in the code-snippet below:
-
-            ```
-            use lakekeeper::service::storage::StorageCredential;
-            let cred: StorageCredential = serde_json::from_str(r#"{
-                "type": "s3",
-                "credential-type": "access-key",
-                "access-key-id": "minio-root-user",
-                "secret-access-key": "minio-root-password"
-              }"#).unwrap();
-            ```
-        - allOf:
-            - $ref: '#/components/schemas/StackitCredential'
-              description: |-
-                Credentials for STACKIT Object Storage.
-
-                Example payload:
-
-                ```
-                use lakekeeper::service::storage::StorageCredential;
-                let cred: StorageCredential = serde_json::from_str(r#"{
-                    "type": "stackit",
-                    "credential-type": "access-key",
-                    "access-key-id": "...",
-                    "secret-access-key": "..."
-                  }"#).unwrap();
-                ```
-            - type: object
-              required:
-                - type
-              properties:
-                type:
-                  type: string
-                  enum:
-                    - stackit
-          title: StorageCredentialStackit
-          description: |-
-            Credentials for STACKIT Object Storage.
-
-            Example payload:
-
-            ```
-            use lakekeeper::service::storage::StorageCredential;
-            let cred: StorageCredential = serde_json::from_str(r#"{
-                "type": "stackit",
-                "credential-type": "access-key",
-                "access-key-id": "...",
-                "secret-access-key": "..."
-              }"#).unwrap();
-            ```
-        - allOf:
-            - $ref: '#/components/schemas/AzCredential'
-              description: |-
-                Credentials for Az storage
-
-                Example payload:
-
-                ```
-                use lakekeeper::service::storage::StorageCredential;
-                let cred: StorageCredential = serde_json::from_str(r#"{
-                    "type": "az",
-                    "credential-type": "client-credentials",
-                    "client-id": "...",
-                    "client-secret": "...",
-                    "tenant-id": "..."
-                  }"#).unwrap();
-                ```
-            - type: object
-              required:
-                - type
-              properties:
-                type:
-                  type: string
-                  enum:
-                    - az
-          title: StorageCredentialAz
-          description: |-
-            Credentials for Az storage
-
-            Example payload:
-
-            ```
-            use lakekeeper::service::storage::StorageCredential;
-            let cred: StorageCredential = serde_json::from_str(r#"{
-                "type": "az",
-                "credential-type": "client-credentials",
-                "client-id": "...",
-                "client-secret": "...",
-                "tenant-id": "..."
-              }"#).unwrap();
-            ```
-        - allOf:
-            - $ref: '#/components/schemas/GcsCredential'
-              description: |
-                Credentials for GCS storage
-
-                Example payload in the code-snippet below:
-
-                ```
-                use lakekeeper::service::storage::StorageCredential;
-                let cred: StorageCredential = serde_json::from_str(r#"{
-                    "type": "gcs",
-                    "credential-type": "service-account-key",
-                    "key": {
-                      "type": "service_account",
-                      "project_id": "example-project-1234",
-                      "private_key_id": "....",
-                      "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
-                      "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
-                      "client_id": "123456789012345678901",
-                      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                      "token_uri": "https://oauth2.googleapis.com/token",
-                      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                      "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
-                      "universe_domain": "googleapis.com"
-                    }
-                }"#).unwrap();
-                ```
-            - type: object
-              required:
-                - type
-              properties:
-                type:
-                  type: string
-                  enum:
-                    - gcs
-          title: StorageCredentialGcs
-          description: |
-            Credentials for GCS storage
-
-            Example payload in the code-snippet below:
-
-            ```
-            use lakekeeper::service::storage::StorageCredential;
-            let cred: StorageCredential = serde_json::from_str(r#"{
-                "type": "gcs",
-                "credential-type": "service-account-key",
-                "key": {
-                  "type": "service_account",
-                  "project_id": "example-project-1234",
-                  "private_key_id": "....",
-                  "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
-                  "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
-                  "client_id": "123456789012345678901",
-                  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                  "token_uri": "https://oauth2.googleapis.com/token",
-                  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
-                  "universe_domain": "googleapis.com"
-                }
-            }"#).unwrap();
-            ```
+        - $ref: '#/components/schemas/StorageCredentialAccessKey'
+        - $ref: '#/components/schemas/StorageCredentialAwsSystemIdentity'
+        - $ref: '#/components/schemas/StorageCredentialCloudflareR2'
+        - $ref: '#/components/schemas/StorageCredentialAliyunOss'
+        - $ref: '#/components/schemas/StorageCredentialStackitAccessKey'
+        - $ref: '#/components/schemas/StorageCredentialClientCredentials'
+        - $ref: '#/components/schemas/StorageCredentialSharedAccessKey'
+        - $ref: '#/components/schemas/StorageCredentialAzureSystemIdentity'
+        - $ref: '#/components/schemas/StorageCredentialServiceAccountKey'
+        - $ref: '#/components/schemas/StorageCredentialGcpSystemIdentity'
       description: Storage secret for a warehouse.
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          access-key: '#/components/schemas/StorageCredentialAccessKey'
+          aliyun-oss: '#/components/schemas/StorageCredentialAliyunOss'
+          aws-system-identity: '#/components/schemas/StorageCredentialAwsSystemIdentity'
+          azure-system-identity: '#/components/schemas/StorageCredentialAzureSystemIdentity'
+          client-credentials: '#/components/schemas/StorageCredentialClientCredentials'
+          cloudflare-r2: '#/components/schemas/StorageCredentialCloudflareR2'
+          gcp-system-identity: '#/components/schemas/StorageCredentialGcpSystemIdentity'
+          service-account-key: '#/components/schemas/StorageCredentialServiceAccountKey'
+          shared-access-key: '#/components/schemas/StorageCredentialSharedAccessKey'
+          stackit-access-key: '#/components/schemas/StorageCredentialStackitAccessKey'
+    StorageCredentialAccessKey:
+      allOf:
+        - $ref: '#/components/schemas/S3AccessKeyCredential'
+          description: Authenticate to AWS using access-key and secret-key.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - access-key
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - s3
+    StorageCredentialAliyunOss:
+      allOf:
+        - $ref: '#/components/schemas/S3AccessKeyCredential'
+          description: |-
+            **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+            future release.
+
+            Authenticate to Alibaba Cloud OSS using access-key and secret-key.
+            Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - aliyun-oss
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - s3
+    StorageCredentialAwsSystemIdentity:
+      allOf:
+        - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
+          description: |-
+            Authenticate to AWS using the identity configured on the system
+             that runs lakekeeper. The AWS SDK is used to load the credentials.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - aws-system-identity
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - s3
+    StorageCredentialAzureSystemIdentity:
+      allOf:
+        - type: object
+          title: AzCredentialManagedIdentity
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - azure-system-identity
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - az
+    StorageCredentialClientCredentials:
+      allOf:
+        - type: object
+          title: AzCredentialClientCredentials
+          required:
+            - client-id
+            - tenant-id
+            - client-secret
+            - credential-type
+          properties:
+            client-id:
+              type: string
+            client-secret:
+              type: string
+            credential-type:
+              type: string
+              enum:
+                - client-credentials
+            tenant-id:
+              type: string
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - az
+    StorageCredentialCloudflareR2:
+      allOf:
+        - $ref: '#/components/schemas/S3CloudflareR2Credential'
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - cloudflare-r2
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - s3
+    StorageCredentialGcpSystemIdentity:
+      allOf:
+        - type: object
+          title: GcsCredentialSystemIdentity
+          description: |-
+            GCP System Identity
+
+            Use the service account that the application is running as.
+            This can be a Compute Engine default service account or a user-assigned service account.
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - gcp-system-identity
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - gcs
+    StorageCredentialServiceAccountKey:
+      allOf:
+        - type: object
+          title: GcsCredentialServiceAccountKey
+          description: |-
+            Service Account Key
+
+            The key is the JSON object obtained when creating a service account key in the GCP console.
+          required:
+            - key
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - service-account-key
+            key:
+              $ref: '#/components/schemas/GcsServiceKey'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - gcs
+    StorageCredentialSharedAccessKey:
+      allOf:
+        - type: object
+          title: AzCredentialSharedAccessKey
+          required:
+            - key
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - shared-access-key
+            key:
+              type: string
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - az
+    StorageCredentialStackitAccessKey:
+      allOf:
+        - $ref: '#/components/schemas/StackitAccessKeyCredential'
+          description: Access key and secret, created inside a STACKIT credentials group.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - stackit-access-key
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - stackit
     StorageCredentialType:
       oneOf:
         - $ref: '#/components/schemas/StorageCredentialTypeS3'
@@ -18275,7 +18607,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/StorageLayoutDefault'
         - $ref: '#/components/schemas/StorageLayoutTabularOnly'
-        - $ref: '#/components/schemas/StorageLayoutFullHierarchyVariant'
+        - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
       description: |-
         Controls how namespace and tabular paths are constructed under the warehouse base location.
 
@@ -18297,7 +18629,7 @@ components:
         propertyName: type
         mapping:
           default: '#/components/schemas/StorageLayoutDefault'
-          full-hierarchy: '#/components/schemas/StorageLayoutFullHierarchyVariant'
+          full-hierarchy: '#/components/schemas/StorageLayoutFullHierarchy'
           tabular-only: '#/components/schemas/StorageLayoutTabularOnly'
     StorageLayoutDefault:
       type: object
@@ -18322,7 +18654,7 @@ components:
           $ref: '#/components/schemas/StorageLayoutTabularTemplate'
       example:
         tabular: '{name}-{uuid}'
-    StorageLayoutFullHierarchy:
+    StorageLayoutFull:
       type: object
       description: |-
         One directory per namespace level, one per tabular.
@@ -18340,9 +18672,9 @@ components:
       example:
         namespace: '{name}-{uuid}'
         tabular: '{name}-{uuid}'
-    StorageLayoutFullHierarchyVariant:
+    StorageLayoutFullHierarchy:
       allOf:
-        - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
+        - $ref: '#/components/schemas/StorageLayoutFull'
         - type: object
           required:
             - type
