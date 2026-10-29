@@ -127,7 +127,6 @@ pub(crate) fn plan_compaction_reap(
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn plan_compaction_reap_inner(
     metadata: &TableMetadata,
     requirements: &[TableRequirement],
@@ -163,57 +162,8 @@ fn plan_compaction_reap_inner(
         return Err(ReapRejection::NoConflict);
     }
 
-    // 2. The writer's updates must be a single clean snapshot append to the asserted branch:
-    //    exactly one AddSnapshot, exactly one SetSnapshotRef that keeps `branch` a branch and
-    //    points it at that snapshot, and no snapshot or ref removals. Anything else is not the shape we can safely rebase.
-    let mut added_snapshot: Option<&Snapshot> = None;
-    let mut set_ref: Option<(&str, &SnapshotReference)> = None;
-    let mut set_ref_count = 0usize;
-    for update in updates {
-        match update {
-            TableUpdate::AddSnapshot { snapshot } => {
-                if added_snapshot.is_some() {
-                    return Err(ReapRejection::UnexpectedUpdateShape);
-                }
-                added_snapshot = Some(snapshot);
-            }
-            TableUpdate::SetSnapshotRef {
-                ref_name,
-                reference,
-            } => {
-                set_ref_count += 1;
-                set_ref = Some((ref_name, reference));
-            }
-            TableUpdate::RemoveSnapshots { .. } | TableUpdate::RemoveSnapshotRef { .. } => {
-                return Err(ReapRejection::UnexpectedUpdateShape);
-            }
-            _ => {}
-        }
-    }
-    let added_snapshot = added_snapshot.ok_or(ReapRejection::UnexpectedUpdateShape)?;
-    let clean_branch_update = set_ref.is_some_and(|(ref_name, reference)| {
-        ref_name == branch
-            && reference.is_branch()
-            && reference.snapshot_id == added_snapshot.snapshot_id()
-    });
-    if set_ref_count != 1 || !clean_branch_update {
-        return Err(ReapRejection::UnexpectedUpdateShape);
-    }
-    // The writer snapshot must have `expected_base` as its parent, so the rebased branch is a clean
-    // append to the rewound base. This rejects a missing parent and any other parent. The iceberg
-    // builder accepts a `parent_snapshot_id` that names no existing snapshot, so a parent that
-    // names a reaped compaction snapshot would leave the rebased branch with a dangling parent.
-    if added_snapshot.parent_snapshot_id() != Some(expected_base) {
-        return Err(ReapRejection::UnexpectedUpdateShape);
-    }
-    // Only an `overwrite` or `delete` can reference files the compaction rewrote (row-level
-    // deletes, merge-on-read updates) and so fail validation on every retry.
-    match added_snapshot.summary().operation {
-        Operation::Overwrite | Operation::Delete => {}
-        Operation::Append | Operation::Replace => {
-            return Err(ReapRejection::WriterOperationRetriesCleanly);
-        }
-    }
+    // 2. The writer's updates must be a single clean snapshot append to the asserted branch.
+    let added_snapshot = clean_writer_snapshot(updates, &branch, expected_base)?;
 
     // 3. Walk the gap from the tip back to the expected base. Every snapshot in between must be
     //    a rollbackable compaction snapshot; the first non-rollbackable snapshot (a real data
@@ -290,6 +240,67 @@ fn plan_compaction_reap_inner(
         expected_base_snapshot_id: expected_base,
         reaped_snapshot_ids: reaped,
     })
+}
+
+/// Returns the writer's added snapshot if `updates` are a single clean snapshot append to
+/// `branch`: exactly one `AddSnapshot` whose parent is `expected_base`, exactly one
+/// `SetSnapshotRef` that keeps `branch` a branch and points it at that snapshot, and no snapshot
+/// or ref removals. The added snapshot must be an `overwrite` or `delete`. Anything else is not
+/// a shape that can be safely rebased.
+fn clean_writer_snapshot<'a>(
+    updates: &'a [TableUpdate],
+    branch: &str,
+    expected_base: i64,
+) -> Result<&'a Snapshot, ReapRejection> {
+    let mut added_snapshot: Option<&Snapshot> = None;
+    let mut set_ref: Option<(&str, &SnapshotReference)> = None;
+    let mut set_ref_count = 0usize;
+    for update in updates {
+        match update {
+            TableUpdate::AddSnapshot { snapshot } => {
+                if added_snapshot.is_some() {
+                    return Err(ReapRejection::UnexpectedUpdateShape);
+                }
+                added_snapshot = Some(snapshot);
+            }
+            TableUpdate::SetSnapshotRef {
+                ref_name,
+                reference,
+            } => {
+                set_ref_count += 1;
+                set_ref = Some((ref_name, reference));
+            }
+            TableUpdate::RemoveSnapshots { .. } | TableUpdate::RemoveSnapshotRef { .. } => {
+                return Err(ReapRejection::UnexpectedUpdateShape);
+            }
+            _ => {}
+        }
+    }
+    let added_snapshot = added_snapshot.ok_or(ReapRejection::UnexpectedUpdateShape)?;
+    let clean_branch_update = set_ref.is_some_and(|(ref_name, reference)| {
+        ref_name == branch
+            && reference.is_branch()
+            && reference.snapshot_id == added_snapshot.snapshot_id()
+    });
+    if set_ref_count != 1 || !clean_branch_update {
+        return Err(ReapRejection::UnexpectedUpdateShape);
+    }
+    // The writer snapshot must have `expected_base` as its parent, so the rebased branch is a clean
+    // append to the rewound base. This rejects a missing parent and any other parent. The iceberg
+    // builder accepts a `parent_snapshot_id` that names no existing snapshot, so a parent that
+    // names a reaped compaction snapshot would leave the rebased branch with a dangling parent.
+    if added_snapshot.parent_snapshot_id() != Some(expected_base) {
+        return Err(ReapRejection::UnexpectedUpdateShape);
+    }
+    // Only an `overwrite` or `delete` can reference files the compaction rewrote (row-level
+    // deletes, merge-on-read updates) and so fail validation on every retry.
+    match added_snapshot.summary().operation {
+        Operation::Overwrite | Operation::Delete => {}
+        Operation::Append | Operation::Replace => {
+            return Err(ReapRejection::WriterOperationRetriesCleanly);
+        }
+    }
+    Ok(added_snapshot)
 }
 
 /// A snapshot may be rolled back on conflict iff it is a `REPLACE` (compaction) snapshot whose
