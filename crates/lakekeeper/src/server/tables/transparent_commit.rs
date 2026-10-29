@@ -20,7 +20,7 @@
 
 use iceberg::{
     TableRequirement, TableUpdate,
-    spec::{FormatVersion, Operation, Snapshot, TableMetadata},
+    spec::{FormatVersion, Operation, Snapshot, SnapshotReference, TableMetadata},
 };
 
 use crate::service::SnapshotRemovalFence;
@@ -164,10 +164,10 @@ fn plan_compaction_reap_inner(
     }
 
     // 2. The writer's updates must be a single clean snapshot append to the asserted branch:
-    //    exactly one AddSnapshot, exactly one SetSnapshotRef pointing `branch` at that snapshot,
-    //    and no snapshot or ref removals. Anything else is not the shape we can safely rebase.
+    //    exactly one AddSnapshot, exactly one SetSnapshotRef that keeps `branch` a branch and
+    //    points it at that snapshot, and no snapshot or ref removals. Anything else is not the shape we can safely rebase.
     let mut added_snapshot: Option<&Snapshot> = None;
-    let mut set_ref: Option<(&str, i64)> = None;
+    let mut set_ref: Option<(&str, &SnapshotReference)> = None;
     let mut set_ref_count = 0usize;
     for update in updates {
         match update {
@@ -182,7 +182,7 @@ fn plan_compaction_reap_inner(
                 reference,
             } => {
                 set_ref_count += 1;
-                set_ref = Some((ref_name, reference.snapshot_id));
+                set_ref = Some((ref_name, reference));
             }
             TableUpdate::RemoveSnapshots { .. } | TableUpdate::RemoveSnapshotRef { .. } => {
                 return Err(ReapRejection::UnexpectedUpdateShape);
@@ -191,7 +191,12 @@ fn plan_compaction_reap_inner(
         }
     }
     let added_snapshot = added_snapshot.ok_or(ReapRejection::UnexpectedUpdateShape)?;
-    if set_ref_count != 1 || set_ref != Some((branch.as_str(), added_snapshot.snapshot_id())) {
+    let clean_branch_update = set_ref.is_some_and(|(ref_name, reference)| {
+        ref_name == branch
+            && reference.is_branch()
+            && reference.snapshot_id == added_snapshot.snapshot_id()
+    });
+    if set_ref_count != 1 || !clean_branch_update {
         return Err(ReapRejection::UnexpectedUpdateShape);
     }
     // The writer snapshot must have `expected_base` as its parent, so the rebased branch is a clean
@@ -616,6 +621,19 @@ mod tests {
             unreachable!("writer() puts SetSnapshotRef second");
         };
         reference.snapshot_id = 1;
+        assert!(plan(&md, &reqs, &updates).is_none());
+    }
+
+    #[test]
+    fn declines_set_ref_converting_branch_to_tag() {
+        let md = table_a_then_compaction(ROLLBACK_MARKER, Operation::Replace);
+        let (reqs, mut updates) = writer(1, 3, 2);
+        let TableUpdate::SetSnapshotRef { reference, .. } = &mut updates[1] else {
+            unreachable!("writer() puts SetSnapshotRef second");
+        };
+        reference.retention = SnapshotRetention::Tag {
+            max_ref_age_ms: None,
+        };
         assert!(plan(&md, &reqs, &updates).is_none());
     }
 
