@@ -29,11 +29,10 @@ use crate::{
 /// every response config, leaving the hash inputs alone. Either way every cached
 /// tag stops matching and each client reloads once — the standing cost.
 ///
-/// `labels` is not such a key: a table without labels has no `labels` in its body
-/// and hashes no labels digest (see [`labels_digest`]), so its tag and body stay
-/// as they were and the prefix stays. A table whose only labels are on columns no
-/// schema has hashes a digest without carrying `labels`; that costs one reload.
-const ETAG_PREFIX: &str = "lk3";
+/// `lk4` added the table's labels digest (see [`labels_digest`]). A table without
+/// labels hashes nothing for them, so only the prefix keeps a validator minted
+/// before labels existed from matching a labels-aware response.
+const ETAG_PREFIX: &str = "lk4";
 
 /// One axis of a [`TableResponseShape`].
 ///
@@ -475,7 +474,7 @@ mod tests {
             TableETag::new(wh(), LOC, delegated_shape, None)
                 .into_etag()
                 .as_str(),
-            "W/\"lk3.ca98cf6daac60cd\""
+            "W/\"lk4.ca98cf6daac60cd\""
         );
         // Same shape, next warehouse version: differs only in the trailing
         // little-endian bytes, so a big-endian slip changes this value.
@@ -491,7 +490,7 @@ mod tests {
             TableETag::new(wh(), LOC, next_version, None)
                 .into_etag()
                 .as_str(),
-            "W/\"lk3.e475cfa1e21ecde5\""
+            "W/\"lk4.e475cfa1e21ecde5\""
         );
         // The `nc` branch skips the version entirely, and the revalidation
         // point is appended as lower-case hex.
@@ -499,7 +498,7 @@ mod tests {
             TableETag::new(wh(), LOC, TableResponseShape::commit_response(), Some(255))
                 .into_etag()
                 .as_str(),
-            "W/\"lk3.165c4d5b6eec0d9a.ff\""
+            "W/\"lk4.165c4d5b6eec0d9a.ff\""
         );
     }
 
@@ -539,16 +538,17 @@ mod tests {
         .unwrap()
     }
 
-    /// A table without labels keeps the tag it had before labels existed, so an
-    /// upgrade does not make every client reload.
+    /// A table without labels hashes as it did before labels existed; only the
+    /// prefix moved, so a tag minted then no longer matches.
     #[test]
-    fn a_load_without_labels_keeps_the_pinned_tag() {
+    fn a_load_without_labels_hashes_as_before_under_the_new_prefix() {
         assert_eq!(
             TableETag::new(wh(), LOC, load_shape(None), None)
                 .into_etag()
                 .as_str(),
-            "W/\"lk3.ca98cf6daac60cd\""
+            "W/\"lk4.ca98cf6daac60cd\""
         );
+        assert!(TableETag::parse("lk3.ca98cf6daac60cd").is_none());
         assert_eq!(load_hash(Some(&Labels::default())), load_hash(None));
     }
 
@@ -596,7 +596,7 @@ mod tests {
             TableETag::new(wh(), LOC, load_shape(labels.as_ref()), None)
                 .into_etag()
                 .as_str(),
-            "W/\"lk3.f03ab9d7b655eb56\""
+            "W/\"lk4.f03ab9d7b655eb56\""
         );
     }
 
@@ -678,10 +678,11 @@ mod tests {
         assert!(TableETag::parse("e34615aade2e6333").is_none());
         assert!(TableETag::parse("lk1.abc").is_none());
         assert!(TableETag::parse("lk2.abc").is_none());
-        assert!(TableETag::parse("lk4.abc").is_none());
-        assert!(TableETag::parse("lk3.").is_none());
-        assert!(TableETag::parse("lk3.abc.def.ghi").is_none());
-        assert!(TableETag::parse("lk3.abc.zzz").is_none());
+        assert!(TableETag::parse("lk3.abc").is_none());
+        assert!(TableETag::parse("lk5.abc").is_none());
+        assert!(TableETag::parse("lk4.").is_none());
+        assert!(TableETag::parse("lk4.abc.def.ghi").is_none());
+        assert!(TableETag::parse("lk4.abc.zzz").is_none());
     }
 
     #[test]
