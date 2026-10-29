@@ -1,5 +1,12 @@
 use core::panic;
-use std::{future::Future, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+};
 
 use bytes::Bytes;
 use futures::StreamExt;
@@ -367,6 +374,11 @@ test_all_storages!(
     test_write_then_read_single_and_read_impl
 );
 test_all_storages!(test_read_returns_metadata, test_read_returns_metadata_impl);
+test_all_storages!(
+    test_read_window_boundaries,
+    test_read_window_boundaries_impl
+);
+test_all_storages!(test_read_during_overwrite, test_read_during_overwrite_impl);
 
 // // Performance tests for storage backend initialization
 // #[cfg(feature = "storage-in-memory")]
@@ -1083,9 +1095,13 @@ async fn test_empty_files_impl(
     storage.write(&test_path, empty_data.clone()).await?;
 
     // Read empty file back
-    let read_data = storage.read(&test_path).await?.bytes;
+    let read = storage.read(&test_path).await?;
+    let read_data = read.bytes;
     assert_eq!(read_data.len(), 0, "Empty file should have zero length");
     assert_eq!(read_data, empty_data, "Empty file content should match");
+    assert_eq!(read.info.size(), Some(0), "Empty file should report size 0");
+    let meta = storage.metadata(&test_path).await?;
+    assert_eq!(read.info.e_tag(), meta.e_tag());
 
     // Clean up
     storage.delete(&test_path).await?;
@@ -2001,6 +2017,180 @@ async fn test_read_returns_metadata_impl(
     assert_eq!(read.info.size(), meta.size());
     assert_eq!(read.info.last_modified(), meta.last_modified());
     assert_eq!(read.info.e_tag(), meta.e_tag());
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `read` returns every byte and the exact size for objects at and just past
+/// the size a backend reads in its first request (7 MiB for ADLS, 25 MiB for
+/// S3 and GCS).
+async fn test_read_window_boundaries_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    const MIB: usize = 1024 * 1024;
+    let data = generate_test_data(26);
+    for size in [7 * MIB, 7 * MIB + 1, 25 * MIB, 25 * MIB + 1] {
+        let path = config.test_path(&format!("read-window-{size}.bin"));
+        let expected = data.slice(0..size);
+        storage.write(&path, expected.clone()).await?;
+
+        let read = storage.read(&path).await?;
+        assert_eq!(
+            read.bytes.len(),
+            size,
+            "read length for a {size} byte object"
+        );
+        assert!(
+            read.bytes == expected,
+            "read content for a {size} byte object"
+        );
+        assert_eq!(read.info.size(), Some(size as u64));
+        let meta = storage.metadata(&path).await?;
+        assert_eq!(read.info.e_tag(), meta.e_tag());
+        assert_eq!(read.info.last_modified(), meta.last_modified());
+
+        storage.delete(&path).await?;
+    }
+    Ok(())
+}
+
+/// The error a `read` fails with when the object is overwritten between two of
+/// its requests, or `None` if the backend never fails a read that way.
+fn overwritten_during_read_kind(storage: &StorageBackend) -> Option<ErrorKind> {
+    // Every request after the first is pinned to the version the first one
+    // saw. The backend rejects it once an overwrite has replaced that version.
+    match storage {
+        #[cfg(feature = "storage-s3")]
+        StorageBackend::S3(_) => Some(ErrorKind::ConditionNotMatch),
+        #[cfg(feature = "storage-gcs")]
+        StorageBackend::Gcs(_) => Some(ErrorKind::ConditionNotMatch),
+        #[cfg(feature = "storage-adls")]
+        StorageBackend::Adls(_) => Some(ErrorKind::ConditionNotMatch),
+        _ => None,
+    }
+}
+
+/// A `read` that races with overwrites of a multi-request object returns one
+/// written version in full, or fails with the backend's overwrite error. It
+/// never mixes the bytes of two versions, and its `info` describes the bytes
+/// it returns.
+///
+/// An ADLS write creates an empty file and then appends to it, so on ADLS a
+/// read during a write can also return the empty file.
+async fn test_read_during_overwrite_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    const SIZE: usize = 30 * 1024 * 1024;
+    const MIN_READS: usize = 3;
+    const MAX_OVERWRITES: usize = 40;
+    const EMPTY: usize = 2;
+    let path = config.test_path("read-during-overwrite.bin");
+    let versions = [Bytes::from(vec![0x11; SIZE]), Bytes::from(vec![0x22; SIZE])];
+    storage.write(&path, versions[0].clone()).await?;
+    let read = storage.read(&path).await?;
+    assert!(read.bytes == versions[0], "the first version is read");
+
+    // The `Adls` variant only exists with `storage-adls`, so gate the arm.
+    let returns_empty_file_during_write = match storage {
+        #[cfg(feature = "storage-adls")]
+        StorageBackend::Adls(_) => true,
+        _ => false,
+    };
+
+    // The writer alternates the two versions until the reader has seen a read
+    // overlap a write, then leaves the first version in place. After each
+    // write it waits for one more read, so the reads interleave with the
+    // writes even on a backend whose writes are instant.
+    let overlap_seen = Arc::new(AtomicBool::new(false));
+    let completed_reads = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let storage = storage.clone();
+        let path = path.clone();
+        let versions = versions.clone();
+        let overlap_seen = overlap_seen.clone();
+        let completed_reads = completed_reads.clone();
+        tokio::spawn(async move {
+            for i in 1..=MAX_OVERWRITES {
+                if overlap_seen.load(Ordering::SeqCst) {
+                    break;
+                }
+                let reads_before = completed_reads.load(Ordering::SeqCst);
+                storage.write(&path, versions[i % 2].clone()).await?;
+                while completed_reads.load(Ordering::SeqCst) == reads_before {
+                    sleep(Duration::from_millis(1)).await;
+                }
+            }
+            storage.write(&path, versions[0].clone()).await?;
+            anyhow::Ok(())
+        })
+    };
+
+    let expected_error = overwritten_during_read_kind(storage);
+    let mut content_by_e_tag = HashMap::new();
+    let mut reads = 0;
+    let mut overlapping_reads = 0;
+    while !writer.is_finished() {
+        // The object holds the first version before and after the writes, so
+        // the second version, the empty file or the overwrite error each show
+        // that the read ran during a write.
+        let overlapped = match storage.read(&path).await {
+            Ok(read) => {
+                let content = if read.bytes == versions[0] {
+                    0
+                } else if read.bytes == versions[1] {
+                    1
+                } else if returns_empty_file_during_write && read.bytes.is_empty() {
+                    EMPTY
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "read returned {} bytes that are not one written version",
+                        read.bytes.len()
+                    ));
+                };
+                assert_eq!(read.info.size(), Some(read.bytes.len() as u64));
+                if let Some(e_tag) = read.info.e_tag()
+                    && let Some(previous) = content_by_e_tag.insert(e_tag.to_string(), content)
+                {
+                    assert_eq!(
+                        previous, content,
+                        "ETag {e_tag} was returned with two different contents"
+                    );
+                }
+                content != 0
+            }
+            Err(ReadError::IOError(e)) if Some(e.kind()) == expected_error => true,
+            Err(e) => return Err(anyhow::anyhow!("read failed during overwrites: {e:?}")),
+        };
+        reads += 1;
+        completed_reads.store(reads, Ordering::SeqCst);
+        if overlapped {
+            overlapping_reads += 1;
+        }
+        if overlapping_reads > 0 && reads >= MIN_READS {
+            overlap_seen.store(true, Ordering::SeqCst);
+        }
+    }
+    writer.await??;
+    assert!(
+        overlapping_reads > 0,
+        "none of {reads} reads overlapped one of {MAX_OVERWRITES} overwrites"
+    );
+
+    let read = storage.read(&path).await?;
+    assert!(
+        read.bytes == versions[0],
+        "the last written version is read"
+    );
+    let meta = storage.metadata(&path).await?;
+    assert_eq!(
+        read.info.e_tag(),
+        meta.e_tag(),
+        "the final read reports the ETag of the object"
+    );
+    println!("{reads} reads during the overwrites, {overlapping_reads} of them during a write");
 
     storage.delete(&path).await?;
     Ok(())
