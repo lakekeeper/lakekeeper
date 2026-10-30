@@ -94,7 +94,8 @@ pub(crate) fn stop_signals() -> tokio::sync::mpsc::UnboundedReceiver<()> {
 }
 
 /// Waits for a signal, the idle timer or the lifetime timer, then drains: workers stop picking,
-/// and this returns once no picked task runs. A drain after a signal waits at most
+/// their running tasks see their drain token cancelled, and this returns once no picked task
+/// runs. A drain after a signal waits at most
 /// `drain_timeout`; with a zero timeout, workers stop picking and this returns at once. A drain after a timer waits without a deadline
 /// until a signal caps it at `drain_timeout` from then. A second signal or a cancellation of
 /// `cancellation_token` returns at once.
@@ -350,6 +351,7 @@ mod tests {
         // The task was picked at 0 s and ends at 30 s, before the first progress tick at 31 s.
         assert_eq!(drain.await.unwrap(), (StopReason::Signal, 30));
         assert_eq!(h.finished.try_recv().unwrap(), 30);
+        assert!(h.control.drain.is_cancelled());
         // A task queued during the drain is not picked.
         h.work.send(5).unwrap();
         tokio::time::sleep(Duration::from_secs(10)).await;
@@ -386,6 +388,7 @@ mod tests {
         let drain = h.start(settings(0, Some(180), None));
         assert_eq!(drain.await.unwrap(), (StopReason::Idle, 180));
         assert!(h.control.is_drained());
+        assert!(h.control.drain.is_cancelled());
     }
 
     #[tokio::test(start_paused = true)]
@@ -432,6 +435,30 @@ mod tests {
         let drain = h.start(settings(0, None, Some(600)));
         // Picked at about 0 s, ends at 3000 s.
         assert_eq!(drain.await.unwrap(), (StopReason::Lifetime, 3000));
+        assert!(h.control.drain.is_cancelled());
+    }
+
+    /// A task that watches its drain token ends when the lifetime passes, so the drain does
+    /// not wait for the task's own end.
+    #[tokio::test(start_paused = true)]
+    async fn a_task_that_watches_the_drain_token_ends_a_lifetime_drain_early() {
+        let control = ArcTaskRunnerControl::default();
+        let (ended_tx, mut ended_rx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = tokio::spawn(run_as_worker(Arc::clone(&control), async move {
+            admit_pick().expect("the gate is open").task_picked();
+            let drain = super::super::drain_token();
+            tokio::select! {
+                () = drain.cancelled() => ended_tx.send("drained").unwrap(),
+                () = tokio::time::sleep(Duration::from_mins(50)) => {
+                    ended_tx.send("finished").unwrap();
+                }
+            }
+            end_task();
+        }));
+        let (drain, _signals, _token) = start_drain(&control, settings(0, None, Some(600)));
+        assert_eq!(drain.await.unwrap(), (StopReason::Lifetime, 600));
+        assert_eq!(ended_rx.try_recv(), Ok("drained"));
+        worker.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -462,6 +489,7 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(5)).await;
         h.token.cancel();
         assert_eq!(drain.await.unwrap(), (StopReason::Cancelled, 5));
+        assert!(!h.control.drain.is_cancelled());
     }
 
     #[tokio::test(start_paused = true)]

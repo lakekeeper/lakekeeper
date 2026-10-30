@@ -1,8 +1,9 @@
 //! Stopping the task workers of a process gracefully.
 //!
-//! A drain closes a gate that every pick checks, waits until no picked task runs, and only then
-//! lets the process cancel its workers. A worker counts as running a task from the pick that
-//! returned it until it picks or polls again, or ends.
+//! A drain closes a gate that every pick checks, cancels the token [`drain_token`] gives the
+//! running tasks, waits until no picked task runs, and only then lets the process cancel its
+//! workers. A worker counts as running a task from the pick that returned it until it picks or
+//! polls again, or ends.
 
 use std::{
     cell::Cell,
@@ -14,6 +15,8 @@ use std::{
 
 use tokio::{sync::Notify, time::Instant};
 
+use crate::CancellationToken;
+
 /// Reference to [`TaskRunnerControl`] that can be cheaply cloned and shared.
 pub(crate) type ArcTaskRunnerControl = Arc<TaskRunnerControl>;
 
@@ -21,6 +24,8 @@ pub(crate) type ArcTaskRunnerControl = Arc<TaskRunnerControl>;
 #[derive(Debug)]
 pub(crate) struct TaskRunnerControl {
     stop_picking: AtomicBool,
+    /// Cancelled with the gate; see [`drain_token`].
+    drain: CancellationToken,
     in_pick: AtomicUsize,
     running: AtomicUsize,
     /// Start, each pick that returned a task, and each task end.
@@ -32,6 +37,7 @@ impl Default for TaskRunnerControl {
     fn default() -> Self {
         Self {
             stop_picking: AtomicBool::new(false),
+            drain: CancellationToken::new(),
             in_pick: AtomicUsize::new(0),
             running: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),
@@ -62,9 +68,11 @@ impl TaskRunnerControl {
 
 #[cfg(any(feature = "router", feature = "test-utils"))]
 impl TaskRunnerControl {
-    /// Picks return nothing more; polling workers wait until they are cancelled.
+    /// Picks return nothing more; polling workers wait until they are cancelled. The token
+    /// [`drain_token`] gives the running tasks is cancelled.
     pub(crate) fn stop_picking(&self) {
         self.stop_picking.store(true, Ordering::SeqCst);
+        self.drain.cancel();
         self.changed.notify_waiters();
     }
 
@@ -162,6 +170,20 @@ pub(crate) fn admit_pick() -> Option<PickPermit> {
         .unwrap_or(Some(PickPermit { control: None }))
 }
 
+/// A token cancelled when the runner of the calling worker starts to drain, for any reason: a
+/// stop signal, the idle time or the lifetime. A task that watches it takes on no new work and
+/// ends before the drain timeout stops the workers.
+///
+/// Call it in the future of the [`TaskQueueWorkerFn`](super::TaskQueueWorkerFn) or in what that
+/// future awaits. A task spawned from it is outside the worker and gets a token that never fires,
+/// as does a call outside a runner (tests, the CLI).
+#[must_use]
+pub fn drain_token() -> CancellationToken {
+    WORKER
+        .try_with(|slot| slot.control.drain.clone())
+        .unwrap_or_default()
+}
+
 /// A task runner for tests outside this crate: runs futures as its workers.
 #[cfg(feature = "test-utils")]
 #[derive(Debug, Clone, Default)]
@@ -192,3 +214,44 @@ impl TestTaskRunner {
 mod stop;
 #[cfg(feature = "router")]
 pub(crate) use stop::{DrainSettings, stop_signals, wait_for_stop_and_drain};
+
+#[cfg(all(test, any(feature = "router", feature = "test-utils")))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_drain_token_fires_when_the_runner_stops_picking() {
+        let control = ArcTaskRunnerControl::default();
+        let worker_control = Arc::clone(&control);
+        run_as_worker(control, async move {
+            let token = drain_token();
+            assert!(!token.is_cancelled());
+            worker_control.stop_picking();
+            assert!(token.is_cancelled());
+            // A token taken after the drain started is cancelled too.
+            assert!(drain_token().is_cancelled());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_drain_token_outside_a_runner_never_fires() {
+        let token = drain_token();
+        ArcTaskRunnerControl::default().stop_picking();
+        assert!(!token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_task_spawned_from_a_worker_gets_a_token_that_never_fires() {
+        let control = ArcTaskRunnerControl::default();
+        let worker_control = Arc::clone(&control);
+        run_as_worker(control, async move {
+            let spawned = tokio::spawn(async { drain_token() }).await.unwrap();
+            let own = drain_token();
+            worker_control.stop_picking();
+            assert!(own.is_cancelled());
+            assert!(!spawned.is_cancelled());
+        })
+        .await;
+    }
+}

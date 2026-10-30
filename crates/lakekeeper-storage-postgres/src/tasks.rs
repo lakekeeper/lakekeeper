@@ -5653,7 +5653,11 @@ mod test {
                 assert_eq!(task.task_id(), second);
                 assert_eq!(worker_runner.running_tasks(), 1);
 
+                // The running task learns of the drain through its token.
+                let drain = lakekeeper::service::tasks::drain_token();
+                assert!(!drain.is_cancelled());
                 worker_runner.stop_picking();
+                assert!(drain.is_cancelled());
                 let cancel = token.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
