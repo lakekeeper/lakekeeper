@@ -24,6 +24,7 @@ mod queue_demand;
 pub(crate) mod task_drain;
 #[cfg(feature = "test-utils")]
 pub use task_drain::TestTaskRunner;
+pub use task_drain::drain_token;
 mod task_queues_runner;
 mod task_registry;
 pub use queue_demand::{TaskDemandClass, TaskQueueDemand, TaskQueueDemandRequest};
