@@ -218,3 +218,5 @@ spark.sql(
 sdf.writeTo("demo.my_namespace.my_table").append()
 spark.table("demo.my_namespace.my_table").show()
 ```
+
+To load data from an operational database such as PostgreSQL or MySQL into Lakekeeper, use an ingestion tool such as [OLake Go](./docs/nightly/engines.md#olake).

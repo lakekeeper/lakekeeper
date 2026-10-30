@@ -18,6 +18,8 @@ Lakekeeper automatically expires old table snapshots based on configurable age a
 
 Expire snapshots can be configured per warehouse and optionally overridden at the table level using Iceberg table properties.
 
+Tables that receive frequent small commits collect snapshots fast. This is typical for tables written by change data capture (CDC) tools such as [OLake Go](engines.md#olake), which commit at least one snapshot for every sync that carries changes.
+
 ### Configuration
 
 Configuration can be set via the Management UI or REST API endpoints:
@@ -119,3 +121,11 @@ For production workloads, we recommend running remove orphan files workers in de
 
 !!! warning
     Every run performs a full recursive listing of the table's storage location, which can be expensive for tables with many files. The adaptive scheduler stretches the cadence on tables that produce few orphans, but each run still pays the listing cost.
+
+## Compaction
+
+Lakekeeper does not run compaction. To merge small data files and rewrite delete files into full data files, use an external compaction tool that connects to Lakekeeper as a REST catalog.
+
+[OLake Fusion](https://olake.io/olake-fusion) is an automated Iceberg table maintenance platform that keeps lakehouse tables efficient, compact, and query-ready as data continuously grows. As Iceberg tables evolve through ingestion, updates, and deletes, they accumulate small files, delete files, and excess metadata — all of which degrade query performance and increase storage overhead over time. Tables written by CDC tools such as [OLake Go](engines.md#olake) accumulate small files and delete files quickly, so compaction is especially important for them.
+
+Spark, Trino, and PyIceberg can also run compaction directly against Lakekeeper using their own built-in compaction commands.
