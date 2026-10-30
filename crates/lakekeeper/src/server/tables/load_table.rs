@@ -651,8 +651,8 @@ mod etag_tests {
         ));
     }
 
-    /// A tag minted for a table before it had labels still matches while it has
-    /// none.
+    /// A tag minted for a table before it had labels — or by a server without
+    /// labels — still matches while it has none.
     #[test]
     fn an_unlabelled_load_matches_a_tag_minted_without_labels() {
         assert!(matches_repr(
