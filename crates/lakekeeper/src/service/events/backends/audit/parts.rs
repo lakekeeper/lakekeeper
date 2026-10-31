@@ -259,6 +259,51 @@ impl schemars::JsonSchema for RecordTime {
     }
 }
 
+/// The id of one audit record: a UUIDv7, unique to that record.
+///
+/// Built only from the record's [`RecordTime`], so its time part is the moment the record
+/// states, to the millisecond. The remaining bits are random: mint it once, where the record
+/// is born, and carry it from there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EventId(uuid::Uuid);
+
+impl EventId {
+    /// A new id for the record that happened at `time`.
+    #[must_use]
+    pub(crate) fn at(time: RecordTime) -> Self {
+        let timestamp = uuid::Timestamp::from_unix(
+            uuid::NoContext,
+            u64::try_from(time.0.timestamp()).unwrap_or_default(),
+            time.0.timestamp_subsec_nanos(),
+        );
+        Self(uuid::Uuid::new_v7(timestamp))
+    }
+
+    /// The id as a UUID.
+    #[must_use]
+    pub fn as_uuid(&self) -> uuid::Uuid {
+        self.0
+    }
+}
+
+impl serde::Serialize for EventId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&self.0.hyphenated())
+    }
+}
+
+impl schemars::JsonSchema for EventId {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("EventId")
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "format": "uuid" })
+    }
+}
+
 /// The role an `assumed_role` actor acts as.
 #[audit_part]
 #[derive(Debug, Clone, PartialEq)]

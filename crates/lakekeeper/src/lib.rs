@@ -101,7 +101,7 @@ pub mod audit {
     pub use lakekeeper_audit_macros::audit_part;
 
     pub use crate::service::events::backends::audit::parts::{
-        Emitters, RecordTime, include_role_source_id,
+        Emitters, EventId, RecordTime, include_role_source_id,
     };
     #[cfg(any(test, feature = "test-utils"))]
     pub use crate::service::events::backends::audit::parts::{

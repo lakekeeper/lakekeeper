@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    audit::{ActorRecord, AnyWireStr, AuditJson, Emitters, RecordTime},
+    audit::{ActorRecord, AnyWireStr, AuditJson, Emitters, EventId, RecordTime},
     request_metadata::RequestId,
 };
 
@@ -26,6 +26,8 @@ pub struct OperationRecordedEvent {
 pub struct OperationRecordData {
     /// Every product that contributed to the record: the emitter that built it.
     pub emitters: Emitters,
+    /// The record's id, unique to it. Its time part is [`Self::time`].
+    pub event_id: EventId,
     /// The request the record belongs to. `None` for an operation no request triggered.
     pub request_id: Option<RequestId>,
     /// When the operation happened, in UTC.

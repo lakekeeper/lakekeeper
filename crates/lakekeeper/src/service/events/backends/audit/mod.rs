@@ -48,7 +48,7 @@ use crate::{
 ///
 /// Derived from `audit-format/` by the format checker; never edit it, write a fragment. See
 /// the audit log section of `docs/docs/developer-guide.md`.
-pub const AUDIT_FORMAT: &str = "1.0";
+pub const AUDIT_FORMAT: &str = "1.1";
 
 /// The `event_source` every audit record carries: what marks a log line as one.
 pub const EVENT_SOURCE: &str = "audit";
