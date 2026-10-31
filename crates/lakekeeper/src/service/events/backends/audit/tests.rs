@@ -169,6 +169,7 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
     crate::audit::validate::assert_valid_record(&schema, emitted, name);
     let mut emitted = emitted.clone();
+    crate::audit::validate::pin_event_id(&mut emitted, name);
     crate::audit::validate::pin_time(&mut emitted, name);
     let emitted = &emitted;
     let path = fixture_path(name);

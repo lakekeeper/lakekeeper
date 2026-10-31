@@ -16,14 +16,15 @@
 //! coverage is exactly the request sequences exercised here, and that set starts small.
 //! Widening it is the point: drive another call through `CatalogServer` and the existing
 //! rules apply to whatever it produces. Reached today: the authorization family in both its
-//! allowed and denied form, and the `idempotent_replay` family — which carries `action` and
+//! allowed and denied form; the `idempotent_replay` family — which carries `action` and
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
-//! `entity` would misread. Not yet reached, cheapest to add first: views and table commits;
-//! the plural `actions`/`entities` form, since every call here checks one action against one
+//! `entity` would misread; and the operational family, through the `grant_created` records
+//! of a grant change. Not yet reached, cheapest to add first: views and table commits; the
+//! plural `actions`/`entities` form, since every call here checks one action against one
 //! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
-//! the operational family, which grant changes emit; and a real authorizer with an
-//! authenticated actor (`AllowAllAuthorizer` and `random_request_metadata()` reach neither) —
-//! the OpenFGA authorizer is the cheap way in, because CI already provisions it.
+//! and a real authorizer with an authenticated actor (`AllowAllAuthorizer` and
+//! `random_request_metadata()` reach neither) — the OpenFGA authorizer is the cheap way in,
+//! because CI already provisions it.
 //!
 //! Keep every test here on a current-thread runtime. Capture is thread-local:
 //! `set_default` binds the subscriber to the calling thread, and the detached
@@ -53,19 +54,20 @@ use std::sync::Arc;
 use iceberg::NamespaceIdent;
 use lakekeeper::{
     api::{
-        RequestMetadataTestBuilder,
+        RequestMetadata, RequestMetadataTestBuilder,
         iceberg::v1::{
             DataAccess, NamespaceParameters, namespace::NamespaceService as _,
             tables::TablesService as _,
         },
         management::v1::{
-            grant::{ListGrantsQuery, Service as _},
+            check::{RoleAssignee, UserOrRole},
+            grant::{ApplyGrantsRequest, GrantEntry, ListGrantsQuery, Service as _},
             role::Service as _,
         },
     },
     server::CatalogServer,
     service::{
-        UserId, authn::Actor, authz::AllowAllAuthorizer,
+        RoleId, UserId, authn::Actor, authz::AllowAllAuthorizer,
         events::backends::audit::AuditEventListener, idempotency::IdempotencyKey,
     },
 };
@@ -82,7 +84,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 17;
+const EXPECTED_RECORDS: usize = 21;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -351,12 +353,13 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             provider_id: provider.map(|p| p.parse().unwrap()),
             source_id: provider.map(|_| "audited".parse().unwrap()),
         };
-    let _ = lakekeeper::api::management::v1::ApiServer::create_role(
+    let native_role = lakekeeper::api::management::v1::ApiServer::create_role(
         role_request(None),
         ctx.clone(),
         random_request_metadata(),
     )
-    .await;
+    .await
+    .expect("creating a native role");
     let _ = lakekeeper::api::management::v1::ApiServer::create_role(
         role_request(Some("system")),
         ctx.clone(),
@@ -394,6 +397,37 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         ),
     )
     .await;
+
+    // A request that writes several records under one `request_id`: a grant change of two
+    // grants writes its `apply_grants` record plus one `grant_created` record per grant. The
+    // `event_id` rule below needs it.
+    let other_role = lakekeeper::api::management::v1::ApiServer::create_role(
+        lakekeeper::api::management::v1::role::CreateRoleRequest {
+            name: "audited-role-grantee".to_string(),
+            ..role_request(None)
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("creating a second native role");
+    let mut granting = RequestMetadata::test_user(UserId::new_unchecked("oidc", "alice"));
+    granting.with_project_id((*project_id).clone());
+    let grant = |role: RoleId| GrantEntry {
+        privilege: "get_metadata".to_string(),
+        principal: UserOrRole::Role(RoleAssignee::from_role(role)),
+    };
+    lakekeeper::api::management::v1::ApiServer::apply_warehouse_grants(
+        warehouse_response.warehouse_id,
+        ctx.clone(),
+        granting,
+        ApplyGrantsRequest {
+            writes: vec![grant(native_role.id), grant(other_role.id)],
+            deletes: Vec::new(),
+        },
+    )
+    .await
+    .expect("granting to both roles");
 
     // Finally a lookup of something absent, so a genuine denial is in the corpus too.
     let _ = CatalogServer::namespace_exists(
@@ -491,6 +525,37 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             serde_json::json!({"action_name": "move", "destination": ["audit_corpus_moves"]}),
         ],
         "move records:\n{}",
+        describe(&records)
+    );
+
+    // Every record has its own `event_id`, records of one request included. A rule that
+    // holds trivially when no two records share a request proves nothing, so that case has
+    // to be in the corpus.
+    let mut event_ids = std::collections::HashSet::new();
+    for (index, record) in records.iter().enumerate() {
+        let event_id = record["event_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("record {index} has no `event_id`:\n{}", describe(&records)));
+        assert!(
+            event_ids.insert(event_id),
+            "record {index} repeats `event_id` {event_id}:\n{}",
+            describe(&records)
+        );
+    }
+    // The grant change: its `apply_grants` record and one `grant_created` record per grant,
+    // all under one `request_id`.
+    let grant_request_id = records
+        .iter()
+        .find(|record| record["actions"][0]["action_name"] == "apply_grants")
+        .and_then(|record| record["request_id"].as_str())
+        .unwrap_or_else(|| panic!("no `apply_grants` record:\n{}", describe(&records)));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["request_id"] == grant_request_id)
+            .count(),
+        3,
+        "records of the grant change, which the `event_id` rule above needs:\n{}",
         describe(&records)
     );
 

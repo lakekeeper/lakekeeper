@@ -153,6 +153,42 @@ pub fn assert_context_valid(schema: &Value, record: &Value, whence: &str) {
 /// The `time` a compared record carries in place of its own.
 pub const PINNED_TIME: &str = "2026-01-01T00:00:00.000000Z";
 
+/// The `event_id` a compared record carries in place of its own: the UUIDv7 time prefix of
+/// [`PINNED_TIME`], so a compared record describes one the server can produce.
+pub const PINNED_EVENT_ID: &str = "019b76da-a800-7000-8000-000000000000";
+
+/// Check a captured record's `event_id` and put [`PINNED_EVENT_ID`] in its place. Run it
+/// before [`pin_time`]: the id's time part is checked against the record's own `time`.
+///
+/// # Panics
+///
+/// If the record has no `event_id`, one that is not a UUIDv7, or one whose time part is not
+/// the record's `time` to the millisecond.
+pub fn pin_event_id(record: &mut Value, whence: &str) {
+    let event_id = record.get("event_id").and_then(Value::as_str);
+    let uuid = event_id
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        .filter(|uuid| uuid.get_version() == Some(uuid::Version::SortRand))
+        .unwrap_or_else(|| panic!("{whence}: `event_id` is {event_id:?}, not a UUIDv7"));
+    let time = record
+        .get("time")
+        .and_then(Value::as_str)
+        .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+        .unwrap_or_else(|| panic!("{whence}: `time` is {:?}, not RFC 3339", record.get("time")));
+    let (seconds, nanos) = uuid
+        .get_timestamp()
+        .expect("a UUIDv7 carries a timestamp")
+        .to_unix();
+    let id_millis = i64::try_from(seconds).expect("a UUIDv7 time fits an i64") * 1000
+        + i64::from(nanos / 1_000_000);
+    assert_eq!(
+        id_millis,
+        time.timestamp_millis(),
+        "{whence}: `event_id` {uuid} names another millisecond than `time` {time}"
+    );
+    record["event_id"] = PINNED_EVENT_ID.into();
+}
+
 /// Check a captured record's `time` and put [`PINNED_TIME`] in its place, so a record can be
 /// compared with a committed one. The clock has no test seam, so the comparison pins what can
 /// be pinned: that the field is there, and that it is RFC 3339 in UTC.

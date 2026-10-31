@@ -13,7 +13,7 @@ use std::sync::Arc;
 use super::{
     Decision,
     parts::{
-        ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityRecord, ErrorRecord,
+        ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityRecord, ErrorRecord, EventId,
         HandlerContext, RecordTime,
     },
     render::AuditJson,
@@ -40,6 +40,9 @@ pub struct AuthorizationRecord<'a> {
     /// Every product that contributed to this record, keyed by its name, with the version of
     /// what it contributes: the one that assembled it and any whose vocabulary it carries.
     pub(crate) emitters: Emitters,
+    /// This record's id, unique to it: the same on every copy of the line, so it can be used
+    /// to remove duplicates. A UUIDv7, so ids sort roughly by time.
+    pub(crate) event_id: EventId,
     /// The request this record belongs to: the `x-request-id` the caller sent, or the one
     /// Lakekeeper generated and returned in that header.
     pub(crate) request_id: RequestId,
@@ -80,6 +83,9 @@ pub struct ReplayRecord<'a> {
     /// Every product that contributed to this record, keyed by its name, with the version of
     /// what it contributes: the one that assembled it and any whose vocabulary it carries.
     pub(crate) emitters: Emitters,
+    /// This record's id, unique to it: the same on every copy of the line, so it can be used
+    /// to remove duplicates. A UUIDv7, so ids sort roughly by time.
+    pub(crate) event_id: EventId,
     /// The request this record belongs to: the `x-request-id` the caller sent, or the one
     /// Lakekeeper generated and returned in that header.
     pub(crate) request_id: RequestId,
@@ -231,6 +237,7 @@ impl<E: AuditEmitter> OperationRecord<E> {
         OperationRecordedEvent {
             record: Arc::new(OperationRecordData {
                 emitters: Emitters::of(crate::audit::EmitterStamp::of::<E>(), []),
+                event_id: EventId::at(self.time),
                 request_id: self.origin.request_id,
                 time: self.time,
                 operation: self.operation,
@@ -249,6 +256,7 @@ pub(super) fn write_operation_record(event: OperationRecordedEvent) {
     let record = Arc::unwrap_or_clone(event.record);
     OperationWire {
         emitters: record.emitters,
+        event_id: record.event_id,
         request_id: record.request_id,
         time: record.time,
         operation: record.operation,
@@ -270,6 +278,9 @@ struct OperationWire {
     /// Every product that contributed to this record, keyed by its name, with the version of
     /// what it contributes: the one that assembled it and any whose vocabulary it carries.
     emitters: Emitters,
+    /// This record's id, unique to it: the same on every copy of the line, so it can be used
+    /// to remove duplicates. A UUIDv7, so ids sort roughly by time.
+    event_id: EventId,
     /// The request this record belongs to. Absent for an operation no request triggered.
     request_id: Option<RequestId>,
     /// When the operation happened, in UTC.
