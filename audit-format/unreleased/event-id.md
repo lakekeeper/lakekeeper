@@ -8,6 +8,6 @@ level: minor
 authorization, replay, operation   + event_id
 ```
 
-Records that share a `request_id`, such as those of a batch check or a grant change, have different `event_id` values. A line delivered twice carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time.
+Records that share a `request_id`, such as those of a grant change, have different `event_id` values. A line delivered twice carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time.
 
 **What to do:** Nothing. To remove duplicate records, use `event_id`.
