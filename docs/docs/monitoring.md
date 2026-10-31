@@ -25,6 +25,32 @@ Three metrics cover all HTTP traffic:
 
 Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics), including "unstable" metrics. A detailed description of these metrics, including how they are derived, can be found in the [tokio_metrics crate documentation](https://docs.rs/tokio-metrics/latest/tokio_metrics/struct.RuntimeMetrics.html#fields).
 
+### Task Queue Metrics
+
+These metrics show when tasks wait too long, for example because too few workers run a queue, workers stopped, or an autoscaler reached its limit.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_age_seconds</code> | Gauge | `queue_name`, `class` | Seconds the longest waiting task of the queue has waited. `0` if no task waits, `NaN` if the last sample failed |
+| <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_<wbr>last_success_timestamp_seconds</code> | Gauge | — | Unix time of the last sample in which every queue succeeded |
+
+A task waits from the time it is scheduled for. A task whose worker stopped responding waits from the time its heartbeat expired. With a heartbeat timeout of 1 hour, for example, such a task starts to wait 1 hour after its last heartbeat.
+
+Every pod that serves the API samples all queues every 15 seconds. `class` is empty for the whole queue. If a queue is split into size classes by the resource demand of its tasks, it also has one series per size class, with the name of the size class in `class`. A pod in read-only [maintenance mode](./configuration.md#maintenance-mode) reports `0`, and a pod that started in it has no series for the built-in queues.
+
+If the tasks of a queue wait too long, run more workers: raise `LAKEKEEPER__TASK_*_WORKERS` of the queue, or with an autoscaler, check that it runs and how many workers it may start.
+
+!!! tip "Alerting on waiting tasks"
+    All pods read the same tasks, so use `max` over the pods. `max` skips the `NaN` of a failed sample. We recommend this rule:
+
+    ```yaml
+    - alert: LakekeeperTasksWaitTooLong
+      expr: max by (queue_name) (lakekeeper_task_queue_oldest_due_age_seconds{class=""}) > 3600
+      for: 10m
+    ```
+
+    A task can be scheduled for a time in the past, for example a run of a schedule that was missed, so the age can start high. `for: 10m` waits until a worker had time to take such a task. Leave out queues that you run with 0 workers on purpose, with `queue_name!="<queue>"` in the selector. If every sample fails, the age is `NaN` and this rule cannot fire. Also alert on `time() - max(lakekeeper_task_queue_oldest_due_last_success_timestamp_seconds) > 120`.
+
 ### Cache Metrics
 
 Lakekeeper maintains in-memory caches for Short-Term Credentials, S3 Signing Identities, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Ancestors, and Users. All caches share three metric names, differentiated by the `cache_type` label:
@@ -225,10 +251,12 @@ Lakekeeper can tell an autoscaler, such as [KEDA](https://keda.sh/docs/latest/sc
 The metrics port (default `9000`) answers `GET /task-queue/<queue>/demand`:
 
 ```json
-{"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2}
+{"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2, "oldest-due-seconds": 95}
 ```
 
 We recommend scaling on `demand`. It adds up the tasks that wait to start (`due`), the tasks that run (`running`), and the tasks whose worker stopped responding (`heartbeat-expired`). Each pod reuses an answer for 5 seconds, so frequent requests do not load the database.
+
+`oldest-due-seconds` is how long the longest waiting task has waited, or `null` if no task waits. The same value is available as a metric, see [Task Queue Metrics](#task-queue-metrics).
 
 The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots` and `remove_orphan_files`.
 
@@ -251,7 +279,7 @@ We recommend these settings:
 - `LAKEKEEPER__TASK_*_WORKERS` of the queue on the API pods: `0`, so that only the autoscaled workers run the queue. Otherwise KEDA also counts the tasks that the API pods run, and starts workers for them.
 - `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` on the headless workers: a short time such as `180s`, so that a worker Job ends when no tasks are left. See [Stopping Task Workers](./configuration.md#stopping-task-workers).
 
-When all API pods are in read-only [maintenance mode](./configuration.md#maintenance-mode), the endpoint answers `0`, so KEDA starts no new workers. Workers that already run keep taking tasks. Like `/metrics`, the endpoint has no authentication and shows only counts. We recommend keeping the metrics port inside the cluster.
+When all API pods are in read-only [maintenance mode](./configuration.md#maintenance-mode), the endpoint reports no tasks (`0`, and `null` for `oldest-due-seconds`), so KEDA starts no new workers. Workers that already run keep taking tasks. Like `/metrics`, the endpoint has no authentication and shows only counts. We recommend keeping the metrics port inside the cluster.
 
 ## Database (Postgres) Monitoring
 
