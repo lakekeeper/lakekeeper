@@ -246,7 +246,7 @@ scrape_configs:
 
 ## Task Queue Demand
 
-Lakekeeper can tell an autoscaler, such as [KEDA](https://keda.sh/docs/latest/scalers/metrics-api/), how many tasks of a queue wait or run. This lets you run worker pods only while there are tasks.
+Lakekeeper can tell an autoscaler, such as [KEDA](https://keda.sh/docs/latest/scalers/metrics-api/), how many tasks of a queue wait or run. This lets you run worker pods only while there are tasks. For a complete setup, see [Task Workers on Kubernetes](./task-workers.md).
 
 The metrics port (default `9000`) answers `GET /task-queue/<queue>/demand`:
 
