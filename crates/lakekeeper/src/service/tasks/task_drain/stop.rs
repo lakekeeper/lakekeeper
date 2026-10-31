@@ -95,9 +95,9 @@ pub(crate) fn stop_signals() -> tokio::sync::mpsc::UnboundedReceiver<()> {
 
 /// Waits for a signal, the idle timer or the lifetime timer, then drains: workers stop picking,
 /// their running tasks see their drain token cancelled, and this returns once no picked task
-/// runs. A drain after a signal waits at most
-/// `drain_timeout`; with a zero timeout, workers stop picking and this returns at once. A drain after a timer waits without a deadline
-/// until a signal caps it at `drain_timeout` from then. A second signal or a cancellation of
+/// runs. A drain after a signal waits at most `drain_timeout`; with a zero timeout, workers stop
+/// picking and this returns at once. A drain after a timer waits without a deadline until a
+/// signal caps it at `drain_timeout` from then. A second signal or a cancellation of
 /// `cancellation_token` returns at once.
 pub(crate) async fn wait_for_stop_and_drain(
     control: &TaskRunnerControl,

@@ -1,9 +1,8 @@
 //! Stopping the task workers of a process gracefully.
 //!
-//! A drain closes a gate that every pick checks, cancels the token [`drain_token`] gives the
-//! running tasks, waits until no picked task runs, and only then lets the process cancel its
-//! workers. A worker counts as running a task from the pick that returned it until it picks or
-//! polls again, or ends.
+//! A drain closes a gate that every pick checks, fires [`drain_token`], waits until no picked
+//! task runs, and only then lets the process cancel its workers. A worker counts as running a
+//! task from the pick that returned it until it picks or polls again, or ends.
 
 use std::{
     cell::Cell,
@@ -68,8 +67,8 @@ impl TaskRunnerControl {
 
 #[cfg(any(feature = "router", feature = "test-utils"))]
 impl TaskRunnerControl {
-    /// Picks return nothing more; polling workers wait until they are cancelled. The token
-    /// [`drain_token`] gives the running tasks is cancelled.
+    /// Picks return nothing more and [`drain_token`] fires; polling workers wait until they are
+    /// cancelled.
     pub(crate) fn stop_picking(&self) {
         self.stop_picking.store(true, Ordering::SeqCst);
         self.drain.cancel();
@@ -170,17 +169,15 @@ pub(crate) fn admit_pick() -> Option<PickPermit> {
         .unwrap_or(Some(PickPermit { control: None }))
 }
 
-/// A token cancelled when the runner of the calling worker starts to drain, for any reason: a
-/// stop signal, the idle time or the lifetime. A task that watches it takes on no new work and
-/// ends before the drain timeout stops the workers.
+/// Cancelled when the runner of the calling worker starts to drain: a stop signal, the idle time
+/// or the lifetime. Cancelling it affects only the caller's token.
 ///
-/// Call it in the future of the [`TaskQueueWorkerFn`](super::TaskQueueWorkerFn) or in what that
-/// future awaits. A task spawned from it is outside the worker and gets a token that never fires,
-/// as does a call outside a runner (tests, the CLI).
+/// Call it inside the future of a [`TaskQueueWorkerFn`](super::TaskQueueWorkerFn), not in the
+/// closure that builds it. Elsewhere (a spawned task, outside a runner) the token never fires.
 #[must_use]
 pub fn drain_token() -> CancellationToken {
     WORKER
-        .try_with(|slot| slot.control.drain.clone())
+        .try_with(|slot| slot.control.drain.child_token())
         .unwrap_or_default()
 }
 
@@ -204,7 +201,7 @@ impl TestTaskRunner {
         self.control.running_tasks()
     }
 
-    /// Closes the gate: the workers pick nothing more.
+    /// Closes the gate and fires [`drain_token`]: the workers pick nothing more.
     pub fn stop_picking(&self) {
         self.control.stop_picking();
     }
@@ -235,10 +232,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_drain_token_outside_a_runner_never_fires() {
-        let token = drain_token();
-        ArcTaskRunnerControl::default().stop_picking();
-        assert!(!token.is_cancelled());
+    async fn a_task_that_cancels_its_drain_token_does_not_drain_the_runner() {
+        let control = ArcTaskRunnerControl::default();
+        let worker_control = Arc::clone(&control);
+        run_as_worker(control, async move {
+            drain_token().cancel();
+            assert!(!drain_token().is_cancelled());
+            assert!(!worker_control.drain.is_cancelled());
+        })
+        .await;
     }
 
     #[tokio::test]

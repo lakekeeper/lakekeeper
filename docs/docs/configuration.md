@@ -157,8 +157,6 @@ The following global configuration options are available:
 
 When Lakekeeper stops, it stops taking new tasks. If `LAKEKEEPER__TASK_DRAIN_TIMEOUT` is longer than 0s, it first lets running tasks finish. While it waits, the HTTP API, health checks, metrics and task heartbeats keep running. When no task runs any more, or the wait ends, Lakekeeper stops the workers and exits with code 0. A task that did not finish may be tried again later, depending on its retry limit.
 
-A running task can watch for the drain (`lakekeeper::service::tasks::drain_token`) and finish early; the built-in queues run their task to its end.
-
 A stop signal (SIGTERM or SIGINT) waits up to `LAKEKEEPER__TASK_DRAIN_TIMEOUT`. If you set it longer than 0s, give the pod a longer grace period: set `terminationGracePeriodSeconds` in Kubernetes to the drain timeout plus about 30 seconds, plus the time of a preStop hook. Otherwise Kubernetes kills the process before it stops cleanly. A second stop signal stops the workers at once. A long drain timeout makes node drains and cluster-autoscaler scale-down slower. The cluster autoscaler waits at most 600 seconds for a pod by default.
 
 Headless workers can also stop on their own, for example when an autoscaler starts them for a backlog of tasks:
