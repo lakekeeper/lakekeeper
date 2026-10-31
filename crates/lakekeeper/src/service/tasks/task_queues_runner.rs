@@ -16,7 +16,8 @@ use crate::{
 /// A worker runs one task at a time: it finishes a task before it picks or polls again. A task
 /// it picked counts as running until then, or until its future ends; a drain of the process
 /// waits for it. Pick or poll inside the returned future: a task spawned from it is outside the
-/// worker, so its picks are neither gated by a drain nor counted.
+/// worker, so its picks are neither gated by a drain nor counted. Inside the returned future,
+/// [`drain_token`](super::drain_token) is cancelled when the process starts to drain.
 pub type TaskQueueWorkerFn = Arc<
     dyn Fn(tokio_util::sync::CancellationToken) -> BoxFuture<'static, ()> + Send + Sync + 'static,
 >;
