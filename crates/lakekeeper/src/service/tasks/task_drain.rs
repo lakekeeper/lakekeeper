@@ -174,6 +174,9 @@ pub(crate) fn admit_pick() -> Option<PickPermit> {
 ///
 /// Call it inside the future of a [`TaskQueueWorkerFn`](super::TaskQueueWorkerFn), not in the
 /// closure that builds it. Elsewhere (a spawned task, outside a runner) the token never fires.
+///
+/// Watch the worker's cancellation token too: it can fire without a drain, and after a stop
+/// signal with the default `LAKEKEEPER__TASK_DRAIN_TIMEOUT` of 0 s, right after the drain starts.
 #[must_use]
 pub fn drain_token() -> CancellationToken {
     WORKER

@@ -183,3 +183,36 @@ impl TaskQueuesRunner {
         }
     }
 }
+
+#[cfg(all(test, feature = "router"))]
+mod tests {
+    use std::{sync::LazyLock, time::Duration};
+
+    use super::*;
+    use crate::service::tasks::drain_token;
+
+    static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| TaskQueueName::new("test"));
+
+    #[tokio::test]
+    async fn a_drain_fires_the_drain_token_of_the_workers() {
+        let worker_fn: TaskQueueWorkerFn =
+            Arc::new(|_| Box::pin(async { drain_token().cancelled().await }));
+        let runner = TaskQueuesRunner {
+            registered_queues: Arc::new(HashMap::from([(
+                &*QUEUE_NAME,
+                QueueWorkerConfig {
+                    worker_fn,
+                    num_workers: 1,
+                },
+            )])),
+            cancellation_token: CancellationToken::new(),
+            control: ArcTaskRunnerControl::default(),
+        };
+        let control = ArcTaskRunnerControl::default();
+        let runner = runner.with_control(Arc::clone(&control));
+        control.stop_picking();
+        tokio::time::timeout(Duration::from_secs(5), runner.run_queue_workers(false))
+            .await
+            .expect("the worker sees the drain");
+    }
+}
