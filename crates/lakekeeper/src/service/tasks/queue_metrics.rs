@@ -23,3 +23,11 @@ pub fn record_timed_out_attempt(queue_name: &TaskQueueName) {
     metrics::counter!(METRIC_TIMED_OUT_ATTEMPTS, "queue_name" => queue_name.to_string())
         .increment(1);
 }
+
+/// Register the counter of `queue_name` at 0, so that the first timed-out attempt shows as an
+/// increase. A process calls this for each queue it runs workers for.
+pub(super) fn init_timed_out_attempts(queue_name: &TaskQueueName) {
+    let () = &*METRICS_INITIALIZED;
+    metrics::counter!(METRIC_TIMED_OUT_ATTEMPTS, "queue_name" => queue_name.to_string())
+        .increment(0);
+}

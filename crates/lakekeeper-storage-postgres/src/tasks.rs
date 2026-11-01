@@ -925,8 +925,10 @@ async fn fail_timed_out_attempt(
         SELECT
             t.task_id,
             t.attempt,
+            t.warehouse_id,
             t.entity_type as "entity_type: TaskEntityTypeDB",
             t.entity_id,
+            t.entity_name,
             t.resource_demand,
             t.execution_details
         FROM task t
@@ -971,10 +973,11 @@ async fn fail_timed_out_attempt(
         resource_demand: timed_out.resource_demand,
         execution_details: timed_out.execution_details.as_ref(),
     };
+    let decision = retry_policy.decide(&failed);
     record_failure(
         id,
         retry_policy.max_retries,
-        &retry_policy.decide(&failed),
+        &decision,
         details,
         &mut transaction,
     )
@@ -986,6 +989,20 @@ async fn fail_timed_out_attempt(
     // The row lock and the conflict check of `record_failure` let only one pick fail an attempt,
     // so each is counted once.
     record_timed_out_attempt(queue_name);
+    // As in `record_failure`, a retry after `max_retries` attempts is ignored.
+    let retried =
+        matches!(decision, RetryDecision::Retry { .. }) && id.attempt < retry_policy.max_retries;
+    tracing::warn!(
+        queue_name = %queue_name,
+        task_id = %id.task_id,
+        attempt = id.attempt,
+        warehouse_id = timed_out.warehouse_id.map(tracing::field::display),
+        entity_type = ?timed_out.entity_type,
+        entity_id = timed_out.entity_id.map(tracing::field::display),
+        entity_name = timed_out.entity_name.map(|name| name.join(".")),
+        retried,
+        "Task attempt timed out: its worker stopped sending heartbeats"
+    );
     Ok(())
 }
 
