@@ -1,6 +1,6 @@
 # Tests for which Lakekeeper check each table operation asks: data changes ask
-# `write_data`, structural changes and history removal ask `commit` with the
-# kinds of update they make, so a principal that may only write data is refused.
+# `write_data`, structural changes and history removal ask `commit` without update
+# kinds, so a principal that may only write data is refused.
 package trino_test
 
 import data.trino
@@ -113,70 +113,48 @@ test_structural_changes_allowed_with_full_access if {
 	}
 }
 
-# Allows a commit only if it names exactly the kinds of update the test expects.
-_mock_exact_kinds_result(check) := {"allowed": true} if {
+# Allows a commit only if it names no update kinds, and refuses `write_data`.
+_mock_any_commit_result(check) := {"allowed": true} if {
 	check.operation.table.action.action == "commit"
-	check.operation.table.action.update_kinds == data.expected_update_kinds
+	object.get(check.operation.table.action, "update_kinds", []) == []
 } else := {"allowed": false} if {
-	check.operation.table.action.action == "commit"
+	check.operation.table.action.action in ["commit", "write_data"]
 } else := {"allowed": true}
 
-mock_http_exact_kinds(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
+mock_http_any_commit(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
 	endswith(request.url, "/token")
 } else := {"status_code": 200, "body": {"defaults": {"prefix": "mock-wh-id"}}} if {
 	contains(request.url, "catalog/v1/config")
 } else := {"status_code": 200, "body": {"results": results}} if {
 	contains(request.url, "batch-check")
-	results := [_mock_exact_kinds_result(check) | some check in request.body.checks]
+	results := [_mock_any_commit_result(check) | some check in request.body.checks]
 }
 
-test_commit_checks_name_the_updates_they_make if {
-	every operation in ["AddColumn", "AlterColumn", "DropColumn", "RenameColumn", "SetColumnComment"] {
+# The bridge cannot see which updates Trino sends for these, so it asks about a
+# commit of any kind.
+test_structural_changes_ask_a_commit_of_any_kind if {
+	every operation in [
+		"AddColumn", "AlterColumn", "DropColumn", "RenameColumn",
+		"SetColumnComment", "SetTableComment", "SetTableProperties",
+	] {
 		trino.allow with input as _table_input(operation)
 			with data.configuration.lakekeeper as mock_lakekeeper
 			with data.configuration.trino_catalog as mock_trino_catalog
-			with http.send as mock_http_exact_kinds
-			with data.expected_update_kinds as ["add-schema", "set-current-schema"]
+			with http.send as mock_http_any_commit
 	}
-	every operation in ["SetTableComment", "SetTableProperties"] {
-		trino.allow with input as _table_input(operation)
-			with data.configuration.lakekeeper as mock_lakekeeper
-			with data.configuration.trino_catalog as mock_trino_catalog
-			with http.send as mock_http_exact_kinds
-			with data.expected_update_kinds as ["set-properties"]
-	}
-	trino.allow with input as _procedure_input("ADD_FILES")
-		with data.configuration.lakekeeper as mock_lakekeeper
-		with data.configuration.trino_catalog as mock_trino_catalog
-		with http.send as mock_http_exact_kinds
-		with data.expected_update_kinds as ["add-snapshot", "set-snapshot-ref", "set-properties"]
-	every procedure in ["EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"] {
+	every procedure in ["ADD_FILES", "EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"] {
 		trino.allow with input as _procedure_input(procedure)
 			with data.configuration.lakekeeper as mock_lakekeeper
 			with data.configuration.trino_catalog as mock_trino_catalog
-			with http.send as mock_http_exact_kinds
-			with data.expected_update_kinds as ["remove-snapshots"]
+			with http.send as mock_http_any_commit
 	}
 }
 
-test_commit_check_with_other_kinds_is_refused if {
-	not trino.allow with input as _table_input("AddColumn")
-		with data.configuration.lakekeeper as mock_lakekeeper
-		with data.configuration.trino_catalog as mock_trino_catalog
-		with http.send as mock_http_exact_kinds
-		with data.expected_update_kinds as ["set-properties"]
-}
-
-# The commit check without kinds keeps its arguments for existing policies and asks
-# about a commit of any kind, which needs more than writing data.
-test_commit_check_without_kinds_needs_modify if {
-	not trino.require_table_access_commit("managed", "schema_a", "t", {}, []) with input as {"context": mock_context}
-		with data.configuration.lakekeeper as mock_lakekeeper
-		with data.configuration.trino_catalog as mock_trino_catalog
-		with http.send as mock_http_writer
-	trino.require_table_access_commit("managed", "schema_a", "t", {}, []) with input as {"context": mock_context}
-		with data.configuration.lakekeeper as mock_lakekeeper
-		with data.configuration.trino_catalog as mock_trino_catalog
-		with http.send as mock_http_exact_kinds
-		with data.expected_update_kinds as []
+test_data_changes_do_not_ask_a_commit if {
+	every operation in ["InsertIntoTable", "DeleteFromTable", "TruncateTable", "UpdateTableColumns"] {
+		not trino.allow with input as _table_input(operation)
+			with data.configuration.lakekeeper as mock_lakekeeper
+			with data.configuration.trino_catalog as mock_trino_catalog
+			with http.send as mock_http_any_commit
+	}
 }
