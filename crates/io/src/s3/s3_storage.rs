@@ -18,7 +18,7 @@ use crate::{
     s3::{
         S3Location,
         s3_error::{
-            is_method_not_allowed, parse_aws_sdk_error, parse_batch_delete_error,
+            is_delete_marker, parse_aws_sdk_error, parse_batch_delete_error,
             parse_complete_multipart_upload_error, parse_create_multipart_upload_error,
             parse_delete_error, parse_get_bucket_policy_error, parse_get_object_error,
             parse_head_object_error, parse_list_objects_v2_error, parse_put_object_error,
@@ -269,7 +269,7 @@ impl LakekeeperStorage for S3Storage {
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-        read_object_range(&self.client, &s3_location, None, range).await
+        read_object_range(&self.client, &s3_location, ChunkPin::default(), range).await
     }
 
     async fn read_version(&self, path: &str, version: &str) -> Result<ObjectRead, ReadError> {
@@ -290,7 +290,27 @@ impl LakekeeperStorage for S3Storage {
         range: Range<u64>,
     ) -> Result<Bytes, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-        read_object_range(&self.client, &s3_location, Some(version), range).await
+        let pin = ChunkPin {
+            version: Some(version.to_string()),
+            e_tag: None,
+        };
+        read_object_range(&self.client, &s3_location, pin, range).await
+    }
+
+    async fn read_range_of(
+        &self,
+        path: &str,
+        info: &FileInfo,
+        range: Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        // The `ETag` pins the object without a version id, which would need the permission
+        // to read object versions.
+        let pin = ChunkPin {
+            version: None,
+            e_tag: info.e_tag().map(ToString::to_string),
+        };
+        read_object_range(&self.client, &s3_location, pin, range).await
     }
 
     async fn list_versions(
@@ -350,22 +370,30 @@ impl LakekeeperStorage for S3Storage {
         Ok(stream.boxed())
     }
 
-    async fn get_tags(&self, path: &str, version: &str) -> Result<ObjectTags, ReadError> {
+    async fn get_tags(&self, path: &str, version: Option<&str>) -> Result<ObjectTags, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
         let request = self
             .client
             .get_object_tagging()
             .bucket(s3_location.bucket_name())
             .key(s3_key_to_str(&s3_location.key()))
-            .version_id(version);
-        let response = send_with_retry(|| async {
+            .set_version_id(version.map(ToString::to_string));
+        let response = match send_with_retry(|| async {
             request.clone().send().await.map_err(|e| {
-                version_error(e, Some(version), s3_location.as_str(), |e, location| {
+                version_error(e, version, s3_location.as_str(), |e, location| {
                     parse_s3_operation_error(e, "get object tagging", location)
                 })
             })
         })
-        .await?;
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(tag_error(&self.client, &s3_location, version, error)
+                    .await
+                    .into());
+            }
+        };
         Ok(response
             .tag_set()
             .iter()
@@ -376,7 +404,7 @@ impl LakekeeperStorage for S3Storage {
     async fn put_tags(
         &self,
         path: &str,
-        version: &str,
+        version: Option<&str>,
         tags: &ObjectTags,
     ) -> Result<(), WriteError> {
         let s3_location = S3Location::try_from_str(path, true)?;
@@ -402,36 +430,46 @@ impl LakekeeperStorage for S3Storage {
             .put_object_tagging()
             .bucket(s3_location.bucket_name())
             .key(s3_key_to_str(&s3_location.key()))
-            .version_id(version)
+            .set_version_id(version.map(ToString::to_string))
             .tagging(tagging);
-        send_with_retry(|| async {
+        match send_with_retry(|| async {
             request.clone().send().await.map_err(|e| {
-                version_error(e, Some(version), s3_location.as_str(), |e, location| {
+                version_error(e, version, s3_location.as_str(), |e, location| {
                     parse_s3_operation_error(e, "put object tagging", location)
                 })
             })
         })
-        .await?;
-        Ok(())
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) => Err(tag_error(&self.client, &s3_location, version, error)
+                .await
+                .into()),
+        }
     }
 
-    async fn remove_tags(&self, path: &str, version: &str) -> Result<(), WriteError> {
+    async fn remove_tags(&self, path: &str, version: Option<&str>) -> Result<(), WriteError> {
         let s3_location = S3Location::try_from_str(path, true)?;
         let request = self
             .client
             .delete_object_tagging()
             .bucket(s3_location.bucket_name())
             .key(s3_key_to_str(&s3_location.key()))
-            .version_id(version);
-        send_with_retry(|| async {
+            .set_version_id(version.map(ToString::to_string));
+        match send_with_retry(|| async {
             request.clone().send().await.map_err(|e| {
-                version_error(e, Some(version), s3_location.as_str(), |e, location| {
+                version_error(e, version, s3_location.as_str(), |e, location| {
                     parse_s3_operation_error(e, "delete object tagging", location)
                 })
             })
         })
-        .await?;
-        Ok(())
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) => Err(tag_error(&self.client, &s3_location, version, error)
+                .await
+                .into()),
+        }
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -635,12 +673,10 @@ fn parse_version_page(
         Ok((location, version_id.to_string(), full_path))
     };
 
-    let mut entries =
-        Vec::with_capacity(response.versions().len() + response.delete_markers().len());
-    for version in response.versions() {
+    let version_entry = |version: &aws_sdk_s3::types::ObjectVersion| {
         let (location, version_id, full_path) =
             entry_location(version.key(), version.version_id())?;
-        entries.push(ObjectVersionEntry::Version(
+        Ok(ObjectVersionEntry::Version(
             ObjectVersion::builder()
                 .location(location)
                 .version(version_id)
@@ -653,32 +689,62 @@ fn parse_version_page(
                 .last_modified(version.last_modified().and_then(parse_timestamp))
                 .is_latest(version.is_latest().unwrap_or(false))
                 .build(),
-        ));
-    }
-    for marker in response.delete_markers() {
+        ))
+    };
+    let marker_entry = |marker: &aws_sdk_s3::types::DeleteMarkerEntry| {
         let (location, version_id, _) = entry_location(marker.key(), marker.version_id())?;
-        entries.push(ObjectVersionEntry::DeleteMarker(
+        Ok(ObjectVersionEntry::DeleteMarker(
             DeleteMarker::builder()
                 .location(location)
                 .version(version_id)
                 .last_modified(marker.last_modified().and_then(parse_timestamp))
                 .is_latest(marker.is_latest().unwrap_or(false))
                 .build(),
-        ));
-    }
-    // Merge the two lists: by key, then the current version, then newest first.
-    entries.sort_by(|a, b| {
-        let modified = |entry: &ObjectVersionEntry| match entry {
-            ObjectVersionEntry::Version(v) => v.last_modified,
-            ObjectVersionEntry::DeleteMarker(m) => m.last_modified,
+        ))
+    };
+
+    // S3 returns the versions and the delete markers in two lists, each ordered by key and
+    // newest first within a key. Merging them compares a version only with a delete marker:
+    // a multipart upload's `LastModified` is when the upload started, so timestamps do not
+    // order the versions among themselves.
+    let mut versions = response.versions().iter().peekable();
+    let mut markers = response.delete_markers().iter().peekable();
+    let mut entries = Vec::with_capacity(versions.len() + markers.len());
+    loop {
+        let marker_first = match (versions.peek(), markers.peek()) {
+            (None, None) => break,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+            (Some(version), Some(marker)) => match marker.key().cmp(&version.key()) {
+                std::cmp::Ordering::Less => true,
+                std::cmp::Ordering::Greater => false,
+                std::cmp::Ordering::Equal => marker_precedes(version, marker),
+            },
         };
-        a.location()
-            .as_str()
-            .cmp(b.location().as_str())
-            .then_with(|| b.is_latest().cmp(&a.is_latest()))
-            .then_with(|| modified(b).cmp(&modified(a)))
-    });
+        let entry = if marker_first {
+            markers.next().map(marker_entry)
+        } else {
+            versions.next().map(version_entry)
+        };
+        if let Some(entry) = entry {
+            entries.push(entry?);
+        }
+    }
     Ok(entries)
+}
+
+/// Whether the delete marker `marker` comes before the version `version` of the same key:
+/// the current entry comes first, then the newer one. A marker as old as the version comes
+/// after it.
+fn marker_precedes(
+    version: &aws_sdk_s3::types::ObjectVersion,
+    marker: &aws_sdk_s3::types::DeleteMarkerEntry,
+) -> bool {
+    match (version.is_latest(), marker.is_latest()) {
+        (Some(true), _) => false,
+        (_, Some(true)) => true,
+        _ => marker.last_modified() > version.last_modified(),
+    }
 }
 
 /// The [`FileInfo`] a `HeadObject` response describes.
@@ -718,11 +784,12 @@ async fn read_object(
     get_object(client, s3_location, version).await
 }
 
-/// Read a byte range of the current object, or of the object version `version`.
+/// Read a byte range of the object `pin` names: the current object, or the object version
+/// `pin.version`, and only while its `ETag` is `pin.e_tag` if set.
 async fn read_object_range(
     client: &aws_sdk_s3::Client,
     s3_location: &S3Location,
-    version: Option<&str>,
+    pin: ChunkPin,
     range: Range<u64>,
 ) -> Result<Bytes, ReadError> {
     if range.end < range.start {
@@ -749,11 +816,22 @@ async fn read_object_range(
     })?;
 
     if range_size <= MAX_BYTES_PER_REQUEST {
-        return fetch_range(client, s3_location, version, range, None).await;
+        return fetch_range(
+            client,
+            s3_location,
+            pin.version.as_deref(),
+            range,
+            pin.e_tag.as_deref(),
+        )
+        .await;
     }
 
-    let head_response = head(client, s3_location, version).await?;
-    let pin = chunk_pin(version, &head_response);
+    let pin = if pin.e_tag.is_some() {
+        pin
+    } else {
+        let version = pin.version.as_deref();
+        chunk_pin(version, &head(client, s3_location, version).await?)
+    };
     parallel_chunked_read(client, s3_location, range.start, range_size, pin).await
 }
 
@@ -762,7 +840,7 @@ async fn read_object_range(
 /// replaced while the download is in flight fail the read. The `ETag` matters
 /// for a version too: some providers replace a version's bytes in place, and the
 /// `"null"` version is replaced by any write.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct ChunkPin {
     version: Option<String>,
     e_tag: Option<String>,
@@ -862,7 +940,11 @@ async fn head(
         .set_version_id(version.map(ToString::to_string))
         .send()
         .await
-        .map_err(|e| version_error(e, version, location.as_str(), parse_head_object_error))?;
+        .map_err(|e| {
+            version_error(e, version, location.as_str(), |e, location| {
+                parse_head_object_error(e, location, version)
+            })
+        })?;
     check_version(version, response.version_id(), location)?;
     Ok(response)
 }
@@ -900,7 +982,8 @@ fn check_version(
 }
 
 /// The error of a request that names `version`, if it names one. S3 refuses a request for
-/// a delete marker's version id with 405, which means the version holds no object.
+/// a delete marker's version id with 405 and `x-amz-delete-marker: true`, which means the
+/// version holds no object. Any other 405 is a refused method.
 fn version_error<E>(
     error: SdkError<E>,
     version: Option<&str>,
@@ -908,12 +991,33 @@ fn version_error<E>(
     parse: impl FnOnce(SdkError<E>, &str) -> IOError,
 ) -> IOError {
     match version {
-        Some(version) if is_method_not_allowed(&error) => IOError::new(
+        Some(version) if is_delete_marker(&error) => IOError::new(
             ErrorKind::NotFound,
             format!("Version `{version}` is a delete marker"),
             location.to_string(),
         ),
         _ => parse(error, location),
+    }
+}
+
+/// The error of a tag request for `version` that failed with `error`. S3 refuses to tag a
+/// delete marker with a 405 that, unlike a `GET` or `HEAD`, does not name it a delete
+/// marker, so a refused request has the version's `HEAD` tell a delete marker
+/// ([`ErrorKind::NotFound`]) from a store without tagging ([`ErrorKind::Unsupported`]).
+async fn tag_error(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    version: Option<&str>,
+    error: IOError,
+) -> IOError {
+    let Some(version) = version.filter(|_| error.kind() == ErrorKind::Unsupported) else {
+        return error;
+    };
+    match head(client, location, Some(version)).await {
+        Err(ReadError::IOError(head_error)) if head_error.kind() == ErrorKind::NotFound => {
+            head_error
+        }
+        _ => error,
     }
 }
 
@@ -2013,6 +2117,50 @@ mod tests {
     }
 
     #[test]
+    fn version_page_keeps_the_order_s3_lists_versions_in() {
+        use aws_sdk_s3::{
+            operation::list_object_versions::ListObjectVersionsOutput,
+            types::{DeleteMarkerEntry, ObjectVersion as S3ObjectVersion},
+        };
+        let at = aws_smithy_types::DateTime::from_secs;
+        let version = |id: &str, secs: i64| {
+            S3ObjectVersion::builder()
+                .key("p/a")
+                .version_id(id)
+                .is_latest(false)
+                .last_modified(at(secs))
+                .build()
+        };
+        // `late` is a multipart upload that started before `early` and completed after it,
+        // so S3 lists it first although its `LastModified` is older.
+        let output = ListObjectVersionsOutput::builder()
+            .versions(version("late", 10))
+            .versions(version("early", 20))
+            .delete_markers(
+                DeleteMarkerEntry::builder()
+                    .key("p/a")
+                    .version_id("marker")
+                    .is_latest(true)
+                    .last_modified(at(30))
+                    .build(),
+            )
+            .delete_markers(
+                DeleteMarkerEntry::builder()
+                    .key("p/a")
+                    .version_id("old-marker")
+                    .is_latest(false)
+                    .last_modified(at(5))
+                    .build(),
+            )
+            .build();
+        let base = Location::from_str("s3://bucket/p/").unwrap();
+
+        let entries = parse_version_page(&output, &base, "bucket").unwrap();
+        let versions: Vec<&str> = entries.iter().map(ObjectVersionEntry::version).collect();
+        assert_eq!(versions, vec!["marker", "late", "early", "old-marker"]);
+    }
+
+    #[test]
     fn version_page_without_version_id_is_an_error() {
         let output =
             aws_sdk_s3::operation::list_object_versions::ListObjectVersionsOutput::builder()
@@ -2089,7 +2237,12 @@ mod tests {
     #[tokio::test]
     async fn a_version_that_is_a_delete_marker_is_not_found() {
         // S3 answers a HEAD for a delete marker's version id with a bodiless 405.
-        let storage = storage_answering("405 Method Not Allowed", "").await;
+        let storage = storage_answering_with(
+            "405 Method Not Allowed",
+            "x-amz-delete-marker: true\r\n",
+            "",
+        )
+        .await;
         let error = storage
             .read_version("s3://my-bucket/key", "marker-id")
             .await
@@ -2099,6 +2252,115 @@ mod tests {
             Some(ErrorKind::NotFound),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_refused_method_on_a_version_is_unsupported() {
+        // Only a 405 that names a delete marker means the version holds no object.
+        let storage = storage_answering(
+            "405 Method Not Allowed",
+            "<Error><Code>MethodNotAllowed</Code><Message>The specified method is not allowed against this resource.</Message></Error>",
+        )
+        .await;
+        let error = storage
+            .put_tags("s3://my-bucket/key", Some("v1"), &ObjectTags::new())
+            .await
+            .unwrap_err();
+        let WriteError::IOError(error) = error else {
+            panic!("expected an IO error, got {error:?}");
+        };
+        assert_eq!(error.kind(), ErrorKind::Unsupported, "{error}");
+        let storage = storage_answering("405 Method Not Allowed", "").await;
+        let error = storage
+            .metadata_version("s3://my-bucket/key", "v1")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::Unsupported),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tagging_a_delete_marker_is_not_found() {
+        // S3 refuses the tag request with a plain 405; the HEAD of the version names it a
+        // delete marker.
+        let app = axum::Router::new().fallback(|method: axum::http::Method| async move {
+            use axum::response::IntoResponse as _;
+            let status = axum::http::StatusCode::METHOD_NOT_ALLOWED;
+            if method == axum::http::Method::HEAD {
+                ([("x-amz-delete-marker", "true")], status).into_response()
+            } else {
+                (
+                    status,
+                    [("content-type", "application/xml")],
+                    "<Error><Code>MethodNotAllowed</Code><Message>The specified method is not allowed against this resource.</Message></Error>",
+                )
+                    .into_response()
+            }
+        });
+        let storage = storage_at(&serve(app).await).await;
+        let error = storage
+            .get_tags("s3://bucket/key", Some("marker-id"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::NotFound),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bodiless_bad_request_without_a_version_is_unexpected() {
+        // Without a version id, a 400 says nothing about the request, for example an
+        // expired token.
+        let storage = storage_answering("400 Bad Request", "").await;
+        let error = storage.metadata("s3://my-bucket/key").await.unwrap_err();
+        assert_eq!(
+            read_error_kind(&error),
+            Some(ErrorKind::Unexpected),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_range_of_a_described_object_is_pinned_by_its_etag() {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let app = axum::Router::new().fallback({
+            let requests = requests.clone();
+            move |uri: axum::http::Uri, headers: axum::http::HeaderMap| {
+                let if_match = headers
+                    .get("if-match")
+                    .map(|value| value.to_str().unwrap().to_string());
+                requests
+                    .lock()
+                    .unwrap()
+                    .push((uri.query().unwrap_or_default().to_string(), if_match));
+                async { (axum::http::StatusCode::PARTIAL_CONTENT, "data") }
+            }
+        });
+        let storage = storage_at(&serve(app).await).await;
+        let info = FileInfo::new(
+            None,
+            Location::from_str("s3://bucket/key").unwrap(),
+            Some(10),
+        )
+        .with_e_tag(Some("\"e\"".to_string()))
+        .with_version(Some("v1".to_string()));
+
+        let bytes = storage
+            .read_range_of("s3://bucket/key", &info, 0..4)
+            .await
+            .unwrap();
+
+        assert_eq!(&bytes[..], b"data");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let (query, if_match) = &requests[0];
+        assert!(!query.contains("versionId"), "{query}");
+        assert_eq!(if_match.as_deref(), Some("\"e\""));
     }
 
     #[tokio::test]
@@ -2231,8 +2493,9 @@ mod tests {
         let tags: ObjectTags = (0..=MAX_OBJECT_TAGS)
             .map(|i| (format!("key-{i}"), "value".to_string()))
             .collect();
-        let Err(WriteError::IOError(error)) =
-            storage.put_tags("s3://my-bucket/key", "v1", &tags).await
+        let Err(WriteError::IOError(error)) = storage
+            .put_tags("s3://my-bucket/key", Some("v1"), &tags)
+            .await
         else {
             panic!("expected the tag set to be refused");
         };
@@ -2251,7 +2514,7 @@ mod tests {
         )
         .await;
         let error = storage
-            .get_tags("s3://my-bucket/key", "v1")
+            .get_tags("s3://my-bucket/key", Some("v1"))
             .await
             .unwrap_err();
         assert_eq!(
@@ -2283,7 +2546,7 @@ mod tests {
         )
         .await;
         let error = storage
-            .put_tags("s3://my-bucket/key", "v1", &ObjectTags::new())
+            .put_tags("s3://my-bucket/key", Some("v1"), &ObjectTags::new())
             .await
             .unwrap_err();
         let WriteError::IOError(error) = error else {

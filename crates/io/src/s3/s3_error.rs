@@ -208,9 +208,11 @@ pub(crate) fn parse_get_object_error(
     .set_source(e)
 }
 
+/// Parse the error of a `HeadObject` request, which names `version` if set.
 pub(crate) fn parse_head_object_error(
     err: SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>,
     location: &str,
+    version: Option<&str>,
 ) -> IOError {
     let transport_kind = transport_error_kind(&err);
     let status = err
@@ -228,7 +230,7 @@ pub(crate) fn parse_head_object_error(
             .code()
             .and_then(|s| S3ErrorCode::from_str(s).ok())
             .map(|kind| kind.as_lakekeeper_kind())
-            .or_else(|| status.and_then(head_status_kind))
+            .or_else(|| status.and_then(|status| head_status_kind(status, version.is_some())))
             .unwrap_or(ErrorKind::Unexpected),
     };
 
@@ -245,10 +247,13 @@ pub(crate) fn parse_head_object_error(
     .set_source(e)
 }
 
-/// The kind of a bodiless `HeadObject` error, by HTTP status.
-fn head_status_kind(status: u16) -> Option<ErrorKind> {
+/// The kind of a bodiless `HeadObject` error, by HTTP status. S3 answers a version id it
+/// cannot parse with 400; without a version id, a 400 can mean anything, such as an
+/// expired token.
+fn head_status_kind(status: u16, names_version: bool) -> Option<ErrorKind> {
     match status {
-        400 | 412 => Some(ErrorKind::ConditionNotMatch),
+        400 if names_version => Some(ErrorKind::ConditionNotMatch),
+        412 => Some(ErrorKind::ConditionNotMatch),
         401 | 403 => Some(ErrorKind::PermissionDenied),
         404 => Some(ErrorKind::NotFound),
         405 => Some(ErrorKind::Unsupported),
@@ -349,11 +354,13 @@ where
     .set_source(e)
 }
 
-/// Whether S3 refused the request's method (405). S3 answers a request that names a delete
-/// marker's version id this way.
-pub(crate) fn is_method_not_allowed<E>(err: &SdkError<E>) -> bool {
-    err.raw_response()
-        .is_some_and(|response| response.status().as_u16() == 405)
+/// Whether S3 refused the request because the version it names is a delete marker: a 405
+/// with `x-amz-delete-marker: true`.
+pub(crate) fn is_delete_marker<E>(err: &SdkError<E>) -> bool {
+    err.raw_response().is_some_and(|response| {
+        response.status().as_u16() == 405
+            && response.headers().get("x-amz-delete-marker") == Some("true")
+    })
 }
 
 pub(crate) fn parse_aws_sdk_error(err: &aws_sdk_s3::types::Error, location: &str) -> IOError {

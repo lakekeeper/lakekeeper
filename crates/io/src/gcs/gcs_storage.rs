@@ -344,6 +344,17 @@ enum Listing {
     SoftDeleted,
 }
 
+/// The listing prefix of the directory `object_name`: it ends with `/`, so a sibling whose
+/// name extends the last segment is not listed. The bucket root lists every object.
+fn directory_prefix(object_name: &str) -> String {
+    let directory = object_name.trim_end_matches('/');
+    if directory.is_empty() {
+        String::new()
+    } else {
+        format!("{directory}/")
+    }
+}
+
 impl GcsStorage {
     /// Pages of the objects under `location` that `listing` selects.
     async fn list_pages(
@@ -352,8 +363,7 @@ impl GcsStorage {
         page_size: Option<usize>,
         listing: Listing,
     ) -> impl futures::Stream<Item = Result<ListObjectsResponse, IOError>> + Send + 'static {
-        // Ensure the path ends with '/' for proper prefix matching
-        let prefix = format!("{}/", location.object_name().trim_end_matches('/'));
+        let prefix = directory_prefix(&location.object_name());
 
         let mut request = self
             .control()
@@ -844,6 +854,14 @@ mod tests {
     };
 
     const PATH: &str = "gs://test-bucket/object";
+
+    #[test]
+    fn a_listing_prefix_ends_a_directory_and_lists_the_whole_bucket_at_its_root() {
+        assert_eq!(directory_prefix("warehouse/table"), "warehouse/table/");
+        assert_eq!(directory_prefix("warehouse/table/"), "warehouse/table/");
+        assert_eq!(directory_prefix(""), "");
+        assert_eq!(directory_prefix("/"), "");
+    }
 
     /// Storage whose endpoint accepts requests and never answers them.
     async fn unresponsive_storage() -> GcsStorage {

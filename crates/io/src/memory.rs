@@ -259,20 +259,24 @@ fn check_version_id(key: &str, version: &str) -> Result<(), IOError> {
     })
 }
 
-/// The object version `version` of `key`. A delete marker is not an object version, so
-/// its id is not found, as S3 refuses to read or tag one.
+/// The object version `version` of `key`, or its current version if `version` is `None`.
+/// A delete marker is not an object version, so its id is not found, as S3 refuses to
+/// read or tag one.
 fn find_version<'a>(
     data: &'a MemoryStore,
     key: &str,
-    version: &str,
+    version: Option<&str>,
 ) -> Result<&'a MemoryVersion, IOError> {
+    let entries = data.get(key).map(Vec::as_slice).unwrap_or_default();
+    let Some(version) = version else {
+        return current(entries).ok_or_else(|| not_found(key));
+    };
     check_version_id(key, version)?;
-    data.get(key)
-        .and_then(|entries| {
-            entries.iter().find_map(|entry| match entry {
-                MemoryEntry::Version(stored) if stored.id == version => Some(stored),
-                _ => None,
-            })
+    entries
+        .iter()
+        .find_map(|entry| match entry {
+            MemoryEntry::Version(stored) if stored.id == version => Some(stored),
+            _ => None,
         })
         .ok_or_else(|| version_not_found(key, version))
 }
@@ -280,17 +284,26 @@ fn find_version<'a>(
 fn find_version_mut<'a>(
     data: &'a mut MemoryStore,
     key: &str,
-    version: &str,
+    version: Option<&str>,
 ) -> Result<&'a mut MemoryVersion, IOError> {
-    check_version_id(key, version)?;
-    data.get_mut(key)
-        .and_then(|entries| {
-            entries.iter_mut().find_map(|entry| match entry {
-                MemoryEntry::Version(stored) if stored.id == version => Some(stored),
-                _ => None,
-            })
-        })
-        .ok_or_else(|| version_not_found(key, version))
+    if let Some(version) = version {
+        check_version_id(key, version)?;
+    }
+    let entries = data.get_mut(key).map(Vec::as_mut_slice).unwrap_or_default();
+    let found = match version {
+        None => match entries.last_mut() {
+            Some(MemoryEntry::Version(stored)) => Some(stored),
+            Some(MemoryEntry::DeleteMarker { .. }) | None => None,
+        },
+        Some(version) => entries.iter_mut().find_map(|entry| match entry {
+            MemoryEntry::Version(stored) if stored.id == version => Some(stored),
+            _ => None,
+        }),
+    };
+    found.ok_or_else(|| match version {
+        Some(version) => version_not_found(key, version),
+        None => not_found(key),
+    })
 }
 
 /// The [`FileInfo`] of a stored object version.
@@ -531,7 +544,10 @@ impl LakekeeperStorage for MemoryStorage {
     async fn read_version(&self, path: &str, version: &str) -> Result<ObjectRead, ReadError> {
         let key = normalize_memory_path(path)?;
         let data = self.data.read().await;
-        Ok(object_read(&key, find_version(&data, &key, version)?)?)
+        Ok(object_read(
+            &key,
+            find_version(&data, &key, Some(version))?,
+        )?)
     }
 
     async fn metadata_version(&self, path: &str, version: &str) -> Result<FileInfo, ReadError> {
@@ -539,7 +555,7 @@ impl LakekeeperStorage for MemoryStorage {
         let data = self.data.read().await;
         Ok(version_file_info(
             &key,
-            find_version(&data, &key, version)?,
+            find_version(&data, &key, Some(version))?,
         )?)
     }
 
@@ -580,7 +596,7 @@ impl LakekeeperStorage for MemoryStorage {
         Ok(stream::iter(pages(&all_entries, page_size).into_iter().map(Ok)).boxed())
     }
 
-    async fn get_tags(&self, path: &str, version: &str) -> Result<ObjectTags, ReadError> {
+    async fn get_tags(&self, path: &str, version: Option<&str>) -> Result<ObjectTags, ReadError> {
         let key = normalize_memory_path(path)?;
         let data = self.data.read().await;
         Ok(find_version(&data, &key, version)?.tags.clone())
@@ -589,7 +605,7 @@ impl LakekeeperStorage for MemoryStorage {
     async fn put_tags(
         &self,
         path: &str,
-        version: &str,
+        version: Option<&str>,
         tags: &ObjectTags,
     ) -> Result<(), WriteError> {
         let key = normalize_memory_path(path)?;
@@ -599,7 +615,7 @@ impl LakekeeperStorage for MemoryStorage {
         Ok(())
     }
 
-    async fn remove_tags(&self, path: &str, version: &str) -> Result<(), WriteError> {
+    async fn remove_tags(&self, path: &str, version: Option<&str>) -> Result<(), WriteError> {
         let key = normalize_memory_path(path)?;
         let mut data = self.data.write().await;
         find_version_mut(&mut data, &key, version)?.tags.clear();
@@ -1047,23 +1063,63 @@ mod tests {
             .unwrap();
         let tags = ObjectTags::from([("state".to_string(), "expired".to_string())]);
 
-        storage.put_tags(path, &first, &tags).await.unwrap();
-        assert_eq!(storage.get_tags(path, &first).await.unwrap(), tags);
+        storage
+            .put_tags(path, Some(first.as_str()), &tags)
+            .await
+            .unwrap();
         assert_eq!(
-            storage.get_tags(path, &second).await.unwrap(),
+            storage.get_tags(path, Some(first.as_str())).await.unwrap(),
+            tags
+        );
+        assert_eq!(
+            storage.get_tags(path, Some(second.as_str())).await.unwrap(),
             ObjectTags::new()
         );
 
-        storage.remove_tags(path, &first).await.unwrap();
+        storage
+            .remove_tags(path, Some(first.as_str()))
+            .await
+            .unwrap();
         assert_eq!(
-            storage.get_tags(path, &first).await.unwrap(),
+            storage.get_tags(path, Some(first.as_str())).await.unwrap(),
             ObjectTags::new()
         );
 
         let unknown = uuid::Uuid::now_v7().to_string();
-        let error = storage.put_tags(path, &unknown, &tags).await.unwrap_err();
+        let error = storage
+            .put_tags(path, Some(unknown.as_str()), &tags)
+            .await
+            .unwrap_err();
         assert!(
             matches!(&error, WriteError::IOError(e) if e.kind() == ErrorKind::NotFound),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memory_tags_without_a_version_address_the_current_object() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://tags/current";
+        storage.write(path, Bytes::from("first")).await.unwrap();
+        let second = storage
+            .write(path, Bytes::from("second"))
+            .await
+            .unwrap()
+            .version
+            .unwrap();
+        let tags = ObjectTags::from([("state".to_string(), "kept".to_string())]);
+
+        storage.put_tags(path, None, &tags).await.unwrap();
+        assert_eq!(
+            storage.get_tags(path, Some(second.as_str())).await.unwrap(),
+            tags
+        );
+        assert_eq!(storage.get_tags(path, None).await.unwrap(), tags);
+
+        storage.delete(path).await.unwrap();
+        let error = storage.get_tags(path, None).await.unwrap_err();
+        assert!(
+            matches!(&error, ReadError::IOError(e) if e.kind() == ErrorKind::NotFound),
             "{error}"
         );
     }
@@ -1152,7 +1208,9 @@ mod tests {
             .version
             .expect("memory storage versions every write");
         let tags = ObjectTags::from([("aws:reserved".to_string(), "value".to_string())]);
-        let Err(WriteError::IOError(error)) = storage.put_tags(path, &version, &tags).await else {
+        let Err(WriteError::IOError(error)) =
+            storage.put_tags(path, Some(version.as_str()), &tags).await
+        else {
             panic!("expected the tag set to be refused");
         };
         assert_eq!(error.kind(), ErrorKind::ConditionNotMatch);
@@ -1161,7 +1219,10 @@ mod tests {
             "Tag key `aws:reserved` is in the reserved `aws:` namespace"
         );
         assert_eq!(
-            storage.get_tags(path, &version).await.unwrap(),
+            storage
+                .get_tags(path, Some(version.as_str()))
+                .await
+                .unwrap(),
             ObjectTags::new()
         );
     }

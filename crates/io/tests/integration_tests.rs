@@ -2524,9 +2524,9 @@ async fn test_write_outcome_identifies_the_object_impl(
             assert_unsupported_read(storage.read_version(&path, "1").await);
             assert_unsupported_read(storage.read_range_version(&path, "1", 0..1).await);
             assert_unsupported_read(storage.metadata_version(&path, "1").await);
-            assert_unsupported_read(storage.get_tags(&path, "1").await);
-            assert_unsupported_write(storage.put_tags(&path, "1", &ObjectTags::new()).await);
-            assert_unsupported_write(storage.remove_tags(&path, "1").await);
+            assert_unsupported_read(storage.get_tags(&path, Some("1")).await);
+            assert_unsupported_write(storage.put_tags(&path, Some("1"), &ObjectTags::new()).await);
+            assert_unsupported_write(storage.remove_tags(&path, Some("1")).await);
         }
         #[cfg(feature = "storage-gcs")]
         StorageBackend::Gcs(_) => {
@@ -2554,9 +2554,13 @@ async fn test_write_outcome_identifies_the_object_impl(
             let other = (version.parse::<i64>()? + 1).to_string();
             assert_read_not_found(storage.read_version(&path, &other).await);
             assert_read_not_found(storage.read_range_version(&path, &other, 1..4).await);
-            assert_unsupported_read(storage.get_tags(&path, &version).await);
-            assert_unsupported_write(storage.put_tags(&path, &version, &ObjectTags::new()).await);
-            assert_unsupported_write(storage.remove_tags(&path, &version).await);
+            assert_unsupported_read(storage.get_tags(&path, Some(version.as_str())).await);
+            assert_unsupported_write(
+                storage
+                    .put_tags(&path, Some(version.as_str()), &ObjectTags::new())
+                    .await,
+            );
+            assert_unsupported_write(storage.remove_tags(&path, Some(version.as_str())).await);
         }
         #[cfg(feature = "storage-in-memory")]
         StorageBackend::Memory(_) => {
@@ -2717,7 +2721,7 @@ async fn test_version_history_impl(
     // A delete marker is a version id with no object behind it.
     assert_read_not_found(storage.read_version(&path, &marker.version).await);
     assert_read_not_found(storage.metadata_version(&path, &marker.version).await);
-    assert_read_not_found(storage.get_tags(&path, &marker.version).await);
+    assert_read_not_found(storage.get_tags(&path, Some(marker.version.as_str())).await);
     // A value that is no version id of the store is refused, not looked up.
     let refused = storage.read_version(&path, "not-a-version").await;
     assert!(
@@ -2860,17 +2864,33 @@ async fn test_tags_address_one_version_impl(
         ("owner".to_string(), "io-tests".to_string()),
     ]);
 
-    storage.put_tags(&path, &first, &tags).await?;
-    assert_eq!(storage.get_tags(&path, &first).await?, tags);
-    assert_eq!(storage.get_tags(&path, &second).await?, ObjectTags::new());
+    storage.put_tags(&path, Some(first.as_str()), &tags).await?;
+    assert_eq!(storage.get_tags(&path, Some(first.as_str())).await?, tags);
+    assert_eq!(
+        storage.get_tags(&path, Some(second.as_str())).await?,
+        ObjectTags::new()
+    );
 
     // A put replaces the whole tag set.
     let replacement = ObjectTags::from([("state".to_string(), "kept".to_string())]);
-    storage.put_tags(&path, &first, &replacement).await?;
-    assert_eq!(storage.get_tags(&path, &first).await?, replacement);
+    storage
+        .put_tags(&path, Some(first.as_str()), &replacement)
+        .await?;
+    assert_eq!(
+        storage.get_tags(&path, Some(first.as_str())).await?,
+        replacement
+    );
 
-    storage.remove_tags(&path, &first).await?;
-    assert_eq!(storage.get_tags(&path, &first).await?, ObjectTags::new());
+    storage.remove_tags(&path, Some(first.as_str())).await?;
+    assert_eq!(
+        storage.get_tags(&path, Some(first.as_str())).await?,
+        ObjectTags::new()
+    );
+
+    // Without a version, the tags address the current object.
+    storage.put_tags(&path, None, &tags).await?;
+    assert_eq!(storage.get_tags(&path, Some(second.as_str())).await?, tags);
+    assert_eq!(storage.get_tags(&path, None).await?, tags);
 
     storage.delete(&path).await?;
     Ok(())

@@ -314,7 +314,8 @@ impl FileInfo {
     /// the backend reported none, and for S3's `"null"` version, which the next write to
     /// the key replaces; [`LakekeeperStorage::list_versions`] lists that version as
     /// `"null"`. S3 listings carry no version, so entries from [`LakekeeperStorage::list`]
-    /// have none there.
+    /// have none there. A GCS generation stays readable after the next write to the key
+    /// only in a bucket with object versioning.
     #[must_use]
     pub fn version(&self) -> Option<&str> {
         self.version.as_deref()
@@ -329,7 +330,8 @@ pub struct WriteOutcome {
     #[builder(default)]
     pub e_tag: Option<String>,
     /// The version the write created, as [`FileInfo::version`]: `None` on an unversioned
-    /// or versioning-suspended S3 bucket.
+    /// or versioning-suspended S3 bucket. On GCS it is set without object versioning too,
+    /// but the next write to the key replaces that generation.
     #[builder(default)]
     pub version: Option<String>,
 }
@@ -708,6 +710,24 @@ where
         Err(unsupported("Reading an object version", path).into())
     }
 
+    /// Read a byte range of the object at `path` that `info` describes, for example
+    /// metadata from [`LakekeeperStorage::metadata`]. The read fails if the object was
+    /// replaced since: on S3 with [`ErrorKind::ConditionNotMatch`] through its `ETag`, so
+    /// it needs no permission to read object versions.
+    ///
+    /// The default reads the version `info` names, or the current object if it names none.
+    async fn read_range_of(
+        &self,
+        path: &str,
+        info: &FileInfo,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        match info.version() {
+            Some(version) => self.read_range_version(path, version, range).await,
+            None => self.read_range(path, range).await,
+        }
+    }
+
     /// List every version and delete marker of every object under this prefix, in pages.
     ///
     /// Entries are ordered by key, and newest first within a key;
@@ -715,6 +735,9 @@ where
     /// delete marker with the same modification time keep no defined order. A key that
     /// [`Location`] cannot represent fails the listing. A trailing slash is added to
     /// `path` as for [`LakekeeperStorage::list`]. Retries are handled internally.
+    ///
+    /// `page_size` is a hint: GCS keeps all generations of a key on one page, so a page
+    /// can hold more entries.
     ///
     /// The default fails with [`ErrorKind::Unsupported`].
     async fn list_versions(
@@ -741,31 +764,33 @@ where
         Err(unsupported("Listing soft-deleted objects", path).into())
     }
 
-    /// The tags of one version of the object at `path`.
+    /// The tags of the object at `path`: of the version `version`, or of the current
+    /// object if `version` is `None`. Errors as for [`LakekeeperStorage::read_version`].
     ///
     /// The default fails with [`ErrorKind::Unsupported`].
-    async fn get_tags(&self, path: &str, _version: &str) -> Result<ObjectTags, ReadError> {
+    async fn get_tags(&self, path: &str, _version: Option<&str>) -> Result<ObjectTags, ReadError> {
         Err(unsupported("Object tagging", path).into())
     }
 
-    /// Replace the tags of one version of the object at `path` with `tags`. A tag set
-    /// outside the limits [`validate_tags`] checks fails with
+    /// Replace the tags of the object at `path`, of the version `version` or of the current
+    /// object, with `tags`. A tag set outside the limits [`validate_tags`] checks fails with
     /// [`ErrorKind::ConditionNotMatch`].
     ///
     /// The default fails with [`ErrorKind::Unsupported`].
     async fn put_tags(
         &self,
         path: &str,
-        _version: &str,
+        _version: Option<&str>,
         _tags: &ObjectTags,
     ) -> Result<(), WriteError> {
         Err(unsupported("Object tagging", path).into())
     }
 
-    /// Remove all tags of one version of the object at `path`.
+    /// Remove all tags of the object at `path`, of the version `version` or of the current
+    /// object.
     ///
     /// The default fails with [`ErrorKind::Unsupported`].
-    async fn remove_tags(&self, path: &str, _version: &str) -> Result<(), WriteError> {
+    async fn remove_tags(&self, path: &str, _version: Option<&str>) -> Result<(), WriteError> {
         Err(unsupported("Object tagging", path).into())
     }
 }
@@ -994,6 +1019,28 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
+    async fn read_range_of(
+        &self,
+        path: &str,
+        info: &FileInfo,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.read_range_of(path, info, range).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.read_range_of(path, info, range).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => {
+                adls_storage.read_range_of(path, info, range).await
+            }
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.read_range_of(path, info, range).await,
+        }
+    }
+
     async fn list_versions(
         &self,
         path: &str,
@@ -1036,7 +1083,7 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn get_tags(&self, path: &str, version: &str) -> Result<ObjectTags, ReadError> {
+    async fn get_tags(&self, path: &str, version: Option<&str>) -> Result<ObjectTags, ReadError> {
         match self {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.get_tags(path, version).await,
@@ -1052,7 +1099,7 @@ impl LakekeeperStorage for StorageBackend {
     async fn put_tags(
         &self,
         path: &str,
-        version: &str,
+        version: Option<&str>,
         tags: &ObjectTags,
     ) -> Result<(), WriteError> {
         match self {
@@ -1069,7 +1116,7 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn remove_tags(&self, path: &str, version: &str) -> Result<(), WriteError> {
+    async fn remove_tags(&self, path: &str, version: Option<&str>) -> Result<(), WriteError> {
         match self {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.remove_tags(path, version).await,
@@ -1209,6 +1256,15 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).read_range_version(path, version, range).await
                 }
 
+                async fn read_range_of(
+                    &self,
+                    path: &str,
+                    info: &FileInfo,
+                    range: std::ops::Range<u64>,
+                ) -> Result<Bytes, ReadError> {
+                    (**self).read_range_of(path, info, range).await
+                }
+
                 async fn list_versions(
                     &self,
                     path: &str,
@@ -1234,7 +1290,7 @@ macro_rules! impl_lakekeeper_storage_delegating {
                 async fn get_tags(
                     &self,
                     path: &str,
-                    version: &str,
+                    version: Option<&str>,
                 ) -> Result<ObjectTags, ReadError> {
                     (**self).get_tags(path, version).await
                 }
@@ -1242,13 +1298,17 @@ macro_rules! impl_lakekeeper_storage_delegating {
                 async fn put_tags(
                     &self,
                     path: &str,
-                    version: &str,
+                    version: Option<&str>,
                     tags: &ObjectTags,
                 ) -> Result<(), WriteError> {
                     (**self).put_tags(path, version, tags).await
                 }
 
-                async fn remove_tags(&self, path: &str, version: &str) -> Result<(), WriteError> {
+                async fn remove_tags(
+                    &self,
+                    path: &str,
+                    version: Option<&str>,
+                ) -> Result<(), WriteError> {
                     (**self).remove_tags(path, version).await
                 }
             }

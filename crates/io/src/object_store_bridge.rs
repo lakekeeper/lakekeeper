@@ -304,17 +304,13 @@ impl ObjectStore for ObjectStoreBridge {
                     store: STORE,
                     source: Box::new(e),
                 })?;
-            // The range is read from the version the metadata names, so the metadata
+            // The range is read from the object the metadata describes, so the metadata
             // describes the bytes even if the object is replaced in between.
-            let bytes = match version.or(info.version()) {
-                Some(version) => {
-                    self.lakekeeper_io
-                        .read_range_version(&path, version, range.clone())
-                        .await
-                }
-                None => self.lakekeeper_io.read_range(&path, range.clone()).await,
-            }
-            .map_err(|e| read_err_to_os(location.as_ref(), e))?;
+            let bytes = self
+                .lakekeeper_io
+                .read_range_of(&path, &info, range.clone())
+                .await
+                .map_err(|e| read_err_to_os(location.as_ref(), e))?;
             let meta = object_meta(location.clone(), &info, size);
             (bytes, meta, range)
         } else {
