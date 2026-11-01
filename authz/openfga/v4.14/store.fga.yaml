@@ -342,6 +342,19 @@ tuples:
   - user: user:namespace_2_1_writer
     relation: write
     object: namespace:namespace_2_1
+  # `write` through a role: the member writes, the role grants nothing more.
+  - user: user:warehouse_1_role_writer
+    relation: assignee
+    object: role:warehouse_1_writers
+  - user: role:warehouse_1_writers#assignee
+    relation: write
+    object: warehouse:warehouse_1
+  - user: user:table_2_2_write_delegator
+    relation: write
+    object: lakekeeper_table:warehouse_2/table_2_2
+  - user: user:table_2_2_write_delegator
+    relation: pass_grants
+    object: lakekeeper_table:warehouse_2/table_2_2
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
     check:
@@ -2363,6 +2376,26 @@ tests:
           select_effective: true
           can_create_warehouse: false
           can_delete: false
+  - name: write through a role works like a direct grant
+    check:
+      - user: user:warehouse_1_role_writer
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          write_effective: true
+          can_write_data: true
+          can_commit_data: true
+          can_read_data: true
+          can_commit: false
+          can_drop: false
+          can_rename: false
+          can_set_protection: false
+          can_grant_write: false
+      - user: user:warehouse_1_role_writer
+        object: warehouse:warehouse_1
+        assertions:
+          can_create_namespace: false
+          can_delete: false
+          manage_grants: false
   - name: write on a deep table bubbles up for navigation
     check:
       - user: user:table_3_writer
@@ -2404,7 +2437,7 @@ tests:
           can_grant_describe: true
           can_grant_modify: false
           can_revoke_write: false     # taking back needs manage_grants
-  - name: write under managed access writes data but grants nothing
+  - name: write under managed access is delegated like select, and an owner grants nothing
     check:
       - user: user:namespace_2_1_writer
         object: lakekeeper_table:warehouse_2/table_2_2
@@ -2415,3 +2448,19 @@ tests:
           can_drop: false
           can_grant_write: false
           can_move: false
+      - user: user:table_2_2_write_delegator
+        object: lakekeeper_table:warehouse_2/table_2_2
+        assertions:
+          can_grant_write: true        # managed access keeps pass_grants delegation
+          can_grant_select: true
+          can_grant_modify: false
+      - user: user:namespace_2_1_owner
+        object: lakekeeper_table:warehouse_2/table_2_2
+        assertions:
+          write_effective: true        # ownership implies write
+          manage_grants: false         # managed access strips the owner's grant authority
+          can_grant_write: false
+      - user: user:namespace_1_1_owner
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          can_grant_write: true        # outside managed access, the owner grants it

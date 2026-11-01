@@ -132,7 +132,7 @@ struct PrivilegeDocumentation {
 
 /// Documentation for one privilege, for a picker that has to group and explain itself.
 ///
-/// Keyed by name rather than by level: a few names cover every level's entries,
+/// Keyed by name, not by level: a few names cover every level's entries,
 /// because a privilege means the same thing wherever the model defines it.
 /// Anything not listed reports nothing rather than a guess — a wrong explanation of a
 /// permission is worse than none.
@@ -192,10 +192,12 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         "select" => ("read", "Read the object's data."),
         "create" => ("create", "Create new objects inside this one."),
         "write" => ("write", {
-            "Write data: add snapshots, move branches and tags, and record statistics. \
-             Does not change a table's structure or properties, expire its snapshots or \
-             remove its branches and tags directly, and does not drop, rename or protect anything. \
-             Gives write and delete access to the table's files."
+            "Write the data of tables: add snapshots, create and move branches and tags, \
+             and record statistics. Does not change a table's schema, partitioning, sort \
+             order or properties, expire its snapshots or remove its branches and tags, and \
+             does not drop, rename or protect anything. Gives write and delete access to the \
+             files of tables and generic tables, so for a generic table it changes everything \
+             stored in its files."
         }),
         "modify" => ("write", {
             "Change the object and its contents, including schema changes, properties and \

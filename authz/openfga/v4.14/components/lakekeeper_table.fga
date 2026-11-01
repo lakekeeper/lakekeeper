@@ -34,7 +34,7 @@ type lakekeeper_table
     define can_write_data: write_effective
     define can_read_data: select_effective
     define can_get_metadata: describe_effective
-    # A commit that only adds data: snapshots, ref moves and statistics.
+    # A commit that only changes data: snapshots, ref moves and statistics.
     define can_commit_data: write_effective
     define can_commit: modify_effective
     define can_rename: modify_effective

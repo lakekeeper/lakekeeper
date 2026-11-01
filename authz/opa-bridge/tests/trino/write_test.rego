@@ -29,19 +29,34 @@ _data_kinds := {
 	"set-partition-statistics", "remove-partition-statistics",
 }
 
-# Answers as Lakekeeper does for a principal that may write data but not change a
-# table's structure: a commit is allowed only if it names kinds and every one of them
-# is a data kind.
-_mock_writer_result(check) := {"allowed": true} if {
-	check.operation.table.action.action == "commit"
-	kinds := object.get(check.operation.table.action, "update_kinds", [])
+# Answers as Lakekeeper does for a principal holding only `write` on the namespace: it
+# reads and writes the data of its tables and lists the namespace and warehouse. A commit
+# is allowed only if it names update kinds, every one of them a data kind, and changes no
+# property. Everything else is refused.
+_writer_allows(check) if {
+	action := check.operation.table.action
+	action.action == "commit"
+	count(object.get(action, "updated_properties", {})) == 0
+	count(object.get(action, "removed_properties", [])) == 0
+	kinds := object.get(action, "update_kinds", [])
 	count(kinds) > 0
 	every kind in kinds {
 		kind in _data_kinds
 	}
-} else := {"allowed": false} if {
-	check.operation.table.action.action == "commit"
-} else := {"allowed": true}
+}
+
+_writer_allows(check) if {
+	check.operation.table.action.action in {"write_data", "read_data", "get_metadata", "include_in_list"}
+	not contains(check.operation.table.table, "$")
+}
+
+_writer_allows(check) if {
+	check.operation.namespace.action.action in {"get_metadata", "list_tables", "list_views", "list_namespaces", "list_everything", "include_in_list"}
+}
+
+_writer_allows(check) if {
+	check.operation.warehouse.action.action in {"get_config", "get_metadata", "list_namespaces", "include_in_list"}
+}
 
 mock_http_writer(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
 	endswith(request.url, "/token")
@@ -49,52 +64,82 @@ mock_http_writer(request) := {"status_code": 200, "body": {"access_token": "mock
 	contains(request.url, "catalog/v1/config")
 } else := {"status_code": 200, "body": {"results": results}} if {
 	contains(request.url, "batch-check")
-	results := [_mock_writer_result(check) | some check in request.body.checks]
+	results := [{"allowed": _writer_allows(check)} | some check in request.body.checks]
 }
 
-test_writer_may_change_data if {
-	every operation in ["InsertIntoTable", "DeleteFromTable", "TruncateTable", "UpdateTableColumns"] {
-		trino.allow with input as _table_input(operation)
-			with data.configuration.lakekeeper as mock_lakekeeper
-			with data.configuration.trino_catalog as mock_trino_catalog
-			with http.send as mock_http_writer
-	}
-}
-
-test_writer_may_not_change_structure if {
-	every operation in [
-		"AddColumn", "AlterColumn", "DropColumn", "RenameColumn",
-		"SetColumnComment", "SetTableComment",
-	] {
-		not trino.allow with input as _table_input(operation)
-			with data.configuration.lakekeeper as mock_lakekeeper
-			with data.configuration.trino_catalog as mock_trino_catalog
-			with http.send as mock_http_writer
-	}
-}
-
-test_writer_may_not_set_properties if {
-	not trino.allow with input as object.union(
-		_table_input("SetTableProperties"),
-		{"action": {"resource": {"table": {"properties": {"format_version": 3}}}}},
-	)
+_writer_may(input_document) if {
+	trino.allow with input as input_document
 		with data.configuration.lakekeeper as mock_lakekeeper
 		with data.configuration.trino_catalog as mock_trino_catalog
 		with http.send as mock_http_writer
 }
 
-test_writer_may_compact_but_not_add_files_or_remove_history if {
-	every procedure in ["OPTIMIZE", "OPTIMIZE_MANIFESTS", "DROP_EXTENDED_STATS"] {
-		trino.allow with input as _procedure_input(procedure)
-			with data.configuration.lakekeeper as mock_lakekeeper
-			with data.configuration.trino_catalog as mock_trino_catalog
-			with http.send as mock_http_writer
-	}
-	every procedure in ["ADD_FILES", "EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"] {
-		not trino.allow with input as _procedure_input(procedure)
-			with data.configuration.lakekeeper as mock_lakekeeper
-			with data.configuration.trino_catalog as mock_trino_catalog
-			with http.send as mock_http_writer
+_writer_table_operations := [
+	"CreateTable", "DropTable", "SetTableProperties", "SetTableComment", "SetViewComment",
+	"SetColumnComment", "ShowColumns", "AddColumn", "AlterColumn", "DropColumn",
+	"RenameColumn", "SelectFromColumns", "InsertIntoTable", "DeleteFromTable",
+	"TruncateTable", "UpdateTableColumns", "CreateView", "DropView",
+	"CreateViewWithSelectFromColumns", "CreateMaterializedView", "RefreshMaterializedView",
+	"SetMaterializedViewProperties", "SetMaterializedViewComment", "DropMaterializedView",
+	"ShowCreateTable", "FilterTables", "FilterColumns", "SetTableAuthorization",
+	"SetViewAuthorization",
+]
+
+_writer_procedures := [
+	"OPTIMIZE", "OPTIMIZE_MANIFESTS", "DROP_EXTENDED_STATS", "ROLLBACK_TO_SNAPSHOT",
+	"EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES", "ADD_FILES", "ADD_FILES_FROM_TABLE",
+]
+
+_with_table(input_document, table) := object.union(
+	input_document,
+	{"action": {"resource": {"table": {"tableName": table}}}},
+)
+
+writer_allowed contains operation if {
+	some operation in _writer_table_operations
+	_writer_may(_table_input(operation))
+}
+
+writer_allowed contains operation if {
+	some operation in ["RenameTable", "RenameView", "RenameMaterializedView"]
+	_writer_may(object.union(
+		_table_input(operation),
+		{"action": {"targetResource": {"table": {"catalogName": "managed", "schemaName": "schema_a", "tableName": "t2"}}}},
+	))
+}
+
+writer_allowed contains procedure if {
+	some procedure in _writer_procedures
+	_writer_may(_procedure_input(procedure))
+}
+
+writer_allowed contains concat("", ["CALL ", procedure]) if {
+	some procedure in ["rollback_to_snapshot", "register_table", "unregister_table", "migrate", "add_files"]
+	_writer_may({"context": mock_context, "action": {
+		"operation": "ExecuteProcedure",
+		"resource": {"function": {"catalogName": "managed", "schemaName": "system", "functionName": procedure}},
+	}})
+}
+
+writer_allowed contains concat("", [operation, " on t$snapshots"]) if {
+	some operation in _writer_table_operations
+	operation != "SelectFromColumns"
+	_writer_may(_with_table(_table_input(operation), "t$snapshots"))
+}
+
+writer_allowed contains concat("", [procedure, " on t$snapshots"]) if {
+	some procedure in _writer_procedures
+	_writer_may(_with_table(_procedure_input(procedure), "t$snapshots"))
+}
+
+# Pins every Trino operation a principal holding only `write` may run: reading, data
+# changes, compaction and statistics. Structural changes, history removal, drops,
+# renames, replacing and procedures stay refused.
+test_writer_may_run_exactly_these_operations if {
+	writer_allowed == {
+		"ShowColumns", "SelectFromColumns", "InsertIntoTable", "DeleteFromTable", "TruncateTable",
+		"UpdateTableColumns", "CreateViewWithSelectFromColumns", "ShowCreateTable", "FilterTables",
+		"FilterColumns", "OPTIMIZE", "OPTIMIZE_MANIFESTS", "DROP_EXTENDED_STATS",
 	}
 }
 

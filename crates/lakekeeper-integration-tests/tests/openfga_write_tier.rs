@@ -23,7 +23,7 @@ mod write_tier {
                 SnapshotReference, SnapshotRetention, Summary, Type,
             },
         };
-        use iceberg_ext::catalog::rest::CommitTableRequest;
+        use iceberg_ext::catalog::rest::{CommitTableRequest, CommitTransactionRequest};
         use lakekeeper::{
             ProjectId, WarehouseId,
             api::{
@@ -33,7 +33,9 @@ mod write_tier {
                     v1::{
                         CreateNamespaceRequest, DataAccess, NamespaceParameters, TableParameters,
                         namespace::NamespaceService as _,
-                        tables::{LoadTableRequest, TablesService as _},
+                        tables::{
+                            LoadTableRequest, LoadTableResultOrNotModified, TablesService as _,
+                        },
                     },
                 },
             },
@@ -130,10 +132,15 @@ mod write_tier {
             ]
         }
 
-        #[sqlx::test]
-        async fn write_commits_data_but_not_structure(pool: PgPool) {
-            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
-            let admin_md = principal_metadata(&admin, &project_id);
+        /// Creates namespace `ns` with the given tables as `admin` and grants `write` on the
+        /// namespace to a new principal, whose request metadata it returns.
+        async fn namespace_with_writer(
+            ctx: &Ctx,
+            admin_md: &RequestMetadata,
+            project_id: &ProjectId,
+            warehouse_id: WarehouseId,
+            tables: &[&str],
+        ) -> RequestMetadata {
             CatalogServer::create_namespace(
                 Some(Prefix(warehouse_id.to_string())),
                 CreateNamespaceRequest {
@@ -145,18 +152,20 @@ mod write_tier {
             )
             .await
             .unwrap();
-            CatalogServer::create_table(
-                NamespaceParameters {
-                    prefix: Some(Prefix(warehouse_id.to_string())),
-                    namespace: namespace(),
-                },
-                create_table_request(Some("t".to_string()), Some(false)),
-                DataAccess::not_specified(),
-                ctx.clone(),
-                admin_md.clone(),
-            )
-            .await
-            .unwrap();
+            for table in tables {
+                CatalogServer::create_table(
+                    NamespaceParameters {
+                        prefix: Some(Prefix(warehouse_id.to_string())),
+                        namespace: namespace(),
+                    },
+                    create_table_request(Some((*table).to_string()), Some(false)),
+                    DataAccess::not_specified(),
+                    ctx.clone(),
+                    admin_md.clone(),
+                )
+                .await
+                .unwrap();
+            }
             let namespace_id: NamespaceId = PostgresBackend::get_namespace(
                 warehouse_id,
                 namespace(),
@@ -168,16 +177,16 @@ mod write_tier {
             .namespace_id();
 
             let writer = UserId::new_unchecked("oidc", "writer");
-            grant_on_namespace(
-                &ctx,
-                &admin_md,
-                warehouse_id,
-                namespace_id,
-                "write",
-                &writer,
-            )
-            .await;
-            let writer_md = principal_metadata(&writer, &project_id);
+            grant_on_namespace(ctx, admin_md, warehouse_id, namespace_id, "write", &writer).await;
+            principal_metadata(&writer, project_id)
+        }
+
+        #[sqlx::test]
+        async fn write_commits_data_but_not_structure(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = principal_metadata(&admin, &project_id);
+            let writer_md =
+                namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
 
             // Reading and appending are what `write` is for.
             CatalogServer::load_table(
@@ -255,6 +264,73 @@ mod write_tier {
             )
             .await
             .expect("modify changes properties");
+        }
+
+        /// Each table of a transaction is checked on its own updates, and one refusal
+        /// refuses the whole transaction.
+        #[sqlx::test]
+        async fn a_transaction_with_a_structural_change_is_refused_as_a_whole(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = principal_metadata(&admin, &project_id);
+            let writer_md =
+                namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t", "t2"])
+                    .await;
+            let change = |table: &str, updates: Vec<TableUpdate>| CommitTableRequest {
+                identifier: Some(TableIdent::new(namespace(), table.to_string())),
+                requirements: vec![],
+                updates,
+            };
+
+            let err = CatalogServer::commit_transaction(
+                Some(Prefix(warehouse_id.to_string())),
+                CommitTransactionRequest {
+                    table_changes: vec![
+                        change("t", append(1)),
+                        change(
+                            "t2",
+                            vec![TableUpdate::SetProperties {
+                                updates: HashMap::from([(
+                                    "write.format.default".to_string(),
+                                    "orc".to_string(),
+                                )]),
+                            }],
+                        ),
+                    ],
+                },
+                ctx.clone(),
+                writer_md.clone(),
+            )
+            .await
+            .expect_err("the property change on t2 needs modify")
+            .error;
+            assert_eq!(err.code, 403, "{err:?}");
+
+            let LoadTableResultOrNotModified::LoadTableResult(loaded) = CatalogServer::load_table(
+                table_params(warehouse_id),
+                LoadTableRequest::default(),
+                ctx.clone(),
+                writer_md.clone(),
+            )
+            .await
+            .unwrap() else {
+                panic!("a load without an ETag returns the table");
+            };
+            assert_eq!(
+                loaded.metadata.current_snapshot_id(),
+                None,
+                "nothing was applied to t"
+            );
+
+            CatalogServer::commit_transaction(
+                Some(Prefix(warehouse_id.to_string())),
+                CommitTransactionRequest {
+                    table_changes: vec![change("t", append(1)), change("t2", append(2))],
+                },
+                ctx.clone(),
+                writer_md.clone(),
+            )
+            .await
+            .expect("a transaction of data commits needs only write");
         }
     }
 }
