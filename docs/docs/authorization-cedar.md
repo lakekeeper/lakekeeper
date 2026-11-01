@@ -159,6 +159,8 @@ when { principal.project_roles.contains({provider_id: "ldap", source_id: "contra
 
 Name `AssumeRole` too in a `forbid` on fewer actions.
 
+A `forbid` on a group applies only to the users that the directory lists in that group. A user that the directory does not know, such as a deleted user, is in no group, so the `forbid` does not apply to them. To keep deleted users out, give access with `permit` on groups.
+
 A decision about another user — a grant's grantee, or the subject of a permission check — sees that user's directory groups. With [persisted token roles](./configuration.md#token-role-provider) it also sees the token groups last stored for them. Admission groups come only with the user's own requests. To decide about users who are not signed in, use a role provider (LDAP, Entra ID, Okta).
 
 #### Fix a `forbid` that names a group by its `Role` id

@@ -140,23 +140,26 @@ These go through the role cache (`cache_type="role"`).
 
 ### Role Provider Metrics { .lkp }
 
-When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
+When a Role Provider (e.g. LDAP, Entra ID or Okta) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
 
 | Metric                                                                                             | Type      | Labels                   | Description |
 |----------------------------------------------------------------------------------------------------|-----------|--------------------------|-----|
 | <code class="selectable">lakekeeper_<wbr>role_provider_up</code>                                   | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable |
 | <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code> | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call |
 | <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>               | Counter   | `provider_id`            | Failures writing fresh roles back to the Postgres catalog cache |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>directory_<wbr>user_not_found_total</code> | Counter   | `provider_id`            | Answers of the directory that it has no entry for the user it was asked about |
 | <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>      | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts |
 
-Only providers with an external backend (LDAP) emit `up`, the role-lookup histogram and the reconnect counter. The periodic health-check loop refreshes `up`. On the reconnect counter, `outcome` is `success` or `error`. The OIDC token provider has no external dependency, so it reports none of those. It emits `sync_errors_total` alone, and only with `persist_token_roles` enabled.
+The LDAP, Entra ID and Okta providers emit `up`, the role-lookup histogram and the user-not-found counter. Only the LDAP provider emits the reconnect counter. The periodic health-check loop refreshes `up`. On the reconnect counter, `outcome` is `success` or `error`. The OIDC token provider has no external dependency, so it reports none of those. It emits `sync_errors_total` alone, and only with `persist_token_roles` enabled.
+
+A user that the directory does not know gets none of that provider's groups. A growing `lakekeeper_role_provider_directory_user_not_found_total` for one `provider_id` usually means that the subject claim does not name users the way the directory does. With Okta, service apps also count, because Okta has no user with their client id.
 
 `outcome` values on the role-lookup histogram:
 
 | Value                         | Meaning                                      |
 |-------------------------------|----------------------------------------------|
 | `cache_hit`                   | All applicable providers were fresh; the external provider was not contacted. |
-| `success`                     | Fresh roles were fetched from the external provider and synced to Postgres. |
+| `success`                     | The directory was asked. For the caller's own request in a project, Lakekeeper syncs the answer to Postgres. An answer that the directory does not know the user is also `success`. |
 | `stale_fallback` | The external provider was unreachable; cached roles from Postgres were served instead. |
 | `error`                       | Unrecoverable error — the provider failed and no cached roles were available. |
 
@@ -165,7 +168,7 @@ Only providers with an external backend (LDAP) emit `up`, the role-lookup histog
 The Postgres connection differs. If Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below). `/health` returns `200 OK` only when the aggregate health state is `ok`. It returns `503 Service Unavailable` when that state is `error` or `unknown`.
 
 !!! tip "Alerting on role provider health"
-    Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported. The series exists only for external-backed providers (LDAP), and only after the first health-check cycle. Pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms Lakekeeper is falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` means roles are not reaching Postgres. For an LDAP provider that is a database connectivity or permissions problem. For the OIDC token provider (`persist_token_roles`) it is a failure persisting token roles for definer-view reuse.
+    Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported. The series exists only for the LDAP, Entra ID and Okta providers, and only after the first health-check cycle. Pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms Lakekeeper is falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` means roles are not reaching Postgres. For an LDAP, Entra ID or Okta provider that is a database connectivity or permissions problem. For the OIDC token provider (`persist_token_roles`) it is a failure persisting token roles for definer-view reuse.
 
 ### Cedar Policy Refresh Metrics { .lkp }
 
