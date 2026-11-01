@@ -1,6 +1,7 @@
 pub mod admission;
 pub mod authn;
 pub mod authz;
+pub mod cache_invalidation;
 pub mod cache_metrics;
 pub(crate) mod cache_ttl;
 mod catalog_store;
@@ -10,6 +11,7 @@ pub mod events;
 pub mod health;
 pub mod idempotency;
 pub mod maintenance;
+pub mod maintenance_mode;
 pub(crate) mod request_project;
 pub mod secrets;
 pub mod storage;

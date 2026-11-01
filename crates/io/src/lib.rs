@@ -29,6 +29,12 @@ use tryhard::{RetryPolicy, backoff_strategies::BackoffStrategy};
 
 #[cfg(feature = "storage-adls")]
 pub mod adls;
+#[cfg(any(
+    feature = "storage-s3",
+    feature = "storage-adls",
+    feature = "storage-gcs"
+))]
+mod delete_limit;
 #[cfg(feature = "storage-gcs")]
 pub mod gcs;
 mod location;
@@ -74,7 +80,7 @@ pub(crate) fn safe_usize_to_i32(value: usize, context: impl Into<String>) -> Res
     })
 }
 
-#[cfg(any(feature = "storage-adls", feature = "storage-gcs"))]
+#[cfg(feature = "storage-adls")]
 /// Fallible usize→i64 conversion with contextual diagnostics.
 pub(crate) fn safe_usize_to_i64(value: usize, context: impl Into<String>) -> Result<i64, IOError> {
     i64::try_from(value).map_err(|_| {
@@ -113,19 +119,15 @@ pub(crate) fn validate_file_size(size: i64, location: impl Into<String>) -> Resu
     }
 }
 
-#[cfg(any(
-    feature = "storage-adls",
-    feature = "storage-gcs",
-    feature = "storage-s3"
-))]
+#[cfg(any(feature = "storage-adls", feature = "storage-s3"))]
 /// Iterator over `(chunk_index, byte_range)` pairs that partition `[0, total)`
 /// into windows of at most `chunk_size`. The last range may be shorter when
 /// `total` is not a multiple of `chunk_size`. Returns an empty iterator when
 /// `total == 0`.
 ///
 /// Pair with `Bytes::slice(range)` for zero-copy chunking of a one-shot
-/// write input. Used by all backends to converge on one chunk-iteration
-/// shape across S3 multipart, GCS resumable, and ADLS append.
+/// write input. S3 multipart uploads and ADLS appends share this chunk-iteration
+/// shape.
 pub(crate) fn chunk_ranges(
     total: usize,
     chunk_size: usize,

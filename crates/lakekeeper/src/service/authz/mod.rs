@@ -2591,6 +2591,13 @@ where
     /// Router for the API
     fn new_router<C: CatalogStore, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>>;
 
+    /// Full paths (`/management/v1/...`) of the `POST` routes of
+    /// [`new_router`](Self::new_router) that only read, such as searches whose
+    /// input does not fit a query string. Read-only maintenance mode serves them.
+    fn read_only_post_paths(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Check if the requested actor combination is allowed - especially if the user
     /// is allowed to assume the specified role.
     async fn check_assume_role_impl(
@@ -2989,17 +2996,16 @@ where
     /// # Ordering contract
     ///
     /// Called **after** the catalog transaction commits, so no principal gains access
-    /// through a parent the catalog has not accepted. Also used to compensate a failed
-    /// commit by re-attaching the *old* parent that
+    /// through a parent the catalog has not accepted. Also used to compensate a commit that
+    /// was rolled back by re-attaching the *old* parent that
     /// [`Self::detach_namespace_parent`] removed.
     ///
     /// Its failure cannot be reported to the caller — the move already happened — so it is
     /// logged and left to reconciliation. That is the trade this ordering buys: a failed
     /// hook leaves the authorizer *missing* an edge rather than holding an extra one, so a
-    /// namespace loses inherited access rather than silently keeping or gaining it. The one
-    /// exception is a commit whose outcome is unknown, where the caller's compensation
-    /// re-attaches a parent the namespace has actually left. Missing
-    /// edges are also what `lakekeeper openfga reconcile` repairs in its **default**
+    /// namespace loses inherited access rather than silently keeping or gaining it. A commit
+    /// whose outcome is unknown is not compensated, so it also leaves an edge missing.
+    /// Missing edges are also what `lakekeeper openfga reconcile` repairs in its **default**
     /// additive mode; removing a surplus edge would need `--mode add-and-delete-drift`.
     ///
     /// Should be idempotent, tolerating a relation that is already present.
@@ -3098,18 +3104,16 @@ where
     /// # Ordering contract
     ///
     /// Called **after** the catalog transaction commits, so no principal gains access
-    /// through a namespace the catalog has not accepted. Also used to compensate a failed
-    /// commit by re-attaching the *old* namespace that
+    /// through a namespace the catalog has not accepted. Also used to compensate a commit
+    /// that was rolled back by re-attaching the *old* namespace that
     /// [`Self::detach_tabular_parent`] removed.
     ///
     /// Its failure cannot be reported to the caller — the rename already happened — so it
     /// is logged and left to reconciliation. That is the trade this ordering buys: a failed
     /// hook leaves the authorizer *missing* an edge rather than holding an extra one, so a
     /// table loses inherited access rather than silently keeping access granted on the
-    /// namespace it was moved out of. The one exception is a commit whose outcome is
-    /// unknown — the connection dies after Postgres committed but before the ack — where
-    /// the caller's compensation re-attaches a namespace the tabular has actually left.
-    /// Missing edges are also what
+    /// namespace it was moved out of. A commit whose outcome is unknown is not compensated,
+    /// so it also leaves an edge missing. Missing edges are also what
     /// `lakekeeper openfga reconcile` repairs in its **default** additive mode; removing a
     /// surplus edge would need `--mode add-and-delete-drift`.
     ///

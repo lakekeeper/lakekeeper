@@ -34,7 +34,11 @@ use crate::{
             new_v1_full_router,
             tables::{DATA_ACCESS_HEADER_NAME, ETAG_HEADER_NAME, IF_NONE_MATCH_HEADER_NAME},
         },
-        management::v1::ApiServer,
+        maintenance::with_maintenance_gate,
+        management::v1::{
+            ApiServer,
+            extension::{ArcManagementApiExtension, management_extension_routes},
+        },
     },
     request_metadata::{
         X_BREAK_GLASS_HEADER_NAME, X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,
@@ -75,8 +79,10 @@ static VARY_ON_REQUEST_IDENTITY: HeaderValue =
 /// to it. Call this before mounting `/health`, which is not
 /// principal-specific.
 ///
-/// `Cache-Control` is set `if_not_present` so that routes with stricter needs
-/// — the S3 signer sets `private, no-cache` — keep their own directive.
+/// `Cache-Control` is set `if_not_present` so that a route that decides its
+/// own caching keeps its directive: the S3 signer sends `private` or
+/// `no-cache` depending on the signed request's method, as the Iceberg REST
+/// spec defines.
 /// `Vary` is *appended*: it is a list-valued header, so a route that names a
 /// further request header must not lose the fields below. Caches combine the
 /// field lines, which is also how `CompressionLayer` adds `accept-encoding`.
@@ -101,8 +107,25 @@ static ICEBERG_OPENAPI_SPEC_YAML: std::sync::LazyLock<serde_json::Value> =
         let mut yaml_str =
             include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
         yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
-        serde_norway::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
+        served_spec(
+            serde_norway::from_str(&yaml_str)
+                .expect("Failed to parse Iceberg API model V1 as JSON"),
+        )
     });
+
+/// The spec as served: the per-table signing route is listed only when
+/// `s3-signer` mounts it.
+#[cfg(feature = "open-api")]
+fn served_spec(mut spec: serde_json::Value) -> serde_json::Value {
+    if !cfg!(feature = "s3-signer")
+        && let Some(paths) = spec
+            .get_mut("paths")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        paths.remove(crate::api::endpoints::SignEndpoint::S3RequestByTableName.path());
+    }
+    spec
+}
 
 pub struct RouterArgs<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
     pub authenticator: Option<N>,
@@ -122,6 +145,8 @@ pub struct RouterArgs<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N:
     /// request); host binaries may register gates that reject already
     /// authenticated principals before they reach any handler.
     pub admission_gates: AdmissionGates,
+    /// Routes added to the management API, behind the same layers as its own routes.
+    pub management_api_extensions: Vec<ArcManagementApiExtension<A, C, S>>,
 }
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -144,6 +169,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + 
             )
             .field("instance_admin_membership", &self.instance_admin_membership)
             .field("admission_gates", &self.admission_gates)
+            .field("management_api_extensions", &self.management_api_extensions)
             .finish()
     }
 }
@@ -152,6 +178,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + 
 ///
 /// # Errors
 /// - Fails if the token verifier chain cannot be created
+/// - Fails if a management API extension is invalid, or a different set of extension
+///   endpoints is already installed in this process
 pub async fn new_full_router<
     C: CatalogStore,
     A: Authorizer + Clone,
@@ -167,7 +195,7 @@ pub async fn new_full_router<
         endpoint_statistics_tracker_tx,
         instance_admin_membership,
         admission_gates,
-        // registered_task_queues,
+        management_api_extensions,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::server::CatalogServer<C, A, S>, State<A, C, S>>();
@@ -177,8 +205,21 @@ pub async fn new_full_router<
         State<A, C, S>,
     >();
 
+    let registered_api_configs = state.v1_state.registered_task_queues.api_config().await;
+    let (warehouse_task_api_configs, project_task_api_configs) = registered_api_configs
+        .iter()
+        .partition::<Vec<_>, _>(|config| {
+            matches!(config.scope, crate::service::tasks::QueueScope::Warehouse)
+        });
+
     let authorizer = state.v1_state.authz.clone();
-    let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
+    let management_routes = Router::new()
+        .merge(ApiServer::new_v1_router(&authorizer))
+        .merge(management_extension_routes(
+            &management_api_extensions,
+            &warehouse_task_api_configs,
+            &project_task_api_configs,
+        )?);
     let maybe_cors_layer = get_cors_layer(cors_origins);
 
     let maybe_auth_layer = if let Some(authenticator) = authenticator {
@@ -197,17 +238,12 @@ pub async fn new_full_router<
         option_layer(None)
     };
 
-    let mut router = Router::new()
+    let router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
-        .nest("/lakekeeper/v1", generic_table_routes)
-        // Maintenance gate: rejects mutating requests (POST/PUT/PATCH/DELETE)
-        // with 503 + Retry-After when MAINTENANCE_MODE=read-only. Applied
-        // before `/health` is added so liveness/readiness probes are
-        // unaffected.
-        .layer(axum::middleware::from_fn(
-            crate::api::maintenance::maintenance_middleware_fn,
-        ))
+        .nest("/lakekeeper/v1", generic_table_routes);
+    // Applied before `/health` is added so liveness/readiness probes are unaffected.
+    let mut router = with_maintenance_gate(router, authorizer.read_only_post_paths())
         .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
 
     // Apply request body logging middleware FIRST, before any other middleware that might consume the body
@@ -228,17 +264,11 @@ pub async fn new_full_router<
     // Add health later so that it is not authenticated
     .route("/health", health_route(service_health_provider));
 
-    let registered_api_configs = state.v1_state.registered_task_queues.api_config().await;
-    let (warehouse_task_api_configs, project_task_api_configs) = registered_api_configs
-        .iter()
-        .partition::<Vec<_>, _>(|config| {
-            matches!(config.scope, crate::service::tasks::QueueScope::Warehouse)
-        });
-
     let router = maybe_merge_swagger_router(
         router,
         &warehouse_task_api_configs,
         &project_task_api_configs,
+        &management_api_extensions,
     );
     let router = router
         .layer(axum::middleware::from_fn(
@@ -467,19 +497,27 @@ fn get_cors_layer(
     maybe_cors_layer
 }
 
-#[cfg_attr(not(feature = "open-api"), allow(unused_variables))]
+#[cfg(feature = "open-api")]
 fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     router: Router<ApiContext<State<A, C, S>>>,
     queue_api_configs: &[&QueueApiConfig],
     project_queue_api_configs: &[&QueueApiConfig],
+    management_api_extensions: &[ArcManagementApiExtension<A, C, S>],
 ) -> Router<ApiContext<State<A, C, S>>> {
-    #[cfg(feature = "open-api")]
     if CONFIG.serve_swagger_ui {
+        let extension_docs = management_api_extensions
+            .iter()
+            .map(|extension| extension.api_doc())
+            .collect::<Vec<_>>();
         router.merge(
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
                 .url(
                     "/api-docs/management/v1/openapi.json",
-                    v1_api_doc::<A>(queue_api_configs, project_queue_api_configs),
+                    v1_api_doc::<A>(
+                        queue_api_configs,
+                        project_queue_api_configs,
+                        &extension_docs,
+                    ),
                 )
                 .external_url_unchecked(
                     "/api-docs/catalog/v1/openapi.json",
@@ -489,10 +527,16 @@ fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     } else {
         router
     }
-    #[cfg(not(feature = "open-api"))]
-    {
-        router
-    }
+}
+
+#[cfg(not(feature = "open-api"))]
+fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    router: Router<ApiContext<State<A, C, S>>>,
+    _: &[&QueueApiConfig],
+    _: &[&QueueApiConfig],
+    _: &[ArcManagementApiExtension<A, C, S>],
+) -> Router<ApiContext<State<A, C, S>>> {
+    router
 }
 
 /// Serve the given router on the given listener until `cancellation_token` is
@@ -847,13 +891,13 @@ mod test {
         assert!(!cache_control.contains("no-store"), "{cache_control}");
     }
 
-    /// The S3 signer relies on this: it sets `private, no-cache` itself.
+    /// The S3 signer relies on this: a sign response for a write carries
+    /// `no-cache`, which the layer must not replace with `private`.
     #[tokio::test]
     async fn a_route_keeps_its_own_cache_directives() {
-        let headers =
-            cache_directive_headers(&[(header::CACHE_CONTROL, "private, no-cache")]).await;
+        let headers = cache_directive_headers(&[(header::CACHE_CONTROL, "no-cache")]).await;
 
-        assert_eq!(headers[header::CACHE_CONTROL], "private, no-cache");
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
     }
 
     /// Mirrors `new_full_router`: authentication is wrapped by the cache
@@ -961,5 +1005,17 @@ mod test {
     #[test]
     fn test_openapi_spec_can_be_parsed() {
         let _ = super::ICEBERG_OPENAPI_SPEC_YAML.clone();
+    }
+
+    #[cfg(feature = "open-api")]
+    #[test]
+    fn served_spec_lists_signing_only_when_mounted() {
+        let signing = crate::api::endpoints::SignEndpoint::S3RequestByTableName.path();
+        assert_eq!(
+            super::ICEBERG_OPENAPI_SPEC_YAML["paths"]
+                .get(signing)
+                .is_some(),
+            cfg!(feature = "s3-signer")
+        );
     }
 }

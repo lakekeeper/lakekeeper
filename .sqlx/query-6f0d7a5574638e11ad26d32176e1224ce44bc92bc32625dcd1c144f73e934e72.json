@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH s AS (SELECT pg_current_snapshot() AS next),\n        changed AS (\n            (SELECT l.xid, l.id, l.domain, l.keys\n             FROM cache_change_log l\n             WHERE l.xid = ANY(ARRAY(SELECT pg_snapshot_xip($1::text::pg_snapshot)))\n               AND pg_visible_in_snapshot(l.xid, pg_current_snapshot())\n             ORDER BY l.xid, l.id\n             LIMIT $2)\n            UNION ALL\n            (SELECT l.xid, l.id, l.domain, l.keys\n             FROM cache_change_log l\n             WHERE l.xid >= pg_snapshot_xmax($1::text::pg_snapshot)\n               AND l.xid < pg_snapshot_xmax(pg_current_snapshot())\n               AND pg_visible_in_snapshot(l.xid, pg_current_snapshot())\n             ORDER BY l.xid, l.id\n             LIMIT $2)\n            ORDER BY xid, id\n            LIMIT $2\n        )\n        SELECT pg_is_in_recovery() AS \"in_recovery!\",\n               pg_postmaster_start_time() AS \"postmaster_start!\",\n               s.next::text AS \"snapshot!\",\n               coalesce(pg_snapshot_xmax(s.next) < pg_snapshot_xmax($1::text::pg_snapshot), false)\n                   AS \"went_back!\",\n               c.domain AS \"domain?\",\n               ARRAY(SELECT k FROM unnest(c.keys) AS k WHERE k IS NOT NULL) AS \"keys?\"\n        FROM s LEFT JOIN changed c ON true\n        ORDER BY c.xid, c.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "in_recovery!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "postmaster_start!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "snapshot!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "went_back!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "domain?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "keys?",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "6f0d7a5574638e11ad26d32176e1224ce44bc92bc32625dcd1c144f73e934e72"
+}

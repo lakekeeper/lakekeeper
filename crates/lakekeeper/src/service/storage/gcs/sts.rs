@@ -1,24 +1,18 @@
-use google_cloud_auth::credentials::CredentialsFile;
-use lakekeeper_io::Location;
+use lakekeeper_io::{Location, gcs::TOKEN_HTTP_CLIENT};
 use serde::{Deserialize, Serialize};
 
-use super::{HTTP_CLIENT, STS_URL, TokenSource};
+use super::STS_URL;
 use crate::service::storage::{
-    ShortTermCredentialsRequest, StoragePermissions, error::TableConfigError, gcs::GcsServiceKey,
+    ShortTermCredentialsRequest, StoragePermissions, error::TableConfigError,
 };
 
 pub(crate) async fn downscope(
-    token_source: TokenSource,
+    subject_token: &str,
     bucket: &str,
     stc_request: &ShortTermCredentialsRequest,
 ) -> Result<STSResponse, TableConfigError> {
-    let token = token_source.token().await.map_err(|e| {
-        tracing::error!("Failed to get token from token source: {:?}", e);
-        TableConfigError::FailedDependency("Failed to get gcp token from token source".to_string())
-    })?;
-
     let gcs_sts_request = &STSRequest::from_token_and_options(
-        &token,
+        subject_token,
         &Options::from_location_and_permissions(
             bucket,
             &stc_request.table_location,
@@ -26,31 +20,52 @@ pub(crate) async fn downscope(
         )?,
     )?;
 
-    let response = HTTP_CLIENT
-        .clone()
-        .post(STS_URL.clone())
+    let response = TOKEN_HTTP_CLIENT
+        .post(STS_URL)
         .json(&gcs_sts_request)
         .send()
         .await
         .map_err(|e| {
             tracing::error!("Failed to send downscoping request: {:?}", e);
             TableConfigError::FailedDependency("Failed to send downscoping request".to_string())
-        })?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                "Downscoping did not return a JSON body: {e:?}. Request: {gcs_sts_request:?}",
-            );
-            TableConfigError::FailedDependency("Failed to downscope.".to_string())
         })?;
-
-    serde_json::from_value(response.clone()).map_err(|e| {
+    let status = response.status();
+    let body = response.bytes().await.map_err(|e| {
+        tracing::error!("Failed to read the downscoping response: {e:?}");
+        TableConfigError::FailedDependency("Failed to downscope.".to_string())
+    })?;
+    if !status.is_success() {
+        // The body of an error response holds no token; only its error fields are logged.
+        let STSErrorResponse {
+            error,
+            error_description,
+        } = serde_json::from_slice(&body).unwrap_or_default();
         tracing::error!(
-            "Failed to parse downscoping response: {e:?}. Received Body: {response}. Request: {gcs_sts_request:?}",
+            %status,
+            error,
+            error_description,
+            "Downscoping failed. Request: {gcs_sts_request:?}"
+        );
+        return Err(TableConfigError::FailedDependency(
+            "Failed to downscope.".to_string(),
+        ));
+    }
+
+    // A successful body holds the token, so it is not logged.
+    serde_json::from_slice(&body).map_err(|e| {
+        tracing::error!(
+            "Failed to parse downscoping response: {e:?}. Request: {gcs_sts_request:?}",
         );
         TableConfigError::FailedDependency("Failed to downscope.".to_string())
     })
+}
+
+#[derive(Deserialize, Default)]
+struct STSErrorResponse {
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    error_description: String,
 }
 
 #[derive(Deserialize, Clone, veil::Redact)]
@@ -219,47 +234,6 @@ struct AccessBoundaryRule {
 struct AvailabilityCondition {
     title: String,
     expression: String,
-}
-
-impl From<&GcsServiceKey> for CredentialsFile {
-    fn from(
-        GcsServiceKey {
-            r#type: tp,
-            project_id,
-            private_key_id,
-            private_key,
-            client_email,
-            client_id,
-            auth_uri,
-            token_uri,
-            auth_provider_x509_cert_url: _,
-            client_x509_cert_url: _,
-            universe_domain: _,
-        }: &GcsServiceKey,
-    ) -> Self {
-        Self {
-            tp: tp.clone(),
-            client_email: Some(client_email.clone()),
-            private_key_id: Some(private_key_id.clone()),
-            private_key: Some(private_key.clone()),
-            auth_uri: Some(auth_uri.clone()),
-            token_uri: Some(token_uri.clone()),
-            project_id: Some(project_id.clone()),
-            client_secret: None,
-            client_id: Some(client_id.clone()),
-            refresh_token: None,
-            audience: None,
-            subject_token_type: None,
-            token_url_external: None,
-            token_info_url: None,
-            service_account_impersonation_url: None,
-            service_account_impersonation: None,
-            delegates: None,
-            credential_source: None,
-            quota_project_id: None,
-            workforce_pool_user_project: None,
-        }
-    }
 }
 
 #[cfg(test)]

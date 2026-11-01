@@ -16,7 +16,7 @@ use crate::{
     },
     service::{
         ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceHierarchy, SecretStore, State, Transaction,
+        CatalogWarehouseOps, NamespaceHierarchy, SecretStore, State,
         authz::{
             AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogNamespaceAction, CatalogViewAction,

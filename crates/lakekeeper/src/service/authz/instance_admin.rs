@@ -54,6 +54,10 @@ use crate::{
 pub enum InstanceAdminAction {
     /// Set or clear a warehouse's managed-by marker.
     SetWarehouseManagedBy,
+    /// Switch this Lakekeeper process into read-only maintenance mode.
+    SetMaintenanceModeReadOnly,
+    /// Switch this Lakekeeper process out of runtime read-only maintenance mode.
+    SetMaintenanceModeOff,
 }
 
 impl EventAction for InstanceAdminAction {

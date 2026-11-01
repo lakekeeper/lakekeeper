@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
-use iceberg::{TableIdent, ViewCreation, spec::ViewMetadataBuilder};
+use iceberg::{
+    TableIdent, ViewCreation,
+    spec::{ViewMetadata, ViewMetadataBuilder},
+};
 use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
+use lakekeeper_io::Location;
 
 use crate::{
     api::{
@@ -11,15 +15,15 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::write_file,
+        io::{delete_on_failure, write_file},
         maybe_get_secret, require_warehouse_id,
         tables::{require_active_warehouse, validate_table_or_view_ident},
         tabular::determine_tabular_location,
         views::{commit::validate_trusted_engine_properties_on_create, validate_view_properties},
     },
     service::{
-        CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
-        Transaction, ViewId,
+        COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogStore, CatalogViewOps, Result,
+        SecretStore, State, TabularId, Transaction, ViewId,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
             emit_bootstrap_grants_async, write_bootstrap_grants,
@@ -36,10 +40,6 @@ use crate::{
 // TODO: split up into smaller functions
 #[allow(clippy::too_many_lines)]
 /// Create a view in the given namespace.
-///
-/// # Panics
-/// Panics if the resolved metadata builder fails an internal invariant (e.g.
-/// uuid assignment).
 pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     request: CreateViewRequest,
@@ -120,31 +120,12 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         0,
     );
 
-    let view_creation = ViewMetadataBuilder::from_view_creation(ViewCreation {
-        name: view.name.clone(),
-        location: view_location.to_string(),
-        representations: request.view_version.representations().clone(),
-        schema: request.schema.clone(),
-        properties: request.properties.clone(),
-        default_namespace: request.view_version.default_namespace().clone(),
-        default_catalog: request.view_version.default_catalog().cloned(),
-        summary: request.view_version.summary().clone(),
-    })
-    .unwrap()
-    .assign_uuid(*view_id.as_ref());
-
-    let metadata_build_result = view_creation.build().map_err(|e| {
-        ErrorModel::bad_request(
-            format!("Failed to create view metadata: {e}"),
-            "ViewMetadataCreationFailed",
-            Some(Box::new(e)),
-        )
-    })?;
+    let metadata = build_view_metadata(&view, &view_location, view_id, &request)?;
 
     state
         .v1_state
         .contract_verifiers
-        .check_create_view(&request, &metadata_build_result.metadata)
+        .check_create_view(&request, &metadata)
         .await?
         .into_result()?;
 
@@ -153,7 +134,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         warehouse_id,
         ns_hierarchy.namespace_id(),
         &view,
-        &metadata_build_result.metadata,
+        &metadata,
         &metadata_location,
         t.transaction(),
     )
@@ -168,62 +149,74 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .storage_profile
         .file_io(storage_secret_ref)
         .await?;
-    let compression_codec = CompressionCodec::try_from_metadata(&metadata_build_result.metadata)?;
-    write_file(
-        &file_io,
-        &metadata_location,
-        &metadata_build_result.metadata,
-        compression_codec,
-    )
+    let (config, bootstrap_grants) = delete_on_failure(&file_io, &[&metadata_location], async {
+        let compression_codec = CompressionCodec::try_from_metadata(&metadata)?;
+        write_file(&file_io, &metadata_location, &metadata, compression_codec).await?;
+        tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
+
+        // Generate the storage profile. This requires the storage secret
+        // because the table config might contain vended-credentials based
+        // on the `data_access` parameter.
+        // ToDo: There is a small inefficiency here: If storage credentials
+        // are not required because of i.e. remote-signing and if this
+        // is a stage-create, we still fetch the secret.
+        let config = warehouse
+            .storage_profile
+            .generate_table_config(
+                data_access,
+                storage_secret_ref,
+                &view_location,
+                StoragePermissions::Read,
+                &request_metadata,
+                &view_info,
+            )
+            .await?;
+
+        let view_id = ViewId::from(metadata.uuid());
+        authorizer
+            .create_view(
+                &request_metadata,
+                warehouse_id,
+                view_id,
+                ns_hierarchy.namespace_id(),
+            )
+            .await?;
+
+        let committed: Result<_> = async {
+            let bootstrap_grants = write_bootstrap_grants::<C, A>(
+                authorizer,
+                &request_metadata,
+                &GrantResource::View {
+                    warehouse_id,
+                    view_id,
+                },
+                t.transaction(),
+            )
+            .await?;
+            t.commit().await?;
+            Ok(bootstrap_grants)
+        }
+        .await;
+        // The view entry outlives a rolled-back transaction; keep it if the commit may have
+        // been applied.
+        if let Err(e) = &committed
+            && e.error.r#type != COMMIT_STATE_UNKNOWN_ERROR_TYPE
+            && let Err(e) = authorizer.delete_view(warehouse_id, view_id).await
+        {
+            tracing::warn!(
+                %view_id,
+                "Failed to remove the authorizer entry of a view that was not created: {e}"
+            );
+        }
+        Ok((config, committed?))
+    })
     .await?;
-    tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
-
-    // Generate the storage profile. This requires the storage secret
-    // because the table config might contain vended-credentials based
-    // on the `data_access` parameter.
-    // ToDo: There is a small inefficiency here: If storage credentials
-    // are not required because of i.e. remote-signing and if this
-    // is a stage-create, we still fetch the secret.
-    let config = warehouse
-        .storage_profile
-        .generate_table_config(
-            data_access,
-            storage_secret_ref,
-            &view_location,
-            StoragePermissions::Read,
-            &request_metadata,
-            &view_info,
-        )
-        .await?;
-
-    let view_id = ViewId::from(metadata_build_result.metadata.uuid());
-    authorizer
-        .create_view(
-            &request_metadata,
-            warehouse_id,
-            view_id,
-            ns_hierarchy.namespace_id(),
-        )
-        .await?;
-
-    let bootstrap_grants = write_bootstrap_grants::<C, A>(
-        authorizer,
-        &request_metadata,
-        &GrantResource::View {
-            warehouse_id,
-            view_id,
-        },
-        t.transaction(),
-    )
-    .await?;
-
-    t.commit().await?;
 
     // Held across the create event below, which consumes the context.
     let grant_dispatcher = event_ctx.dispatcher().clone();
     let grant_request_metadata = event_ctx.request_metadata_arc();
 
-    let view_metadata = Arc::new(metadata_build_result.metadata);
+    let view_metadata = Arc::new(metadata);
     let metadata_location_str = metadata_location.to_string();
     let metadata_location = Arc::new(metadata_location);
 
@@ -247,4 +240,41 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     };
 
     Ok(load_view_result)
+}
+
+/// Build the metadata of a new view.
+///
+/// # Panics
+/// Panics if the resolved metadata builder fails an internal invariant (e.g.
+/// uuid assignment).
+fn build_view_metadata(
+    view: &TableIdent,
+    view_location: &Location,
+    view_id: TabularId,
+    request: &CreateViewRequest,
+) -> Result<ViewMetadata> {
+    let view_creation = ViewMetadataBuilder::from_view_creation(ViewCreation {
+        name: view.name.clone(),
+        location: view_location.to_string(),
+        representations: request.view_version.representations().clone(),
+        schema: request.schema.clone(),
+        properties: request.properties.clone(),
+        default_namespace: request.view_version.default_namespace().clone(),
+        default_catalog: request.view_version.default_catalog().cloned(),
+        summary: request.view_version.summary().clone(),
+    })
+    .unwrap()
+    .assign_uuid(*view_id.as_ref());
+
+    view_creation
+        .build()
+        .map(|result| result.metadata)
+        .map_err(|e| {
+            ErrorModel::bad_request(
+                format!("Failed to create view metadata: {e}"),
+                "ViewMetadataCreationFailed",
+                Some(Box::new(e)),
+            )
+            .into()
+        })
 }

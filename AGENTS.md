@@ -87,8 +87,9 @@ Applies to `docs/docs/*.md` and `site/docs/`. Release notes: also follow `.githu
 - New features should extend existing traits/interfaces where possible rather than introducing parallel abstractions.
 - Cold path (management/admin routes): bypass per-process in-memory caches; read authoritative data from the DB.
 - Hot authz path: may tolerate cache lag.
-- After any write: invalidate the local replica's in-memory cache immediately.
-- Never rely on per-process caches for cross-replica correctness — caches have no cross-replica invalidation.
+- Write cached entities through store methods that take `&mut WriteTransaction` and record the changed cache keys; never evict by hand after a write.
+- Fill shared caches only from reads that see committed data (`State` or `ReadTransaction::committed_reads()`), never from a write transaction.
+- Never rely on per-process caches for cross-replica correctness: cross-replica eviction is best effort, and the TTL stays the bound.
 - Never retrofit a behavior-narrowing query param onto an existing route (worst case: scoping a DELETE). Released servers ignore unknown query params, so under version skew a new client gets the un-scoped operation. Add a new route instead — old servers reject it.
 
 ## Authorization & audit in handlers
@@ -109,7 +110,7 @@ Follow `crates/lakekeeper/src/api/management/v1/lakekeeper_actions.rs` as the re
 - Everything this log names is `lower_snake_case`. The attribute checks values and keys; record and part field names are checked in review.
 - Never add a `_ =>` arm to an `action_descriptor` match: a new action would emit no context.
 - A fixture must describe a record the server can produce: build it from `action_descriptor()` or the handler's `event_actions()`. Add one for every new emission path, and extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record shape.
-- Never suppress a log line because "the audit record covers it" without asking `crate::audit::enabled()` first.
+- Never suppress a log line because "the audit record covers it" without asking `crate::audit::log_enabled()` first.
 - After a change: `just update-audit-fixtures` and `just update-audit-schema`, review both diffs, commit, then run `just check-audit-format` (it reads `HEAD`). Never edit `AUDIT_FORMAT`, the fixtures or `docs/docs/audit/schema.json` by hand.
 
 ## Rules

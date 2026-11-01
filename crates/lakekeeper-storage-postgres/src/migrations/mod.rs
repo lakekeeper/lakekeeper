@@ -5,7 +5,10 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use futures::future::BoxFuture;
-use lakekeeper::service::{ServerId, Transaction};
+use lakekeeper::service::{
+    ServerId, Transaction,
+    cache_invalidation::{CacheDomain, ChangeSet},
+};
 /// Re-exported for convenience so the `ExtensionMigrations::migrator` field
 /// type is reachable without naming `sqlx` in the caller's import list.
 ///
@@ -19,11 +22,13 @@ use sqlx::{
     AssertSqlSafe, Error, Executor, Postgres,
     migrate::{AppliedMigration, Migrate, MigrateError, Migration as SqlxMigration, Migrator},
 };
+use strum::IntoEnumIterator;
 use typed_builder::TypedBuilder;
 
 use crate::{
     CatalogState, PostgresTransaction,
     bootstrap::get_or_set_server_id,
+    cache_change_log::record_cache_changes,
     config::{CONFIG, PgSchema},
     migrations::split_table_metadata::SplitTableMetadataHook,
 };
@@ -456,10 +461,11 @@ async fn migrate_in_schema(
     // 3. Apply in merged order, dispatching each migration to its source's
     //    tracker table. Each source's checksum / sha-patch / hook state lives
     //    on its `SourceState`.
+    let mut applied_any = false;
     for (version, src_idx, mut migration) in timeline {
         migration.no_tx = true;
         let source = &mut sources[src_idx];
-        apply_migration(transaction, source, migration)
+        applied_any |= apply_migration(transaction, source, migration)
             .await
             .with_context(|| {
                 format!(
@@ -467,6 +473,16 @@ async fn migrate_in_schema(
                     source.table_name,
                 )
             })?;
+    }
+
+    // Migrations and their data hooks can change any cached row, and instances of the
+    // previous release keep serving during a rolling upgrade.
+    if applied_any {
+        let mut every_domain = ChangeSet::new();
+        for domain in CacheDomain::iter() {
+            every_domain.insert_whole_domain(domain);
+        }
+        record_cache_changes(&every_domain, transaction).await?;
     }
 
     let server_id = get_or_set_server_id(&mut **transaction).await?;
@@ -493,12 +509,13 @@ struct SourceState {
     sha_patches: HashSet<i64>,
 }
 
-/// Apply (or skip, or sha-patch) one migration against its source's tracker.
+/// Apply (or skip, or sha-patch) one migration against its source's tracker. Returns
+/// whether it applied the migration.
 async fn apply_migration(
     transaction: &mut sqlx::Transaction<'_, Postgres>,
     source: &mut SourceState,
     migration: SqlxMigration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     tracing::info!(%migration.version, %migration.description, "Current migration");
 
     // Clone the applied checksum so we don't hold a borrow into `source.applied`
@@ -519,11 +536,12 @@ async fn apply_migration(
                     migration.version,
                 )
                 .await?;
-                return Ok(());
+                return Ok(false);
             }
             Err(MigrateError::VersionMismatch(migration.version))?;
         }
         tracing::info!(%migration.version, "Migration already applied");
+        Ok(false)
     } else {
         transaction.apply(&source.table_name, &migration).await?;
         tracing::info!(%migration.version, "Applying migration");
@@ -534,8 +552,8 @@ async fn apply_migration(
         } else {
             tracing::debug!(%migration.version, "No hook for migration");
         }
+        Ok(true)
     }
-    Ok(())
 }
 
 async fn run_checks(
@@ -1037,6 +1055,108 @@ mod tests {
         pool_b.close().await;
     }
 
+    /// Call `lakekeeper_record_cache_change` through a Lakekeeper pool, as the code and
+    /// extension triggers in its sessions do.
+    async fn record_cache_change(pool: &PgPool, key: &str) {
+        sqlx::query("SELECT lakekeeper_record_cache_change('extension_domain', ARRAY[$1])")
+            .bind(key)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// The keys `record_cache_change` recorded in `schema`.
+    async fn cache_change_keys_in_schema(admin_pool: &PgPool, schema: &str) -> Vec<Vec<String>> {
+        sqlx::query_scalar(AssertSqlSafe(format!(
+            r#"SELECT keys FROM "{schema}".cache_change_log WHERE domain = 'extension_domain' ORDER BY id"#
+        )))
+        .fetch_all(admin_pool)
+        .await
+        .unwrap()
+    }
+
+    /// Each deployment's record function writes to the change log in its own schema.
+    #[sqlx::test(migrations = false)]
+    async fn test_record_cache_change_writes_to_its_own_schema(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema_a = unique_schema("lk_a");
+        let schema_b = unique_schema("lk_b");
+        let pool_a = app_pool(&admin_pool, Some(&schema_a)).await;
+        let pool_b = app_pool(&admin_pool, Some(&schema_b)).await;
+        migrate_in_schema(&pool_a, Vec::new(), Some(&schema_a))
+            .await
+            .unwrap();
+        migrate_in_schema(&pool_b, Vec::new(), Some(&schema_b))
+            .await
+            .unwrap();
+
+        record_cache_change(&pool_a, "a").await;
+        record_cache_change(&pool_b, "b").await;
+
+        assert_eq!(
+            cache_change_keys_in_schema(&admin_pool, schema_a.as_str()).await,
+            vec![vec!["a".to_string()]]
+        );
+        assert_eq!(
+            cache_change_keys_in_schema(&admin_pool, schema_b.as_str()).await,
+            vec![vec!["b".to_string()]]
+        );
+        pool_a.close().await;
+        pool_b.close().await;
+    }
+
+    /// With `LAKEKEEPER__PG_SCHEMA` unset and the schema chosen by the role's
+    /// `search_path` (the pooler setup), the function writes to that schema's log.
+    #[sqlx::test(migrations = false)]
+    async fn test_record_cache_change_follows_the_role_search_path(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema = create_schema(&admin_pool, "lk_role").await;
+        // Same session state as `ALTER ROLE … SET search_path`: the path is set
+        // before Lakekeeper runs, and `migrate` is given no schema.
+        let pool = app_pool(&admin_pool, Some(&schema)).await;
+        migrate_in_schema(&pool, Vec::new(), None).await.unwrap();
+
+        record_cache_change(&pool, "k").await;
+
+        assert_eq!(
+            cache_change_keys_in_schema(&admin_pool, schema.as_str()).await,
+            vec![vec!["k".to_string()]]
+        );
+        assert!(!table_exists_in_schema(&admin_pool, "public", "cache_change_log").await);
+        pool.close().await;
+    }
+
+    /// Renaming the schema of a deployment keeps the record function working.
+    #[sqlx::test(migrations = false)]
+    async fn test_record_cache_change_survives_a_schema_rename(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let old = unique_schema("lk_old");
+        let pool = app_pool(&admin_pool, Some(&old)).await;
+        migrate_in_schema(&pool, Vec::new(), Some(&old))
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let new = unique_schema("lk_new");
+        sqlx::query(AssertSqlSafe(format!(
+            r#"ALTER SCHEMA "{}" RENAME TO "{}""#,
+            old.as_str(),
+            new.as_str()
+        )))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+        let pool = app_pool(&admin_pool, Some(&new)).await;
+
+        record_cache_change(&pool, "k").await;
+
+        assert_eq!(
+            cache_change_keys_in_schema(&admin_pool, new.as_str()).await,
+            vec![vec!["k".to_string()]]
+        );
+        pool.close().await;
+    }
+
     /// The advisory lock is keyed on the database, so concurrent migrations into
     /// different schemas serialize instead of racing on the database-global
     /// `CREATE EXTENSION`.
@@ -1250,6 +1370,36 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// Applied migrations and data hooks can change any cached row, so a run that applies
+    /// one names every domain. A run that applies nothing records nothing.
+    #[sqlx::test(migrations = false)]
+    async fn test_migrate_records_every_domain_when_it_applies_a_migration(pool: PgPool) {
+        use crate::test_utils::{change_log_head as head, changes_since};
+
+        migrate_core_only(&pool).await.unwrap();
+        let before_rerun = head(&pool).await;
+        migrate_core_only(&pool).await.unwrap();
+        assert_eq!(changes_since(&pool, before_rerun).await, vec![]);
+
+        let ext = ExtensionMigrations::builder()
+            .name("demo")
+            .migrator(sqlx::migrate!("./tests/extension_migrations_fixture"))
+            .build();
+        migrate(&pool, vec![ext]).await.unwrap();
+        let whole = |domain: &str| (domain.to_string(), Vec::<String>::new());
+        assert_eq!(
+            changes_since(&pool, before_rerun).await,
+            vec![
+                whole("warehouse"),
+                whole("namespace"),
+                whole("role"),
+                whole("user_assignments"),
+                whole("role_ancestors"),
+                whole("secret"),
+            ]
+        );
     }
 
     /// An extension shipped a migration, it landed in operators' databases,
@@ -1864,17 +2014,13 @@ mod tests {
         assert_eq!(*ns.version(), 0, "freshly-inserted namespace starts at v0");
 
         // --- Namespace U: each UPDATE must fire the recreated trigger ---
-        let mut tx = PostgresTransaction::begin_write(state.clone())
+        let mut tx = lakekeeper::service::WriteTransaction::<PostgresBackend>::begin(state.clone())
             .await
             .unwrap();
-        let after_protect = PostgresBackend::set_namespace_protected(
-            warehouse_id,
-            namespace_id,
-            true,
-            tx.transaction(),
-        )
-        .await
-        .expect("set_namespace_protected must succeed post-restore");
+        let after_protect =
+            PostgresBackend::set_namespace_protected(warehouse_id, namespace_id, true, &mut tx)
+                .await
+                .expect("set_namespace_protected must succeed post-restore");
         assert_eq!(*after_protect.version(), 1);
 
         let new_props = HashMap::from([("k".to_string(), "v1".to_string())]);
@@ -1882,7 +2028,7 @@ mod tests {
             warehouse_id,
             namespace_id,
             new_props,
-            tx.transaction(),
+            &mut tx,
         )
         .await
         .expect("update_namespace_properties must succeed post-restore");
@@ -1890,14 +2036,9 @@ mod tests {
 
         // Unprotect so the namespace doesn't block table/view inserts (it
         // doesn't today, but keeps the test resilient to future tightening).
-        PostgresBackend::set_namespace_protected(
-            warehouse_id,
-            namespace_id,
-            false,
-            tx.transaction(),
-        )
-        .await
-        .unwrap();
+        PostgresBackend::set_namespace_protected(warehouse_id, namespace_id, false, &mut tx)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
         // --- Table C / U / D ---

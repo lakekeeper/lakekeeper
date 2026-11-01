@@ -6,7 +6,7 @@ description: "Contribute to Lakekeeper: development setup, pull request and CI e
 
 All commits to main go through a PR. CI checks have to pass before merging the PR. Keep in mind that CI checks include lints. Before merge, commits are squashed, but GitHub is taking care of this, so don't worry. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). We encourage small and orthogonal PRs. If you want to work on a bigger feature, please open an issue and discuss it with us first.
 
-If you want to work on something but don't know what, take a look at our issues tagged with `help wanted`. If you're still unsure, please reach out to us via the [Lakekeeper Discord](https://discord.gg/jkAGG8p93B). If you have questions while working on something, please use the GitHub issue or our Discord. We are happy to guide you!
+If you want to work on something but don't know what, take a look at our issues tagged with `help wanted`. To claim an open issue with no assignees, comment only `/assign` on the issue. If you're still unsure, please reach out to us via the [Lakekeeper Discord](https://discord.gg/jkAGG8p93B). If you have questions while working on something, please use the GitHub issue or our Discord. We are happy to guide you!
 
 ## Foundation & CLA
 
@@ -18,7 +18,9 @@ To work on small and self-contained features, it is usually enough to have a Pos
 
 ```bash
 # start postgres
-docker run -d --name postgres-16 -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
+# Many tests run their migrations at the same time. More lock slots than the default
+# keep them from failing with "out of shared memory".
+docker run -d --name postgres-17 -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17 -c max_locks_per_transaction=1024
 # set envs
 echo 'export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres' > .env
 echo 'export ICEBERG_REST__PG_ENCRYPTION_KEY="abc"' >> .env
@@ -143,7 +145,17 @@ A `none` fragment is optional. Write one to put a new action in the release note
 - **A new vocabulary**: put `#[audit_part(field = "...")]` on the enum for a set of values, or `#[audit_part(keys_of = "...")]` for a set of object keys. Nothing else registers it. A variant's doc comment becomes that name's description in the schema; write what the name means to a consumer.
 - **A field**: add it to the part or context struct with a doc comment, or add a variant to the key vocabulary of its object.
 - **A field on a record shape**: add it to the struct in `shapes.rs` with a doc comment. `#[audit_part(shape = "...")]` writes the shape's `emit()` from its fields, so the field reaches the record and the schema under its own name. The attribute rejects `rename`, `skip` and `flatten` on a shape's fields, and a shape outside the `lakekeeper` crate.
-- **A new kind of operation record, from any crate**: an operations enum, an outcomes enum and a context struct, each with the attribute, then `OperationRecord::new(..).context(..).emit()`.
+- **A new kind of operation record, from any crate**: an operations enum, an outcomes enum and a context struct, each with the attribute, then build the record and dispatch it to the event dispatcher:
+
+    ```rust
+    OperationRecord::new(MyOperation::RolesResolved.as_wire(), origin, MyOutcome::Success.as_wire())
+        .context(RolesResolvedContext { .. })
+        .message("Roles resolved")
+        .dispatch(&events)
+        .await;
+    ```
+
+    While `crate::audit::log_enabled()` holds, the dispatcher hands the record to every event listener. The audit listener writes it to the log, and other listeners, such as one that forwards the audit trail to an external store, receive the same record in `EventListener::operation_recorded`. `origin` is the `&RequestMetadata` or `AdmissionTrigger` of the request the operation serves, or `RecordOrigin::without_request(actor)` for background work such as a role sync. Get the dispatcher from the `events` field of the server `State`, from the `events` field of the `AdmissionContext` in an admission gate, or from the `dispatcher` parameter of the role sync methods. `dispatch` returns a future: await it, or spawn it to keep the listeners off the caller's path.
 
 **Every name is `lower_snake_case`**: runs of `[a-z0-9]` joined by single underscores, starting with a letter. This covers a record's own fields, every key, and every value this log owns. Every other Lakekeeper log line uses the same spelling. A vocabulary's names are its variant names in `snake_case`, or the name `#[audit(rename = "...")]` gives a variant. The macro reads no `strum` or `serde` attribute, so an enum that is also an API type keeps its API spelling to itself. The macro rejects any other spelling at compile time.
 
@@ -161,7 +173,7 @@ The compiler cannot make this decision: a `String` key accepts a closed value as
 
 If the enum lives in a crate that cannot depend on `lakekeeper`, such as `iceberg-ext`, the attribute does not work: its expansion names `::lakekeeper`. Register the enum by hand, as `TableUpdateKind` is registered in `events/backends/audit/mod.rs`, from the same `VariantNames` the attribute would read.
 
-**Before setting `skip_log` on an error, ask what else records the event.** `skip_log` suppresses the ordinary error line, usually because an audit record says the same thing with the principal named. That record exists only while the audit trail reaches the log, so ask `crate::audit::enabled()` first. It is `false` under `LAKEKEEPER__AUDIT__TRACING__ENABLED=false` and under a `tracing` filter that drops the `lakekeeper::audit` target; suppressing the error line then leaves the event in no log at all. Where a second, unconditional line already exists, such as the warning a fail-closed admission gate always writes, suppress unconditionally, so an outage does not show up as an error this server did not have. The same switch gates every shape's `emit()` and `OperationRecord::context`, so records built outside the event listener follow it too, and a disabled audit trail serialises nothing.
+**Before setting `skip_log` on an error, ask what else records the event.** `skip_log` suppresses the ordinary error line, usually because an audit record says the same thing with the principal named. That record exists only while the audit trail reaches the log, so ask `crate::audit::log_enabled()` first. It is `false` under `LAKEKEEPER__AUDIT__TRACING__ENABLED=false` and under a `tracing` filter that drops the `lakekeeper::audit` target; suppressing the error line then leaves the event in no log at all. Where a second, unconditional line already exists, such as the warning a fail-closed admission gate always writes, suppress unconditionally, so an outage does not show up as an error this server did not have. The same switch gates every shape's `emit()`, `OperationRecord::context` and `OperationRecord::dispatch`: while the audit log does not record audit records, an operation record serialises no context and reaches no listener, so an audit trail that is switched off costs nothing.
 
 **Never add a `_ =>` arm to an `action_descriptor` match.** With one, a new action silently emits no context. The matches carry `#[deny(clippy::wildcard_enum_match_arm)]`, so a wildcard fails `just check` and CI, but not a plain `cargo build`. A wildcard next to the full list is caught by rustc's `unreachable_patterns`; the risky edit is replacing arms with one. Every impl in this repository that matches on its action carries the deny. `EventAction` is public, so an impl in another crate needs it too.
 
@@ -370,6 +382,56 @@ when no hooks are needed (the common case in the snippet above).
 
 Callers that don't register extensions use the back-compat shim
 `migrate_core_only(pool)`. Core upstream tooling and tests already do.
+
+#### Caches of extensions across instances
+
+An extension that caches data from its own tables can have every Lakekeeper instance remove the changed entries, like Lakekeeper does for its own caches (see [Cache Invalidation Across Instances](./configuration.md#cache-invalidation)).
+
+A *domain* names one cache, for example `ext_my_extension_scope`. Record each change in the transaction that makes it, for example from a trigger on the `ext_*` table:
+
+```sql
+SELECT lakekeeper_record_cache_change('ext_my_extension_scope', ARRAY['project:p1']);
+```
+
+- Call it on a connection whose `search_path` finds Lakekeeper's tables, as Lakekeeper's own connections do.
+- Each call adds one record, so pass all keys of a domain in one call. An empty array means all entries of the domain.
+- Use a statement-level trigger (`FOR EACH STATEMENT` with a transition table), so a bulk change adds one record and not one per row. More than 1000 records between two reads make every instance empty all its caches.
+- `lakekeeper migrate` records only the domains of Lakekeeper. A migration of an extension that changes cached rows must call the function itself.
+- Give the domain a prefix such as `ext_`, so it cannot collide with a domain Lakekeeper adds later.
+
+Then register a receiver for the domain when starting the server:
+
+```rust
+use lakekeeper::service::cache_invalidation::CacheChangeReceiver;
+
+#[derive(Debug)]
+struct MyScopeCache;
+
+#[async_trait::async_trait]
+impl CacheChangeReceiver for MyScopeCache {
+    fn domain(&self) -> &str {
+        "ext_my_extension_scope"
+    }
+
+    async fn evict(&self, keys: &[String]) {
+        // Remove `keys` from this process's cache.
+    }
+
+    async fn evict_all(&self) {
+        // Empty this process's cache.
+    }
+}
+
+let config = ServeConfiguration::builder()
+    // ...
+    .cache_change_receivers(vec![Arc::new(MyScopeCache)])
+    .build();
+```
+
+- Every instance, including the one that made the change, calls `evict` when it reads the record. It calls it again after `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE`. For a record with an empty array, and when it cannot know which changes it missed, it calls `evict_all`.
+- Each call runs in a task of its own and is cancelled after 10 seconds. Return quickly and do not wait on the database. Calls may run at the same time.
+- Cached entries must expire within two hours. Change records are kept for at least two hours, and an instance that cannot read them for longer misses the records deleted in the meantime.
+- Receivers are called only while `LAKEKEEPER__CACHE__INVALIDATION__ENABLED` is `true`. The server does not start if a receiver names a domain Lakekeeper uses, or two receivers name the same domain.
 
 #### Recovery: removing an extension's state
 

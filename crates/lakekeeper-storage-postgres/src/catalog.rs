@@ -35,31 +35,32 @@ use lakekeeper::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
-        DeleteRoleError, DeleteTagDefinitionError, DeletedUser, DropGenericTableError,
-        DropTabularError, EffectiveTagCandidate, EnsureWarehouseSpecMutableError,
-        GenericTableCreation, GenericTableId, GenericTableInfo, GenericTableListEntry,
-        GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError,
-        GetTaskDetailsError, ListCatalogRoleMembersPage, ListGenericTablesError,
-        ListGrantsStoreError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
-        ListRolesPage, ListRolesResponse, ListTabularsError, ListTagAttachmentsError,
-        ListTagAttachmentsResponse, ListTagDefinitionsError, ListTagDefinitionsResponse,
-        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
-        LoadViewError, ManagedBy, MarkTabularAsDeletedError, MovedNamespace, NamespaceDropInfo,
-        NamespaceId, NamespaceWithParent, ProjectId, RemoveRoleMembersError,
-        RemoveRoleMembersResult, RemoveTagError, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent,
-        RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
-        SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
-        SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncFor,
-        SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
-        TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
-        Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
-        UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
+        DeleteRoleError, DeleteTagDefinitionError, DeletedUser, DeletedWarehouse,
+        DropGenericTableError, DropTabularError, EffectiveTagCandidate,
+        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
+        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
+        GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
+        ListGenericTablesError, ListGrantsStoreError, ListNamespacesQuery, ListRoleMembersResult,
+        ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
+        ListTagAttachmentsError, ListTagAttachmentsResponse, ListTagDefinitionsError,
+        ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
+        LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
+        MovedNamespace, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        ReboundRole, RemoveRoleMembersError, RemoveRoleMembersResult, RemoveTagError,
+        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
+        RenamedWarehouse, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result,
+        RevokeSubtreeGrantsStoreError, Role, RoleId, RoleIdent, RoleMemberKind,
+        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
+        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, SyncFor, SyncRoleMembersError, SyncRoleMembersResult,
+        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, TableCommit, TableCreation,
+        TableId, TableIdent, TableInfo, TabularId, TabularIdentBorrowed, TabularListFlags, Tag,
+        TagAttachmentFilter, TagDefinition, TagDefinitionId, TagId, TagSource, TagTarget,
+        TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
+        UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
+        UpdateWarehouseStorageProfileError, UpdatedWarehouseStorage, UserMembershipEntry,
         UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
         WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
@@ -68,12 +69,17 @@ use lakekeeper::{
             GrantSpec, ListGrantsResultPage, ListSubtreeGrantsResultPage, SubtreeGrantFilter,
             SubtreeGrantRoot, UserOrRoleId,
         },
+        cache_invalidation::{BoxedCacheChangeLog, ChangeSet},
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
         tasks::{
-            CancelTasksFilter, Task, TaskAttemptId, TaskCheckState, TaskDetailsScope, TaskFilter,
-            TaskId, TaskInput, TaskQueueName, TaskResolveScope,
+            CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
+            ProjectTaskScheduleState, RetryDecision, Task, TaskAttemptId, TaskCheckState,
+            TaskDetailsScope, TaskFilter, TaskId, TaskInput, TaskQueueDemand,
+            TaskQueueDemandRequest, TaskQueueName, TaskResolveScope, TaskSchedule,
+            TaskScheduleFilter, TaskScheduleId, TaskScheduleStoreError, TaskScheduleUpsert,
+            TriggerTaskScheduleError, UpsertTaskScheduleError,
         },
     },
 };
@@ -82,6 +88,10 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
+    cache_change_log::{
+        PostgresCacheChangeLog, prune as prune_cache_change_log, record_cache_changes,
+    },
+    dbutils::DBErrorHandler,
     grant::{
         SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
         insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
@@ -125,9 +135,12 @@ use crate::{
     },
     tasks::{
         cancel_scheduled_tasks, check_and_heartbeat_task, cleanup_task_logs_older_than,
-        get_task_details, get_task_queue_config, list_tasks, pick_task, queue_task_batch,
-        record_failure, record_success, request_tasks_stop, reschedule_tasks_for, resolve_tasks,
-        set_task_queue_config,
+        delete_task_schedule, delete_warehouse_task_schedules, enqueue_task, get_task_details,
+        get_task_queue_config, list_project_task_schedule_states, list_task_schedules, list_tasks,
+        materialize_due_task_schedules, pick_task_with_retry_policy, queue_task_batch,
+        record_failure, record_success, reparent_pending_task, request_tasks_stop,
+        reschedule_tasks_for, resolve_tasks, set_task_queue_config, task_queue_demand,
+        task_queue_oldest_due, trigger_task_schedule, upsert_task_schedule,
     },
     user::{create_or_update_user, delete_user, list_users, search_user},
     warehouse::{
@@ -157,6 +170,28 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn reopen_for_bootstrap(catalog_state: Self::State) -> Result<ServerId> {
         reopen_for_bootstrap(&catalog_state.write_pool()).await
+    }
+
+    async fn record_cache_changes_impl<'a>(
+        change_set: &ChangeSet,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), CatalogBackendError> {
+        record_cache_changes(change_set, transaction)
+            .await
+            .map_err(DBErrorHandler::into_catalog_backend_error)
+    }
+
+    fn cache_change_log(catalog_state: Self::State) -> BoxedCacheChangeLog {
+        Box::new(PostgresCacheChangeLog::for_state(&catalog_state))
+    }
+
+    async fn prune_cache_change_log(
+        catalog_state: Self::State,
+        retention: std::time::Duration,
+    ) -> std::result::Result<Option<u64>, CatalogBackendError> {
+        prune_cache_change_log(&catalog_state.write_pool(), retention)
+            .await
+            .map_err(DBErrorHandler::into_catalog_backend_error)
     }
 
     async fn get_warehouse_by_name_impl(
@@ -405,7 +440,7 @@ impl CatalogStore for super::PostgresBackend {
         role_id: RoleId,
         request: &UpdateRoleSourceSystemRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Role, UpdateRoleError> {
+    ) -> Result<ReboundRole, UpdateRoleError> {
         update_role_source_system(project_id, role_id, request, &mut **transaction).await
     }
 
@@ -845,18 +880,6 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn affected_users_for_membership_edges_after_commit_impl(
-        member_role_ids: &[RoleId],
-        catalog_state: Self::State,
-    ) -> Result<Vec<UserId>, CatalogBackendError> {
-        let member_uuids: Vec<uuid::Uuid> = member_role_ids.iter().map(|r| **r).collect();
-        super::role_assignment::affected_users_for_membership_edges_after_commit(
-            &member_uuids,
-            &catalog_state.write_pool(),
-        )
-        .await
-    }
-
     async fn expire_role_assignment_syncs_impl<'a>(
         project_id: &ProjectId,
         provider_id: &RoleProviderId,
@@ -1019,7 +1042,7 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn delete_user<'a>(
+    async fn delete_user_impl<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<DeletedUser>> {
@@ -1043,11 +1066,10 @@ impl CatalogStore for super::PostgresBackend {
         create_project(project_id, project_name, transaction).await
     }
 
-    /// Delete a project
-    async fn delete_project<'a>(
+    async fn delete_project_impl<'a>(
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()> {
+    ) -> Result<Vec<UserId>> {
         delete_project(project_id, transaction).await
     }
 
@@ -1110,7 +1132,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<Option<SecretId>, CatalogDeleteWarehouseError> {
+    ) -> std::result::Result<DeletedWarehouse, CatalogDeleteWarehouseError> {
         delete_warehouse(warehouse_id, query, transaction).await
     }
 
@@ -1118,7 +1140,7 @@ impl CatalogStore for super::PostgresBackend {
         warehouse_id: WarehouseId,
         new_name: &str,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<ResolvedWarehouse, CatalogRenameWarehouseError> {
+    ) -> std::result::Result<RenamedWarehouse, CatalogRenameWarehouseError> {
         rename_warehouse(warehouse_id, new_name, transaction).await
     }
 
@@ -1151,7 +1173,7 @@ impl CatalogStore for super::PostgresBackend {
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretId>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<ResolvedWarehouse, UpdateWarehouseStorageProfileError> {
+    ) -> std::result::Result<UpdatedWarehouseStorage, UpdateWarehouseStorageProfileError> {
         update_storage_profile(
             warehouse_id,
             storage_profile,
@@ -1309,18 +1331,39 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn pick_new_task_impl(
-        queue_name: &TaskQueueName,
-        legacy_queue_names: &[&TaskQueueName],
-        default_max_time_since_last_heartbeat: Duration,
+        request: PickTaskRequest<'_>,
         state: Self::State,
     ) -> Result<Option<Task>> {
-        pick_task(
+        let PickTaskRequest {
+            queue_name,
+            legacy_queue_names,
+            default_max_time_since_last_heartbeat,
+            retry_policy,
+            resource_demand,
+        } = request;
+        pick_task_with_retry_policy(
             &state.write_pool(),
             queue_name,
             legacy_queue_names,
             default_max_time_since_last_heartbeat,
+            retry_policy,
+            resource_demand,
         )
         .await
+    }
+
+    async fn task_queue_demand_impl(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<TaskQueueDemand, CatalogBackendError> {
+        task_queue_demand(&state.read_pool(), request).await
+    }
+
+    async fn task_queue_oldest_due_impl(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<Option<chrono::DateTime<chrono::Utc>>, CatalogBackendError> {
+        task_queue_oldest_due(&state.read_pool(), request).await
     }
 
     async fn resolve_tasks_impl(
@@ -1343,9 +1386,10 @@ impl CatalogStore for super::PostgresBackend {
         id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
+        retry_decision: &RetryDecision,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        record_failure(&id, max_retries, error_details, transaction).await
+        record_failure(&id, max_retries, retry_decision, error_details, transaction).await
     }
 
     async fn get_task_details_impl(
@@ -1379,6 +1423,83 @@ impl CatalogStore for super::PostgresBackend {
         tracing::trace!("Queued {} tasks", queued.len());
 
         Ok(queued.into_iter().map(|t| t.task_id).collect())
+    }
+
+    async fn enqueue_task_impl(
+        queue_name: &'static TaskQueueName,
+        task: TaskInput,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome> {
+        enqueue_task(transaction, queue_name, task).await
+    }
+
+    async fn reparent_pending_task_impl(
+        queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
+        task_id: TaskId,
+        new_parent: TaskId,
+        task_data: serde_json::Value,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool> {
+        reparent_pending_task(
+            transaction,
+            queue_name,
+            legacy_queue_names,
+            task_id,
+            new_parent,
+            task_data,
+        )
+        .await
+    }
+
+    async fn upsert_task_schedule_impl(
+        schedule: TaskScheduleUpsert,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<TaskSchedule, UpsertTaskScheduleError> {
+        upsert_task_schedule(transaction, schedule).await
+    }
+
+    async fn list_task_schedules_impl(
+        filter: &TaskScheduleFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskSchedule>, TaskScheduleStoreError> {
+        list_task_schedules(transaction, filter).await
+    }
+
+    async fn delete_task_schedule_impl(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<bool, TaskScheduleStoreError> {
+        delete_task_schedule(transaction, schedule_id).await
+    }
+
+    async fn list_project_task_schedule_states_impl(
+        queue_name: &TaskQueueName,
+        schedule_key: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<ProjectTaskScheduleState>, TaskScheduleStoreError> {
+        list_project_task_schedule_states(transaction, queue_name, schedule_key).await
+    }
+
+    async fn delete_warehouse_task_schedules_impl(
+        warehouse_id: WarehouseId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<(), TaskScheduleStoreError> {
+        delete_warehouse_task_schedules(transaction, warehouse_id).await
+    }
+
+    async fn trigger_task_schedule_impl(
+        schedule_id: TaskScheduleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<EnqueueOutcome, TriggerTaskScheduleError> {
+        trigger_task_schedule(transaction, schedule_id).await
+    }
+
+    async fn materialize_due_task_schedules_impl(
+        limit: i64,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<MaterializedTick>, TaskScheduleStoreError> {
+        materialize_due_task_schedules(transaction, limit).await
     }
 
     async fn cancel_scheduled_tasks_impl(

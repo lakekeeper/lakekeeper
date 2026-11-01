@@ -103,7 +103,10 @@ impl<'de> Deserialize<'de> for StorageLayoutParentNamespaceAndTabular {
 /// `<base>/<grandparent-segment>/<parent-segment>/<tabular-segment>`.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+// Published as `StorageLayoutFull`, leaving `StorageLayoutFullHierarchy` to the
+// tagged `full-hierarchy` member of `StorageLayout`.
 #[cfg_attr(feature = "open-api", schema(
+    as = StorageLayoutFull,
     example = json!({"namespace": "{name}-{uuid}", "tabular": "{name}-{uuid}"})
 ))]
 pub struct StorageLayoutFullHierarchy {

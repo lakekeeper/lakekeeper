@@ -10,9 +10,9 @@ use super::secondary_index_get_or_load;
 #[cfg(feature = "router")]
 use crate::service::events::{self, EventListener};
 use crate::{
-    CONFIG,
+    CONFIG, ProjectId,
     service::{
-        ArcProjectId, ArcRole, ArcRoleIdent, RoleId,
+        ArcProjectId, ArcRole, ArcRoleIdent, RoleId, RoleIdent,
         cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         cache_ttl::JitteredTtl,
     },
@@ -80,7 +80,6 @@ static IDENT_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, ArcRoleIdent), RoleId>> 
             .build()
     });
 
-#[allow(dead_code)] // Not required for all features
 pub async fn role_cache_invalidate(role_id: RoleId) {
     if CONFIG.cache.role.enabled {
         tracing::debug!("Invalidating role id {role_id} from cache");
@@ -96,6 +95,31 @@ pub async fn role_cache_invalidate(role_id: RoleId) {
             .entry(role_id)
             .and_compute_with(|_| async { Op::Remove })
             .await;
+        update_cache_size_metric();
+    }
+}
+
+/// Drop the entry that resolves `ident` in `project_id` to a role id from this replica's
+/// cache.
+pub(crate) async fn role_cache_invalidate_ident(project_id: &ProjectId, ident: &RoleIdent) {
+    if CONFIG.cache.role.enabled {
+        tracing::debug!("Invalidating role ident {ident} from cache");
+        IDENT_TO_ID_CACHE
+            .invalidate(&(
+                ArcProjectId::new(project_id.clone()),
+                ArcRoleIdent::new(ident.clone()),
+            ))
+            .await;
+        update_cache_size_metric();
+    }
+}
+
+/// Drop every role from this replica's cache.
+pub(crate) fn role_cache_invalidate_all() {
+    if CONFIG.cache.role.enabled {
+        tracing::debug!("Invalidating all roles from cache");
+        ROLE_CACHE.invalidate_all();
+        IDENT_TO_ID_CACHE.invalidate_all();
         update_cache_size_metric();
     }
 }
@@ -325,15 +349,6 @@ impl EventListener for RoleCacheEventListener {
         Ok(())
     }
 
-    async fn role_deleted(&self, event: events::DeleteRoleEvent) -> anyhow::Result<()> {
-        let events::DeleteRoleEvent {
-            role,
-            request_metadata: _,
-        } = event;
-        role_cache_invalidate(role.id()).await;
-        Ok(())
-    }
-
     /// Warm the `IDENT_TO_ID_CACHE` secondary index after a role's members
     /// have been synced.
     ///
@@ -463,6 +478,29 @@ mod tests {
 
         let cached = role_cache_get_by_ident(other_project_id, role.ident_arc()).await;
         assert!(cached.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalidating_an_ident_keeps_the_role_by_id() {
+        let role_id = RoleId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        let role = test_role(
+            role_id,
+            project_id,
+            "lakekeeper",
+            "invalidate-ident-source",
+            0,
+        );
+        role_cache_insert(role.clone()).await;
+
+        role_cache_invalidate_ident(&role.project_id_arc(), &role.ident_arc()).await;
+
+        assert!(
+            role_cache_get_by_ident(role.project_id_arc(), role.ident_arc())
+                .await
+                .is_none()
+        );
+        assert!(role_cache_get_by_id(role_id).await.is_some());
     }
 
     #[tokio::test]

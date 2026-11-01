@@ -7,7 +7,7 @@ use std::{
 use http::StatusCode;
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::{ViewRequirement, rest::ViewUpdate};
-use lakekeeper_io::Location;
+use lakekeeper_io::{LakekeeperStorage, Location};
 use uuid::Uuid;
 
 use crate::{
@@ -23,7 +23,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::{remove_all, write_file},
+        io::{cleanup_before_response, delete_on_failure, remove_all, write_file},
         require_warehouse_id,
         tables::{
             MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
@@ -277,81 +277,74 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     };
     let storage_secret_ref = storage_secret.as_deref();
 
-    // Write metadata file
+    // Write the metadata file and commit
     let file_io = ctx.storage_profile.file_io(storage_secret_ref).await?;
-    write_file(
-        &file_io,
-        &new_view.metadata_location,
-        &new_metadata,
-        CompressionCodec::try_from_metadata(&new_metadata)?,
-    )
-    .await?;
-
-    tracing::debug!(
-        "Wrote new view metadata file to: '{}'",
-        new_view.metadata_location
-    );
-
-    // Generate config for client
-    let config = ctx
-        .storage_profile
-        .generate_table_config(
-            ctx.data_access,
-            storage_secret_ref,
+    let config = delete_on_failure(&file_io, &[&new_view.metadata_location], async {
+        write_file(
+            &file_io,
             &new_view.metadata_location,
-            StoragePermissions::ReadWriteDelete,
-            request_metadata,
-            ctx.view_info,
+            &new_metadata,
+            CompressionCodec::try_from_metadata(&new_metadata)?,
         )
         .await?;
 
-    // Insert idempotency key in the same transaction.
-    if let Some(key) = idempotency_key
-        && !C::try_insert_idempotency_key(
-            warehouse_id,
-            &IdempotencyInfo::builder()
-                .key(*key)
-                .endpoint(EndpointFlat::CatalogV1ReplaceView)
-                .http_status(StatusCode::OK)
-                .build(),
-            t.transaction(),
+        tracing::debug!(
+            "Wrote new view metadata file to: '{}'",
+            new_view.metadata_location
+        );
+
+        // Generate config for client
+        let config = ctx
+            .storage_profile
+            .generate_table_config(
+                ctx.data_access,
+                storage_secret_ref,
+                &new_view.metadata_location,
+                StoragePermissions::ReadWriteDelete,
+                request_metadata,
+                ctx.view_info,
+            )
+            .await?;
+
+        // Insert idempotency key in the same transaction.
+        if let Some(key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1ReplaceView)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
+        t.commit().await?;
+        Ok(config)
+    })
+    .await?;
+
+    // The removal ends before the response: the client's next commit may move the view back
+    // into this location.
+    if let Some(DeleteLocation(before_update_view_location)) = delete_old_location
+        && !cleanup_before_response(
+            request_metadata.received_at(),
+            remove_old_view_location(&file_io, before_update_view_location),
         )
-        .await?
+        .await
     {
-        t.rollback()
-            .await
-            .inspect_err(|e| {
-                tracing::warn!("Rollback failed after idempotency conflict: {e}");
-            })
-            .ok();
-        // Best-effort cleanup: delete the metadata file we wrote before rollback.
-        let _ = remove_all(&file_io, &new_view.metadata_location)
-            .await
-            .inspect_err(|e| {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to clean up metadata file after idempotency rollback"
-                );
-            });
-        return Err(ErrorModel::request_in_progress().into());
-    }
-
-    // Commit transaction
-    t.commit().await?;
-
-    // Handle file cleanup after transaction is committed
-    if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {
-        tracing::debug!("Deleting old view location at: '{before_update_view_location}'");
-        let _ = remove_all(&file_io, before_update_view_location)
-            .await
-            .inspect(|()| {
-                tracing::debug!("Deleted old view location {before_update_view_location}");
-            })
-            .inspect_err(|e| {
-                tracing::error!(
-                    "Failed to delete old view location '{before_update_view_location}': {e:?}"
-                );
-            });
+        tracing::warn!(
+            "Stopped deleting old view location '{before_update_view_location}' at the request deadline. Its remaining files stay in storage."
+        );
     }
 
     Ok((
@@ -367,6 +360,15 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             new_metadata_location: new_view.metadata_location,
         },
     ))
+}
+
+/// Removes the location a view moved away from, and logs a failure.
+async fn remove_old_view_location(file_io: &impl LakekeeperStorage, location: &Location) {
+    tracing::debug!("Deleting old view location at: '{location}'");
+    let _ = remove_all(file_io, location)
+        .await
+        .inspect(|()| tracing::debug!("Deleted old view location {location}"))
+        .inspect_err(|e| tracing::error!("Failed to delete old view location '{location}': {e:?}"));
 }
 
 fn check_requirements(requirements: Option<&Vec<ViewRequirement>>, view_id: ViewId) -> Result<()> {

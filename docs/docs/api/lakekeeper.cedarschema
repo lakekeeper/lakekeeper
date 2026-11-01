@@ -780,9 +780,10 @@ namespace Lakekeeper {
   // The same holds for `IncludeWarehouseInList`, `IncludeNamespaceInList`,
   // `IncludeTableInList`, `IncludeViewInList` and `IncludeGenericTableInList`.
   //
-  // One exception: when the caller is allowed `ListEverythingInWarehouse` or
-  // `ListEverythingInNamespace`, the per-item check below that point is not
-  // asked at all and everything is listed.
+  // One exception: a listing skips the per-item check when the caller is
+  // allowed to list everything at the level it lists: `ListEverythingInWarehouse`
+  // for warehouse-wide listings, `ListEverythingInNamespace` for listings inside
+  // that namespace.
   action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles,
          SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig,
          GetProjectTasks, ListTags in ["ProjectDescribeActions"]
@@ -979,9 +980,10 @@ namespace Lakekeeper {
   //     that the warehouse exists.
   //   GetConfig — read the Iceberg REST config endpoint that clients call when
   //     they connect.
-  //   ListEverythingInWarehouse — see everything under the warehouse in
-  //     listings. When this is allowed, everything below the warehouse is listed
-  //     and the per-item `IncludeXInList` check is skipped.
+  //   ListEverythingInWarehouse — list everything in warehouse-wide listings
+  //     without the per-item `IncludeXInList` check: top-level namespaces, the
+  //     table and view search, soft-deleted tabulars and tasks. Listings inside a
+  //     namespace ask `ListEverythingInNamespace`.
   action UseWarehouse, ListNamespacesInWarehouse, GetWarehouseMetadata, GetConfig,
          IncludeWarehouseInList, ListDeletedTabulars, GetTaskQueueConfig, GetAllTasks,
          ListEverythingInWarehouse, GetWarehouseEndpointStatistics in ["WarehouseDescribeActions"]
@@ -1039,6 +1041,11 @@ namespace Lakekeeper {
   action "NamespaceCreateActions" in ["NamespaceActions", "NamespaceModifyActions"];
   action "NamespaceModifyActions" in ["NamespaceActions"];
 
+  //   ListEverythingInNamespace — list everything directly in the namespace
+  //     without the per-item `IncludeXInList` check: tables, views, generic
+  //     tables and child namespaces. Allow it on
+  //     `resource in Lakekeeper::Warehouse::"<id>"` to cover every namespace of
+  //     a warehouse.
   action ListEverythingInNamespace, GetNamespaceMetadata, IncludeNamespaceInList,
          ListTables, ListViews, ListGenericTables,
          ListNamespacesInNamespace in ["NamespaceDescribeActions"]

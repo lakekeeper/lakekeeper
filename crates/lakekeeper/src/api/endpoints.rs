@@ -1,7 +1,14 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{LazyLock, OnceLock},
+};
 
 use http::Method;
 use strum::IntoEnumIterator;
+
+#[cfg(feature = "router")]
+use crate::api::management::v1::extension::ManagementApiExtensionError;
 
 macro_rules! generate_endpoints {
     (
@@ -44,11 +51,20 @@ macro_rules! generate_endpoints {
         )*
 
         pastey::paste! {
-            #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter, strum::Display)]
-            #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
+            /// Every endpoint under its stored name (see [`EndpointFlat::name`]).
+            #[derive(
+                Debug,
+                Clone,
+                Copy,
+                PartialEq,
+                Eq,
+                Hash,
+                strum_macros::EnumIter,
+                strum::Display,
+                strum::IntoStaticStr,
+                strum::EnumString,
+            )]
             #[strum(serialize_all = "kebab-case")]
-            // Only apply the sqlx attribute if the feature is enabled
-            #[cfg_attr(feature = "sqlx-postgres", sqlx(type_name = "api_endpoints", rename_all = "kebab-case"))]
             pub enum EndpointFlat {
                 $(
                     $(
@@ -201,6 +217,7 @@ generate_endpoints! {
         ServerInfo(GET, "/management/v1/info"),
         GetServerActions(GET, "/management/v1/server/actions"),
         Bootstrap(POST, "/management/v1/bootstrap"),
+        SetMaintenanceMode(POST, "/management/v1/server/maintenance-mode"),
         CreateUser(POST, "/management/v1/user"),
         SearchUser(POST, "/management/v1/search/user"),
         GetUser(GET, "/management/v1/user/{user_id}"),
@@ -371,9 +388,32 @@ impl ManagementV1Endpoint {
     }
 }
 
+impl EndpointFlat {
+    /// The name this endpoint is stored under, e.g. in endpoint statistics. A stored name
+    /// never changes and never disappears; `test_stored_names_are_pinned` enforces that.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        self.into()
+    }
+}
+
 impl Endpoint {
-    pub fn from_method_and_matched_path(method: &Method, inp: &str) -> Option<Self> {
-        if inp.starts_with("/management/v1/permissions") {
+    /// See [`EndpointFlat::name`].
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        EndpointFlat::from(self).name()
+    }
+
+    /// The endpoint stored under `name`, if this server knows it.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        name.parse::<EndpointFlat>().ok().map(Into::into)
+    }
+
+    /// The Lakekeeper endpoint axum matched for a request. Use
+    /// [`ServedEndpoint::from_method_and_matched_path`] to include extension endpoints.
+    pub(crate) fn from_method_and_matched_path(method: &Method, inp: &str) -> Option<Self> {
+        if inp.starts_with(PERMISSIONS_PREFIX) {
             return match *method {
                 Method::GET => Some(PermissionV1Endpoint::Get.into()),
                 Method::POST => Some(PermissionV1Endpoint::Post.into()),
@@ -383,19 +423,196 @@ impl Endpoint {
                 _ => None,
             };
         }
-        ROUTE_MAP
-            .get(&(
-                match method {
-                    &Method::GET => Method::GET,
-                    &Method::POST => Method::POST,
-                    &Method::HEAD => Method::HEAD,
-                    &Method::DELETE => Method::DELETE,
-                    &Method::PUT => Method::PUT,
-                    x => x.clone(),
-                },
-                inp,
-            ))
-            .copied()
+        head_served_by_get(method, |method| {
+            ROUTE_MAP.get(&(method.clone(), inp)).copied()
+        })
+    }
+}
+
+/// The authorizer's management routes. Every path starting with this is a permission endpoint.
+pub(crate) const PERMISSIONS_PREFIX: &str = "/management/v1/permissions";
+
+/// Looks up `method`, and for a HEAD request without its own endpoint the GET endpoint:
+/// axum serves such a request with the route's GET handler.
+fn head_served_by_get<T>(method: &Method, lookup: impl Fn(&Method) -> Option<T>) -> Option<T> {
+    lookup(method).or_else(|| {
+        if method == Method::HEAD {
+            lookup(&Method::GET)
+        } else {
+            None
+        }
+    })
+}
+
+/// An endpoint that a management API extension serves.
+///
+/// Endpoint statistics store it under [`name`](Self::name), which starts with `ext-`. Like
+/// Lakekeeper's own names, a released name never changes.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct ExtensionEndpoint {
+    name: &'static str,
+    method: Method,
+    path: &'static str,
+}
+
+impl ExtensionEndpoint {
+    /// `path` is the full route, starting with `/management/v1/`, as axum reports it as the
+    /// matched path. Declare the endpoint as a `static`: `Method` has drop glue, so a
+    /// reference to a constant is not `'static`.
+    #[must_use]
+    pub const fn new(name: &'static str, method: Method, path: &'static str) -> Self {
+        Self { name, method, path }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    #[must_use]
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &'static str {
+        self.path
+    }
+}
+
+/// An endpoint this server serves: one of Lakekeeper's own, or one a management API extension
+/// adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServedEndpoint {
+    Lakekeeper(Endpoint),
+    Extension(&'static ExtensionEndpoint),
+}
+
+impl From<Endpoint> for ServedEndpoint {
+    fn from(endpoint: Endpoint) -> Self {
+        Self::Lakekeeper(endpoint)
+    }
+}
+
+impl From<&'static ExtensionEndpoint> for ServedEndpoint {
+    fn from(endpoint: &'static ExtensionEndpoint) -> Self {
+        Self::Extension(endpoint)
+    }
+}
+
+impl ServedEndpoint {
+    /// The endpoint axum matched for a request. A HEAD request to a route without a HEAD
+    /// endpoint resolves to the route's GET endpoint, whose handler serves it.
+    #[must_use]
+    pub(crate) fn from_method_and_matched_path(
+        method: &Method,
+        matched_path: &str,
+    ) -> Option<Self> {
+        Self::from_method_and_matched_path_in(EXTENSION_ENDPOINTS.get(), method, matched_path)
+    }
+
+    fn from_method_and_matched_path_in(
+        extensions: Option<&ExtensionEndpoints>,
+        method: &Method,
+        matched_path: &str,
+    ) -> Option<Self> {
+        Endpoint::from_method_and_matched_path(method, matched_path)
+            .map(Self::Lakekeeper)
+            .or_else(|| {
+                extensions?
+                    .served(method, matched_path)
+                    .map(Self::Extension)
+            })
+    }
+
+    /// The endpoint stored under `name`, if this server serves it.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::from_name_in(EXTENSION_ENDPOINTS.get(), name)
+    }
+
+    fn from_name_in(extensions: Option<&ExtensionEndpoints>, name: &str) -> Option<Self> {
+        Endpoint::from_name(name)
+            .map(Self::Lakekeeper)
+            .or_else(|| extensions?.by_name.get(name).copied().map(Self::Extension))
+    }
+
+    /// The name this endpoint is stored under (see [`EndpointFlat::name`]).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Lakekeeper(endpoint) => endpoint.name(),
+            Self::Extension(endpoint) => endpoint.name(),
+        }
+    }
+
+    /// `METHOD /path`, e.g. `GET /management/v1/info`.
+    #[must_use]
+    pub fn http_route(self) -> Cow<'static, str> {
+        match self {
+            Self::Lakekeeper(endpoint) => Cow::Borrowed(endpoint.as_http_route()),
+            Self::Extension(endpoint) => {
+                Cow::Owned(format!("{} {}", endpoint.method(), endpoint.path()))
+            }
+        }
+    }
+}
+
+/// The extension endpoints this process routes.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExtensionEndpoints {
+    routed: HashMap<(Method, &'static str), &'static ExtensionEndpoint>,
+    by_name: HashMap<&'static str, &'static ExtensionEndpoint>,
+}
+
+impl ExtensionEndpoints {
+    /// Validation rejects a repeated name, and axum panics on a repeated route.
+    pub(crate) fn new(routed: impl IntoIterator<Item = &'static ExtensionEndpoint>) -> Self {
+        let mut endpoints = Self::default();
+        for endpoint in routed {
+            endpoints
+                .routed
+                .insert((endpoint.method().clone(), endpoint.path()), endpoint);
+            endpoints.by_name.insert(endpoint.name(), endpoint);
+        }
+        endpoints
+    }
+
+    fn served(&self, method: &Method, matched_path: &str) -> Option<&'static ExtensionEndpoint> {
+        head_served_by_get(method, |method| {
+            self.routed.get(&(method.clone(), matched_path)).copied()
+        })
+    }
+}
+
+/// Process-global like [`ROUTE_MAP`]: the statistics listing resolves stored names without
+/// access to the server's state.
+static EXTENSION_ENDPOINTS: OnceLock<ExtensionEndpoints> = OnceLock::new();
+
+/// Installs the extension endpoints of this process. Installing an equal set again succeeds,
+/// since a process can build its router more than once; an empty set installs nothing.
+///
+/// # Errors
+/// A different set is already installed.
+#[cfg(feature = "router")]
+pub(crate) fn install_extension_endpoints(
+    endpoints: ExtensionEndpoints,
+) -> Result<(), ManagementApiExtensionError> {
+    install_extension_endpoints_into(&EXTENSION_ENDPOINTS, endpoints)
+}
+
+#[cfg(feature = "router")]
+fn install_extension_endpoints_into(
+    installed: &OnceLock<ExtensionEndpoints>,
+    endpoints: ExtensionEndpoints,
+) -> Result<(), ManagementApiExtensionError> {
+    if endpoints.by_name.is_empty() {
+        return Ok(());
+    }
+    match installed.set(endpoints) {
+        Ok(()) => Ok(()),
+        Err(rejected) if installed.get() == Some(&rejected) => Ok(()),
+        Err(_) => Err(ManagementApiExtensionError::DifferentEndpointsInstalled),
     }
 }
 
@@ -507,6 +724,14 @@ mod test {
             "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
             "management/v1/project/task-queue/task_log_cleanup/config",
         ];
+        // Upstream Iceberg REST routes Lakekeeper does not serve. They are in the vendored
+        // spec and absent from the `Endpoint` enum.
+        let unserved_catalog_paths = [
+            "catalog/v1/{prefix}/namespaces/{namespace}/functions",
+            "catalog/v1/{prefix}/namespaces/{namespace}/functions/{function}",
+            "catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister",
+            "catalog/v1/{prefix}/namespaces/{namespace}/register-view",
+        ];
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
         let catalog_yaml = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml");
@@ -579,8 +804,17 @@ mod test {
         // Extract endpoints from Endpoints enum
         let mut actual_endpoints = HashSet::new();
         for endpoint in Endpoint::iter() {
+            // Permission routes are per-authorizer. Of the signing routes, only the per-table
+            // one is in the Iceberg spec.
             if matches!(endpoint, Endpoint::PermissionV1(_))
-                || matches!(endpoint, Endpoint::Sign(_))
+                || matches!(
+                    endpoint,
+                    Endpoint::Sign(
+                        SignEndpoint::S3RequestGlobal
+                            | SignEndpoint::S3RequestPrefix
+                            | SignEndpoint::S3RequestTabular
+                    )
+                )
             {
                 continue;
             }
@@ -607,6 +841,13 @@ mod test {
             actual_endpoints.insert((method.clone(), normalized_path.to_string()));
         }
 
+        for path in unserved_catalog_paths {
+            assert!(
+                !actual_endpoints.iter().any(|(_method, p)| p == path),
+                "{path} is in the Endpoints enum; remove it from `unserved_catalog_paths`"
+            );
+        }
+
         // Find missing endpoints
         let missing_endpoints: Vec<_> = expected_endpoints.difference(&actual_endpoints).collect();
 
@@ -620,6 +861,8 @@ mod test {
             // We remove the parameterized endpoints with {queue_name} and expand them using actually
             // registered queues
             .filter(|(_method, path)| !exempt_config_paths.contains(&path.as_str()))
+            // Upstream routes Lakekeeper does not serve
+            .filter(|(_method, path)| !unserved_catalog_paths.contains(&path.as_str()))
             .collect::<Vec<_>>();
 
         if !missing_endpoints.is_empty() {
@@ -683,5 +926,388 @@ mod test {
                 format!("{method} {path}")
             );
         }
+    }
+
+    /// Every stored endpoint name, oldest first. Stored data keeps these names, so entries
+    /// are only ever appended: a new endpoint adds its name at the end, and a removed route
+    /// keeps its endpoint variant.
+    const PINNED_STORED_NAMES: &[&str] = &[
+        "sign-s3-request-global",
+        "sign-s3-request-prefix",
+        "catalog-v1-get-config",
+        "catalog-v1-list-namespaces",
+        "catalog-v1-create-namespace",
+        "catalog-v1-load-namespace-metadata",
+        "catalog-v1-namespace-exists",
+        "catalog-v1-fetch-scan-tasks",
+        "catalog-v1-drop-namespace",
+        "catalog-v1-update-namespace-properties",
+        "catalog-v1-list-tables",
+        "catalog-v1-create-table",
+        "catalog-v1-load-table",
+        "catalog-v1-update-table",
+        "catalog-v1-drop-table",
+        "catalog-v1-table-exists",
+        "catalog-v1-load-credentials",
+        "catalog-v1-rename-table",
+        "catalog-v1-register-table",
+        "catalog-v1-report-metrics",
+        "catalog-v1-commit-transaction",
+        "catalog-v1-create-view",
+        "catalog-v1-list-views",
+        "catalog-v1-load-view",
+        "catalog-v1-replace-view",
+        "catalog-v1-drop-view",
+        "catalog-v1-view-exists",
+        "catalog-v1-rename-view",
+        "management-v1-server-info",
+        "management-v1-bootstrap",
+        "management-v1-create-role",
+        "management-v1-list-role",
+        "management-v1-update-role",
+        "management-v1-get-role",
+        "management-v1-delete-role",
+        "management-v1-search-role",
+        "management-v1-whoami",
+        "management-v1-search-user",
+        "management-v1-update-user",
+        "management-v1-get-user",
+        "management-v1-delete-user",
+        "management-v1-create-user",
+        "management-v1-list-user",
+        "management-v1-create-project",
+        "management-v1-get-project",
+        "management-v1-delete-project",
+        "management-v1-rename-project",
+        "management-v1-get-project-by-id-deprecated",
+        "management-v1-load-endpoint-statistics",
+        "management-v1-delete-project-by-id-deprecated",
+        "management-v1-create-warehouse",
+        "management-v1-list-warehouses",
+        "management-v1-list-projects",
+        "management-v1-get-warehouse",
+        "management-v1-delete-warehouse",
+        "management-v1-rename-warehouse",
+        "management-v1-deactivate-warehouse",
+        "management-v1-activate-warehouse",
+        "management-v1-update-storage-profile",
+        "management-v1-update-storage-credential",
+        "management-v1-get-warehouse-statistics",
+        "management-v1-list-deleted-tabulars",
+        "management-v1-undrop-tabulars-deprecated",
+        "management-v1-undrop-tabulars",
+        "management-v1-update-warehouse-delete-profile",
+        "permission-v1-get",
+        "permission-v1-post",
+        "permission-v1-head",
+        "permission-v1-delete",
+        "management-v1-set-warehouse-protection",
+        "management-v1-set-namespace-protection",
+        "management-v1-set-table-protection",
+        "management-v1-set-view-protection",
+        "catalog-v1-cancel-planning",
+        "catalog-v1-fetch-planning-result",
+        "catalog-v1-plan-table-scan",
+        "management-v1-get-view-protection",
+        "management-v1-get-table-protection",
+        "management-v1-get-namespace-protection",
+        "management-v1-rename-default-project-deprecated",
+        "management-v1-get-default-project-deprecated",
+        "management-v1-delete-default-project-deprecated",
+        "permission-v1-put",
+        "management-v1-rename-project-by-id-deprecated",
+        "sign-s3-request-tabular",
+        "management-v1-set-task-queue-config",
+        "management-v1-get-task-queue-config",
+        "management-v1-control-tasks",
+        "management-v1-get-task-details",
+        "management-v1-list-tasks",
+        "management-v1-search-tabular",
+        "management-v1-get-server-actions",
+        "management-v1-get-user-actions",
+        "management-v1-get-role-actions",
+        "management-v1-get-warehouse-actions",
+        "management-v1-get-project-actions",
+        "management-v1-get-namespace-actions",
+        "management-v1-get-table-actions",
+        "management-v1-get-view-actions",
+        "management-v1-batch-check-actions",
+        "management-v1-get-role-metadata",
+        "management-v1-update-role-source-system",
+        "management-v1-set-project-task-queue-config",
+        "management-v1-get-project-task-queue-config",
+        "management-v1-control-project-tasks",
+        "management-v1-get-project-task-details",
+        "management-v1-list-project-tasks",
+        "management-v1-schedule-task",
+        "generic-table-v1-create-generic-table",
+        "generic-table-v1-list-generic-tables",
+        "generic-table-v1-load-generic-table",
+        "generic-table-v1-drop-generic-table",
+        "generic-table-v1-rename-generic-table",
+        "generic-table-v1-load-generic-table-credentials",
+        "management-v1-get-generic-table-actions",
+        "management-v1-get-generic-table-protection",
+        "management-v1-set-generic-table-protection",
+        "management-v1-update-warehouse-format-version-policy",
+        "management-v1-set-warehouse-managed-by",
+        "management-v1-list-role-members",
+        "management-v1-add-role-members",
+        "management-v1-remove-role-member",
+        "management-v1-list-role-member-of",
+        "management-v1-list-user-roles",
+        "management-v1-list-role-transitive-members",
+        "management-v1-list-user-transitive-roles",
+        "management-v1-list-role-transitive-member-of",
+        "management-v1-create-tag-definition",
+        "management-v1-list-tag-definitions",
+        "management-v1-get-tag-definition",
+        "management-v1-update-tag-definition",
+        "management-v1-delete-tag-definition",
+        "management-v1-list-tag-attachments",
+        "management-v1-set-warehouse-tag",
+        "management-v1-delete-warehouse-tag",
+        "management-v1-list-warehouse-tags",
+        "management-v1-set-namespace-tag",
+        "management-v1-delete-namespace-tag",
+        "management-v1-list-namespace-tags",
+        "management-v1-set-table-tag",
+        "management-v1-delete-table-tag",
+        "management-v1-list-table-tags",
+        "management-v1-set-table-column-tag",
+        "management-v1-delete-table-column-tag",
+        "management-v1-list-table-column-tags",
+        "management-v1-list-column-tags",
+        "management-v1-set-view-tag",
+        "management-v1-delete-view-tag",
+        "management-v1-list-view-tags",
+        "management-v1-set-generic-table-tag",
+        "management-v1-delete-generic-table-tag",
+        "management-v1-list-generic-table-tags",
+        "management-v1-validate-warehouse",
+        "management-v1-validate-storage-profile",
+        "management-v1-validate-storage-credential",
+        "management-v1-validate-storage-access",
+        "management-v1-list-grants",
+        "management-v1-get-grantable-privileges",
+        "management-v1-list-warehouse-grants",
+        "management-v1-apply-warehouse-grants",
+        "management-v1-list-server-grants",
+        "management-v1-apply-server-grants",
+        "management-v1-list-project-grants",
+        "management-v1-apply-project-grants",
+        "management-v1-list-namespace-grants",
+        "management-v1-apply-namespace-grants",
+        "management-v1-list-tag-grants",
+        "management-v1-apply-tag-grants",
+        "management-v1-list-table-grants",
+        "management-v1-apply-table-grants",
+        "management-v1-list-view-grants",
+        "management-v1-apply-view-grants",
+        "management-v1-list-generic-table-grants",
+        "management-v1-apply-generic-table-grants",
+        "management-v1-get-tag-actions",
+        "management-v1-get-server-grantable-privileges",
+        "management-v1-get-project-grantable-privileges",
+        "management-v1-get-warehouse-grantable-privileges",
+        "management-v1-get-namespace-grantable-privileges",
+        "management-v1-get-table-grantable-privileges",
+        "management-v1-get-view-grantable-privileges",
+        "management-v1-get-generic-table-grantable-privileges",
+        "management-v1-get-tag-grantable-privileges",
+        "management-v1-move-namespace",
+        "sign-s3-request-by-table-name",
+        "management-v1-list-namespace-subtree-grants",
+        "management-v1-revoke-namespace-subtree-grants",
+        "management-v1-list-warehouse-subtree-grants",
+        "management-v1-revoke-warehouse-subtree-grants",
+        "management-v1-set-maintenance-mode",
+    ];
+
+    #[test]
+    fn test_stored_names_are_pinned() {
+        let pinned = PINNED_STORED_NAMES
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            pinned.len(),
+            PINNED_STORED_NAMES.len(),
+            "duplicate pinned name"
+        );
+
+        let current = Endpoint::iter()
+            .map(Endpoint::name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            current.len(),
+            Endpoint::iter().count(),
+            "duplicate stored name"
+        );
+
+        let missing = pinned.difference(&current).collect_vec();
+        assert!(
+            missing.is_empty(),
+            "stored names no endpoint has any more (renamed or removed): {missing:?}"
+        );
+        let unpinned = current.difference(&pinned).collect_vec();
+        assert!(
+            unpinned.is_empty(),
+            "new endpoints; append their names to PINNED_STORED_NAMES: {unpinned:?}"
+        );
+    }
+
+    #[test]
+    fn test_names_round_trip() {
+        for endpoint in Endpoint::iter() {
+            assert_eq!(Endpoint::from_name(endpoint.name()), Some(endpoint));
+        }
+        assert_eq!(Endpoint::from_name("ext-not-an-endpoint"), None);
+    }
+
+    #[test]
+    fn test_no_name_uses_the_extension_prefix() {
+        let reserved = Endpoint::iter()
+            .map(Endpoint::name)
+            .filter(|name| name.starts_with("ext-"))
+            .collect_vec();
+        assert!(
+            reserved.is_empty(),
+            "`ext-` is reserved for extensions: {reserved:?}"
+        );
+    }
+
+    #[test]
+    fn test_head_to_a_get_only_route_resolves_to_the_get_endpoint() {
+        let server_info = Endpoint::from(ManagementV1Endpoint::ServerInfo);
+        assert_eq!(
+            ServedEndpoint::from_method_and_matched_path(&Method::HEAD, server_info.path()),
+            Some(ServedEndpoint::Lakekeeper(server_info))
+        );
+        // A route's own HEAD endpoint wins over its GET endpoint.
+        let table_exists = Endpoint::from(CatalogV1Endpoint::TableExists);
+        assert_eq!(
+            Endpoint::from_method_and_matched_path(&Method::HEAD, table_exists.path()),
+            Some(table_exists)
+        );
+        // Only HEAD falls back, and only to GET.
+        assert_eq!(
+            Endpoint::from_method_and_matched_path(
+                &Method::HEAD,
+                ManagementV1Endpoint::Bootstrap.path()
+            ),
+            None
+        );
+        assert_eq!(
+            Endpoint::from_method_and_matched_path(
+                &Method::DELETE,
+                CatalogV1Endpoint::GetConfig.path()
+            ),
+            None
+        );
+    }
+
+    static HEALTH: ExtensionEndpoint = ExtensionEndpoint::new(
+        "ext-table-health",
+        Method::GET,
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+    );
+    static RECHECK: ExtensionEndpoint = ExtensionEndpoint::new(
+        "ext-table-health-recheck",
+        Method::POST,
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+    );
+
+    fn extension_endpoints() -> ExtensionEndpoints {
+        ExtensionEndpoints::new([&HEALTH, &RECHECK])
+    }
+
+    #[test]
+    fn test_extension_endpoints_resolve_from_method_and_matched_path() {
+        let extensions = extension_endpoints();
+        let lookup = |method: &Method, path: &str| {
+            ServedEndpoint::from_method_and_matched_path_in(Some(&extensions), method, path)
+        };
+        assert_eq!(
+            lookup(&Method::GET, HEALTH.path()),
+            Some(ServedEndpoint::Extension(&HEALTH))
+        );
+        assert_eq!(
+            lookup(&Method::HEAD, HEALTH.path()),
+            Some(ServedEndpoint::Extension(&HEALTH))
+        );
+        assert_eq!(
+            lookup(&Method::POST, RECHECK.path()),
+            Some(ServedEndpoint::Extension(&RECHECK))
+        );
+        assert_eq!(lookup(&Method::DELETE, HEALTH.path()), None);
+        assert_eq!(
+            lookup(&Method::GET, ManagementV1Endpoint::ServerInfo.path()),
+            Some(ServedEndpoint::Lakekeeper(
+                ManagementV1Endpoint::ServerInfo.into()
+            ))
+        );
+        assert_eq!(
+            ServedEndpoint::from_method_and_matched_path_in(None, &Method::GET, HEALTH.path()),
+            None
+        );
+    }
+
+    #[test]
+    fn test_from_name_knows_lakekeeper_and_extension_endpoints() {
+        let extensions = extension_endpoints();
+        let from_name = |name: &str| ServedEndpoint::from_name_in(Some(&extensions), name);
+        assert_eq!(
+            from_name("management-v1-server-info"),
+            Some(ServedEndpoint::Lakekeeper(
+                ManagementV1Endpoint::ServerInfo.into()
+            ))
+        );
+        assert_eq!(
+            from_name("ext-table-health"),
+            Some(ServedEndpoint::Extension(&HEALTH))
+        );
+        assert_eq!(from_name("ext-unknown"), None);
+        assert_eq!(ServedEndpoint::from_name_in(None, "ext-table-health"), None);
+    }
+
+    #[test]
+    fn test_served_endpoint_name_and_http_route() {
+        let lakekeeper = ServedEndpoint::from(Endpoint::from(ManagementV1Endpoint::ServerInfo));
+        assert_eq!(lakekeeper.name(), "management-v1-server-info");
+        assert_eq!(lakekeeper.http_route(), "GET /management/v1/info");
+
+        let extension = ServedEndpoint::from(&RECHECK);
+        assert_eq!(extension.name(), "ext-table-health-recheck");
+        assert_eq!(
+            extension.http_route(),
+            "POST /management/v1/warehouse/{warehouse_id}/table/{table_id}/health"
+        );
+    }
+
+    #[cfg(feature = "router")]
+    #[test]
+    fn test_installing_extension_endpoints() {
+        let installed = OnceLock::new();
+        // An empty set installs nothing.
+        assert_eq!(
+            install_extension_endpoints_into(&installed, ExtensionEndpoints::default()),
+            Ok(())
+        );
+        assert_eq!(installed.get(), None);
+
+        assert_eq!(
+            install_extension_endpoints_into(&installed, extension_endpoints()),
+            Ok(())
+        );
+        assert_eq!(
+            install_extension_endpoints_into(&installed, extension_endpoints()),
+            Ok(())
+        );
+        assert_eq!(
+            install_extension_endpoints_into(&installed, ExtensionEndpoints::new([&HEALTH])),
+            Err(ManagementApiExtensionError::DifferentEndpointsInstalled)
+        );
+        assert_eq!(installed.get(), Some(&extension_endpoints()));
     }
 }

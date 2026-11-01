@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use crate::{api::management::v1::user::User, service::RoleId};
+use super::{CatalogStore, WriteTransaction};
+use crate::{
+    api::management::v1::user::User,
+    service::{Result, RoleId, UserId, cache_invalidation::CacheKey},
+};
 
 /// What [`crate::service::CatalogStore::create_or_update_user`] did to the row.
 ///
@@ -61,7 +65,7 @@ pub enum UserWrite {
     },
 }
 
-/// A user [`crate::service::CatalogStore::delete_user`] deleted.
+/// A user [`CatalogUserOps::delete_user`] deleted.
 #[derive(Debug, Clone)]
 pub struct DeletedUser {
     /// The row as it was before the delete cleared its name and email.
@@ -82,3 +86,24 @@ pub enum UserUpsertMode {
     /// Used by the first-login (`GET /v1/config`) hook.
     BackfillUnnamedStub,
 }
+
+#[async_trait::async_trait]
+pub trait CatalogUserOps
+where
+    Self: CatalogStore,
+{
+    /// Soft-deletes the user and removes their role assignments and provider sync
+    /// records. Records the user's assignments. Returns `None` if no active user has
+    /// this id, else the row as it was before the delete and the roles the user was
+    /// assigned to.
+    async fn delete_user(
+        user_id: UserId,
+        transaction: &mut WriteTransaction<Self>,
+    ) -> Result<Option<DeletedUser>> {
+        let deleted = Self::delete_user_impl(user_id.clone(), transaction.transaction()).await?;
+        transaction.record(CacheKey::UserAssignments(user_id));
+        Ok(deleted)
+    }
+}
+
+impl<T> CatalogUserOps for T where T: CatalogStore {}

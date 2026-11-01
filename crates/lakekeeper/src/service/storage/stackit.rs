@@ -228,6 +228,7 @@ impl StackitProfile {
             // AWS-only, and deliberately not exposed on the STACKIT profile.
             assume_role_arn: None,
             sts_session_tags: BTreeMap::new(),
+            sts_session_policy_principal: None,
             aws_kms_key_arn: None,
             // `s3a://` / `s3n://` are for migrating Hadoop tables; not a
             // STACKIT concern.
@@ -669,6 +670,10 @@ fn validate_credentials_group_urn(urn: &str) -> Result<(), ValidationError> {
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum StackitCredential {
     /// Access key and secret, created inside a STACKIT credentials group.
+    // Unique across all `StorageCredential` variants (see the note there).
+    // `access-key` is still accepted from 0.14 clients and stored secrets.
+    #[serde(rename = "stackit-access-key", alias = "access-key")]
+    #[cfg_attr(feature = "open-api", schema(title = "StackitCredentialAccessKey"))]
     AccessKey(StackitAccessKeyCredential),
 }
 
@@ -1362,5 +1367,39 @@ mod tests {
         p.normalize(None).unwrap();
         assert_eq!(p.endpoint, Some(private.clone()));
         assert_eq!(p.to_s3().unwrap().endpoint, Some(private));
+    }
+
+    #[test]
+    fn the_access_key_credential_accepts_the_0_14_tag_and_writes_its_own() {
+        use crate::service::storage::StorageCredential;
+
+        let expected =
+            StorageCredential::Stackit(StackitCredential::AccessKey(StackitAccessKeyCredential {
+                access_key_id: "id".to_string(),
+                secret_access_key: "secret".to_string(),
+            }));
+        for tag in ["stackit-access-key", "access-key"] {
+            let credential: StorageCredential = serde_json::from_value(serde_json::json!({
+                "type": "stackit",
+                "credential-type": tag,
+                "access-key-id": "id",
+                "secret-access-key": "secret",
+            }))
+            .unwrap();
+            assert_eq!(credential, expected, "{tag}");
+        }
+        assert_eq!(
+            serde_json::to_value(&expected).unwrap(),
+            serde_json::json!({
+                "type": "stackit",
+                "credential-type": "stackit-access-key",
+                "access-key-id": "id",
+                "secret-access-key": "secret",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(expected.credential_type()).unwrap(),
+            serde_json::json!({"type": "stackit", "credential-type": "stackit-access-key"})
+        );
     }
 }

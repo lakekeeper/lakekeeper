@@ -7,6 +7,7 @@
 
 mod advisory_lock;
 mod bootstrap;
+mod cache_change_log;
 mod catalog;
 pub mod config;
 pub(crate) mod dbutils;
@@ -35,15 +36,15 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 pub use endpoint_statistics::sink::PostgresStatisticsSink;
 use lakekeeper::{
-    api::Result,
+    api::{ErrorModel, Result},
     service::{
-        StateOrTransaction, StateOrTransactionEnum, Transaction,
+        COMMIT_STATE_UNKNOWN_ERROR_TYPE, StateOrTransaction, StateOrTransactionEnum, Transaction,
         health::{Health, HealthExt, HealthStatus},
     },
 };
 pub use secrets::SecretsState;
 use sqlx::{
-    ConnectOptions, Executor, PgPool,
+    ConnectOptions, PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 pub use tabular::DeletionKind;
@@ -53,7 +54,7 @@ use tokio::sync::RwLock;
 
 use self::{
     config::{CONFIG, DynAppConfig, PgSchema, PgSslMode},
-    dbutils::DBErrorHandler,
+    dbutils::{DBErrorHandler, commit_state_unknown},
 };
 
 /// # Errors
@@ -102,27 +103,32 @@ impl Transaction<CatalogState> for PostgresTransaction {
     }
 
     async fn begin_read(db_state: CatalogState) -> Result<Self> {
-        let mut transaction = db_state.read_pool().begin().await.map_err(|e| {
-            if crate::pool_metrics::is_pool_timeout(&e) {
-                crate::pool_metrics::record_acquire_timeout("read");
-            }
-            e.into_error_model("Error starting transaction".to_string())
-        })?;
-
-        transaction
-            .execute("SET TRANSACTION READ ONLY")
+        let transaction = db_state
+            .read_pool()
+            .begin_with("BEGIN READ ONLY")
             .await
             .map_err(|e| {
-                e.into_error_model("Error setting transaction to read-only".to_string())
+                if crate::pool_metrics::is_pool_timeout(&e) {
+                    crate::pool_metrics::record_acquire_timeout("read");
+                }
+                e.into_error_model("Error starting transaction".to_string())
             })?;
+
         Ok(Self { transaction })
     }
 
     async fn commit(self) -> Result<()> {
-        self.transaction
-            .commit()
-            .await
-            .map_err(|e| e.into_error_model("Error committing transaction".to_string()))?;
+        self.transaction.commit().await.map_err(|e| {
+            if commit_state_unknown(&e) {
+                ErrorModel::internal(
+                    "Outcome of the transaction commit is unknown",
+                    COMMIT_STATE_UNKNOWN_ERROR_TYPE,
+                    Some(Box::new(e)),
+                )
+            } else {
+                e.into_error_model("Error committing transaction".to_string())
+            }
+        })?;
         Ok(())
     }
 
@@ -445,5 +451,138 @@ mod search_path_tests {
         assert_eq!(current, "public");
 
         pool.close().await;
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use sqlx::AssertSqlSafe;
+
+    use super::*;
+
+    #[sqlx::test]
+    async fn read_transactions_refuse_writes(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool);
+        let mut transaction = PostgresTransaction::begin_read(state).await.unwrap();
+
+        let error = sqlx::query("CREATE TEMP TABLE read_only_probe (id int)")
+            .execute(&mut **transaction.transaction())
+            .await
+            .unwrap_err();
+
+        // 25006: read_only_sql_transaction
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("25006")
+        );
+    }
+
+    async fn probe_rows(pool: &PgPool) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM commit_probe")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Begin a transaction that inserts into `commit_probe`; returns it and its backend pid.
+    async fn insert_probe(pool: &PgPool) -> (PostgresTransaction, i32) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let mut transaction = PostgresTransaction::begin_write(state).await.unwrap();
+        let pid =
+            sqlx::query_scalar("INSERT INTO commit_probe VALUES (1) RETURNING pg_backend_pid()")
+                .fetch_one(&mut **transaction.transaction())
+                .await
+                .unwrap();
+        (transaction, pid)
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn commit_failing_in_deferred_trigger_is_classified_by_sqlstate(pool: PgPool) {
+        sqlx::raw_sql(
+            "CREATE TABLE commit_probe (id int);
+            CREATE TABLE probe_errcode (code text);
+            CREATE FUNCTION reject_probe() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    RAISE EXCEPTION 'rejected at commit' USING ERRCODE = (SELECT code FROM probe_errcode);
+                END $$;
+            CREATE CONSTRAINT TRIGGER reject_probe AFTER INSERT ON commit_probe
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_probe();",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for (code, expected_type) in [
+            ("P0001", "DatabaseError"),
+            ("08006", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
+            ("40003", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
+            ("53200", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
+            ("57014", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
+            ("58030", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
+            ("XX000", COMMIT_STATE_UNKNOWN_ERROR_TYPE),
+        ] {
+            sqlx::raw_sql(AssertSqlSafe(format!(
+                "TRUNCATE probe_errcode; INSERT INTO probe_errcode VALUES ('{code}')"
+            )))
+            .execute(&pool)
+            .await
+            .unwrap();
+            let (transaction, _) = insert_probe(&pool).await;
+
+            let error = transaction.commit().await.unwrap_err();
+
+            assert_eq!(error.error.r#type, expected_type, "SQLSTATE {code}");
+            assert_eq!(probe_rows(&pool).await, 0, "SQLSTATE {code}");
+        }
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn commit_on_terminated_session_is_unknown(pool: PgPool) {
+        sqlx::raw_sql("CREATE TABLE commit_probe (id int)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (transaction, pid) = insert_probe(&pool).await;
+        let terminated: bool = sqlx::query_scalar("SELECT pg_terminate_backend($1, 5000)")
+            .bind(pid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(terminated);
+
+        let error = transaction.commit().await.unwrap_err();
+
+        // FATAL 57P01 also arrives for a commit that was applied, if the signal comes during it.
+        assert_eq!(error.error.r#type, COMMIT_STATE_UNKNOWN_ERROR_TYPE);
+        assert_eq!(probe_rows(&pool).await, 0);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn commit_after_idle_in_transaction_timeout_is_rolled_back(pool: PgPool) {
+        sqlx::raw_sql("CREATE TABLE commit_probe (id int)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (mut transaction, _) = insert_probe(&pool).await;
+        sqlx::raw_sql("SET idle_in_transaction_session_timeout = 200")
+            .execute(&mut **transaction.transaction())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+        let error = transaction.commit().await.unwrap_err();
+
+        // 25P03 is mapped to a conflict like other aborted transactions.
+        assert_eq!(error.error.r#type, "TransactionFailed");
+        assert_eq!(probe_rows(&pool).await, 0);
+    }
+
+    #[test]
+    fn commit_state_is_unknown_without_a_server_reply() {
+        let dropped = sqlx::Error::Io(std::io::ErrorKind::UnexpectedEof.into());
+        assert!(commit_state_unknown(&dropped));
+        assert!(commit_state_unknown(&sqlx::Error::Protocol(
+            "bad message".into()
+        )));
     }
 }

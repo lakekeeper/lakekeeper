@@ -447,7 +447,7 @@ impl schemars::JsonSchema for AnyWireStr {
     }
 }
 
-/// The `tracing` target every audit record is written to, and the one [`enabled`] asks about.
+/// The `tracing` target every audit record is written to, and the one [`log_enabled`] asks about.
 ///
 /// A fixed name, not a module path, so an operator filter keeps working when the code moves:
 /// `RUST_LOG=warn,lakekeeper::audit=info` keeps audit lines and quiets the rest.
@@ -510,14 +510,15 @@ pub fn warn_on_retired_audit_filter() {
 /// whether the catalog keeps an audit trail at all, and the `tracing` filter on
 /// [`AUDIT_TARGET`], which decides whether the subscriber records what is written there.
 ///
-/// Every record passes this on its way out, so the configuration switch also covers records
-/// emitted outside the event listener. Code that suppresses an ordinary log line because the
-/// audit record covers it must ask this first: with either switch closed the event would be
-/// in neither log.
+/// It answers for the log only. Every record passes this on its way out, and an operation
+/// record is dispatched to the event listeners only while it holds, so a listener other than
+/// the audit listener receives one only while the audit log records it. Code that suppresses
+/// an ordinary log line because the audit record covers it must ask this first: with either
+/// switch closed the event would be in neither log.
 ///
 /// `tracing` caches its half per call site when the filter is static.
 #[must_use]
-pub fn enabled() -> bool {
+pub fn log_enabled() -> bool {
     crate::CONFIG.audit.tracing.enabled
         && tracing::enabled!(target: AUDIT_TARGET, tracing::Level::INFO)
 }
@@ -674,20 +675,20 @@ mod tests {
         }
     }
 
-    fn enabled_under(filter: &str) -> bool {
+    fn log_enabled_under(filter: &str) -> bool {
         let subscriber = tracing_subscriber::registry()
             .with(EnvFilter::new(filter))
             .with(tracing_subscriber::fmt::layer().with_writer(std::io::sink));
         let _guard = subscriber.set_default();
-        enabled()
+        log_enabled()
     }
 
     #[test]
     fn the_gate_follows_the_installed_filter() {
-        assert!(!enabled_under("warn"));
-        assert!(enabled_under("info"));
-        assert!(enabled_under("warn,lakekeeper::audit=info"));
-        assert!(!enabled_under("info,lakekeeper::audit=warn"));
+        assert!(!log_enabled_under("warn"));
+        assert!(log_enabled_under("info"));
+        assert!(log_enabled_under("warn,lakekeeper::audit=info"));
+        assert!(!log_enabled_under("info,lakekeeper::audit=warn"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
+    http::HeaderMap,
     routing::post,
 };
 use iceberg_ext::catalog::rest::{S3SignRequest, S3SignResponse};
@@ -61,7 +62,7 @@ where
         request: S3SignRequest,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-    ) -> Result<S3SignResponse>;
+    ) -> Result<(HeaderMap, S3SignResponse)>;
 }
 
 pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
@@ -173,7 +174,7 @@ mod tests {
                 _request: S3SignRequest,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
-            ) -> Result<S3SignResponse> {
+            ) -> Result<(HeaderMap, S3SignResponse)> {
                 // The target is what is under test, so report it back as an error message.
                 Err(ErrorModel::bad_request(format!("{target:?}"), "TargetUnderTest", None).into())
             }

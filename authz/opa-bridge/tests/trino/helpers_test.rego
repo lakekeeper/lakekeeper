@@ -163,3 +163,27 @@ mock_http_namespace_list_everything_schema_a(request) := {"status_code": 200, "b
 	contains(request.url, "batch-check")
 	results := [_mock_namespace_list_everything_schema_a_result(check) | some check in request.body.checks]
 }
+
+# Allow warehouse-level list_everything and only "products" table/view checks.
+# With the tabular fast path on, every table is allowed; with it off, only
+# "products".
+_mock_list_everything_and_products_result(check) := {"allowed": true} if {
+	check.operation.warehouse.action.action == "list_everything"
+} else := result if {
+	result := _mock_products_only_result(check)
+}
+
+mock_http_list_everything_and_products(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
+	endswith(request.url, "/token")
+} else := {"status_code": 200, "body": {"defaults": {"prefix": "mock-wh-id"}}} if {
+	contains(request.url, "catalog/v1/config")
+} else := {"status_code": 200, "body": {"results": results}} if {
+	contains(request.url, "batch-check")
+	results := [_mock_list_everything_and_products_result(check) | some check in request.body.checks]
+}
+
+# Lakekeeper instance config with the tabular fast path turned off.
+mock_lakekeeper_without_tabular_fast_path := [object.union(
+	mock_lakekeeper[0],
+	{"list_everything_grants_tabular_metadata": false},
+)]

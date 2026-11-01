@@ -26,7 +26,7 @@ use lakekeeper::{
     server::CatalogServer,
     service::{
         ArcProjectId, CatalogNamespaceOps, CreateNamespaceResponse, NamespaceWithParent, State,
-        UserId,
+        UserId, WriteTransaction,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
         events::EventDispatcher,
@@ -168,6 +168,7 @@ pub async fn setup_with_registry<T: Authorizer>(
         "Number of warehouses must be greater than 0",
     );
     migrate_core_only(&pool).await.unwrap();
+    require_cache_changes(&pool).await;
     let (api_context, registry) = get_api_context_with_registry(&pool, authorizer).await;
 
     let metadata = if let Some(user_id) = user_id {
@@ -242,6 +243,110 @@ pub async fn setup_with_registry<T: Authorizer>(
         },
         registry,
     )
+}
+
+/// Make a transaction that writes a warehouse, namespace, role, role membership or role
+/// assignment, or deletes a role-provider sync record, fail to commit unless it recorded a
+/// cache change of that domain. For warehouses (also inserts) and roles, the change must
+/// name the row's id or the whole domain; for assignments and sync records, the user's
+/// assignments or the whole domain; a role membership change must name the role ancestor
+/// sets. A transaction that sets `lakekeeper_test.unrecorded_write` to `on` is exempt.
+pub async fn require_cache_changes(pool: &PgPool) {
+    sqlx::raw_sql(
+        r"
+        CREATE OR REPLACE FUNCTION test_require_cache_change() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        DECLARE
+            domain_name text := TG_ARGV[0];
+            -- The column holding the id the change must name, if any.
+            id_column text := TG_ARGV[1];
+            row_id text := to_jsonb(CASE WHEN TG_OP = 'INSERT' THEN NEW ELSE OLD END) ->> id_column;
+        BEGIN
+            IF coalesce(current_setting('lakekeeper_test.unrecorded_write', true), '') = 'on'
+               OR EXISTS (
+                   SELECT 1 FROM cache_change_log
+                   WHERE xid = pg_current_xact_id() AND domain = domain_name
+                     AND (id_column IS NULL OR keys = '{}' OR row_id = ANY(keys))
+               ) THEN
+                RETURN NULL;
+            END IF;
+            IF id_column IS NULL THEN
+                RAISE EXCEPTION 'a write to % recorded no % cache change',
+                    TG_TABLE_NAME, domain_name;
+            END IF;
+            RAISE EXCEPTION 'a write to % recorded no % cache change for %',
+                TG_TABLE_NAME, domain_name, row_id;
+        END $$;
+        DROP TRIGGER IF EXISTS warehouse_requires_cache_change ON warehouse;
+        CREATE CONSTRAINT TRIGGER warehouse_requires_cache_change
+            AFTER INSERT OR UPDATE OR DELETE ON warehouse DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('warehouse', 'warehouse_id');
+        DROP TRIGGER IF EXISTS namespace_requires_cache_change ON namespace;
+        CREATE CONSTRAINT TRIGGER namespace_requires_cache_change
+            AFTER UPDATE OR DELETE ON namespace DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('namespace');
+        DROP TRIGGER IF EXISTS role_requires_cache_change ON role;
+        CREATE CONSTRAINT TRIGGER role_requires_cache_change
+            AFTER UPDATE OR DELETE ON role DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('role', 'id');
+        DROP TRIGGER IF EXISTS role_membership_requires_cache_change ON role_membership;
+        CREATE CONSTRAINT TRIGGER role_membership_requires_cache_change
+            AFTER INSERT OR UPDATE OR DELETE ON role_membership DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('role_ancestors');
+        DROP TRIGGER IF EXISTS role_assignment_requires_cache_change ON role_assignment;
+        CREATE CONSTRAINT TRIGGER role_assignment_requires_cache_change
+            AFTER INSERT OR UPDATE OR DELETE ON role_assignment DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('user_assignments', 'user_id');
+        DROP TRIGGER IF EXISTS role_assignment_sync_requires_cache_change ON role_assignment_sync;
+        CREATE CONSTRAINT TRIGGER role_assignment_sync_requires_cache_change
+            AFTER DELETE ON role_assignment_sync DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION test_require_cache_change('user_assignments', 'user_id');
+        ",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The id of the newest change-log row, or 0 if the log is empty.
+pub async fn change_log_head(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM cache_change_log")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// The change-log rows added after row `head`, as `(domain, sorted keys)`.
+pub async fn changes_since(pool: &PgPool, head: i64) -> Vec<(String, Vec<String>)> {
+    let rows: Vec<(String, Vec<String>)> =
+        sqlx::query_as("SELECT domain, keys FROM cache_change_log WHERE id > $1 ORDER BY id")
+            .bind(head)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    rows.into_iter()
+        .map(|(domain, mut keys)| {
+            keys.sort();
+            (domain, keys)
+        })
+        .collect()
+}
+
+/// The change-log rows `transaction` adds when it commits, as `(domain, sorted keys)`.
+pub async fn committed_changes(
+    transaction: WriteTransaction<PostgresBackend>,
+    pool: &PgPool,
+) -> Vec<(String, Vec<String>)> {
+    let head = change_log_head(pool).await;
+    transaction.commit().await.unwrap();
+    changes_since(pool, head).await
+}
+
+/// A change-log row as [`committed_changes`] returns it.
+pub fn change(domain: &str, keys: &[&str]) -> (String, Vec<String>) {
+    let mut keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
+    keys.sort();
+    (domain.to_string(), keys)
 }
 
 pub async fn get_api_context<T: Authorizer>(

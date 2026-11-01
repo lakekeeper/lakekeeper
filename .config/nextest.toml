@@ -1,5 +1,5 @@
-# Cloud storage integration tests open many concurrent connections (e.g. the
-# 100-way delete_batch fanout). Running too many of them at once exhausts
+# Cloud storage integration tests open many concurrent connections (e.g.
+# concurrent delete_batch requests). Running too many of them at once exhausts
 # ephemeral ports / SNAT against the cloud endpoints, causing connect timeouts
 # (os error 110) that exhaust the SDK retry budget. Cap how many run together.
 [test-groups]

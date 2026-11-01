@@ -8,7 +8,8 @@ use crate::{
         CatalogStore, SecretStore,
         authz::Authorizer,
         tasks::{
-            TaskConfig, TaskQueueName, TaskQueueWorkerFn, TaskQueuesRunner,
+            OnWarehouseDelete, TaskConfig, TaskDemandClass, TaskQueueName, TaskQueueWorkerFn,
+            TaskQueuesRunner, queue_demand::is_valid_demand_class_name,
             task_queues_runner::QueueWorkerConfig,
         },
     },
@@ -87,6 +88,13 @@ pub type ScheduleEligibilityFn = Arc<
         + Sync,
 >;
 
+/// Check run by the `task-queue/{name}/config` endpoint after the config is parsed. Receives
+/// the raw config JSON and returns `Err(ErrorModel)` to refuse the save. Wraps
+/// [`TaskConfig::check_config`].
+pub type ConfigCheckFn = Arc<
+    dyn Fn(serde_json::Value) -> Result<(), iceberg_ext::catalog::rest::ErrorModel> + Send + Sync,
+>;
+
 #[derive(Clone)]
 struct RegisteredQueue {
     /// API configuration for this queue
@@ -94,6 +102,8 @@ struct RegisteredQueue {
     /// Schema validator function for the queue configuration
     /// This function is called to validate the configuration payload
     schema_validator_fn: ValidatorFn,
+    /// Check called by the config endpoint. Wraps `T::check_config` into a type-erased dispatch.
+    config_check_fn: ConfigCheckFn,
     /// Pre-check called by the schedule endpoint. Wraps
     /// `T::check_schedule_eligibility` into a type-erased dispatch.
     schedule_eligibility_fn: ScheduleEligibilityFn,
@@ -108,6 +118,12 @@ struct RegisteredQueue {
     /// `task-queue/{name}/config` path keep working. From
     /// `TaskConfig::legacy_queue_names` at registration time.
     legacy_names: Vec<&'static TaskQueueName>,
+    /// From `TaskConfig::on_warehouse_delete` at registration time.
+    on_warehouse_delete: OnWarehouseDelete,
+    /// From `TaskConfig::max_time_since_last_heartbeat` at registration time.
+    max_time_since_last_heartbeat: chrono::Duration,
+    /// Named resource demand ranges autoscalers ask for.
+    demand_classes: Vec<TaskDemandClass>,
 }
 
 impl std::fmt::Debug for RegisteredQueue {
@@ -115,9 +131,16 @@ impl std::fmt::Debug for RegisteredQueue {
         f.debug_struct("RegisteredQueue")
             .field("api_config", &self.api_config)
             .field("schema_validator_fn", &"Fn(...)")
+            .field("config_check_fn", &"Fn(...)")
             .field("schedule_eligibility_fn", &"Fn(...)")
             .field("payload_validator_fn", &"Fn(...)")
             .field("legacy_names", &self.legacy_names)
+            .field("on_warehouse_delete", &self.on_warehouse_delete)
+            .field(
+                "max_time_since_last_heartbeat",
+                &self.max_time_since_last_heartbeat,
+            )
+            .field("demand_classes", &self.demand_classes)
             .finish()
     }
 }
@@ -142,6 +165,17 @@ impl RegisteredTaskQueues {
             .await
             .get(queue_name)
             .map(|q| Arc::clone(&q.schema_validator_fn))
+    }
+
+    /// Config check for the config endpoint, run after [`Self::validate_config_fn`] accepted
+    /// the config. Returns `None` if the queue is not registered.
+    #[must_use]
+    pub async fn config_check_fn(&self, queue_name: &TaskQueueName) -> Option<ConfigCheckFn> {
+        self.queues
+            .read()
+            .await
+            .get(queue_name)
+            .map(|q| Arc::clone(&q.config_check_fn))
     }
 
     /// Get the API configuration for all registered queues
@@ -252,6 +286,106 @@ impl RegisteredTaskQueues {
         v.sort_unstable();
         v
     }
+
+    /// What the demand of `class` of the queue `queue_name` or of one of its earlier names
+    /// counts. Without a class, the whole queue.
+    ///
+    /// # Errors
+    /// If no registered queue answers to `queue_name`, or the queue has no such class.
+    #[cfg(feature = "router")]
+    pub(crate) async fn demand_target(
+        &self,
+        queue_name: &TaskQueueName,
+        class: Option<&str>,
+    ) -> Result<DemandTarget, DemandLookupError> {
+        let queues = self.queues.read().await;
+        let (name, queue) = queues
+            .get_key_value(queue_name)
+            .or_else(|| {
+                queues
+                    .iter()
+                    .find(|(_, q)| q.legacy_names.iter().any(|n| **n == *queue_name))
+            })
+            .ok_or(DemandLookupError::UnknownQueue)?;
+        let resource_demand = match class {
+            None => super::TaskResourceDemandRange::default(),
+            Some(class) => {
+                queue
+                    .demand_classes
+                    .iter()
+                    .find(|c| c.name == class)
+                    .ok_or(DemandLookupError::UnknownClass)?
+                    .resource_demand
+            }
+        };
+        Ok(DemandTarget {
+            queue_name: name,
+            legacy_queue_names: queue.legacy_names.clone(),
+            max_time_since_last_heartbeat: queue.max_time_since_last_heartbeat,
+            resource_demand,
+        })
+    }
+
+    /// Each registered queue without a class, then with each of its demand classes. Sorted by
+    /// queue name.
+    #[cfg(feature = "router")]
+    pub(crate) async fn demand_keys(&self) -> Vec<(&'static TaskQueueName, Option<String>)> {
+        let queues = self.queues.read().await;
+        let mut names: Vec<_> = queues.keys().copied().collect();
+        names.sort_unstable();
+        names
+            .into_iter()
+            .flat_map(|name| {
+                std::iter::once((name, None)).chain(
+                    queues[name]
+                        .demand_classes
+                        .iter()
+                        .map(move |c| (name, Some(c.name.clone()))),
+                )
+            })
+            .collect()
+    }
+
+    /// Queues whose tasks are cancelled when their warehouse is deleted, each with its
+    /// legacy names. Sorted by name, so concurrent deletes cancel the queues in the same order.
+    #[must_use]
+    pub(crate) async fn queues_cancelled_on_warehouse_delete(
+        &self,
+    ) -> Vec<(&'static TaskQueueName, Vec<&'static TaskQueueName>)> {
+        let mut v: Vec<_> = self
+            .queues
+            .read()
+            .await
+            .iter()
+            .filter(|(_, q)| match q.on_warehouse_delete {
+                OnWarehouseDelete::Cancel => true,
+                OnWarehouseDelete::Block => false,
+            })
+            .map(|(name, q)| (*name, q.legacy_names.clone()))
+            .collect();
+        v.sort_unstable();
+        v
+    }
+}
+
+/// The tasks a demand count covers.
+#[cfg(feature = "router")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DemandTarget {
+    pub(crate) queue_name: &'static TaskQueueName,
+    pub(crate) legacy_queue_names: Vec<&'static TaskQueueName>,
+    /// Used where no task configuration of the queue sets a heartbeat timeout.
+    pub(crate) max_time_since_last_heartbeat: chrono::Duration,
+    pub(crate) resource_demand: super::TaskResourceDemandRange,
+}
+
+#[cfg(feature = "router")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum DemandLookupError {
+    #[error("Unknown task queue")]
+    UnknownQueue,
+    #[error("Unknown demand class of the task queue")]
+    UnknownClass,
 }
 
 #[derive(Clone)]
@@ -341,18 +475,11 @@ impl TaskQueueRegistry {
         // worker and fail at pickup.
         let payload_validator_fn = |v| serde_json::from_value::<D>(v).map(|_| ());
         let payload_validator_fn = Arc::new(payload_validator_fn) as ValidatorFn;
+        let config_check_fn: ConfigCheckFn =
+            Arc::new(|raw_config| T::check_config(&parse_queue_config::<T>(raw_config)?));
         let schedule_eligibility_fn: ScheduleEligibilityFn =
             Arc::new(|raw_config, entity_props, entity| {
-                let config: T = serde_json::from_value(raw_config).map_err(|e| {
-                    iceberg_ext::catalog::rest::ErrorModel::internal(
-                        format!(
-                            "Failed to deserialize queue config for queue '{}': {e}",
-                            T::queue_name()
-                        ),
-                        "TaskConfigDeserializeError",
-                        Some(Box::new(e)),
-                    )
-                })?;
+                let config = parse_queue_config::<T>(raw_config)?;
                 T::check_schedule_eligibility(&config, &entity_props, entity)
             });
         let api_config = QueueApiConfig {
@@ -376,9 +503,13 @@ impl TaskQueueRegistry {
             RegisteredQueue {
                 api_config,
                 schema_validator_fn,
+                config_check_fn,
                 schedule_eligibility_fn,
                 payload_validator_fn,
                 legacy_names: T::legacy_queue_names(),
+                on_warehouse_delete: T::on_warehouse_delete(),
+                max_time_since_last_heartbeat: T::max_time_since_last_heartbeat(),
+                demand_classes: Vec::new(),
             },
         ) {
             tracing::warn!("Overwriting registration for queue `{queue_name}`");
@@ -392,6 +523,38 @@ impl TaskQueueRegistry {
             },
         );
         self
+    }
+
+    /// Names ranges of resource demands of a registered queue, so that autoscalers can ask for
+    /// the demand of each by its name. Replaces the queue's earlier classes.
+    ///
+    /// # Errors
+    /// If the queue is not registered, or a class name is not lower case letters, digits and
+    /// `-`, or two classes share a name.
+    pub async fn register_demand_classes(
+        &self,
+        queue_name: &TaskQueueName,
+        classes: Vec<TaskDemandClass>,
+    ) -> anyhow::Result<()> {
+        for (i, class) in classes.iter().enumerate() {
+            anyhow::ensure!(
+                is_valid_demand_class_name(&class.name),
+                "Demand class `{}` of queue `{queue_name}`: a name consists of lower case letters, \
+                 digits and `-`",
+                class.name
+            );
+            anyhow::ensure!(
+                classes[..i].iter().all(|c| c.name != class.name),
+                "Demand class `{}` of queue `{queue_name}` is named twice",
+                class.name
+            );
+        }
+        let mut queues = self.registered_queues.write().await;
+        let queue = queues
+            .get_mut(queue_name)
+            .ok_or_else(|| anyhow::anyhow!("Queue `{queue_name}` is not registered"))?;
+        queue.demand_classes = classes;
+        Ok(())
     }
 
     pub async fn register_built_in_queues<C: CatalogStore, S: SecretStore, A: Authorizer>(
@@ -543,6 +706,7 @@ impl TaskQueueRegistry {
         TaskQueuesRunner {
             registered_queues: Arc::new(registered_task_queues),
             cancellation_token,
+            control: Arc::default(),
         }
     }
 }
@@ -589,6 +753,22 @@ impl std::fmt::Debug for QueueApiConfig {
     }
 }
 
+/// Parse a stored or just-validated queue config. A failure is an internal error.
+fn parse_queue_config<T: TaskConfig>(
+    raw_config: serde_json::Value,
+) -> Result<T, iceberg_ext::catalog::rest::ErrorModel> {
+    serde_json::from_value(raw_config).map_err(|e| {
+        iceberg_ext::catalog::rest::ErrorModel::internal(
+            format!(
+                "Failed to deserialize queue config for queue '{}': {e}",
+                T::queue_name()
+            ),
+            "TaskConfigDeserializeError",
+            Some(Box::new(e)),
+        )
+    })
+}
+
 #[cfg(test)]
 mod test {
 
@@ -597,7 +777,7 @@ mod test {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::service::tasks::{TaskData, TaskQueueName};
+    use crate::service::tasks::{TaskData, TaskQueueName, TaskResourceDemandRange};
 
     /// Placeholder payload used by the test queues below. Real queues bind
     /// their actual `TaskData` via the `D` generic of `register_queue`;
@@ -1015,6 +1195,60 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_check_config_dispatches_through_registry() {
+        static STRICT_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "strict-config-check".into());
+
+        // Refuses `level: 0`.
+        #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct StrictCheckCfg {
+            #[serde(default)]
+            level: u32,
+        }
+        impl TaskConfig for StrictCheckCfg {
+            fn queue_name() -> &'static TaskQueueName {
+                &STRICT_QN
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+            fn check_config(config: &Self) -> Result<(), iceberg_ext::catalog::rest::ErrorModel> {
+                if config.level == 0 {
+                    return Err(iceberg_ext::catalog::rest::ErrorModel::bad_request(
+                        "level must be at least 1",
+                        "StrictLevelTooLow",
+                        None,
+                    ));
+                }
+                Ok(())
+            }
+        }
+
+        let registry = TaskQueueRegistry::new();
+        let queues = registry.registered_task_queues();
+        registry
+            .register_queue::<StrictCheckCfg, TestPayload>(QueueRegistration {
+                queue_name: &STRICT_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+
+        let strict_fn = queues
+            .config_check_fn(&STRICT_QN)
+            .await
+            .expect("strict queue registered");
+        let err = strict_fn(serde_json::json!({"level": 0}))
+            .expect_err("strict queue must refuse level 0");
+        assert_eq!(err.code, 400);
+        assert_eq!(err.r#type, "StrictLevelTooLow");
+        assert_eq!(err.message, "level must be at least 1");
+        assert!(strict_fn(serde_json::json!({"level": 1})).is_ok());
+    }
+
+    #[tokio::test]
     async fn test_payload_validator_dispatches_through_registry() {
         static EMPTY_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "empty-payload".into());
         static REQUIRED_FIELD_QN: LazyLock<TaskQueueName> =
@@ -1100,5 +1334,220 @@ mod test {
             required_validator(serde_json::json!({"must_have": "yes"})).is_ok(),
             "valid shape must pass"
         );
+    }
+
+    #[tokio::test]
+    async fn test_queues_cancelled_on_warehouse_delete() {
+        use crate::service::tasks::{
+            tabular_expiration_queue::SoftDeletionQueueConfig,
+            tabular_purge_queue::PurgeQueueConfig, task_log_cleanup_queue::TaskLogCleanupConfig,
+        };
+
+        static BLOCKING_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "blocking-queue".into());
+        static CANCELLED_QN: LazyLock<TaskQueueName> = LazyLock::new(|| "cancelled-queue".into());
+        static CANCELLED_LEGACY_QN: LazyLock<TaskQueueName> =
+            LazyLock::new(|| "cancelled-queue-legacy".into());
+
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct BlockingCfg {}
+        impl TaskConfig for BlockingCfg {
+            fn queue_name() -> &'static TaskQueueName {
+                &BLOCKING_QN
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+        }
+
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct CancelledCfg {}
+        impl TaskConfig for CancelledCfg {
+            fn queue_name() -> &'static TaskQueueName {
+                &CANCELLED_QN
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+            fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
+                vec![&CANCELLED_LEGACY_QN]
+            }
+            fn on_warehouse_delete() -> OnWarehouseDelete {
+                OnWarehouseDelete::Cancel
+            }
+        }
+
+        // Built-in queues keep the default, so pending purges and soft deletions keep their
+        // warehouse.
+        assert_eq!(
+            SoftDeletionQueueConfig::on_warehouse_delete(),
+            OnWarehouseDelete::Block
+        );
+        assert_eq!(
+            PurgeQueueConfig::on_warehouse_delete(),
+            OnWarehouseDelete::Block
+        );
+        assert_eq!(
+            TaskLogCleanupConfig::on_warehouse_delete(),
+            OnWarehouseDelete::Block
+        );
+
+        let registry = TaskQueueRegistry::new();
+        let queues = registry.registered_task_queues();
+        assert_eq!(queues.queues_cancelled_on_warehouse_delete().await, vec![]);
+        registry
+            .register_queue::<BlockingCfg, TestPayload>(QueueRegistration {
+                queue_name: &BLOCKING_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+        registry
+            .register_queue::<CancelledCfg, TestPayload>(QueueRegistration {
+                queue_name: &CANCELLED_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+
+        assert_eq!(
+            queues.queues_cancelled_on_warehouse_delete().await,
+            vec![(&*CANCELLED_QN, vec![&*CANCELLED_LEGACY_QN])]
+        );
+    }
+
+    static DEMAND_QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| "demand-queue".into());
+    static DEMAND_LEGACY_NAME: LazyLock<TaskQueueName> =
+        LazyLock::new(|| "old-demand-queue".into());
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+    struct DemandQueueConfig {}
+
+    impl TaskConfig for DemandQueueConfig {
+        fn queue_name() -> &'static TaskQueueName {
+            &DEMAND_QUEUE_NAME
+        }
+
+        fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
+            vec![&DEMAND_LEGACY_NAME]
+        }
+
+        fn max_time_since_last_heartbeat() -> chrono::Duration {
+            chrono::Duration::seconds(60)
+        }
+    }
+
+    async fn register_demand_queue(registry: &TaskQueueRegistry) {
+        registry
+            .register_queue::<DemandQueueConfig, TestPayload>(super::QueueRegistration {
+                queue_name: &DEMAND_QUEUE_NAME,
+                worker_fn: std::sync::Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+            })
+            .await;
+    }
+
+    fn demand_class(name: &str, resource_demand: TaskResourceDemandRange) -> TaskDemandClass {
+        TaskDemandClass::builder()
+            .name(name)
+            .resource_demand(resource_demand)
+            .build()
+    }
+
+    #[cfg(feature = "router")]
+    #[tokio::test]
+    async fn demand_targets_resolve_legacy_names_and_classes() {
+        let registry = TaskQueueRegistry::new();
+        let small = TaskResourceDemandRange::builder().at_most(10).build();
+        let large = TaskResourceDemandRange::builder().above(10).build();
+        let classes = vec![
+            demand_class("small", small),
+            demand_class("x-large-2", large),
+        ];
+        register_demand_queue(&registry).await;
+        registry
+            .register_demand_classes(&DEMAND_QUEUE_NAME, classes)
+            .await
+            .unwrap();
+        let queues = registry.registered_task_queues();
+
+        let expected = |resource_demand| DemandTarget {
+            queue_name: &DEMAND_QUEUE_NAME,
+            legacy_queue_names: vec![&DEMAND_LEGACY_NAME],
+            max_time_since_last_heartbeat: chrono::Duration::seconds(60),
+            resource_demand,
+        };
+        let whole = TaskResourceDemandRange::default();
+        for (queue_name, class, target) in [
+            (&*DEMAND_QUEUE_NAME, None, Ok(expected(whole))),
+            (&*DEMAND_LEGACY_NAME, None, Ok(expected(whole))),
+            (&*DEMAND_QUEUE_NAME, Some("small"), Ok(expected(small))),
+            (&*DEMAND_LEGACY_NAME, Some("x-large-2"), Ok(expected(large))),
+            (
+                &*DEMAND_QUEUE_NAME,
+                Some("medium"),
+                Err(DemandLookupError::UnknownClass),
+            ),
+            (
+                &TaskQueueName::from("other"),
+                None,
+                Err(DemandLookupError::UnknownQueue),
+            ),
+        ] {
+            assert_eq!(
+                queues.demand_target(queue_name, class).await,
+                target,
+                "{queue_name} {class:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn demand_classes_need_a_registered_queue_and_unique_valid_names() {
+        let registry = TaskQueueRegistry::new();
+        let small = TaskResourceDemandRange::builder().at_most(10).build();
+        let not_registered = registry
+            .register_demand_classes(&DEMAND_QUEUE_NAME, vec![demand_class("small", small)])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            not_registered.to_string(),
+            "Queue `demand-queue` is not registered"
+        );
+
+        register_demand_queue(&registry).await;
+        for (names, error) in [
+            (
+                vec!["Small"],
+                "Demand class `Small` of queue `demand-queue`: a name consists of lower case \
+                 letters, digits and `-`",
+            ),
+            (
+                vec![""],
+                "Demand class `` of queue `demand-queue`: a name consists of lower case letters, \
+                 digits and `-`",
+            ),
+            (
+                vec!["small", "small"],
+                "Demand class `small` of queue `demand-queue` is named twice",
+            ),
+        ] {
+            let classes = names
+                .into_iter()
+                .map(|name| demand_class(name, small))
+                .collect();
+            let result = registry
+                .register_demand_classes(&DEMAND_QUEUE_NAME, classes)
+                .await;
+            assert_eq!(result.unwrap_err().to_string(), error);
+        }
     }
 }

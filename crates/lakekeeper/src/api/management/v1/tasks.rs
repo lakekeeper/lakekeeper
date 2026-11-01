@@ -121,6 +121,9 @@ pub struct WarehouseTaskInfo {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// When the task was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+    /// has none.
+    pub resource_demand: Option<i64>,
 }
 
 impl TryFrom<TaskInfo> for WarehouseTaskInfo {
@@ -143,10 +146,12 @@ impl TryFrom<TaskInfo> for WarehouseTaskInfo {
         let attempt = id.attempt;
 
         let TaskMetadata {
+            resource_demand,
             project_id,
             parent_task_id,
             scheduled_for,
             entity: scope,
+            schedule_id: _,
         } = task_metadata;
 
         let (warehouse_id, sub_entity) = match scope {
@@ -186,6 +191,7 @@ impl TryFrom<TaskInfo> for WarehouseTaskInfo {
             entity_name,
             queue_name,
             project_id,
+            resource_demand,
         })
     }
 }
@@ -222,6 +228,9 @@ pub struct ProjectTaskInfo {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// When the task was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// How much worker capacity the task needs, in a unit its queue chooses; unset if the task
+    /// has none.
+    pub resource_demand: Option<i64>,
 }
 
 impl TryFrom<TaskInfo> for ProjectTaskInfo {
@@ -249,6 +258,7 @@ impl TryFrom<TaskInfo> for ProjectTaskInfo {
             created_at: value.created_at(),
             updated_at: value.updated_at(),
             project_id: value.task_metadata.project_id().clone(),
+            resource_demand: value.task_metadata.resource_demand(),
             queue_name: value.queue_name,
         })
     }
@@ -368,6 +378,9 @@ pub struct TaskAttempt {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Progress achieved in this attempt
     pub progress: f32,
+    /// How much worker capacity this attempt needed, in a unit its queue chooses; unset if it
+    /// had none.
+    pub resource_demand: Option<i64>,
     /// Execution details for this attempt
     #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
     pub execution_details: Option<serde_json::Value>,
@@ -544,6 +557,12 @@ pub struct ListTasksRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+    /// a client that depends on it checks `parent-task-id` of each returned task.
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
+    pub parent_task_id: Option<TaskId>,
     /// Next page token, re-use the same request as for the original request,
     /// but set this to the `next_page_token` from the previous response.
     /// Stop iterating when no more items are returned in a page.
@@ -564,6 +583,7 @@ impl From<ListProjectTasksRequest> for ListTasksRequest {
             entities: None,
             created_after: value.created_after,
             created_before: value.created_before,
+            parent_task_id: value.parent_task_id,
             page_token: value.page_token,
             page_size: value.page_size,
         }
@@ -593,6 +613,12 @@ pub struct ListProjectTasksRequest {
     #[builder(default)]
     #[cfg_attr(feature = "open-api", schema(example = "2025-12-31T23:59:59Z"))]
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Only list the tasks whose parent is this task. Older servers ignore it and list all tasks;
+    /// a client that depends on it checks `parent-task-id` of each returned task.
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<uuid::Uuid>))]
+    pub parent_task_id: Option<TaskId>,
     /// Next page token, re-use the same request as for the original request,
     /// but set this to the `next_page_token` from the previous response.
     /// Stop iterating when no more items are returned in a page.
@@ -631,7 +657,8 @@ pub struct ControlTasksRequest {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", tag = "action-type")]
 pub enum ControlTaskAction {
-    /// Stop the task gracefully. The task will be retried.
+    /// Stop the task gracefully. The task will be retried. An attempt that does not stop before
+    /// its heartbeat times out counts as failed; after its last try, the task fails.
     Stop,
     /// Cancel the task permanently. The task is not retried.
     Cancel,

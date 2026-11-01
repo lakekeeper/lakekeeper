@@ -1,7 +1,35 @@
 use lakekeeper::{
     api::ErrorModel,
-    service::{CatalogBackendError, CatalogBackendErrorType},
+    service::{CatalogBackendError, CatalogBackendErrorType, DatabaseIntegrityError, UserId},
 };
+use sqlx::postgres::{PgDatabaseError, PgSeverity};
+
+pub(crate) fn user_id_from_db(s: &str) -> Result<UserId, DatabaseIntegrityError> {
+    UserId::try_from(s).map_err(|e| DatabaseIntegrityError::new(e.message))
+}
+
+/// Whether a transaction whose `COMMIT` failed with `error` may have been committed. A rollback is
+/// proven only by an ERROR outside SQLSTATE 40003 and the classes 08, 53, 57, 58 and XX, or by
+/// the FATAL idle-in-transaction timeout (25P03), which ends the session before `COMMIT` runs.
+pub(crate) fn commit_state_unknown(error: &sqlx::Error) -> bool {
+    let Some(db) = error
+        .as_database_error()
+        .and_then(|e| e.try_downcast_ref::<PgDatabaseError>())
+    else {
+        return true;
+    };
+    let code = db.code();
+    match db.severity() {
+        PgSeverity::Error => {
+            code == "40003"
+                || ["08", "53", "57", "58", "XX"]
+                    .iter()
+                    .any(|c| code.starts_with(c))
+        }
+        PgSeverity::Fatal => code != "25P03",
+        _ => true,
+    }
+}
 
 pub(crate) trait DBErrorHandler
 where
@@ -29,7 +57,7 @@ impl DBErrorHandler for sqlx::Error {
                     // https://www.postgresql.org/docs/current/errcodes-appendix.html
                     Some(
                         "2D000" | "25000" | "25001" | "25P01" | "25P02" | "25P03" | "40000"
-                        | "40001" | "40002" | "40003" | "40004" | "40P01",
+                        | "40001" | "40002" | "40004" | "40P01",
                     ) => ErrorModel::conflict(
                         "Concurrent modification failed.",
                         "TransactionFailed",
@@ -51,7 +79,7 @@ impl DBErrorHandler for sqlx::Error {
                     // https://www.postgresql.org/docs/current/errcodes-appendix.html
                     Some(
                         "2D000" | "25000" | "25001" | "25P01" | "25P02" | "25P03" | "40000"
-                        | "40001" | "40002" | "40003" | "40004" | "40P01",
+                        | "40001" | "40002" | "40004" | "40P01",
                     ) => CatalogBackendError::new(
                         self,
                         CatalogBackendErrorType::ConcurrentModification,
