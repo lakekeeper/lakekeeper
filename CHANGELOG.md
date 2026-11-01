@@ -1,5 +1,105 @@
 # Changelog
 
+## [0.15.0](https://github.com/lakekeeper/lakekeeper/compare/v0.14.0...v0.15.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **audit:** send operation records through the event dispatcher ([#2177](https://github.com/lakekeeper/lakekeeper/issues/2177))
+* **s3:** enforce the AWS system identity rules on every use ([#2174](https://github.com/lakekeeper/lakekeeper/issues/2174))
+* **gcs:** use Google's official Rust SDK for Cloud Storage ([#2159](https://github.com/lakekeeper/lakekeeper/issues/2159))
+* **tasks:** task schedules, retry decisions and resource demand ([#2147](https://github.com/lakekeeper/lakekeeper/issues/2147))
+* **kafka:** remove Kerberos (GSSAPI) support for Kafka ([#2108](https://github.com/lakekeeper/lakekeeper/issues/2108))
+
+### Features
+
+* allow contributors to self-assign issues ([#2143](https://github.com/lakekeeper/lakekeeper/issues/2143)) ([6e85c7a](https://github.com/lakekeeper/lakekeeper/commit/6e85c7a4acef544a4b7427ae1d4579f504d2eb3b))
+* **api:** store endpoint names as text and let extensions add management routes ([#2138](https://github.com/lakekeeper/lakekeeper/issues/2138)) ([7b3224c](https://github.com/lakekeeper/lakekeeper/commit/7b3224ca2c4e5fb1f5627485153ce7f87092544b))
+* **audit:** send operation records through the event dispatcher ([#2177](https://github.com/lakekeeper/lakekeeper/issues/2177)) ([2f63b3b](https://github.com/lakekeeper/lakekeeper/commit/2f63b3b0e3b0427e9c6cefba98a59263513e0897))
+* Distributed Cache Invalidation ([#2157](https://github.com/lakekeeper/lakekeeper/issues/2157)) ([5b517a5](https://github.com/lakekeeper/lakekeeper/commit/5b517a54146a9da383c4a8d89d8e28e328996b6d))
+* **gcs:** use Google's official Rust SDK for Cloud Storage ([#2159](https://github.com/lakekeeper/lakekeeper/issues/2159)) ([e75b43d](https://github.com/lakekeeper/lakekeeper/commit/e75b43d0b31aa0ab17b22ca52c8ed2afc16d87d0))
+* **kafka:** remove Kerberos (GSSAPI) support for Kafka ([#2108](https://github.com/lakekeeper/lakekeeper/issues/2108)) ([393ef82](https://github.com/lakekeeper/lakekeeper/commit/393ef822e4fce812898a6689ba0ef62ab1410af4))
+* **maintenance:** instance admins switch a process into and out of read-only at runtime ([#2156](https://github.com/lakekeeper/lakekeeper/issues/2156)) ([b2eb409](https://github.com/lakekeeper/lakekeeper/commit/b2eb409f140f0f04206d4053527965f751b9163a))
+* **opa-bridge:** make the list_everything shortcut for tables and views optional ([#2153](https://github.com/lakekeeper/lakekeeper/issues/2153)) ([790bd1a](https://github.com/lakekeeper/lakekeeper/commit/790bd1a4783da5bf937db8a68004d44faf0649a8))
+* **pg-performance:** start read transactions in one round trip ([#2146](https://github.com/lakekeeper/lakekeeper/issues/2146)) ([de33178](https://github.com/lakekeeper/lakekeeper/commit/de33178d2404e7d8e08952dc0cdd36a45e27566f))
+* **storage:** optionally add a principal to the STS session policy ([#2139](https://github.com/lakekeeper/lakekeeper/issues/2139)) ([3ffdfd3](https://github.com/lakekeeper/lakekeeper/commit/3ffdfd39d318b851cf9e32259639949d892525cd))
+* **tasks:** count task attempts that time out ([#2206](https://github.com/lakekeeper/lakekeeper/issues/2206)) ([62ae3b4](https://github.com/lakekeeper/lakekeeper/commit/62ae3b47d8c7f0de4c60c5a8a203d507352108d0))
+* **tasks:** drain on shutdown, idle exit and max lifetime for task workers ([#2186](https://github.com/lakekeeper/lakekeeper/issues/2186)) ([907a2ef](https://github.com/lakekeeper/lakekeeper/commit/907a2ef001bceab55f60ec7e56537b2281895a0d))
+* **tasks:** let a queue refuse a config when it is saved ([#2179](https://github.com/lakekeeper/lakekeeper/issues/2179)) ([8d47ab1](https://github.com/lakekeeper/lakekeeper/commit/8d47ab189ac6349d0fc17b5894ab5249518425d2))
+* **tasks:** let task queues cancel their tasks when the warehouse is… ([#2130](https://github.com/lakekeeper/lakekeeper/issues/2130)) ([5355a1b](https://github.com/lakekeeper/lakekeeper/commit/5355a1bbbe7c37bd9ffc16b889874a294250923d))
+* **tasks:** record a task failure with an explicit retry decision ([#2161](https://github.com/lakekeeper/lakekeeper/issues/2161)) ([5526753](https://github.com/lakekeeper/lakekeeper/commit/5526753470bc3b03d5e905598df60775794b4718))
+* **tasks:** report queue demand per class for autoscalers ([#2187](https://github.com/lakekeeper/lakekeeper/issues/2187)) ([15ad908](https://github.com/lakekeeper/lakekeeper/commit/15ad908c5da19d1801c070e6d095d3bb4434e4a5))
+* **tasks:** report the age of the oldest due task per queue ([#2190](https://github.com/lakekeeper/lakekeeper/issues/2190)) ([554234f](https://github.com/lakekeeper/lakekeeper/commit/554234fe0c5d98f9e29de14eaf20afa68161dd1c))
+* **tasks:** task schedules, retry decisions and resource demand ([#2147](https://github.com/lakekeeper/lakekeeper/issues/2147)) ([2e43ea6](https://github.com/lakekeeper/lakekeeper/commit/2e43ea6cb818a24f9be96c97c0aa70292a65eeb2))
+* **tasks:** tell running tasks that a drain started ([#2202](https://github.com/lakekeeper/lakekeeper/issues/2202)) ([81d1b25](https://github.com/lakekeeper/lakekeeper/commit/81d1b2509cb106ce82924552a6e2596d9f7b0d44))
+
+
+### Bug Fixes
+
+* **catalog:** keep prepared resources when the outcome of COMMIT is unknown ([#2176](https://github.com/lakekeeper/lakekeeper/issues/2176)) ([7b9e47c](https://github.com/lakekeeper/lakekeeper/commit/7b9e47cc530149dd53d5e1656dc03d60084c549a))
+* **catalog:** refuse a commit that removes the snapshot of a ref it does not remove ([#2185](https://github.com/lakekeeper/lakekeeper/issues/2185)) ([259d178](https://github.com/lakekeeper/lakekeeper/commit/259d178891eaa872c695569738469dc8332d8a7d))
+* **deps:** bump ctutils for RUSTSEC-2026-0385 ([e3bb4d1](https://github.com/lakekeeper/lakekeeper/commit/e3bb4d16506857739b2646a4d59b402ca3877d0f))
+* **deps:** bump libz-sys to 1.1.31 for RUSTSEC-2026-0418 ([#2207](https://github.com/lakekeeper/lakekeeper/issues/2207)) ([79d9168](https://github.com/lakekeeper/lakekeeper/commit/79d9168ed17d2c92b361da0fca28950db88a9832))
+* **deps:** bump rustls to 0.23.46 and chacha20 to 0.10.2 ([#2125](https://github.com/lakekeeper/lakekeeper/issues/2125)) ([83d7553](https://github.com/lakekeeper/lakekeeper/commit/83d75531d38c3cabcd15e059a85feeba5933dceb))
+* **deps:** bump tokio for RUSTSEC-2026-0386 ([1d8856a](https://github.com/lakekeeper/lakekeeper/commit/1d8856ae0d0de3403634e9feeae0581b85cee183))
+* **deps:** bump webpki crates for RUSTSEC-2026-0381, -0382 and -0383 ([a465b8e](https://github.com/lakekeeper/lakekeeper/commit/a465b8eb9f7260f02e47240ce6b9e55b677cbf06))
+* **deps:** drop aws-sdk-s3 sigv4a feature for RUSTSEC-2026-0387 ([#2166](https://github.com/lakekeeper/lakekeeper/issues/2166)) ([e862934](https://github.com/lakekeeper/lakekeeper/commit/e8629342f2f44ecd51d8ddb98dcb1b3542957ecc))
+* **docs:** pin Redoc to v2.5.4 so the API pages render again ([#2149](https://github.com/lakekeeper/lakekeeper/issues/2149)) ([b9da6b5](https://github.com/lakekeeper/lakekeeper/commit/b9da6b5a98ca29157492d5bc65454892ca2eca2f))
+* **io:** ignore @ in paths when extracting usernames ([#2141](https://github.com/lakekeeper/lakekeeper/issues/2141)) ([969b8e9](https://github.com/lakekeeper/lakekeeper/commit/969b8e9472458b2a017d8fb61b7c72ec8ec27ba2))
+* **io:** limit bulk deletes per storage endpoint, bound S3 and ADLS requests ([#2165](https://github.com/lakekeeper/lakekeeper/issues/2165)) ([7e5fd6a](https://github.com/lakekeeper/lakekeeper/commit/7e5fd6a5e2341dab83bdc57cee740fdcaf589f9f))
+* **openapi:** restore discriminated storage credential unions ([#2194](https://github.com/lakekeeper/lakekeeper/issues/2194)) ([f65abcf](https://github.com/lakekeeper/lakekeeper/commit/f65abcf1985da4f17aba5478990c5ab63df96cc8))
+* re-read Azure workload identity credentials for new token requests ([#2193](https://github.com/lakekeeper/lakekeeper/issues/2193)) ([c29fbcf](https://github.com/lakekeeper/lakekeeper/commit/c29fbcfdbc647175d8f26f1dbcd595e3c16fea62))
+* return correct Cache-Control header values from S3 signer ([#2124](https://github.com/lakekeeper/lakekeeper/issues/2124)) ([0d9d2f3](https://github.com/lakekeeper/lakekeeper/commit/0d9d2f3b20c070eef29e5bf038ed6fd3201868cd))
+* **s3-signer:** sign only allowlisted query parameters and headers ([#2102](https://github.com/lakekeeper/lakekeeper/issues/2102)) ([58520c8](https://github.com/lakekeeper/lakekeeper/commit/58520c86a131163d603f8fc4e21ed64491aabc0f))
+* **s3:** cache the identity remote signing signs with ([#2170](https://github.com/lakekeeper/lakekeeper/issues/2170)) ([6eb29c5](https://github.com/lakekeeper/lakekeeper/commit/6eb29c53decc59992d1821978dd590a9aaab289b))
+* **s3:** enforce the AWS system identity rules on every use ([#2174](https://github.com/lakekeeper/lakekeeper/issues/2174)) ([87e66e3](https://github.com/lakekeeper/lakekeeper/commit/87e66e37139fa524af640b19f994520a75cdb66b))
+* **signer:** exclude unsigned headers regardless of name case ([#2104](https://github.com/lakekeeper/lakekeeper/issues/2104)) ([c1308f0](https://github.com/lakekeeper/lakekeeper/commit/c1308f08e9bad21fa3b85aac7ed83fa85d2e8c52))
+* sort insert_snapshot_refs, remove early return and add 40P01 as retry-able error ([#2117](https://github.com/lakekeeper/lakekeeper/issues/2117)) ([7c007ff](https://github.com/lakekeeper/lakekeeper/commit/7c007ffce3a2ae5836dd65d493667c1a38b30efc))
+* **tasks:** expire soft-deleted tabulars in inactive warehouses ([#2151](https://github.com/lakekeeper/lakekeeper/issues/2151)) ([68cebec](https://github.com/lakekeeper/lakekeeper/commit/68cebec734dac5e2107e67efee67db2db9696824))
+* **tasks:** list a table's tasks through the entity index ([#2172](https://github.com/lakekeeper/lakekeeper/issues/2172)) ([6025649](https://github.com/lakekeeper/lakekeeper/commit/6025649333d386a7c103568c154fdcbdee8a4c6f))
+* **tasks:** pick the oldest due task without sorting the queue's backlog ([#2155](https://github.com/lakekeeper/lakekeeper/issues/2155)) ([059030f](https://github.com/lakekeeper/lakekeeper/commit/059030f30b1322dfce4162787563c2a52d778089))
+* **ui:** preserve nested ui path segments ([#2119](https://github.com/lakekeeper/lakekeeper/issues/2119)) ([afed1cd](https://github.com/lakekeeper/lakekeeper/commit/afed1cde426ad72472def540ffaa8aebf283b437))
+
+
+### Documentation
+
+* add security policy ([#2123](https://github.com/lakekeeper/lakekeeper/issues/2123)) ([b5afaf3](https://github.com/lakekeeper/lakekeeper/commit/b5afaf35291449eddad0bbce7959bec118111a5a))
+* **authz-cedar:** document tabular move actions and the predefined move policies ([abae03a](https://github.com/lakekeeper/lakekeeper/commit/abae03aebfc5f4d4384b5f8df6ef70367259969c))
+* **cedar:** failed policy refreshes keep pods healthy; document refresh metrics ([0771b01](https://github.com/lakekeeper/lakekeeper/commit/0771b01a545fcac41102ef44ded7f7715d830ec8))
+* Entra ID service principals and users a directory does not know ([19f74be](https://github.com/lakekeeper/lakekeeper/commit/19f74be6a09e82fb2ab309be1e50ca07bbd423bf))
+* **spark:** use rest-catalog-purge for DROP TABLE … PURGE ([#2205](https://github.com/lakekeeper/lakekeeper/issues/2205)) ([358df02](https://github.com/lakekeeper/lakekeeper/commit/358df02d1b25d706c319269c70c88cbce586e65a))
+* **storage:** recommend Storage Object User for GCS instead of Storage Admin ([#2114](https://github.com/lakekeeper/lakekeeper/issues/2114)) ([76fb1ca](https://github.com/lakekeeper/lakekeeper/commit/76fb1cad64a3689f267c626c5bb7e97219214be0))
+* task workers on Kubernetes, and orphan removal retention and dry-run ([#2189](https://github.com/lakekeeper/lakekeeper/issues/2189)) ([5592a7b](https://github.com/lakekeeper/lakekeeper/commit/5592a7b389f021cd6ae27418f18dbbf3d588a0a3))
+
+
+### Miscellaneous Chores
+
+* 0.14.x docs ([69ec61f](https://github.com/lakekeeper/lakekeeper/commit/69ec61f129761ce607027581ad68a0fce5df1898))
+* **ci:** start migration tests from the branch's last release ([#2132](https://github.com/lakekeeper/lakekeeper/issues/2132)) ([0b3fb12](https://github.com/lakekeeper/lakekeeper/commit/0b3fb1202eaf32a73b769c414dc563ab3795eccd))
+* clean up after the 0.14.0 release and fix the Cedar tag docs ([#2096](https://github.com/lakekeeper/lakekeeper/issues/2096)) ([7643164](https://github.com/lakekeeper/lakekeeper/commit/7643164ec61578de2562c9c99633e835d2e61e1a))
+* **deps:** bump iceberg-rust to the 2026-10-20 snapshot ([#2148](https://github.com/lakekeeper/lakekeeper/issues/2148)) ([f3769b2](https://github.com/lakekeeper/lakekeeper/commit/f3769b2942d0170b4a1978c60705fcffc2025c50))
+* **deps:** bump iceberg-rust to the fork that keeps delete file read errors as sources ([#2196](https://github.com/lakekeeper/lakekeeper/issues/2196)) ([a1b0ee1](https://github.com/lakekeeper/lakekeeper/commit/a1b0ee1e2b6a9fbccf5725738614a7c85e79dd48))
+* **deps:** bump iceberg-rust to the fork with delete file adds on rewrites ([#2192](https://github.com/lakekeeper/lakekeeper/issues/2192)) ([7d7714e](https://github.com/lakekeeper/lakekeeper/commit/7d7714e266127241451f2fc0df880f5de402da3d))
+* **deps:** bump iceberg-rust to the fork with rewrite, reader and audit fixes ([#2182](https://github.com/lakekeeper/lakekeeper/issues/2182)) ([1fbcad8](https://github.com/lakekeeper/lakekeeper/commit/1fbcad8e98920383eca017d71fcbeba0b94d8885))
+* **deps:** bump iceberg-rust to the fork with write.metadata.metrics.* and Java-style bound truncation ([#2197](https://github.com/lakekeeper/lakekeeper/issues/2197)) ([698be3e](https://github.com/lakekeeper/lakekeeper/commit/698be3e739a19ee3a2da9022d2f8baf92fc8a1a8))
+* **deps:** bump zstd-sys and async-compression, ignore remaining zstd advisories ([#2188](https://github.com/lakekeeper/lakekeeper/issues/2188)) ([57a1bb2](https://github.com/lakekeeper/lakekeeper/commit/57a1bb2c921474cf989cc4b28c0ea77a0ed1b44f))
+* **docs:** add 0.13.7 release notes ([#2133](https://github.com/lakekeeper/lakekeeper/issues/2133)) ([bb1e46d](https://github.com/lakekeeper/lakekeeper/commit/bb1e46dc2e6c1a204d726e1e0744cc7b1953aa1e))
+* **docs:** add 0.14.1 release notes ([#2135](https://github.com/lakekeeper/lakekeeper/issues/2135)) ([3a8a278](https://github.com/lakekeeper/lakekeeper/commit/3a8a278625248b24707efe1c099afe86777da063))
+* **docs:** add 0.14.2 and 0.13.8 release notes ([#2180](https://github.com/lakekeeper/lakekeeper/issues/2180)) ([b41de6a](https://github.com/lakekeeper/lakekeeper/commit/b41de6abed1a5dd85df24b82f1620a5e9502d143))
+* **docs:** Sync documentation from lakekeeper plus ([#2089](https://github.com/lakekeeper/lakekeeper/issues/2089)) ([630e2d8](https://github.com/lakekeeper/lakekeeper/commit/630e2d85036c2a97db3b31800e2df33e2b4c9529))
+* **docs:** Sync documentation from lakekeeper plus ([#2098](https://github.com/lakekeeper/lakekeeper/issues/2098)) ([18e3d98](https://github.com/lakekeeper/lakekeeper/commit/18e3d9896bf58db91e4e6f1c215b1b460a0031d9))
+* **docs:** Sync documentation from lakekeeper plus ([#2101](https://github.com/lakekeeper/lakekeeper/issues/2101)) ([0901486](https://github.com/lakekeeper/lakekeeper/commit/09014869173aebc5eb0ccab16d0350324ff621d3))
+* **docs:** Sync documentation from lakekeeper plus ([#2137](https://github.com/lakekeeper/lakekeeper/issues/2137)) ([d891fe1](https://github.com/lakekeeper/lakekeeper/commit/d891fe1c4a78537b3531e1d4abd98783385d57c3))
+* **docs:** Sync documentation from lakekeeper plus ([#2152](https://github.com/lakekeeper/lakekeeper/issues/2152)) ([59b9d3b](https://github.com/lakekeeper/lakekeeper/commit/59b9d3b2671e4339e09b04dbf294aee9fc15b64d))
+* fix release notes and checker alongside ([#2103](https://github.com/lakekeeper/lakekeeper/issues/2103)) ([adbf98c](https://github.com/lakekeeper/lakekeeper/commit/adbf98c11fc62178b092a23ad3541f51db71e533))
+* follow Arc&lt;AType&gt; is ATypeArc rule ([#2106](https://github.com/lakekeeper/lakekeeper/issues/2106)) ([4e1fc70](https://github.com/lakekeeper/lakekeeper/commit/4e1fc70f04a7c87b176db7304a6c5a668a3ec371))
+* name every shared arc alias the same way ([#2111](https://github.com/lakekeeper/lakekeeper/issues/2111)) ([6557e52](https://github.com/lakekeeper/lakekeeper/commit/6557e52a6ba3feac5846cdd2071b7d987933d806))
+* **openapi:** sync rest-catalog spec with apache/iceberg main ([#2109](https://github.com/lakekeeper/lakekeeper/issues/2109)) ([f68542f](https://github.com/lakekeeper/lakekeeper/commit/f68542f071b088f9749c7e55e170c80cbc9eaf39))
+* release-please crate check, bounded DB dump, idp_ids docs ([#2100](https://github.com/lakekeeper/lakekeeper/issues/2100)) ([f9bf05f](https://github.com/lakekeeper/lakekeeper/commit/f9bf05fa96151198a9f606447aef740e25327253))
+* **test-tasks:** pin that queue workers see the drain token ([#2204](https://github.com/lakekeeper/lakekeeper/issues/2204)) ([8e89771](https://github.com/lakekeeper/lakekeeper/commit/8e89771394eaa8de5efbc2dc03816720f31528d9))
+* update quinn-proton to 0.11.19 (RUSTSEC-2026-0338 to -0342) ([#2112](https://github.com/lakekeeper/lakekeeper/issues/2112)) ([0adfe14](https://github.com/lakekeeper/lakekeeper/commit/0adfe14e59b71d46033f28a98ef18a52f5469055))
+* use shared references in audit log ([#2105](https://github.com/lakekeeper/lakekeeper/issues/2105)) ([b146802](https://github.com/lakekeeper/lakekeeper/commit/b146802e09ceb4bb0d98b9557c863f6eb7003bdb))
+
 ## [0.14.0](https://github.com/lakekeeper/lakekeeper/compare/v0.13.1...v0.14.0) (2026-10-07)
 
 
