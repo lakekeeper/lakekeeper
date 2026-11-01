@@ -237,6 +237,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         metadata_location: metadata_location_str,
         metadata: view_metadata,
         config: Some(config.config.into()),
+        labels: None,
     };
 
     Ok(load_view_result)

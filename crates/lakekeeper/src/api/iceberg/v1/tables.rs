@@ -1289,6 +1289,7 @@ mod test {
             config: None,
             storage_credentials: None,
             remote_signing_config: None,
+            labels: None,
             etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();

@@ -118,6 +118,19 @@ With Cedar in Lakekeeper Plus<span class="lkp"></span>, policies read these effe
 
 Reading an object's tags requires permission to see the object's metadata (`describe` in OpenFGA). Effective tags are gated only on your access to the **queried object**: an inherited tag is part of that object's effective governance, so anyone who can read the object's tags sees them, values included. Granting someone `describe` on a sub-object therefore also exposes the tags it inherits from above.
 
+## Tags in query engines
+
+When a query engine loads a table or view, Lakekeeper also sends the object's tags as labels, a part of the [Iceberg REST Catalog specification](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml). An engine can read the governance tags of a table this way without calling the Management API. Lakekeeper does not require engines to use labels. Labels are read-only: you still apply and remove tags through the Management API or the Lakekeeper UI.
+
+- **Object labels** are the table's or view's effective tags, as described above, including tags inherited from namespaces and the warehouse.
+- **Field labels** are the column tags of a table, matched to the column by its field ID. A label stays as long as at least one schema version of the table has the column, so it follows a renamed column and stays for a column that only older schema versions have.
+- The label key is the tag name. A `marker` tag has the value `true`, so it looks the same as a `free-text` tag with the value `true`. Other tags have their value.
+- A table or view without tags has no labels. The response to creating or registering a table has no labels; the next load of the table has them.
+
+Anyone who may load the table or view sees its labels, as with effective tags above. This includes a load through a view that is allowed to read the table on behalf of the caller.
+
+An engine can ask whether a table it loaded earlier is still current. Lakekeeper answers that it is not when a tag on the table, on one of its columns, on one of its namespaces or on the warehouse changed, even if the table itself did not change.
+
 ## Finding where a tag is used
 
 To list every object a definition is attached to, use the reverse lookup:

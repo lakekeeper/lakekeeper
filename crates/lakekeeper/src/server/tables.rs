@@ -131,6 +131,7 @@ async fn replay_load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         state,
         request_metadata,
         list_flags,
+        load_table::TableLabels::Omit,
     )
     .await
     // Keep the load's own status. Wrapping everything as internal turned the two
@@ -655,6 +656,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             remote_signing_config: config.remote_signing.clone(),
             config: Some(load_response_config(Some(config.config))),
             storage_credentials,
+            labels: None,
             etag: Some(etag),
         })
     }

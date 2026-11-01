@@ -27,6 +27,9 @@ pub mod rest {
     pub(crate) use error::impl_into_response;
     pub use error::{Error, ErrorModel, IcebergErrorResponse};
 
+    mod labels;
+    pub use labels::{FieldLabels, Labels};
+
     mod table;
     pub use table::{
         CommitTableRequest, CommitTableResponse, CommitTransactionRequest, CreateTableRequest,
