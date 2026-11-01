@@ -339,6 +339,7 @@ mod tests {
         assert_eq!(drain.await.unwrap(), (StopReason::Signal, 2));
         assert_eq!(h.control.running_tasks(), 1);
         assert!(h.control.stop_picking.load(Ordering::SeqCst));
+        assert!(h.control.drain.is_cancelled());
     }
 
     #[tokio::test(start_paused = true)]
