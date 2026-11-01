@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod queue_demand;
+mod queue_metrics;
 pub(crate) mod task_drain;
 #[cfg(feature = "test-utils")]
 pub use task_drain::TestTaskRunner;
@@ -28,6 +29,7 @@ pub use task_drain::drain_token;
 mod task_queues_runner;
 mod task_registry;
 pub use queue_demand::{TaskDemandClass, TaskQueueDemand, TaskQueueDemandRequest};
+pub use queue_metrics::record_timed_out_attempt;
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
 pub use task_registry::{
     ConfigCheckFn, QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues,
