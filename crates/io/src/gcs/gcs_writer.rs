@@ -15,11 +15,11 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::Instrument as _;
 
 use crate::{
-    ErrorKind, IOError, LakekeeperFileWrite, WriteError,
+    ErrorKind, IOError, LakekeeperFileWrite, WriteError, WriteOutcome,
     gcs::{
         GcsLocation, RESUMABLE_UPLOAD_THRESHOLD, UPLOAD_TIMEOUT,
         gcs_error::parse_error,
-        gcs_storage::{bucket_resource, upload_bytes, within},
+        gcs_storage::{bucket_resource, upload_bytes, within, write_outcome},
     },
 };
 
@@ -119,7 +119,7 @@ enum GcsWriterState {
     Buffering(BytesMut),
     Streaming {
         sender: mpsc::Sender<WriterMessage>,
-        upload: JoinHandle<Result<(), WriteError>>,
+        upload: JoinHandle<Result<WriteOutcome, WriteError>>,
     },
     Closed,
     Aborted,
@@ -164,7 +164,7 @@ impl GcsFileWrite {
         first: Bytes,
     ) -> (
         mpsc::Sender<WriterMessage>,
-        JoinHandle<Result<(), WriteError>>,
+        JoinHandle<Result<WriteOutcome, WriteError>>,
     ) {
         let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
         let source = ChannelSource {
@@ -185,7 +185,7 @@ impl GcsFileWrite {
             async move {
                 Box::pin(request.send_buffered())
                     .await
-                    .map(|_| ())
+                    .map(|object| write_outcome(&object))
                     .map_err(|e| {
                         parse_error(e, location.as_str())
                             .with_context("Failed to upload object.")
@@ -231,9 +231,9 @@ impl GcsFileWrite {
 }
 
 async fn upload_result(
-    upload: &mut JoinHandle<Result<(), WriteError>>,
+    upload: &mut JoinHandle<Result<WriteOutcome, WriteError>>,
     location: &GcsLocation,
-) -> Result<(), WriteError> {
+) -> Result<WriteOutcome, WriteError> {
     upload.await.unwrap_or_else(|join_error| {
         Err(WriteError::IOError(IOError::new(
             ErrorKind::Unexpected,
@@ -271,7 +271,7 @@ impl LakekeeperFileWrite for GcsFileWrite {
         }
     }
 
-    async fn close(&mut self) -> Result<(), WriteError> {
+    async fn close(&mut self) -> Result<WriteOutcome, WriteError> {
         if matches!(self.state, GcsWriterState::Streaming { .. }) {
             self.send(WriterMessage::Finish).await?;
         }

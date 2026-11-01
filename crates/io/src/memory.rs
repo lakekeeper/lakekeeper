@@ -6,23 +6,60 @@ use futures::stream::{self, BoxStream, StreamExt};
 use tokio::sync::RwLock;
 
 use crate::{
-    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, WriteError,
+    DeleteBatchError, DeleteError, DeleteMarker, ErrorKind, FileInfo, IOError,
+    InvalidLocationError, LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ObjectTags,
+    ObjectVersion, ObjectVersionEntry, ReadError, WriteError, WriteOutcome,
 };
 
-type MemoryFile = (Bytes, DateTime<Utc>);
+/// A stored version of an object.
+#[derive(Debug, Clone)]
+struct MemoryVersion {
+    id: String,
+    bytes: Bytes,
+    /// The `ETag` S3 reports for an object written in one request.
+    e_tag: String,
+    last_modified: DateTime<Utc>,
+    tags: ObjectTags,
+}
+
+impl MemoryVersion {
+    fn new(bytes: Bytes, last_modified: DateTime<Utc>) -> Self {
+        Self {
+            id: uuid::Uuid::now_v7().to_string(),
+            e_tag: format!("\"{:x}\"", md5::compute(&bytes)),
+            bytes,
+            last_modified,
+            tags: ObjectTags::new(),
+        }
+    }
+}
+
+/// One version of a key, as a versioned S3 bucket keeps it.
+#[derive(Debug, Clone)]
+enum MemoryEntry {
+    Version(MemoryVersion),
+    DeleteMarker {
+        id: String,
+        last_modified: DateTime<Utc>,
+    },
+}
+
+/// Versions of each key, oldest first.
+type MemoryStore = HashMap<String, Vec<MemoryEntry>>;
 
 /// In-memory storage implementation for testing and development purposes.
 /// All data is stored in memory and persists across instances within the same thread.
+///
+/// It behaves like a versioned S3 bucket: a write adds a version, a delete adds a delete
+/// marker, and no version is ever removed except by [`MemoryStorage::clear`].
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
-    data: Arc<RwLock<HashMap<String, MemoryFile>>>,
+    data: Arc<RwLock<MemoryStore>>,
     use_global_store: bool,
 }
 
 thread_local! {
-    #[allow(clippy::type_complexity)]
-    static GLOBAL_MEMORY_STORE: RefCell<Option<Arc<RwLock<HashMap<String, (Bytes, DateTime<Utc>)>>>>> = const { RefCell::new(None) };
+    static GLOBAL_MEMORY_STORE: RefCell<Option<Arc<RwLock<MemoryStore>>>> = const { RefCell::new(None) };
 }
 
 impl Default for MemoryStorage {
@@ -86,37 +123,49 @@ impl MemoryStorage {
     /// This creates an isolated instance not connected to the global store.
     #[must_use]
     pub fn with_data(data: HashMap<String, Bytes>) -> Self {
-        let data = data
-            .into_iter()
-            .map(|(k, v)| (k, (v, Utc::now())))
-            .collect::<HashMap<_, _>>();
-        MemoryStorage {
-            data: Arc::new(RwLock::new(data)),
-            use_global_store: false,
-        }
+        let now = Utc::now();
+        Self::with_timed_data(data.into_iter().map(|(k, v)| (k, (v, now))).collect())
     }
 
     /// Create a new memory storage instance with pre-populated data and custom timestamps.
     /// This creates an isolated instance not connected to the global store.
     #[must_use]
     pub fn with_timed_data(data: HashMap<String, (Bytes, DateTime<Utc>)>) -> Self {
+        let data = data
+            .into_iter()
+            .map(|(k, (bytes, last_modified))| {
+                (
+                    k,
+                    vec![MemoryEntry::Version(MemoryVersion::new(
+                        bytes,
+                        last_modified,
+                    ))],
+                )
+            })
+            .collect();
         MemoryStorage {
             data: Arc::new(RwLock::new(data)),
             use_global_store: false,
         }
     }
 
-    /// Get the number of objects stored in memory.
+    /// Get the number of objects stored in memory: keys whose current version is not a
+    /// delete marker.
     pub async fn len(&self) -> usize {
-        self.data.read().await.len()
+        self.data
+            .read()
+            .await
+            .values()
+            .filter(|entries| current(entries).is_some())
+            .count()
     }
 
     /// Check if the storage is empty.
     pub async fn is_empty(&self) -> bool {
-        self.data.read().await.is_empty()
+        self.len().await == 0
     }
 
-    /// Clear all data from storage.
+    /// Clear all data, every version included, from storage.
     /// This will clear the global storage if this instance is using it.
     pub async fn clear(&self) {
         self.data.write().await.clear();
@@ -152,38 +201,239 @@ fn normalize_memory_path(path: &str) -> Result<String, InvalidLocationError> {
     Ok(key.to_string())
 }
 
-/// Build a [`FileInfo`] for a stored object from its key and metadata.
-fn memory_file_info(
-    key: &str,
-    bytes: &Bytes,
-    last_modified: DateTime<Utc>,
-) -> Result<FileInfo, ReadError> {
+/// The prefix `path` lists, with a trailing slash.
+fn list_prefix(path: &str) -> Result<String, InvalidLocationError> {
+    let key = normalize_memory_path(path)?;
+    if key.ends_with('/') {
+        Ok(key)
+    } else {
+        Ok(format!("{key}/"))
+    }
+}
+
+fn memory_location(key: &str) -> Result<Location, IOError> {
     let location_str = format!("{MEMORY_PREFIX}{key}");
-    let location = location_str.parse::<Location>().map_err(|e| {
-        ReadError::IOError(
-            IOError::new(
-                ErrorKind::Unexpected,
-                format!("Failed to parse location: {e}"),
-                location_str.clone(),
-            )
-            .set_source(anyhow::anyhow!(e)),
+    location_str.parse::<Location>().map_err(|e| {
+        IOError::new(
+            ErrorKind::Unexpected,
+            format!("Failed to parse location: {e}"),
+            location_str.clone(),
+        )
+        .set_source(anyhow::anyhow!(e))
+    })
+}
+
+/// The current version of a key, unless the key is absent or its current version is a
+/// delete marker.
+fn current(entries: &[MemoryEntry]) -> Option<&MemoryVersion> {
+    match entries.last() {
+        Some(MemoryEntry::Version(version)) => Some(version),
+        Some(MemoryEntry::DeleteMarker { .. }) | None => None,
+    }
+}
+
+fn not_found(key: &str) -> IOError {
+    IOError::new(
+        ErrorKind::NotFound,
+        "Object not found in memory storage",
+        key.to_string(),
+    )
+}
+
+fn version_not_found(key: &str, version: &str) -> IOError {
+    IOError::new(
+        ErrorKind::NotFound,
+        format!("Version `{version}` not found in memory storage"),
+        key.to_string(),
+    )
+}
+
+/// Fails unless `version` has the form of the version ids this backend issues.
+fn check_version_id(key: &str, version: &str) -> Result<(), IOError> {
+    uuid::Uuid::parse_str(version).map(|_| ()).map_err(|_| {
+        IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("`{version}` is not a memory storage version id"),
+            key.to_string(),
+        )
+    })
+}
+
+/// The object version `version` of `key`, or its current version if `version` is `None`.
+/// A delete marker is not an object version, so its id is not found, as S3 refuses to
+/// read or tag one.
+fn find_version<'a>(
+    data: &'a MemoryStore,
+    key: &str,
+    version: Option<&str>,
+) -> Result<&'a MemoryVersion, IOError> {
+    let entries = data.get(key).map(Vec::as_slice).unwrap_or_default();
+    let Some(version) = version else {
+        return current(entries).ok_or_else(|| not_found(key));
+    };
+    check_version_id(key, version)?;
+    entries
+        .iter()
+        .find_map(|entry| match entry {
+            MemoryEntry::Version(stored) if stored.id == version => Some(stored),
+            _ => None,
+        })
+        .ok_or_else(|| version_not_found(key, version))
+}
+
+fn find_version_mut<'a>(
+    data: &'a mut MemoryStore,
+    key: &str,
+    version: Option<&str>,
+) -> Result<&'a mut MemoryVersion, IOError> {
+    if let Some(version) = version {
+        check_version_id(key, version)?;
+    }
+    let entries = data.get_mut(key).map(Vec::as_mut_slice).unwrap_or_default();
+    let found = match version {
+        None => match entries.last_mut() {
+            Some(MemoryEntry::Version(stored)) => Some(stored),
+            Some(MemoryEntry::DeleteMarker { .. }) | None => None,
+        },
+        Some(version) => entries.iter_mut().find_map(|entry| match entry {
+            MemoryEntry::Version(stored) if stored.id == version => Some(stored),
+            _ => None,
+        }),
+    };
+    found.ok_or_else(|| match version {
+        Some(version) => version_not_found(key, version),
+        None => not_found(key),
+    })
+}
+
+/// The [`FileInfo`] of a stored object version.
+fn version_file_info(key: &str, version: &MemoryVersion) -> Result<FileInfo, IOError> {
+    Ok(FileInfo::new(
+        Some(version.last_modified),
+        memory_location(key)?,
+        Some(version.bytes.len() as u64),
+    )
+    .with_e_tag(Some(version.e_tag.clone()))
+    .with_version(Some(version.id.clone())))
+}
+
+/// Build the [`ObjectRead`] of a stored object version.
+fn object_read(key: &str, version: &MemoryVersion) -> Result<ObjectRead, IOError> {
+    Ok(ObjectRead {
+        bytes: version.bytes.clone(),
+        info: version_file_info(key, version)?,
+    })
+}
+
+/// Most entries S3 returns in one listing page, and its page size for a requested size of
+/// zero.
+const MAX_PAGE_SIZE: usize = 1000;
+
+/// Pages of at most `page_size` items, as S3 pages a listing.
+fn pages<T: Clone>(items: &[T], page_size: Option<usize>) -> Vec<Vec<T>> {
+    let page_size = page_size
+        .filter(|size| *size > 0)
+        .map_or(MAX_PAGE_SIZE, |size| size.min(MAX_PAGE_SIZE));
+    items.chunks(page_size).map(<[T]>::to_vec).collect()
+}
+
+fn slice_range(key: &str, bytes: &Bytes, range: std::ops::Range<u64>) -> Result<Bytes, IOError> {
+    if range.end < range.start {
+        return Err(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!(
+                "Invalid range: start ({}) > end ({})",
+                range.start, range.end
+            ),
+            key.to_string(),
+        ));
+    }
+    if range.is_empty() {
+        return Ok(Bytes::new());
+    }
+    let start = usize::try_from(range.start).map_err(|_| {
+        IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("Range start {} too large for this platform", range.start),
+            key.to_string(),
         )
     })?;
-    Ok(FileInfo::new(
-        Some(last_modified),
-        location,
-        Some(bytes.len() as u64),
-    ))
+    let end = usize::try_from(range.end).map_err(|_| {
+        IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("Range end {} too large for this platform", range.end),
+            key.to_string(),
+        )
+    })?;
+    if end > bytes.len() {
+        return Err(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("Range end {end} exceeds file size {}", bytes.len()),
+            key.to_string(),
+        ));
+    }
+    Ok(bytes.slice(start..end))
+}
+
+/// Add `bytes` as the new current version of `key`.
+fn put_version(data: &mut MemoryStore, key: String, bytes: Bytes) -> WriteOutcome {
+    let version = MemoryVersion::new(bytes, Utc::now());
+    let outcome = WriteOutcome {
+        e_tag: Some(version.e_tag.clone()),
+        version: Some(version.id.clone()),
+    };
+    data.entry(key)
+        .or_default()
+        .push(MemoryEntry::Version(version));
+    outcome
+}
+
+/// Add a delete marker as the new current version of `key`. Like S3, this happens
+/// whether or not the key has a current version.
+fn put_delete_marker(data: &mut MemoryStore, key: String) {
+    data.entry(key)
+        .or_default()
+        .push(MemoryEntry::DeleteMarker {
+            id: uuid::Uuid::now_v7().to_string(),
+            last_modified: Utc::now(),
+        });
+}
+
+/// The entries of one key, newest first.
+fn version_entries(key: &str, entries: &[MemoryEntry]) -> Result<Vec<ObjectVersionEntry>, IOError> {
+    let location = memory_location(key)?;
+    Ok(entries
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(index, entry)| match entry {
+            MemoryEntry::Version(version) => ObjectVersionEntry::Version(
+                ObjectVersion::builder()
+                    .location(location.clone())
+                    .version(version.id.clone())
+                    .e_tag(Some(version.e_tag.clone()))
+                    .size(Some(version.bytes.len() as u64))
+                    .last_modified(Some(version.last_modified))
+                    .is_latest(index == 0)
+                    .build(),
+            ),
+            MemoryEntry::DeleteMarker { id, last_modified } => ObjectVersionEntry::DeleteMarker(
+                DeleteMarker::builder()
+                    .location(location.clone())
+                    .version(id.clone())
+                    .last_modified(Some(*last_modified))
+                    .is_latest(index == 0)
+                    .build(),
+            ),
+        })
+        .collect())
 }
 
 #[async_trait::async_trait]
 impl LakekeeperStorage for MemoryStorage {
     async fn delete(&self, path: &str) -> Result<(), DeleteError> {
         let key = normalize_memory_path(path)?;
-
-        let mut data = self.data.write().await;
-        data.remove(&key);
-        // Memory storage treats deleting non-existent keys as success
+        put_delete_marker(&mut *self.data.write().await, key);
         Ok(())
     }
 
@@ -194,12 +444,9 @@ impl LakekeeperStorage for MemoryStorage {
         Ok(())
     }
 
-    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<WriteOutcome, WriteError> {
         let key = normalize_memory_path(path)?;
-
-        let mut data = self.data.write().await;
-        data.insert(key, (bytes, Utc::now()));
-        Ok(())
+        Ok(put_version(&mut *self.data.write().await, key, bytes))
     }
 
     async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
@@ -214,22 +461,12 @@ impl LakekeeperStorage for MemoryStorage {
 
     async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let key = normalize_memory_path(path)?;
-
         let data = self.data.read().await;
-        match data.get(&key) {
-            Some((bytes, last_modified)) => {
-                let info = memory_file_info(&key, bytes, *last_modified)?;
-                Ok(ObjectRead {
-                    bytes: bytes.clone(),
-                    info,
-                })
-            }
-            None => Err(ReadError::IOError(IOError::new(
-                ErrorKind::NotFound,
-                "Object not found in memory storage",
-                key,
-            ))),
-        }
+        let version = data
+            .get(&key)
+            .and_then(|entries| current(entries))
+            .ok_or_else(|| not_found(&key))?;
+        Ok(object_read(&key, version)?)
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -241,67 +478,17 @@ impl LakekeeperStorage for MemoryStorage {
         path: &str,
         range: std::ops::Range<u64>,
     ) -> Result<Bytes, ReadError> {
-        if range.end < range.start {
-            return Err(ReadError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                format!(
-                    "Invalid range: start ({}) > end ({})",
-                    range.start, range.end
-                ),
-                path.to_string(),
-            )));
-        }
-        if range.is_empty() {
-            return Ok(Bytes::new());
-        }
-
         let key = normalize_memory_path(path)?;
-        let data = self.data.read().await;
-        let (bytes, _) = data.get(&key).ok_or_else(|| {
-            ReadError::IOError(IOError::new(
-                ErrorKind::NotFound,
-                "Object not found in memory storage",
-                key.clone(),
-            ))
-        })?;
-
-        let start = usize::try_from(range.start).map_err(|_| {
-            ReadError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                format!("Range start {} too large for this platform", range.start),
-                key.clone(),
-            ))
-        })?;
-        let end = usize::try_from(range.end).map_err(|_| {
-            ReadError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                format!("Range end {} too large for this platform", range.end),
-                key.clone(),
-            ))
-        })?;
-        if end > bytes.len() {
-            return Err(ReadError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                format!("Range end {end} exceeds file size {}", bytes.len()),
-                key.clone(),
-            )));
+        // Invalid and empty ranges are answered without looking the key up.
+        if range.is_empty() {
+            return Ok(slice_range(&key, &Bytes::new(), range)?);
         }
-        Ok(bytes.slice(start..end))
+        let read = self.read(path).await?;
+        Ok(slice_range(&key, &read.bytes, range)?)
     }
 
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
-        let key = normalize_memory_path(path)?;
-
-        let data = self.data.read().await;
-        let (bytes, last_modified) = data.get(&key).ok_or_else(|| {
-            ReadError::IOError(IOError::new(
-                ErrorKind::NotFound,
-                "Object not found in memory storage",
-                key.clone(),
-            ))
-        })?;
-
-        memory_file_info(&key, bytes, *last_modified)
+        self.read(path).await.map(|r| r.info)
     }
 
     async fn list(
@@ -309,82 +496,140 @@ impl LakekeeperStorage for MemoryStorage {
         path: &str,
         page_size: Option<usize>,
     ) -> Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError> {
-        let prefix = if path.ends_with('/') {
-            normalize_memory_path(path)?
-        } else {
-            format!("{}/", normalize_memory_path(path)?)
-        };
+        let prefix = list_prefix(path)?;
 
         let data = self.data.read().await;
-        let mut matching_files: Vec<(String, DateTime<Utc>, u64)> = data
+        let mut matching_files: Vec<(&String, &MemoryVersion)> = data
             .iter()
             .filter(|(key, _)| key.starts_with(&prefix))
-            .map(|(key, (bytes, last_modified))| (key.clone(), *last_modified, bytes.len() as u64))
+            .filter_map(|(key, entries)| current(entries).map(|version| (key, version)))
             .collect();
 
         // Sort for consistent ordering
-        matching_files.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let page_size = page_size.unwrap_or(1000);
+        matching_files.sort_by(|a, b| a.0.cmp(b.0));
 
         let mut all_file_infos = Vec::new();
-        for (key, last_modified, size) in matching_files {
-            let location_str = format!("{MEMORY_PREFIX}{key}");
-            match location_str.parse::<Location>() {
-                Ok(location) => {
-                    let file_info = FileInfo::new(Some(last_modified), location, Some(size));
-                    all_file_infos.push(file_info);
-                }
-                Err(e) => {
-                    let error = IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Failed to parse location: {e}"),
-                        location_str,
-                    )
-                    .set_source(anyhow::anyhow!(e));
-                    // Return an error in the stream
-                    return Ok(stream::iter(std::iter::once(Err(error))).boxed());
-                }
+        for (key, version) in matching_files {
+            // Like S3, a listing reports no version.
+            match version_file_info(key, version) {
+                Ok(info) => all_file_infos.push(info.with_version(None)),
+                // Return an error in the stream
+                Err(error) => return Ok(stream::iter(std::iter::once(Err(error))).boxed()),
             }
         }
 
-        // Convert to Vec<Vec<FileInfo>> by chunking, then create an iterator over those chunks
-        let chunks: Vec<Vec<FileInfo>> = all_file_infos
-            .chunks(page_size)
-            .map(<[FileInfo]>::to_vec)
-            .collect();
-
         // Create a stream that returns pages of locations
-        let stream = stream::iter(chunks.into_iter().map(Ok));
+        let stream = stream::iter(pages(&all_file_infos, page_size).into_iter().map(Ok));
 
         Ok(stream.boxed())
     }
 
-    /// Native in-memory recursive delete via direct `HashMap` key scan.
-    ///
-    /// Overrides the default streamed list+batch-delete implementation because
-    /// the in-memory backend has no I/O to batch and can drain matching keys
-    /// from the underlying `HashMap` in a single write-lock acquisition.
+    /// Adds a delete marker to every key under the prefix that has a current version,
+    /// in a single write-lock acquisition.
     async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
-        let prefix = if path.ends_with('/') {
-            normalize_memory_path(path)?
-        } else {
-            format!("{}/", normalize_memory_path(path)?)
-        };
+        let prefix = list_prefix(path)?;
 
         let mut data = self.data.write().await;
-        data.retain(|key, _| !key.starts_with(&prefix));
+        let live_keys: Vec<String> = data
+            .iter()
+            .filter(|(key, entries)| key.starts_with(&prefix) && current(entries).is_some())
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in live_keys {
+            put_delete_marker(&mut data, key);
+        }
+        Ok(())
+    }
+
+    async fn read_version(&self, path: &str, version: &str) -> Result<ObjectRead, ReadError> {
+        let key = normalize_memory_path(path)?;
+        let data = self.data.read().await;
+        Ok(object_read(
+            &key,
+            find_version(&data, &key, Some(version))?,
+        )?)
+    }
+
+    async fn metadata_version(&self, path: &str, version: &str) -> Result<FileInfo, ReadError> {
+        let key = normalize_memory_path(path)?;
+        let data = self.data.read().await;
+        Ok(version_file_info(
+            &key,
+            find_version(&data, &key, Some(version))?,
+        )?)
+    }
+
+    async fn read_range_version(
+        &self,
+        path: &str,
+        version: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        let key = normalize_memory_path(path)?;
+        // Invalid and empty ranges are answered without looking the version up.
+        if range.is_empty() {
+            return Ok(slice_range(&key, &Bytes::new(), range)?);
+        }
+        let read = self.read_version(path, version).await?;
+        Ok(slice_range(&key, &read.bytes, range)?)
+    }
+
+    async fn list_versions(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<BoxStream<'_, Result<Vec<ObjectVersionEntry>, IOError>>, ReadError> {
+        let prefix = list_prefix(path)?;
+
+        let data = self.data.read().await;
+        let mut keys: Vec<&String> = data.keys().filter(|key| key.starts_with(&prefix)).collect();
+        keys.sort();
+
+        let mut all_entries = Vec::new();
+        for key in keys {
+            match version_entries(key, &data[key]) {
+                Ok(entries) => all_entries.extend(entries),
+                Err(error) => return Ok(stream::iter(std::iter::once(Err(error))).boxed()),
+            }
+        }
+
+        Ok(stream::iter(pages(&all_entries, page_size).into_iter().map(Ok)).boxed())
+    }
+
+    async fn get_tags(&self, path: &str, version: Option<&str>) -> Result<ObjectTags, ReadError> {
+        let key = normalize_memory_path(path)?;
+        let data = self.data.read().await;
+        Ok(find_version(&data, &key, version)?.tags.clone())
+    }
+
+    async fn put_tags(
+        &self,
+        path: &str,
+        version: Option<&str>,
+        tags: &ObjectTags,
+    ) -> Result<(), WriteError> {
+        let key = normalize_memory_path(path)?;
+        crate::validate_tags(tags, &key)?;
+        let mut data = self.data.write().await;
+        find_version_mut(&mut data, &key, version)?.tags = tags.clone();
+        Ok(())
+    }
+
+    async fn remove_tags(&self, path: &str, version: Option<&str>) -> Result<(), WriteError> {
+        let key = normalize_memory_path(path)?;
+        let mut data = self.data.write().await;
+        find_version_mut(&mut data, &key, version)?.tags.clear();
         Ok(())
     }
 }
 
 /// Streaming writer for the in-memory backend.
 ///
-/// Buffers all written bytes locally and inserts them into the shared
-/// store on `close`. Calling `write` after `close` returns an error.
+/// Buffers all written bytes locally and adds them as a new version on `close`.
+/// Calling `write` after `close` returns an error.
 #[derive(Debug)]
 pub(crate) struct MemoryFileWrite {
-    data: Arc<RwLock<HashMap<String, MemoryFile>>>,
+    data: Arc<RwLock<MemoryStore>>,
     key: String,
     buffer: Vec<u8>,
     closed: bool,
@@ -404,7 +649,7 @@ impl LakekeeperFileWrite for MemoryFileWrite {
         Ok(())
     }
 
-    async fn close(&mut self) -> Result<(), WriteError> {
+    async fn close(&mut self) -> Result<WriteOutcome, WriteError> {
         if self.closed {
             return Err(WriteError::IOError(IOError::new(
                 ErrorKind::ConditionNotMatch,
@@ -413,10 +658,9 @@ impl LakekeeperFileWrite for MemoryFileWrite {
             )));
         }
         let bytes = Bytes::from(std::mem::take(&mut self.buffer));
-        let mut data = self.data.write().await;
-        data.insert(self.key.clone(), (bytes, Utc::now()));
+        let outcome = put_version(&mut *self.data.write().await, self.key.clone(), bytes);
         self.closed = true;
-        Ok(())
+        Ok(outcome)
     }
 }
 
@@ -427,7 +671,21 @@ mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
 
-    use crate::{LakekeeperStorage, memory::MemoryStorage};
+    use crate::{
+        ErrorKind, IOError, LakekeeperStorage, ObjectTags, ObjectVersionEntry, ReadError,
+        WriteError,
+        memory::{MemoryStorage, pages},
+    };
+
+    async fn all_versions(storage: &MemoryStorage, prefix: &str) -> Vec<ObjectVersionEntry> {
+        let pages: Vec<Result<Vec<ObjectVersionEntry>, IOError>> = storage
+            .list_versions(prefix, None)
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        pages.into_iter().flat_map(Result::unwrap).collect()
+    }
 
     #[tokio::test]
     async fn test_memory_storage_basic_operations() {
@@ -659,5 +917,313 @@ mod tests {
         // Verify data is gone
         let read_result = storage.read("test/file1.txt").await;
         assert!(read_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_versions_after_overwrite_and_delete() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://versions/dir/obj";
+        let first = storage.write(path, Bytes::from("first")).await.unwrap();
+        let second = storage.write(path, Bytes::from("second")).await.unwrap();
+        storage.delete(path).await.unwrap();
+
+        let first_version = first.version.clone().unwrap();
+        let second_version = second.version.clone().unwrap();
+        assert_ne!(first_version, second_version);
+        assert_eq!(
+            first.e_tag.as_deref(),
+            Some("\"8b04d5e3775d298e78455efc5ca404d5\"")
+        );
+
+        let entries = all_versions(&storage, "memory://versions/dir").await;
+        assert_eq!(entries.len(), 3);
+        let ObjectVersionEntry::DeleteMarker(marker) = &entries[0] else {
+            panic!("expected the delete marker first, got {:?}", entries[0]);
+        };
+        assert!(marker.is_latest);
+        let ObjectVersionEntry::Version(newer) = &entries[1] else {
+            panic!("expected a version, got {:?}", entries[1]);
+        };
+        let ObjectVersionEntry::Version(older) = &entries[2] else {
+            panic!("expected a version, got {:?}", entries[2]);
+        };
+        assert_eq!(
+            (
+                newer.version.as_str(),
+                newer.e_tag.as_ref(),
+                newer.size,
+                newer.is_latest
+            ),
+            (
+                second_version.as_str(),
+                second.e_tag.as_ref(),
+                Some(6),
+                false
+            )
+        );
+        assert_eq!(
+            (
+                older.version.as_str(),
+                older.e_tag.as_ref(),
+                older.size,
+                older.is_latest
+            ),
+            (first_version.as_str(), first.e_tag.as_ref(), Some(5), false)
+        );
+        assert_eq!(older.location.as_str(), path);
+
+        // The key reads as absent, its versions stay readable.
+        let current = storage.read(path).await.unwrap_err();
+        assert!(
+            matches!(&current, ReadError::IOError(e) if e.kind() == ErrorKind::NotFound),
+            "{current}"
+        );
+        let read = storage.read_version(path, &first_version).await.unwrap();
+        assert_eq!(read.bytes, Bytes::from("first"));
+        assert_eq!(read.info.version(), Some(first_version.as_str()));
+        assert_eq!(
+            storage
+                .read_range_version(path, &second_version, 1..4)
+                .await
+                .unwrap(),
+            Bytes::from("eco")
+        );
+        assert_eq!(storage.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_memory_reading_a_delete_marker_is_not_found() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://versions/marker";
+        storage.write(path, Bytes::from("x")).await.unwrap();
+        storage.delete(path).await.unwrap();
+        let entries = all_versions(&storage, "memory://versions").await;
+        let marker = entries[0].version().to_string();
+
+        let error = storage.read_version(path, &marker).await.unwrap_err();
+        assert!(
+            matches!(&error, ReadError::IOError(e) if e.kind() == ErrorKind::NotFound),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memory_list_reports_e_tag_but_no_version() {
+        let storage = MemoryStorage::new_isolated();
+        let outcome = storage
+            .write("memory://listing/a", Bytes::from("a"))
+            .await
+            .unwrap();
+        let mut stream = storage.list("memory://listing", None).await.unwrap();
+        let page = stream.next().await.unwrap().unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].e_tag(), outcome.e_tag.as_deref());
+        assert_eq!(page[0].version(), None);
+
+        let version = outcome
+            .version
+            .clone()
+            .expect("memory storage versions every write");
+        let metadata = storage.metadata("memory://listing/a").await.unwrap();
+        assert_eq!(metadata.version(), Some(version.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_close_returns_the_version_it_wrote() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/outcome.bin";
+        let mut writer = storage.writer(path).await.unwrap();
+        writer.write(Bytes::from("streamed")).await.unwrap();
+        let outcome = writer.close().await.unwrap();
+        let version = outcome
+            .version
+            .clone()
+            .expect("memory storage versions every write");
+
+        let read = storage.read(path).await.unwrap();
+        assert_eq!(read.info.version(), Some(version.as_str()));
+        assert_eq!(read.info.e_tag(), outcome.e_tag.as_deref());
+    }
+
+    #[tokio::test]
+    async fn test_memory_tags_address_one_version() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://tags/obj";
+        let first = storage
+            .write(path, Bytes::from("first"))
+            .await
+            .unwrap()
+            .version
+            .unwrap();
+        let second = storage
+            .write(path, Bytes::from("second"))
+            .await
+            .unwrap()
+            .version
+            .unwrap();
+        let tags = ObjectTags::from([("state".to_string(), "expired".to_string())]);
+
+        storage
+            .put_tags(path, Some(first.as_str()), &tags)
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.get_tags(path, Some(first.as_str())).await.unwrap(),
+            tags
+        );
+        assert_eq!(
+            storage.get_tags(path, Some(second.as_str())).await.unwrap(),
+            ObjectTags::new()
+        );
+
+        storage
+            .remove_tags(path, Some(first.as_str()))
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.get_tags(path, Some(first.as_str())).await.unwrap(),
+            ObjectTags::new()
+        );
+
+        let unknown = uuid::Uuid::now_v7().to_string();
+        let error = storage
+            .put_tags(path, Some(unknown.as_str()), &tags)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, WriteError::IOError(e) if e.kind() == ErrorKind::NotFound),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memory_tags_without_a_version_address_the_current_object() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://tags/current";
+        storage.write(path, Bytes::from("first")).await.unwrap();
+        let second = storage
+            .write(path, Bytes::from("second"))
+            .await
+            .unwrap()
+            .version
+            .unwrap();
+        let tags = ObjectTags::from([("state".to_string(), "kept".to_string())]);
+
+        storage.put_tags(path, None, &tags).await.unwrap();
+        assert_eq!(
+            storage.get_tags(path, Some(second.as_str())).await.unwrap(),
+            tags
+        );
+        assert_eq!(storage.get_tags(path, None).await.unwrap(), tags);
+
+        storage.delete(path).await.unwrap();
+        let error = storage.get_tags(path, None).await.unwrap_err();
+        assert!(
+            matches!(&error, ReadError::IOError(e) if e.kind() == ErrorKind::NotFound),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memory_remove_all_marks_only_live_keys() {
+        let storage = MemoryStorage::new_isolated();
+        storage
+            .write("memory://tree/a", Bytes::from("a"))
+            .await
+            .unwrap();
+        storage
+            .write("memory://tree/b", Bytes::from("b"))
+            .await
+            .unwrap();
+        storage.delete("memory://tree/b").await.unwrap();
+        storage.remove_all("memory://tree").await.unwrap();
+
+        let entries = all_versions(&storage, "memory://tree").await;
+        let kinds: Vec<(&str, bool)> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.location().as_str(),
+                    matches!(entry, ObjectVersionEntry::DeleteMarker(_)),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("memory://tree/a", true),
+                ("memory://tree/a", false),
+                ("memory://tree/b", true),
+                ("memory://tree/b", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn listing_pages_hold_at_most_a_thousand_entries() {
+        let items: Vec<usize> = (0..2500).collect();
+        let sizes = |page_size| {
+            pages(&items, page_size)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sizes(Some(5000)), vec![1000, 1000, 500]);
+        assert_eq!(sizes(Some(0)), vec![1000, 1000, 500]);
+        assert_eq!(sizes(None), vec![1000, 1000, 500]);
+        assert_eq!(sizes(Some(1200)), vec![1000, 1000, 500]);
+        assert_eq!(sizes(Some(999)), vec![999, 999, 502]);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_version_id_is_refused() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://versions/obj";
+        storage.write(path, Bytes::from("data")).await.unwrap();
+        let Err(ReadError::IOError(error)) = storage.read_version(path, "not-a-version").await
+        else {
+            panic!("expected the version id to be refused");
+        };
+        assert_eq!(error.kind(), ErrorKind::ConditionNotMatch);
+        assert_eq!(
+            error.reason(),
+            "`not-a-version` is not a memory storage version id"
+        );
+        // A well-formed id the key does not have is not found.
+        let unknown = uuid::Uuid::now_v7().to_string();
+        let Err(ReadError::IOError(error)) = storage.read_version(path, &unknown).await else {
+            panic!("expected the version to be missing");
+        };
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn a_tag_set_beyond_the_limits_is_refused() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://tags/limits";
+        let version = storage
+            .write(path, Bytes::from("data"))
+            .await
+            .unwrap()
+            .version
+            .expect("memory storage versions every write");
+        let tags = ObjectTags::from([("aws:reserved".to_string(), "value".to_string())]);
+        let Err(WriteError::IOError(error)) =
+            storage.put_tags(path, Some(version.as_str()), &tags).await
+        else {
+            panic!("expected the tag set to be refused");
+        };
+        assert_eq!(error.kind(), ErrorKind::ConditionNotMatch);
+        assert_eq!(
+            error.reason(),
+            "Tag key `aws:reserved` is in the reserved `aws:` namespace"
+        );
+        assert_eq!(
+            storage
+                .get_tags(path, Some(version.as_str()))
+                .await
+                .unwrap(),
+            ObjectTags::new()
+        );
     }
 }

@@ -336,17 +336,19 @@ impl ErrorModel {
         // a commit without an idempotency key, so a storage error must only be
         // returned before the catalog commit.
         let code = match io_error.kind() {
-            lakekeeper_io::ErrorKind::Unexpected => StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             lakekeeper_io::ErrorKind::NotFound => StatusCode::BAD_REQUEST.as_u16(),
             lakekeeper_io::ErrorKind::RequestTimeout
             | lakekeeper_io::ErrorKind::ServiceUnavailable
             | lakekeeper_io::ErrorKind::RateLimited => StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            // A store that lacks a feature is a dependency failure, not an endpoint this
+            // server lacks, which is what Iceberg clients read 501 as.
             lakekeeper_io::ErrorKind::ConfigInvalid
             | lakekeeper_io::ErrorKind::PermissionDenied
             | lakekeeper_io::ErrorKind::ConditionNotMatch
-            | lakekeeper_io::ErrorKind::CredentialsExpired => {
-                StatusCode::PRECONDITION_FAILED.as_u16()
-            }
+            | lakekeeper_io::ErrorKind::CredentialsExpired
+            | lakekeeper_io::ErrorKind::Unsupported => StatusCode::PRECONDITION_FAILED.as_u16(),
+            // `Unexpected`, and kinds this match does not know yet.
+            _ => StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
         };
 
         Self::from_io_error_with_code(io_error, code, detail)
@@ -511,6 +513,17 @@ mod tests {
     use futures_util::stream::StreamExt;
 
     use super::*;
+
+    #[test]
+    fn a_store_without_a_feature_is_a_failed_dependency() {
+        let io_error = lakekeeper_io::IOError::new(
+            lakekeeper_io::ErrorKind::Unsupported,
+            "Object tagging is not supported by this storage backend",
+            "s3://bucket/key".to_string(),
+        );
+        let model = ErrorModel::from_io_error(io_error, "Storage operation failed.");
+        assert_eq!(model.code, StatusCode::PRECONDITION_FAILED.as_u16());
+    }
 
     #[tokio::test]
     async fn test_iceberg_error_response_serialization() {
