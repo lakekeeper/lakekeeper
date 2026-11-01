@@ -345,6 +345,8 @@ Basic setup in spark:
     spark.sql(f"USE {catalog_name}")
     ```
 
+    With Iceberg 1.12 and newer, also set `spark.sql.catalog.<catalog-name>.rest-catalog-purge` to `true`, so that Lakekeeper handles `DROP TABLE … PURGE`. See [Spark and `DROP TABLE … PURGE`](./concepts.md#spark-and-drop-table-purge).
+
 ## PyIceberg { .engine data-icon="python" }
 
 ```python

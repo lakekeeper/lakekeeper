@@ -149,6 +149,16 @@ Clients such as Iceberg Java 1.11 and newer can ask whether a table changed sinc
 
 Currently all tables stored in Lakekeeper are assumed to be managed by Lakekeeper. The concept of "external" tables will follow in a later release. When managed tables are dropped, Lakekeeper defaults to setting `purgeRequested` parameter of the `dropTable` endpoint to true unless explicitly set to false. Currently most query engines do not set this flag, which defaults to enabling purge. If purge is enabled for a drop, all files of the table are removed.
 
+### Spark and `DROP TABLE … PURGE`
+
+With Iceberg 1.12 and newer, set the Spark catalog option `rest-catalog-purge` to `true`. Spark then passes `PURGE` to Lakekeeper and does not delete any files itself. Lakekeeper removes the files, and [soft deletion](#soft-deletion) keeps working. Set the option in your Spark configuration, because Lakekeeper cannot set it for the client:
+
+```
+spark.sql.catalog.<catalog-name>.rest-catalog-purge=true
+```
+
+Without this option, which includes all Iceberg versions older than 1.12, Spark drops the table without `PURGE` and then deletes the files itself. This undermines soft deletion. On warehouses with hard deletion and remote signing, the statement fails with `Table does not exist or user does not have permission to view it at location …`, although the table is dropped and Lakekeeper removes its files. On these versions, use `DROP TABLE xyz` without `PURGE`. Lakekeeper removes the files of managed tables anyway.
+
 ## Soft Deletion
 
 Lakekeeper allows warehouses to enable soft deletion as a data protection mechanism. When enabled:
@@ -165,10 +175,10 @@ Soft deletion works correctly only when clients follow these behaviors:
 
 2. `DROP TABLE xyz PURGE`: Clients should not delete files themselves, and should call the `dropTable` endpoint with the `purgeRequested` flag set to true. Lakekeeper will remove files for managed tables (and for unmanaged tables in a future release). Unfortunately not all query engines adhere to this behavior, as described below.
 
-Unfortunately, some Java-based query engines like Spark don't follow the expected behavior for `PURGE` operations. Instead, they immediately delete files, which undermines soft deletion functionality. The Apache Iceberg community has [agreed to fix this in Iceberg 2.0](https://github.com/apache/iceberg/pull/11317#issuecomment-2604912801). For Iceberg 1.x versions, we're working on a new `io.client-side.purge-enabled` flag for better control.
+Spark follows this behavior for `PURGE` only if the catalog option `rest-catalog-purge` is set, which requires Iceberg 1.12 or newer. Otherwise Spark deletes the files itself, which undermines soft deletion. See [Spark and `DROP TABLE … PURGE`](#spark-and-drop-table-purge).
 
 !!! warning
-    Never use **`DROP TABLE xyz PURGE`** with clients like Spark that immediately remove files when soft deletion is enabled!
+    Never use **`DROP TABLE xyz PURGE`** with clients that delete files themselves, such as Spark without `rest-catalog-purge`, when soft deletion is enabled!
 
 For S3-based storage, Lakekeeper provides a protective configuration option in storage profiles: `push-s3-delete-disabled`. When set to `true`, this:
 
