@@ -4,6 +4,17 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
+## `v4.14`
+
+```text
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+`warehouse`:
+
+- Add `can_set_rollback_compaction_policy` (from `modify_effective`). It gates changing the warehouse policy that lets a commit roll back a concurrent compaction.
+
 ## `v4.13`
 
 ```text

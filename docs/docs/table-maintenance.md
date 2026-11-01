@@ -120,3 +120,39 @@ For production workloads, we recommend running remove orphan files workers in de
 
 !!! warning
     Every run performs a full recursive listing of the table's storage location, which can be expensive for tables with many files. The adaptive scheduler stretches the cadence on tables that produce few orphans, but each run still pays the listing cost.
+
+## Transparent Commit { #transparent-commit .lkp }
+
+Iceberg optimistic concurrency is symmetric: whoever commits second loses. When a compaction (a `REPLACE` snapshot) lands first, a concurrent writer's commit fails validation even though the compaction changed no logical table data — the compaction, being lower value, wins over the user's write. Transparent commit reverses that priority at the catalog: the writer wins, and the conflicting compaction is silently rolled back.
+
+The catalog uses a lazy *tag-and-reap* model. A compaction commit lands as an ordinary, durable snapshot; it merely carries a marker in its snapshot summary declaring it rollbackable. If no conflicting writer ever appears, it stays as a perfectly valid compaction result and nothing further happens. Only when a writer's commit would otherwise fail optimistic-concurrency validation does the catalog act: if *every* snapshot between the writer's expected base and the current branch tip is a rollbackable compaction snapshot, the catalog excises those snapshots, rebases the writer onto its expected base, and commits — folding the revert into the writer's own commit. The pre-compaction data files still physically exist, so restoring the earlier snapshot leaves the writer's positional deletes referencing live files again.
+
+If any genuine data commit sits between the writer's base and the tip, the catalog does **not** roll back — the writer takes a normal concurrency failure and retries, and the compaction snapshot becomes permanent. A compaction is rolled back only while it is younger than the warehouse's maximum compaction age, 24 hours by default. After that, a conflicting writer takes a normal concurrency failure. This is a yield primitive, not a rebase — the catalog drops the compaction snapshot rather than replaying it, which is what makes it safe on V2 positional-delete tables.
+
+### Two-part opt-in
+
+Transparent commit is disabled by default and requires two independent opt-ins:
+
+1. **Warehouse flag.** Enable it per warehouse:
+
+    ```bash
+    curl -X POST ".../management/v1/warehouse/{warehouse_id}/rollback-compaction-policy" \
+      -H "Content-Type: application/json" \
+      -d '{"enabled": true}'
+    ```
+
+    The optional `max-compaction-age-seconds` sets how old a compaction may be and still be rolled back. It is measured from the compaction snapshot's timestamp. The optional `snapshot-removal-fence-seconds` sets the window described in [Snapshot expiration](#transparent-commit-snapshot-expiration). Each request sets the whole policy, so a request without them sets them back to 86400 and 60 seconds.
+
+    Changing the flag needs the `set_rollback_compaction_policy` permission on the warehouse. With OpenFGA, `modify` on the warehouse grants it.
+
+2. **Per-snapshot marker.** The compaction engine must stamp its `REPLACE` snapshot summary with either `lakekeeper.rollbackable=true` (native) or Apache Polaris's `polaris.internal.conflict-resolution.by-operation-type.replace=rollback` (honoured for compatibility with engines already integrated against Polaris). Because the opt-in is a snapshot-summary marker, external compaction engines participate without any Lakekeeper-specific integration beyond stamping the marker.
+
+### Snapshot expiration { #transparent-commit-snapshot-expiration }
+
+Lakekeeper keeps rollbacks and snapshot expiration apart on each table, for a window of 60 seconds by default. For the window after a compaction of a table was rolled back, a commit that removes snapshots from that table, such as an `expire_snapshots` run, is rejected with a conflict. Iceberg clients retry such a commit with freshly loaded table metadata, so the run normally succeeds on a later attempt or a later run. For the window after a commit removed snapshots, no compaction of that table is rolled back, and a conflicting writer retries as usual. Set the window with `snapshot-removal-fence-seconds`.
+
+The window protects files that a table still reads. Iceberg's Java `ExpireSnapshots` loads the table before and after its commit, and deletes the files of every snapshot that is missing from the second load as if it had expired that snapshot itself. A compaction rolled back between the two loads is such a snapshot, and the files it replaced are the files the table reads again after the rollback. The window must be longer than the time an expiration run needs from its first load to its second load, which is normally less than a second.
+
+### Notes and limitations
+
+A rolled-back compaction leaves its data and manifest files behind; they are reclaimed by [Remove Orphan Files](#remove-orphan-files), not synchronously during the commit. Rollback is attempted only for a writer commit that adds one `overwrite` or `delete` snapshot to one branch, such as a row-level delete, update or merge. Such a commit can depend on files the compaction rewrote. An `append` or `replace` commit gets a normal concurrency failure and succeeds when the client retries on top of the compaction. Snapshots referenced by another branch or tag are never excised. On V3 (row-lineage) tables, rollback is skipped when a reaped snapshot carries row ranges.

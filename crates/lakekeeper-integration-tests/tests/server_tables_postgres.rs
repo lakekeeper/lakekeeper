@@ -33,7 +33,8 @@ use lakekeeper::{
             ApiServer as ManagementApiServer,
             table::TableManagementService,
             warehouse::{
-                Service as _, TabularDeleteProfile, UpdateWarehouseFormatVersionPolicyRequest,
+                Service as _, SetWarehouseRollbackCompactionPolicyRequest, TabularDeleteProfile,
+                UpdateWarehouseFormatVersionPolicyRequest,
             },
         },
     },
@@ -1701,6 +1702,289 @@ async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_poo
         expired.snapshots().map(|s| s.snapshot_id()).collect_vec(),
         vec![2]
     );
+}
+
+/// A transparent-commit table: snapshot `1` on `main`, policy enabled with a 2 s fence.
+async fn transparent_commit_setup(
+    pool: PgPool,
+) -> (
+    ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    NamespaceParameters,
+    TableIdent,
+) {
+    let (ctx, ns, ns_params, _) = commit_test_setup(pool).await;
+    let warehouse_id: WarehouseId = ns_params
+        .prefix
+        .as_ref()
+        .unwrap()
+        .as_str()
+        .parse::<Uuid>()
+        .unwrap()
+        .into();
+    ManagementApiServer::set_warehouse_rollback_compaction_policy(
+        warehouse_id,
+        SetWarehouseRollbackCompactionPolicyRequest {
+            enabled: true,
+            max_compaction_age_seconds: None,
+            snapshot_removal_fence_seconds: std::num::NonZeroU64::new(2),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    commit_snapshot(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        None,
+        TestSnapshot {
+            id: 1,
+            parent: None,
+            sequence_number: 1,
+            operation: Operation::Append,
+        },
+    )
+    .await
+    .unwrap();
+    (ctx, ns_params, table_ident)
+}
+
+/// A snapshot for [`commit_snapshot`].
+struct TestSnapshot {
+    id: i64,
+    parent: Option<i64>,
+    sequence_number: i64,
+    operation: Operation,
+}
+
+/// Commits `snapshot` to `main`. `expected_base` asserts the current tip of `main`.
+/// A `Replace` snapshot carries the rollbackable marker.
+async fn commit_snapshot(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    table_ident: &TableIdent,
+    expected_base: Option<i64>,
+    TestSnapshot {
+        id,
+        parent,
+        sequence_number,
+        operation,
+    }: TestSnapshot,
+) -> lakekeeper::api::Result<()> {
+    let mut additional_properties = HashMap::new();
+    if operation == Operation::Replace {
+        additional_properties.insert("lakekeeper.rollbackable".to_string(), "true".to_string());
+    }
+    let snapshot = Snapshot::builder()
+        .with_snapshot_id(id)
+        .with_parent_snapshot_id(parent)
+        .with_timestamp_ms(chrono::Utc::now().timestamp_millis() + id)
+        .with_sequence_number(sequence_number)
+        .with_schema_id(0)
+        .with_manifest_list(format!("/snap-{id}.avro"))
+        .with_summary(Summary {
+            operation,
+            additional_properties,
+        })
+        .build();
+    let requirements = expected_base
+        .map(|base| {
+            vec![iceberg::TableRequirement::RefSnapshotIdMatch {
+                r#ref: MAIN_BRANCH.to_string(),
+                snapshot_id: Some(base),
+            }]
+        })
+        .unwrap_or_default();
+    commit_updates(
+        ctx,
+        ns_params,
+        table_ident,
+        requirements,
+        vec![
+            TableUpdate::AddSnapshot { snapshot },
+            TableUpdate::SetSnapshotRef {
+                ref_name: MAIN_BRANCH.to_string(),
+                reference: create_snapshot_reference(id),
+            },
+        ],
+    )
+    .await
+}
+
+async fn commit_updates(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    table_ident: &TableIdent,
+    requirements: Vec<iceberg::TableRequirement>,
+    updates: Vec<TableUpdate>,
+) -> lakekeeper::api::Result<()> {
+    commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements,
+                updates,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+fn remove_snapshots(ids: Vec<i64>) -> Vec<TableUpdate> {
+    vec![TableUpdate::RemoveSnapshots { snapshot_ids: ids }]
+}
+
+/// After a compaction is rolled back, a commit that removes snapshots gets a retryable
+/// conflict until the fence window has passed.
+#[sqlx::test]
+async fn test_transparent_commit_fences_snapshot_removal_after_reap(pool: PgPool) {
+    let (ctx, ns_params, table_ident) = transparent_commit_setup(pool).await;
+    commit_snapshot(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        None,
+        TestSnapshot {
+            id: 2,
+            parent: Some(1),
+            sequence_number: 2,
+            operation: Operation::Replace,
+        },
+    )
+    .await
+    .unwrap();
+    // The writer based on 1 wins: compaction 2 is rolled back.
+    commit_snapshot(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        Some(1),
+        TestSnapshot {
+            id: 3,
+            parent: Some(1),
+            sequence_number: 2,
+            operation: Operation::Delete,
+        },
+    )
+    .await
+    .unwrap();
+    let table = load_table(&ctx, &ns_params, &table_ident.name).await;
+    assert_eq!(table.metadata.current_snapshot_id(), Some(3));
+    assert!(table.metadata.snapshot_by_id(2).is_none());
+
+    let e = commit_updates(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![],
+        remove_snapshots(vec![1]),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+    assert_eq!(e.error.r#type.as_str(), "CommitFailedException");
+
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    commit_updates(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![],
+        remove_snapshots(vec![1]),
+    )
+    .await
+    .unwrap();
+}
+
+/// After a commit removed snapshots, no compaction is rolled back until the fence window
+/// has passed; the writer gets a normal conflict.
+#[sqlx::test]
+async fn test_transparent_commit_skips_reap_after_snapshot_removal(pool: PgPool) {
+    let (ctx, ns_params, table_ident) = transparent_commit_setup(pool).await;
+    commit_snapshot(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        None,
+        TestSnapshot {
+            id: 2,
+            parent: Some(1),
+            sequence_number: 2,
+            operation: Operation::Append,
+        },
+    )
+    .await
+    .unwrap();
+    commit_updates(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![],
+        remove_snapshots(vec![1]),
+    )
+    .await
+    .unwrap();
+    commit_snapshot(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        None,
+        TestSnapshot {
+            id: 3,
+            parent: Some(2),
+            sequence_number: 3,
+            operation: Operation::Replace,
+        },
+    )
+    .await
+    .unwrap();
+
+    let e = commit_snapshot(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        Some(2),
+        TestSnapshot {
+            id: 4,
+            parent: Some(2),
+            sequence_number: 3,
+            operation: Operation::Delete,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+    let table = load_table(&ctx, &ns_params, &table_ident.name).await;
+    assert_eq!(table.metadata.current_snapshot_id(), Some(3));
+
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    commit_snapshot(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        Some(2),
+        TestSnapshot {
+            id: 4,
+            parent: Some(2),
+            sequence_number: 3,
+            operation: Operation::Delete,
+        },
+    )
+    .await
+    .unwrap();
+    let table = load_table(&ctx, &ns_params, &table_ident.name).await;
+    assert_eq!(table.metadata.current_snapshot_id(), Some(4));
+    assert!(table.metadata.snapshot_by_id(3).is_none());
 }
 
 async fn commit_test_setup(

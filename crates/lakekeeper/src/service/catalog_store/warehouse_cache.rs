@@ -434,6 +434,19 @@ impl EventListener for WarehouseCacheEventListener {
         Ok(())
     }
 
+    async fn warehouse_rollback_compaction_policy_set(
+        &self,
+        event: events::SetWarehouseRollbackCompactionPolicyEvent,
+    ) -> anyhow::Result<()> {
+        let events::SetWarehouseRollbackCompactionPolicyEvent {
+            request: _request,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
+    }
+
     async fn warehouse_storage_updated(
         &self,
         event: events::UpdateWarehouseStorageEvent,
@@ -497,6 +510,7 @@ mod tests {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: crate::service::AllowedFormatVersions::default(),
             default_format_version: None,
+            rollback_compaction_policy: crate::service::RollbackCompactionPolicy::default(),
             updated_at,
             version: version.into(),
         })

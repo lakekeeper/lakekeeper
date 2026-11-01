@@ -39,9 +39,10 @@ use crate::{
     service::{
         AllowedFormatVersions, ArcProjectId, ArcResolvedWarehouse, COMMIT_STATE_UNKNOWN_ERROR_TYPE,
         CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogTaskOps,
-        CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId, State, TabularId,
-        TabularListFlags, Transaction, UpdatedWarehouseStorage, ViewOrTableDeletionInfo,
-        WarehouseFormatVersionPolicy, WarehouseSpecLocked, WriteTransaction,
+        CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId,
+        RollbackCompactionPolicy, State, TabularId, TabularListFlags, Transaction,
+        UpdatedWarehouseStorage, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy,
+        WarehouseSpecLocked, WriteTransaction,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
@@ -300,6 +301,35 @@ pub struct UpdateWarehouseFormatVersionPolicyRequest {
     pub default_format_version: Option<FormatVersion>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct SetWarehouseRollbackCompactionPolicyRequest {
+    /// When `true`, a writer's commit that would fail optimistic-concurrency validation solely
+    /// because of intervening rollbackable compaction snapshots reaps those snapshots and
+    /// rebases the writer on top, so the writer wins over compaction ("transparent commit").
+    pub enabled: bool,
+    /// A compaction snapshot older than this many seconds is not rolled back; the writer gets
+    /// a normal concurrency failure. Defaults to 86400 (24 hours).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<u64>, minimum = 1))]
+    pub max_compaction_age_seconds: Option<std::num::NonZeroU64>,
+    /// For this many seconds after a compaction was rolled back, a commit that removes
+    /// snapshots (such as an expire-snapshots run) gets a retryable conflict. For this many
+    /// seconds after such a commit, no compaction is rolled back. Defaults to 60.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "open-api", schema(value_type = Option<u64>, minimum = 1))]
+    pub snapshot_removal_fence_seconds: Option<std::num::NonZeroU64>,
+}
+
+fn default_rollback_compaction_max_age_seconds() -> u64 {
+    RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS
+}
+
+fn default_rollback_compaction_snapshot_removal_fence_seconds() -> u64 {
+    RollbackCompactionPolicy::DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -352,6 +382,18 @@ pub struct GetWarehouseResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]
     pub default_format_version: Option<FormatVersion>,
+    /// Whether transparent commit (rollback-compaction-on-conflict) is enabled for this
+    /// warehouse. When `true`, a writer's commit that would fail optimistic-concurrency
+    /// validation solely because of intervening rollbackable compaction snapshots reaps those
+    /// snapshots and rebases the writer on top, so the writer wins over compaction.
+    #[serde(default)]
+    pub rollback_compaction_on_conflict: bool,
+    /// A compaction snapshot older than this many seconds is not rolled back.
+    #[serde(default = "default_rollback_compaction_max_age_seconds")]
+    pub rollback_compaction_max_age_seconds: u64,
+    /// Seconds a compaction rollback and a snapshot-removal commit on one table are kept apart.
+    #[serde(default = "default_rollback_compaction_snapshot_removal_fence_seconds")]
+    pub rollback_compaction_snapshot_removal_fence_seconds: u64,
     /// Last updated timestamp.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -1622,6 +1664,76 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         ))
     }
 
+    /// Enable or disable transparent commit (rollback-compaction-on-conflict) for a warehouse.
+    ///
+    /// Authorized with [`CatalogWarehouseAction::SetRollbackCompactionPolicy`], a warehouse-spec
+    /// mutation subject to the managed-by lock.
+    async fn set_warehouse_rollback_compaction_policy(
+        warehouse_id: WarehouseId,
+        request: SetWarehouseRollbackCompactionPolicyRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<GetWarehouseResponse> {
+        let policy = validate_rollback_compaction_policy(&request)?;
+
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::SetRollbackCompactionPolicy,
+        );
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let authz_result = authorizer
+            .require_warehouse_action(
+                event_ctx.request_metadata(),
+                warehouse_id,
+                warehouse,
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse);
+
+        // ------------------- Business Logic -------------------
+        let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
+        C::ensure_warehouse_spec_mutable(
+            warehouse_id,
+            event_ctx.action(),
+            event_ctx
+                .request_metadata()
+                .bypasses_control_plane_authz(None),
+            transaction.transaction(),
+        )
+        .await
+        .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
+        let updated_warehouse =
+            C::set_warehouse_rollback_compaction_policy(warehouse_id, policy, &mut transaction)
+                .await?;
+        transaction.commit().await?;
+
+        event_ctx.emit_warehouse_rollback_compaction_policy_set(
+            Arc::new(request),
+            updated_warehouse.clone(),
+        );
+
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
+    }
+
     async fn deactivate_warehouse(
         warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
@@ -2340,6 +2452,13 @@ impl GetWarehouseResponse {
             managed_by: warehouse.managed_by,
             allowed_format_versions: warehouse.allowed_format_versions.to_vec(),
             default_format_version: warehouse.default_format_version,
+            rollback_compaction_on_conflict: warehouse.rollback_compaction_policy.enabled,
+            rollback_compaction_max_age_seconds: warehouse
+                .rollback_compaction_policy
+                .max_compaction_age_seconds,
+            rollback_compaction_snapshot_removal_fence_seconds: warehouse
+                .rollback_compaction_policy
+                .snapshot_removal_fence_seconds,
             updated_at: warehouse.updated_at,
         }
     }
@@ -2687,6 +2806,43 @@ fn validate_format_version_policy(
     })
 }
 
+/// Validate a rollback-compaction policy request and convert it into the domain type.
+///
+/// Omitted durations take their defaults. Durations above `i64::MAX` seconds are rejected,
+/// because the catalog stores them as signed 64-bit integers.
+fn validate_rollback_compaction_policy(
+    request: &SetWarehouseRollbackCompactionPolicyRequest,
+) -> Result<RollbackCompactionPolicy> {
+    fn seconds(value: Option<std::num::NonZeroU64>, default: u64, field: &str) -> Result<u64> {
+        let Some(value) = value else {
+            return Ok(default);
+        };
+        if i64::try_from(value.get()).is_err() {
+            return Err(ErrorModel::bad_request(
+                format!("{field} must not exceed {}", i64::MAX),
+                "RollbackCompactionPolicyValueTooLarge",
+                None,
+            )
+            .into());
+        }
+        Ok(value.get())
+    }
+
+    Ok(RollbackCompactionPolicy {
+        enabled: request.enabled,
+        max_compaction_age_seconds: seconds(
+            request.max_compaction_age_seconds,
+            RollbackCompactionPolicy::DEFAULT_MAX_COMPACTION_AGE_SECONDS,
+            "max-compaction-age-seconds",
+        )?,
+        snapshot_removal_fence_seconds: seconds(
+            request.snapshot_removal_fence_seconds,
+            RollbackCompactionPolicy::DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS,
+            "snapshot-removal-fence-seconds",
+        )?,
+    })
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
@@ -2883,6 +3039,7 @@ mod test {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: crate::service::AllowedFormatVersions::default(),
             default_format_version: None,
+            rollback_compaction_policy: crate::service::RollbackCompactionPolicy::default(),
             updated_at: None,
             version: crate::service::WarehouseVersion::from(0),
         }
@@ -3062,5 +3219,55 @@ mod test {
         assert_eq!(s3_profile.bucket, "test");
         assert_eq!(s3_profile.region, "dummy");
         assert_eq!(s3_profile.path_style_access, Some(true));
+    }
+
+    #[test]
+    fn rollback_compaction_policy_applies_defaults() {
+        let request: super::SetWarehouseRollbackCompactionPolicyRequest =
+            serde_json::from_value(serde_json::json!({"enabled": true})).unwrap();
+        let policy = super::validate_rollback_compaction_policy(&request).unwrap();
+        assert_eq!(
+            policy,
+            crate::service::RollbackCompactionPolicy {
+                enabled: true,
+                max_compaction_age_seconds: 86_400,
+                snapshot_removal_fence_seconds: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn rollback_compaction_policy_accepts_i64_max() {
+        let request: super::SetWarehouseRollbackCompactionPolicyRequest =
+            serde_json::from_value(serde_json::json!({
+                "enabled": true,
+                "max-compaction-age-seconds": i64::MAX,
+                "snapshot-removal-fence-seconds": i64::MAX,
+            }))
+            .unwrap();
+        let policy = super::validate_rollback_compaction_policy(&request).unwrap();
+        assert_eq!(policy.max_compaction_age_seconds, i64::MAX.unsigned_abs());
+        assert_eq!(
+            policy.snapshot_removal_fence_seconds,
+            i64::MAX.unsigned_abs()
+        );
+    }
+
+    #[test]
+    fn rollback_compaction_policy_rejects_values_above_i64_max() {
+        for field in [
+            "max-compaction-age-seconds",
+            "snapshot-removal-fence-seconds",
+        ] {
+            let request: super::SetWarehouseRollbackCompactionPolicyRequest =
+                serde_json::from_value(serde_json::json!({
+                    "enabled": true,
+                    field: i64::MAX.unsigned_abs() + 1,
+                }))
+                .unwrap();
+            let err = super::validate_rollback_compaction_policy(&request).unwrap_err();
+            assert_eq!(err.error.code, 400, "{field}");
+            assert_eq!(err.error.r#type, "RollbackCompactionPolicyValueTooLarge");
+        }
     }
 }
