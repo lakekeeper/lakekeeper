@@ -52,7 +52,7 @@ If the tasks of a queue wait too long, run more workers: raise `LAKEKEEPER__TASK
 
     A task can be scheduled for a time in the past, for example a run of a schedule that was missed, so the age can start high. `for: 10m` waits until a worker had time to take such a task. Leave out queues that you run with 0 workers on purpose, with `queue_name!="<queue>"` in the selector. If every sample fails, the age is `NaN` and this rule cannot fire. Also alert on `time() - max(lakekeeper_task_queue_oldest_due_last_success_timestamp_seconds) > 120`.
 
-A worker that stops during a task, for example because it ran out of memory, leaves only "Attempt timed out." in the task log. The next worker of the same queue counts that attempt in `lakekeeper_task_queue_timed_out_attempts_total`, so use `sum` over the pods.
+A worker that stops during a task, for example because it ran out of memory, leaves a task log entry that starts with "Attempt timed out.". The next worker of the same queue counts that attempt in `lakekeeper_task_queue_timed_out_attempts_total`, so use `sum` over the pods.
 
 ### Cache Metrics
 
