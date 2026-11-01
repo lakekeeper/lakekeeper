@@ -33,6 +33,7 @@ These metrics show when tasks wait too long, for example because too few workers
 |--------|------|--------|-------------|
 | <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_age_seconds</code> | Gauge | `queue_name`, `class` | Seconds the longest waiting task of the queue has waited. `0` if no task waits, `NaN` if the last sample failed |
 | <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_<wbr>last_success_timestamp_seconds</code> | Gauge | — | Unix time of the last sample in which every queue succeeded |
+| <code class="selectable">lakekeeper_task_queue_<wbr>timed_out_attempts_total</code> | Counter | `queue_name` | Task attempts that failed because their worker stopped sending heartbeats |
 
 A task waits from the time it is scheduled for. A task whose worker stopped responding waits from the time its heartbeat expired. With a heartbeat timeout of 1 hour, for example, such a task starts to wait 1 hour after its last heartbeat.
 
@@ -50,6 +51,8 @@ If the tasks of a queue wait too long, run more workers: raise `LAKEKEEPER__TASK
     ```
 
     A task can be scheduled for a time in the past, for example a run of a schedule that was missed, so the age can start high. `for: 10m` waits until a worker had time to take such a task. Leave out queues that you run with 0 workers on purpose, with `queue_name!="<queue>"` in the selector. If every sample fails, the age is `NaN` and this rule cannot fire. Also alert on `time() - max(lakekeeper_task_queue_oldest_due_last_success_timestamp_seconds) > 120`.
+
+A worker that stops during a task, for example because it ran out of memory, leaves only "Attempt timed out." in the task log. The next worker of the same queue counts that attempt in `lakekeeper_task_queue_timed_out_attempts_total`, so use `sum` over the pods.
 
 ### Cache Metrics
 
