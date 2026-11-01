@@ -1616,6 +1616,11 @@ where
         state: Self::State,
     ) -> std::result::Result<TaskQueueDemand, CatalogBackendError>;
 
+    async fn task_queue_oldest_due_impl(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<Option<chrono::DateTime<chrono::Utc>>, CatalogBackendError>;
+
     async fn resolve_tasks_impl(
         scope: TaskResolveScope,
         task_ids: &[TaskId],

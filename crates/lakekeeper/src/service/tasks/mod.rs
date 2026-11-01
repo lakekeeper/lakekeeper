@@ -24,16 +24,17 @@ mod queue_demand;
 pub(crate) mod task_drain;
 #[cfg(feature = "test-utils")]
 pub use task_drain::TestTaskRunner;
+pub use task_drain::drain_token;
 mod task_queues_runner;
 mod task_registry;
 pub use queue_demand::{TaskDemandClass, TaskQueueDemand, TaskQueueDemandRequest};
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
-#[cfg(feature = "router")]
-pub(crate) use task_registry::DemandTarget;
 pub use task_registry::{
     ConfigCheckFn, QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues,
     ScheduleEligibilityFn, TaskQueueRegistry, UserScheduling, ValidatorFn,
 };
+#[cfg(feature = "router")]
+pub(crate) use task_registry::{DemandLookupError, DemandTarget};
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
