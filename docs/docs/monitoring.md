@@ -33,6 +33,7 @@ These metrics show when tasks wait too long, for example because too few workers
 |--------|------|--------|-------------|
 | <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_age_seconds</code> | Gauge | `queue_name`, `class` | Seconds the longest waiting task of the queue has waited. `0` if no task waits, `NaN` if the last sample failed |
 | <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_<wbr>last_success_timestamp_seconds</code> | Gauge | — | Unix time of the last sample in which every queue succeeded |
+| <code class="selectable">lakekeeper_task_queue_<wbr>timed_out_attempts_total</code> | Counter | `queue_name` | Task attempts that failed because their worker stopped sending heartbeats |
 
 A task waits from the time it is scheduled for. A task whose worker stopped responding waits from the time its heartbeat expired. With a heartbeat timeout of 1 hour, for example, such a task starts to wait 1 hour after its last heartbeat.
 
@@ -50,6 +51,18 @@ If the tasks of a queue wait too long, run more workers: raise `LAKEKEEPER__TASK
     ```
 
     A task can be scheduled for a time in the past, for example a run of a schedule that was missed, so the age can start high. `for: 10m` waits until a worker had time to take such a task. Leave out queues that you run with 0 workers on purpose, with `queue_name!="<queue>"` in the selector. If every sample fails, the age is `NaN` and this rule cannot fire. Also alert on `time() - max(lakekeeper_task_queue_oldest_due_last_success_timestamp_seconds) > 120`.
+
+A worker that stops during a task, for example because it ran out of memory, leaves a task log entry that starts with "Attempt timed out.". A worker of the same queue counts that attempt in `lakekeeper_task_queue_timed_out_attempts_total`. The counter rises only after the heartbeat timeout of the queue, when a worker of the queue next looks for a task. With a heartbeat timeout of 1 hour, for example, it rises at least 1 hour after the worker stopped. The worker that counts the attempt also writes the log line "Task attempt timed out" at level WARN, with the queue and the task, so you can also alert on it with a log-based tool.
+
+!!! tip "Alerting on timed-out attempts"
+    Each pod counts only the attempts it failed, so use `sum` over the pods. We recommend this rule:
+
+    ```yaml
+    - alert: LakekeeperTaskAttemptsTimedOut
+      expr: sum by (queue_name) (increase(lakekeeper_task_queue_timed_out_attempts_total[1h])) > 0
+    ```
+
+    The counter is reliable for workers that run for a long time, for example API pods that also run workers. A worker Job usually exits before Prometheus reads its counter. For worker Jobs, see [Alerting](./task-workers.md#alerting) in Task Workers on Kubernetes.
 
 ### Cache Metrics
 

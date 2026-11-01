@@ -4282,6 +4282,7 @@ version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum-prometheus",
  "base64 0.22.1",
  "chrono",
  "crc",

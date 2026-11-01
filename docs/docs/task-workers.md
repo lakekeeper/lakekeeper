@@ -96,3 +96,14 @@ GROUP BY queue_name;
 ```
 
 If you set `LAKEKEEPER__PG_SCHEMA`, write the schema in double quotes before the table name, for example `"lakekeeper".task`.
+
+A worker that is killed during a task, for example because it ran out of memory or used more disk than its limit, fails its Job, because the ScaledJob above does not restart it. We recommend alerts on failed Jobs with [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics). If you use kube-prometheus, it already includes the first rule as `KubeJobFailed`.
+
+```yaml
+- alert: LakekeeperWorkerJobFailed
+  expr: kube_job_failed{namespace="<namespace>"} > 0
+- alert: LakekeeperWorkerOutOfMemory
+  expr: kube_pod_container_status_terminated_reason{namespace="<namespace>", container="worker", reason="OOMKilled"} > 0
+```
+
+The first rule fires for every failed Job in the namespace, the second only for workers that ran out of memory. `container` is the container name of the ScaledJob above. Both alerts stay until the failed Job is deleted. The ScaledJob keeps the last `failedJobsHistoryLimit` failed Jobs, so delete the failed Job after the investigation. To find the task of the killed worker, look for the log line "Task attempt timed out" in the logs of the other workers of the queue (see [Task Queue Metrics](./monitoring.md#task-queue-metrics)). The killed worker cannot write it: the next worker of the queue writes it after the heartbeat timeout.
