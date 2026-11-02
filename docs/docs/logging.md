@@ -1054,6 +1054,50 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
 
 </details>
 
+**Users a directory does not know (`operation = "directory_resolve_roles"`):**
+
+| `outcome`        | When written                                              |
+|------------------|-----------------------------------------------------------|
+| `user_not_found` | The directory of an LDAP, Entra ID or Okta role provider has no entry for the user. The user gets none of that provider's groups. `context.provider_id` names the provider. |
+
+Lakekeeper writes one record each time it asks the directory and the directory answers that it has no entry for the user. Requests that are answered from the cache write no record. `actor` is the user that the directory was asked about. This can be another user than the caller, such as the grantee of a grant or the owner of a DEFINER view. The record has no `request_id`.
+
+For the same answer, an LDAP provider also writes an `ldap_resolve_roles` record with `outcome` `user_not_found`.
+
+Many records for one `provider_id` usually mean that the subject claim does not name users the way the directory does. With Okta, service apps also write this record, because Okta has no user with their client id. Users that were deleted in the directory also write this record.
+
+**PII.** `actor.principal` is PII. `provider_id` is not.
+
+<details>
+<summary>User not found in the directory</summary>
+
+```json
+{
+  "timestamp": "2026-01-01T00:00:00.000000Z",
+  "level": "INFO",
+  "message": "the directory has no entry for the user; they get none of its groups",
+  "target": "lakekeeper::audit",
+  "event_source": "audit",
+  "audit_format": "1.0",
+  "record_type": "operation",
+  "emitters": {
+    "lakekeeper_plus": "1.1"
+  },
+  "time": "2026-01-01T00:00:00.000000Z",
+  "operation": "directory_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "outcome": "user_not_found",
+  "context": {
+    "provider_id": "entra"
+  }
+}
+```
+
+</details>
+
 **Role assignment cache (`operation = "cached_role_provider"`):**
 
 | `outcome`             | When written                                                            |
@@ -1100,8 +1144,8 @@ A `WARN` line without PII is also written to the general log. This outcome point
 # All LDAP resolution events
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "ldap_resolve_roles")'
 
-# Users not found in LDAP (wrong filter or unknown principals)
-cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "user_not_found")'
+# Users a directory does not know (wrong subject claim or deleted users)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "directory_resolve_roles")'
 
 # Successful resolutions for a specific user
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .operation == "ldap_resolve_roles" and .actor.principal == "oidc~user@example.com")'

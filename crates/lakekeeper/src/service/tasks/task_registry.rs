@@ -326,6 +326,26 @@ impl RegisteredTaskQueues {
         })
     }
 
+    /// Each registered queue without a class, then with each of its demand classes. Sorted by
+    /// queue name.
+    #[cfg(feature = "router")]
+    pub(crate) async fn demand_keys(&self) -> Vec<(&'static TaskQueueName, Option<String>)> {
+        let queues = self.queues.read().await;
+        let mut names: Vec<_> = queues.keys().copied().collect();
+        names.sort_unstable();
+        names
+            .into_iter()
+            .flat_map(|name| {
+                std::iter::once((name, None)).chain(
+                    queues[name]
+                        .demand_classes
+                        .iter()
+                        .map(move |c| (name, Some(c.name.clone()))),
+                )
+            })
+            .collect()
+    }
+
     /// Queues whose tasks are cancelled when their warehouse is deleted, each with its
     /// legacy names. Sorted by name, so concurrent deletes cancel the queues in the same order.
     #[must_use]
