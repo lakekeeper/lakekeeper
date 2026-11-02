@@ -106,6 +106,7 @@ impl OpenFgaEntity for UserOrRole {
     Hash,
     Eq,
     PartialEq,
+    EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -136,6 +137,40 @@ impl From<CatalogRoleAction> for RoleRelation {
 }
 
 impl OpenFgaRelation for RoleRelation {}
+
+impl RoleRelation {
+    /// Lakekeeper answers this relation itself and never asks `OpenFGA` for it.
+    pub(super) fn is_answered_without_openfga(self) -> bool {
+        matches!(self, Self::CanReadMetadata)
+    }
+}
+
+/// Relations of `fga_type` that the server checks or writes in `OpenFGA`.
+/// `None` for the types that record applied model versions: `openfga-client`
+/// reads and writes them, not this server.
+pub(super) fn relations_in_use(fga_type: &FgaType) -> Option<Vec<String>> {
+    fn all<R: IntoEnumIterator + std::fmt::Display>() -> Vec<String> {
+        R::iter().map(|relation| relation.to_string()).collect()
+    }
+    match fga_type {
+        FgaType::User => Some(Vec::new()),
+        FgaType::Role => Some(
+            RoleRelation::iter()
+                .filter(|relation| !relation.is_answered_without_openfga())
+                .map(|relation| relation.to_string())
+                .collect(),
+        ),
+        FgaType::Server => Some(all::<ServerRelation>()),
+        FgaType::Project => Some(all::<ProjectRelation>()),
+        FgaType::Warehouse => Some(all::<WarehouseRelation>()),
+        FgaType::Namespace => Some(all::<NamespaceRelation>()),
+        FgaType::Table => Some(all::<TableRelation>()),
+        FgaType::View => Some(all::<ViewRelation>()),
+        FgaType::GenericTable => Some(all::<GenericTableRelation>()),
+        FgaType::Tag => Some(all::<TagRelation>()),
+        FgaType::ModelVersion | FgaType::AuthModelId => None,
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -286,6 +321,7 @@ impl ReducedRelation for CatalogRoleAction {
     Hash,
     Eq,
     PartialEq,
+    EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -415,6 +451,7 @@ impl ReducedRelation for APITagRelation {
     Hash,
     Eq,
     PartialEq,
+    EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -599,6 +636,7 @@ impl ReducedRelation for OpenFGAServerAction {
     Hash,
     Eq,
     PartialEq,
+    EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -927,6 +965,7 @@ impl ReducedRelation for OpenFGAProjectAction {
     Hash,
     Eq,
     PartialEq,
+    EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -1310,6 +1349,7 @@ impl ReducedRelation for OpenFGAWarehouseAction {
     Eq,
     PartialEq,
     strum_macros::Display,
+    EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -1665,6 +1705,7 @@ impl ReducedRelation for OpenFGANamespaceAction {
     Eq,
     PartialEq,
     strum_macros::Display,
+    EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
@@ -1966,6 +2007,7 @@ impl ReducedRelation for OpenFGATableAction {
     Eq,
     PartialEq,
     strum_macros::Display,
+    EnumIter,
     strum_macros::VariantNames,
     strum_macros::EnumCount,
 )]
