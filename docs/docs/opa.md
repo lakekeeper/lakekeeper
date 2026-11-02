@@ -146,11 +146,13 @@ Namespaces, tables and views with such names can exist in Lakekeeper, for exampl
 Trino reads a name such as `orders$files` as the `$files` metadata table of the table `orders`. Reading a metadata table needs a permission on its base table, here `orders`:
 
 - `$snapshots`, `$history`, `$refs`, `$properties` and `$metadata_log_entries` need `get_metadata`.
-- `$files`, `$entries`, `$all_entries`, `$manifests`, `$all_manifests`, `$partitions` and `$materialized_view_storage` need `read_data`, because they show values of the data, such as column bounds and partition values.
+- `$files`, `$entries`, `$all_entries`, `$manifests`, `$all_manifests` and `$partitions` need `read_data`, because they show values of the data, such as column bounds and partition values.
 
 Users who can only see a table can list tables and columns, and run `SHOW COLUMNS`, `DESCRIBE` and `SHOW CREATE TABLE`. Tools such as Superset may read `$partitions` for such users and log the denied query. What these tools show does not change.
 
-On Trino 484 and later, such a name always means the metadata table. Older Trino versions can read a view with this name instead. On these versions the bridge also requires that no view with this name exists, or that the user has `select` on it. This costs one more request to Lakekeeper for each read of a metadata table. The bridge takes the Trino version from Trino's request. If it cannot read the version, it handles Trino as an older version.
+The bridge denies `$materialized_view_storage`. Trino cannot read it from Lakekeeper, because Trino's Iceberg REST catalog has no materialized views.
+
+Trino 484 and later always read a name such as `orders$files` as the metadata table. Older Trino versions read a view with this name if Trino does not find the base table, or if the Trino version does not know the type, for example `$entries` before Trino 469. So on these versions the bridge also requires that no view with this name exists, or that the user has `select` on it. This costs one more request to Lakekeeper for each read of a metadata table. The bridge takes the Trino version from Trino's request. If it cannot read the version, it handles Trino as an older version.
 
 The bridge refuses all other table and view names with `$` or `@`. If a later Trino version adds a type of metadata table, names with this type are then denied, and not checked on the wrong object.
 
@@ -202,7 +204,7 @@ If `list_everything` should not show the columns and names of every table and vi
 
 ## Context Forwarding
 
-The OPA bridge forwards resource names, paths and other context to Lakekeeper's batch-check API for create actions, replaces, moves and drops. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, on what a replace changes, on where a table or view is moved from and to, or on the flags of a drop:
+The OPA bridge forwards resource names, paths and other context to Lakekeeper's batch-check API for create actions, replaces, moves and drops. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, on the properties of a create or replace statement, on where a table or view is moved from and to, or on the flags of a drop:
 
 | Trino Operation | Lakekeeper Action | Context Forwarded |
 |-----------------|-------------------|----------------|
@@ -211,7 +213,7 @@ The OPA bridge forwards resource names, paths and other context to Lakekeeper's 
 | `CreateTable` | `create_table` (namespace) | Table name |
 | `CreateView` / `CreateMaterializedView` | `create_view` (namespace) | View name |
 | `RenameTable` / `RenameView` into another schema | `move` (table or view) and `accept_moved_tabular` (destination namespace) | `move` carries the destination namespace path, `accept_moved_tabular` the source namespace path |
-| `CreateTable`, if a table with the name exists | `commit` (that table) | Table name, target ref `main` and the update kinds of every replace: `set-current-schema`, `set-default-spec` and `set-default-sort-order` |
+| `CreateTable`, if a table with the name exists | `commit` (that table) | Table name and target ref `main` |
 | `CreateView`, if a view with the name exists | `commit` (that view) | View name |
 | `DropTable` | `drop` (table) | `purge: true` |
 | `DropView` | `drop` (view) | `purge: true` |
@@ -234,11 +236,11 @@ Trino asks for the same permission to create a table as to replace it with `CREA
 
 A table or view that was dropped and can still be restored does not count.
 
-With OpenFGA, this `commit` needs `modify` or ownership on the table or view, or on anything that contains it, such as its namespace or warehouse. The [`write`](./authorization-openfga.md#write) privilege does not allow it, because replacing a table changes its schema, partitioning and sort order. See [Authorization with OpenFGA](./authorization-openfga.md). When Trino connects to Lakekeeper with its own credentials, tables and views that users create through Trino belong to Trino's service account. Roles that replace tables or views through Trino therefore need `modify` on the namespace. Examples are roles that run dbt view models, or dbt table models with `on_table_exists='replace'`.
+The bridge cannot see which changes Trino makes when it replaces a table or view, so it checks a `commit` of any kind. With OpenFGA, a `commit` of any kind needs `modify` or ownership on the table or view, or on anything that contains it, such as its namespace or warehouse. The [`write`](./authorization-openfga.md#write) privilege is not enough. See [Authorization with OpenFGA](./authorization-openfga.md). When Trino connects to Lakekeeper with its own credentials, tables and views that users create through Trino belong to Trino's service account. Roles that replace tables or views through Trino therefore need `modify` on the namespace. Examples are roles that run dbt view models, or dbt table models with `on_table_exists='replace'`.
 
 Trino checks the permission to create a view before it checks if the view exists. If a view with the name exists and the user does not have `commit` on it, `CREATE VIEW` fails with an access error, not with an error that the view already exists. `CREATE VIEW IF NOT EXISTS` with the name of an existing view also needs `commit` on that view.
 
-When Trino creates a table with a new name, Lakekeeper writes one audit record for a failed `introspect_permissions` with the reason `resource_not_found`. For a view with a new name, it writes two such records. On Trino before 484, each read of a [metadata table](#metadata-tables) also writes one such record if no view has its name. These records are expected.
+When Trino creates a table with a new name, Lakekeeper writes one audit record for a failed `introspect_permissions` with the reason `resource_not_found`. For a view with a new name, it writes two such records. On Trino before 484, each read of a [metadata table](#metadata-tables) also writes one such record if no view has its name. On Trino 482 and 483, a read of `$partitions` writes two such records, because Trino also reads `$files` for it. These records are expected.
 
 If the bridge cannot find out if the name is free, for example because Lakekeeper does not answer, it denies the statement.
 

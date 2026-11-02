@@ -1,8 +1,8 @@
 # Tests for CreateTable / CreateView under a name that is already taken. Trino
 # asks the same operation for `CREATE OR REPLACE`, so a taken name also needs
 # `commit` on the table or view. A free name needs only the create action.
-# The bridge cannot see which updates Trino sends, so it asks `commit` without
-# update kinds.
+# The bridge cannot see which updates Trino sends, so it asks about a commit of
+# any kind. For a table, the commit targets the ref `main`.
 package trino_test
 
 import data.trino
@@ -93,7 +93,6 @@ _expected_table_replace_check(namespace, updated_properties) := {
 		"action": {
 			"action": "commit",
 			"target_refs": ["main"],
-			"update_kinds": ["set-current-schema", "set-default-sort-order", "set-default-spec"],
 			"updated_properties": updated_properties,
 		},
 		"warehouse-id": "mock-wh-id",

@@ -1724,7 +1724,10 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
             let mut checks = Vec::with_capacity(actions.len());
             for (tabular_ident, actions_on_tabular) in &actions {
                 let Some(tabular_info) = tabular_infos_by_ident.get(&(warehouse_id, tabular_ident.clone())) else {
-                    // Tabular not found
+                    // No live tabular has this name. With `error_on_not_found`, the answer says
+                    // so before any authorization, so every caller learns whether the name is
+                    // taken. The Trino bridge relies on it to tell a free name apart from a
+                    // denied check.
                     if error_on_not_found {
                         match tabular_ident {
                             TabularIdentOwned::Table(table_ident) => {

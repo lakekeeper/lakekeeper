@@ -82,7 +82,7 @@ test_every_view_operation_refuses_a_metadata_table_name if {
 	allowed := {[request.action.operation, name] |
 		some name in [
 			"orders$files", "orders$snapshots", "orders$entries", "orders$properties",
-			"orders$FILES", "orders$materialized_view_storage",
+			"orders$FILES",
 		]
 		some request in _view_inputs(name)
 		_allowed_without_table_access(request)
@@ -135,8 +135,12 @@ _batch_with_full_access(operation, names) := result if {
 # Trino 484 matches the base name `[^$@]+` and a known type. Any other name with
 # `$` or `@` is refused for every table and view operation, also with full
 # access: Trino might load a view with this name, while the bridge cannot tell
-# which object Trino acts on.
-_other_names_with_dollar_or_at := ["a$b$files", "x@y$files", "orders$foo", "orders$", "$files", "x@y", "a$b"]
+# which object Trino acts on. `$materialized_view_storage` is refused too,
+# because Trino cannot read it from Lakekeeper.
+_other_names_with_dollar_or_at := [
+	"a$b$files", "x@y$files", "orders$foo", "orders$", "$files", "x@y", "a$b",
+	"orders$materialized_view_storage",
+]
 
 test_other_names_with_dollar_or_at_are_refused if {
 	allowed := {[request.action.operation, name] |
@@ -154,13 +158,13 @@ test_metadata_table_names_follow_trino if {
 	trino.is_metadata_table("orders$files")
 	trino.is_metadata_table("orders$FILES")
 	trino.is_metadata_table("orders$Snapshots")
-	trino.is_metadata_table("orders$materialized_view_storage")
 	trino.is_metadata_table("daily sales$history")
 	trino.split_metadata_table_name("orders$FILES") == "orders"
 	not trino.is_metadata_table("a$b$files")
 	not trino.is_metadata_table("x@y$files")
 	not trino.is_metadata_table("orders$foo")
 	not trino.is_metadata_table("orders$data")
+	not trino.is_metadata_table("orders$materialized_view_storage")
 	not trino.is_metadata_table("orders$files$files")
 	not trino.is_metadata_table("$files")
 	not trino.is_metadata_table("orders")

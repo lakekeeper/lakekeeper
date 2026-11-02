@@ -1415,9 +1415,17 @@ impl DroppedTabulars {
     }
 
     fn check_by_name(&self, identity: Option<UserOrRole>) -> CatalogActionCheckItem {
+        self.check_by_other_name(self.name, identity)
+    }
+
+    fn check_by_other_name(
+        &self,
+        name: &str,
+        identity: Option<UserOrRole>,
+    ) -> CatalogActionCheckItem {
         let tabular = TabularIdentOrUuid::Name {
             namespace: self.namespace.clone(),
-            table: self.name.to_string(),
+            table: name.to_string(),
             warehouse_id: self.warehouse_id,
         };
         let operation = match self.kind {
@@ -1545,6 +1553,72 @@ async fn test_check_internal_by_name_ignores_dropped_generic_table(pool: sqlx::P
         pool,
         TabularKind::GenericTable,
         "NoSuchGenericTableException",
+    )
+    .await;
+}
+
+/// With `error_on_not_found`, a by-name check tells every caller whether the name is
+/// taken, before any authorization. The Trino bridge relies on it to tell a free name
+/// apart from a denied check.
+async fn assert_by_name_check_reports_free_names(
+    pool: sqlx::PgPool,
+    kind: TabularKind,
+    not_found_type: &str,
+    read_grants: &str,
+) {
+    let setup = DroppedTabulars::new(pool, kind, "taken_name").await;
+    setup.create().await;
+    let other_user = UserOrRole::User(UserId::new_unchecked("oidc", "other-user"));
+    let free_name = || setup.check_by_other_name("free_name", Some(other_user.clone()));
+    let taken_name = || setup.check_by_name(Some(other_user.clone()));
+
+    let err = setup.check(vec![free_name()], true).await.unwrap_err();
+    assert_eq!((err.code, err.r#type.as_str()), (404, not_found_type));
+    assert_eq!(
+        setup.check(vec![taken_name()], true).await.unwrap(),
+        vec![true]
+    );
+
+    // From here on, the caller may not inspect the permissions of other principals.
+    setup.authz.block_action(read_grants);
+    let err = setup.check(vec![taken_name()], true).await.unwrap_err();
+    assert_eq!(
+        (err.code, err.r#type.as_str()),
+        (403, "CannotInspectPermissions")
+    );
+    let err = setup.check(vec![free_name()], true).await.unwrap_err();
+    assert_eq!((err.code, err.r#type.as_str()), (404, not_found_type));
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_table_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::Table,
+        "NoSuchTableException",
+        "table:ReadGrants",
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_view_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::View,
+        "NoSuchViewException",
+        "view:ReadGrants",
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_generic_table_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::GenericTable,
+        "NoSuchGenericTableException",
+        "generic_table:ReadGrants",
     )
     .await;
 }

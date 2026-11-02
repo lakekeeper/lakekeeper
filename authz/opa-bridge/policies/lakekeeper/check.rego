@@ -137,10 +137,10 @@ require_table_access_commit(
 
 # Check that `user` may replace the table called `table_name`, if one exists.
 # Holds if no live table has this name, or if the user may commit to it.
-# Replacing a table commits a new definition and new data to it, and moves
-# `main` to the new snapshot. Every Iceberg replace sets the current schema,
-# the default partition spec and the default sort order. `updated_properties`
-# are the properties of the statement.
+# Replacing a table commits a new definition and new data to it in one commit
+# and moves `main` to the new snapshot. Which other updates the commit holds
+# depends on the table and the Trino version, so the check asks about a commit
+# of any kind. `updated_properties` are the properties of the statement.
 require_table_replace_access(
 	lakekeeper_id, warehouse_name, namespace_name,
 	table_name, user, updated_properties,
@@ -150,7 +150,6 @@ require_table_replace_access(
 		{
 			"action": "commit",
 			"target_refs": ["main"],
-			"update_kinds": ["set-current-schema", "set-default-sort-order", "set-default-spec"],
 			"updated_properties": updated_properties,
 		},
 	)

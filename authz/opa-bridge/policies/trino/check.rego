@@ -275,10 +275,13 @@ require_view_replace_access(catalog_name, schema_name, view_name) if {
 	)
 }
 
-# Trino before 484 reads a view whose name looks like a metadata table, such as
-# `orders$files`, as that view. Trino 484 and later read the metadata table. So
-# on older or unknown Trino versions, reading a metadata table also needs
-# `select` on a live view with this name, if one exists.
+# Trino before 484 reads a view with a metadata table name, such as
+# `orders$files`, if it does not find the base table while it plans the query,
+# or if it does not know the type (`$all_manifests` before 467, `$entries` and
+# `$all_entries` before 469). Trino asks for this check after it planned the
+# query, so the base table can exist by then. On older or unknown Trino
+# versions, reading a metadata table also needs `select` on a live view with
+# this name, if one exists. Trino 484 and later never read such a view.
 require_metadata_table_view_access(_, _, _) if {
 	_trino_reads_metadata_tables_before_views
 }
@@ -314,18 +317,19 @@ child_schema_name(schema_name) := child_name if {
 }
 
 # Trino's Iceberg connector reads `<table>$<type>` as the metadata table `<type>`
-# of the table `<table>`. Trino 484 does so also if a view has this name; older
-# versions read the view (see `require_metadata_table_view_access`). The pattern is
+# of the table `<table>`. Trino before 484 can read a view with this name (see
+# `require_metadata_table_view_access`). The pattern is
 # `IcebergTableName.TABLE_PATTERN` of Trino 484: the base name has neither `$`
-# nor `@`, and the type is one of `TableType` except `DATA`. Java's `(?i)`
-# ignores only ASCII case, so the type must be ASCII before it is compared in
-# lower case. `allow_table_metadata_read` checks the base table. Table and view
-# rules refuse every name with `$` or `@` (see `is_canonical_tabular_name`), so a
-# type that a later Trino version adds is denied, not checked on another object.
+# nor `@`. The type is one of Trino's `TableType` except `DATA` and
+# `MATERIALIZED_VIEW_STORAGE`, because Trino's REST catalog has no materialized
+# views. Java's `(?i)` ignores only ASCII case, so the type must be ASCII before
+# it is compared in lower case. `allow_table_metadata_read` checks the base
+# table. Table and view rules refuse every name with `$` or `@` (see
+# `is_canonical_tabular_name`), so a type that is not listed here, also one that
+# a later Trino version adds, is denied, not checked on another object.
 _metadata_table_types := {
 	"history", "metadata_log_entries", "snapshots", "all_manifests", "manifests",
 	"partitions", "files", "all_entries", "entries", "properties", "refs",
-	"materialized_view_storage",
 }
 
 is_metadata_table(table_name) if {

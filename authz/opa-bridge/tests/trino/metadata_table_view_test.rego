@@ -1,6 +1,7 @@
 # Tests that reading a metadata table also checks a view with the same name.
-# Trino before 484 reads a view named `orders$files` as that view, so the user
-# also needs `select` on such a view if it exists.
+# Trino before 484 can read a view named `orders$files`, for example if the base
+# table is created after Trino planned the query, so the user also needs
+# `select` on such a view if it exists.
 package trino_test
 
 import data.trino

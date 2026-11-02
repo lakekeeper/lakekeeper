@@ -65,7 +65,7 @@ _allowed_with_read_orders(request) if {
 		with http.send as mock_http_read_orders_only
 }
 
-_data_value_types := ["files", "entries", "all_entries", "manifests", "all_manifests", "partitions", "materialized_view_storage"]
+_data_value_types := ["files", "entries", "all_entries", "manifests", "all_manifests", "partitions"]
 
 _metadata_only_types := ["snapshots", "history", "refs", "properties", "metadata_log_entries"]
 
@@ -77,7 +77,6 @@ test_metadata_table_read_actions_are_exact if {
 		"manifests": "read_data",
 		"all_manifests": "read_data",
 		"partitions": "read_data",
-		"materialized_view_storage": "read_data",
 		"snapshots": "get_metadata",
 		"history": "get_metadata",
 		"refs": "get_metadata",
@@ -115,6 +114,14 @@ test_metadata_tables_without_data_values_need_get_metadata if {
 		_allowed_with_read_orders(_metadata_input("SelectFromColumns", concat("$", ["orders", type])))
 	}
 	allowed == set()
+}
+
+# Trino cannot read `$materialized_view_storage` from Lakekeeper, so the bridge
+# denies it like other names with `$`, also with full access.
+test_materialized_view_storage_is_denied if {
+	name := "orders$materialized_view_storage"
+	not _allowed_with_read_orders(_metadata_input("SelectFromColumns", name))
+	not _allowed_with_full_access(_metadata_input("SelectFromColumns", name))
 }
 
 test_metadata_table_type_in_upper_case_needs_the_same_action if {

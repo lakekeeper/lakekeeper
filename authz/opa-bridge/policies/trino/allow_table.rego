@@ -127,7 +127,6 @@ metadata_table_read_action := {
 	"manifests": "read_data",
 	"all_manifests": "read_data",
 	"partitions": "read_data",
-	"materialized_view_storage": "read_data",
 	"snapshots": "get_metadata",
 	"history": "get_metadata",
 	"refs": "get_metadata",
