@@ -135,10 +135,19 @@ Trino and Lakekeeper change some schema and table names before they use them. Tr
 - A schema name with a part that begins or ends with a space, a tab, a line break, another Unicode space character or a control character, for example `" sales"` or `"sales. eu"`.
 - A schema name that contains the control character U+001F.
 - A schema, table or view name that contains `+`.
+- A table or view name that contains `$` or `@`. Reading a metadata table such as `orders$files` is the only exception, see [Metadata Tables](#metadata-tables).
 
 Spaces inside a name are allowed, for example `daily sales`.
 
 Namespaces, tables and views with such names can exist in Lakekeeper, for example if another client created them. To use one of them in Trino, rename it with the Lakekeeper API or UI.
+
+### Metadata Tables
+
+Trino reads a name such as `orders$files` as the `$files` metadata table of the table `orders`. Reading a metadata table needs `get_metadata` on its base table, here `orders`.
+
+On Trino 484 and later, such a name always means the metadata table. Older Trino versions can read a view with this name instead. On these versions the bridge also requires that no view with this name exists, or that the user has `select` on it. This costs one more request to Lakekeeper for each read of a metadata table. The bridge takes the Trino version from Trino's request. If it cannot read the version, it handles Trino as an older version.
+
+The bridge refuses all other table and view names with `$` or `@`. If a later Trino version adds a type of metadata table, names with this type are then denied, and not checked on the wrong object.
 
 ## Extension Points
 
@@ -215,7 +224,7 @@ With OpenFGA, this `commit` needs `modify` or ownership on the table or view, or
 
 Trino checks the permission to create a view before it checks if the view exists. If a view with the name exists and the user does not have `commit` on it, `CREATE VIEW` fails with an access error, not with an error that the view already exists. `CREATE VIEW IF NOT EXISTS` with the name of an existing view also needs `commit` on that view.
 
-When Trino creates a table with a new name, Lakekeeper writes one audit record for a failed `introspect_permissions` with the reason `resource_not_found`. For a view with a new name, it writes two such records. These records are expected.
+When Trino creates a table with a new name, Lakekeeper writes one audit record for a failed `introspect_permissions` with the reason `resource_not_found`. For a view with a new name, it writes two such records. On Trino before 484, each read of a [metadata table](#metadata-tables) also writes one such record if no view has its name. These records are expected.
 
 If the bridge cannot find out if the name is free, for example because Lakekeeper does not answer, it denies the statement.
 

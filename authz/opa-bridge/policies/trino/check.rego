@@ -47,14 +47,21 @@ _is_canonical_namespace_part(part) if {
 	not contains(part, "+")
 }
 
-# Lakekeeper reads a '+' in a request path as a space, so for a table or view
-# name with '+' Trino would act on the name with a space. Such names are
-# refused. The rules for `CreateTable` and `CreateView` apply this to the name
-# of the new table or view, and the rename rules to the new name. The name of a
-# new child namespace is checked by `namespace_for_schema`.
+# Every check must name the table or view Trino acts on, so these table and view
+# names are refused:
+# - Lakekeeper reads a '+' in a request path as a space, so for a name with '+'
+#   Trino would act on the name with a space.
+# - Trino reads `$` and `@` in a name as part of a metadata table name (see
+#   `is_metadata_table`). A metadata table is checked on its base table, whose
+#   name has neither character.
+# The rules for `CreateTable` and `CreateView` apply this to the name of the new
+# table or view, and the rename rules to the new name. The name of a new child
+# namespace is checked by `namespace_for_schema`.
 is_canonical_tabular_name(name) if {
 	name != ""
 	not contains(name, "+")
+	not contains(name, "$")
+	not contains(name, "@")
 }
 
 parent_schema(schema_name) := parent_schema if {
@@ -221,28 +228,65 @@ require_view_replace_access(catalog_name, schema_name, view_name) if {
 	)
 }
 
+# Trino before 484 reads a view whose name looks like a metadata table, such as
+# `orders$files`, as that view. Trino 484 and later read the metadata table. So
+# on older or unknown Trino versions, reading a metadata table also needs
+# `select` on a live view with this name, if one exists.
+require_metadata_table_view_access(_, _, _) if {
+	_trino_reads_metadata_tables_before_views
+}
+
+require_metadata_table_view_access(catalog_name, schema_name, name) if {
+	not _trino_reads_metadata_tables_before_views
+	_require_view_select_access_if_exists(catalog_name, schema_name, name)
+}
+
+_require_view_select_access_if_exists(catalog_name, schema_name, name) if {
+	is_metadata_table(name)
+	trino_catalog := catalog_config_by_name[catalog_name]
+	lakekeeper.require_view_select_access_if_exists(
+		trino_catalog.lakekeeper_id,
+		trino_catalog.lakekeeper_warehouse,
+		namespace_for_schema(schema_name),
+		name,
+		lakekeeper_user_id,
+	)
+}
+
+# The Trino version is the leading number of `softwareStack.trinoVersion`, for
+# example 484 for "484-SNAPSHOT" or 476 for "476-e.1". A version without a
+# leading number counts as older than 484.
+_trino_reads_metadata_tables_before_views if {
+	version := regex.find_all_string_submatch_n(`^([0-9]+)`, input.context.softwareStack.trinoVersion, 1)
+	to_number(version[0][1]) >= 484
+}
+
 child_schema_name(schema_name) := child_name if {
 	parts := namespace_for_schema(schema_name)
 	child_name := parts[count(parts) - 1]
 }
 
+# Trino's Iceberg connector reads `<table>$<type>` as the metadata table `<type>`
+# of the table `<table>`. Trino 484 does so also if a view has this name; older
+# versions read the view (see `require_metadata_table_view_access`). The pattern is
+# `IcebergTableName.TABLE_PATTERN` of Trino 484: the base name has neither `$`
+# nor `@`, and the type is one of `TableType` except `DATA`. Java's `(?i)`
+# ignores only ASCII case, so the type must be ASCII before it is compared in
+# lower case. `allow_table_metadata_read` checks the base table. Table and view
+# rules refuse every name with `$` or `@` (see `is_canonical_tabular_name`), so a
+# type that a later Trino version adds is denied, not checked on another object.
+_metadata_table_types := {
+	"history", "metadata_log_entries", "snapshots", "all_manifests", "manifests",
+	"partitions", "files", "all_entries", "entries", "properties", "refs",
+	"materialized_view_storage",
+}
+
 is_metadata_table(table_name) if {
-	table_name_suffixes := [
-		"$properties", "$history", "$metadata_log_entries",
-		"$snapshots", "$manifests", "$all_manifests",
-		"$partitions", "$files", "$entries", "$all_entries", "$refs",
-	]
-	some suffix in table_name_suffixes
-	endswith(table_name, suffix)
+	regex.match(`^[^$@]+\$[A-Za-z_]+$`, table_name)
+	lower(split(table_name, "$")[1]) in _metadata_table_types
 } else := false
 
 split_metadata_table_name(table_name) := base_table_name if {
-	table_name_suffixes := [
-		"$properties", "$history", "$metadata_log_entries",
-		"$snapshots", "$manifests", "$all_manifests",
-		"$partitions", "$files", "$entries", "$all_entries", "$refs",
-	]
-	some suffix in table_name_suffixes
-	endswith(table_name, suffix)
-	base_table_name := substring(table_name, 0, count(table_name) - count(suffix))
+	is_metadata_table(table_name)
+	base_table_name := split(table_name, "$")[0]
 }

@@ -202,12 +202,22 @@ require_view_replace_access(lakekeeper_id, warehouse_name, namespace_name, view_
 	)
 }
 
+# Check that `user` may select from the view called `view_name`, if one exists.
+# Holds if no live view has this name, or if the user may select from it.
+require_view_select_access_if_exists(lakekeeper_id, warehouse_name, namespace_name, view_name, user) if {
+	_require_tabular_access_if_exists(
+		lakekeeper_id, warehouse_name, namespace_name, view_name, user, "view",
+		{"action": "select"},
+	)
+}
+
 # Holds if `user` may do `action` on the `kind` (table or view) called `name`,
 # or if no live `kind` has this name. The check asks Lakekeeper to answer `404`
 # for a name that is free, which tells a free name apart from a denied action.
 # Every other answer denies. Trino asks for a create check before it creates or
 # replaces the table or view, so the check sees the tables and views that exist
-# at that time.
+# at that time. For a read, Trino loads a view while it analyzes the query and
+# asks for the check afterwards; a view dropped in between counts as absent.
 _require_tabular_access_if_exists(lakekeeper_id, warehouse_name, namespace_name, name, user, kind, action) if {
 	response := authenticated_http_send(
 		lakekeeper_id,

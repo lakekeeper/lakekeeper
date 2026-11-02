@@ -35,7 +35,6 @@ allow_table if {
 allow_table_create if {
 	input.action.operation == "CreateTable"
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	is_canonical_tabular_name(table)
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
@@ -48,7 +47,6 @@ allow_table_create if {
 allow_table_drop if {
 	input.action.operation == "DropTable"
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_simple(catalog, schema, table, "drop")
@@ -57,7 +55,6 @@ allow_table_drop if {
 allow_table_rename if {
 	input.action.operation == "RenameTable"
 	source_table := input.action.resource.table.tableName
-	is_metadata_table(source_table) == false
 	source_catalog := input.action.resource.table.catalogName
 	source_schema := input.action.resource.table.schemaName
 	require_table_access_simple(source_catalog, source_schema, source_table, "rename")
@@ -74,7 +71,6 @@ allow_table_modify if {
 		"UpdateTableColumns",
 	]
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_simple(catalog, schema, table, "write_data")
@@ -89,7 +85,6 @@ allow_table_modify if {
 		"SetTableComment",
 	]
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_commit(catalog, schema, table, {}, [])
@@ -98,7 +93,6 @@ allow_table_modify if {
 allow_table_modify if {
 	input.action.operation == "SetTableProperties"
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	properties := object.get(input.action.resource.table, "properties", {})
@@ -109,7 +103,6 @@ allow_table_modify if {
 allow_table_metadata if {
 	input.action.operation in ["FilterTables", "ShowColumns", "FilterColumns", "ShowCreateTable"]
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_simple(catalog, schema, table, "get_metadata")
@@ -118,7 +111,6 @@ allow_table_metadata if {
 allow_table_read if {
 	input.action.operation in ["SelectFromColumns", "CreateViewWithSelectFromColumns"]
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_simple(catalog, schema, table, "read_data")
@@ -128,8 +120,10 @@ allow_table_metadata_read if {
 	input.action.operation == "SelectFromColumns"
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
-	table := split_metadata_table_name(input.action.resource.table.tableName)
+	name := input.action.resource.table.tableName
+	table := split_metadata_table_name(name)
 	require_table_access_simple(catalog, schema, table, "get_metadata")
+	require_metadata_table_view_access(catalog, schema, name)
 }
 
 allow_table_procedure if {
@@ -140,7 +134,6 @@ allow_table_procedure if {
 		"DROP_EXTENDED_STATS",
 	]
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_simple(catalog, schema, table, "write_data")
@@ -153,7 +146,6 @@ allow_table_procedure if {
 	input.action.operation == "ExecuteTableProcedure"
 	input.action.resource.function.functionName in ["ADD_FILES", "EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"]
 	table := input.action.resource.table.tableName
-	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_commit(catalog, schema, table, {}, [])

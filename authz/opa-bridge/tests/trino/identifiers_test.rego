@@ -400,7 +400,7 @@ _ordinary_names := [
 	{"schema": "Sales", "table": "Orders", "namespace": ["Sales"]},
 	{"schema": "café.ümlaut", "table": "日本語", "namespace": ["café", "ümlaut"]},
 	{"schema": "daily\u3000sales", "table": "daily\tsales", "namespace": ["daily\u3000sales"]},
-	{"schema": "sales-2026_q1", "table": "orders$x", "namespace": ["sales-2026_q1"]},
+	{"schema": "sales-2026_q1", "table": "orders~x", "namespace": ["sales-2026_q1"]},
 ]
 
 test_namespace_for_schema_keeps_ordinary_names if {

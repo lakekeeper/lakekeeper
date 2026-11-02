@@ -120,6 +120,7 @@ _distinct_schemas_for(catalog_name) := names if {
 # A resource is excluded from the Lakekeeper batch checks when a check cannot
 # use its names as they are (see `namespace_for_schema` and
 # `is_canonical_tabular_name`).
+# Metadata tables are decided one by one in `main.rego`.
 _is_canonical_table_resource(raw_resource) if {
 	namespace_for_schema(raw_resource.table.schemaName)
 	is_canonical_tabular_name(raw_resource.table.tableName)
@@ -168,7 +169,6 @@ _lakekeeper_batch_table_indices contains i if {
 	some i, raw_resource in input.action.filterResources
 	raw_resource.table.catalogName in _managed_catalog_names
 	not raw_resource.table.schemaName in lakekeeper_system_schemas
-	not is_metadata_table(raw_resource.table.tableName)
 	_is_canonical_table_resource(raw_resource)
 	not _fast_path_covers_table(raw_resource)
 }
@@ -285,7 +285,6 @@ batch contains i if {
 	some i, raw_resource in input.action.filterResources
 	raw_resource.table.catalogName in _warehouse_broad
 	not raw_resource.table.schemaName in lakekeeper_system_schemas
-	not is_metadata_table(raw_resource.table.tableName)
 	_is_canonical_table_resource(raw_resource)
 }
 
@@ -296,7 +295,6 @@ batch contains i if {
 	catalog := raw_resource.table.catalogName
 	not catalog in _warehouse_broad
 	not raw_resource.table.schemaName in lakekeeper_system_schemas
-	not is_metadata_table(raw_resource.table.tableName)
 	_is_canonical_table_resource(raw_resource)
 	raw_resource.table.schemaName in object.get(_namespace_broad, catalog, set())
 }
@@ -331,7 +329,6 @@ batch contains i if {
 	count(raw_resource.table.columns) > 0
 	raw_resource.table.catalogName in _managed_catalog_names
 	not raw_resource.table.schemaName in lakekeeper_system_schemas
-	not is_metadata_table(raw_resource.table.tableName)
 	_is_canonical_table_resource(raw_resource)
 	_single_table_filter_columns_allowed(raw_resource)
 	some i in numbers.range(0, count(raw_resource.table.columns) - 1)
