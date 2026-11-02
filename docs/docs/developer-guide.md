@@ -596,7 +596,7 @@ When adding a new endpoint, you may need to extend the authorization model. Plea
 
     (Requires the `fga` CLI — download from the [OpenFGA repo](https://github.com/openfga/cli/releases/).)
 
-1. In `crates/authz-openfga/src/migration.rs` bump `ACTIVE_MODEL_VERSION` to the new version. For backward-compatible changes, repoint the current `add_model_*_current` call (schema-path `include_str!` + version). For tuple-migrating changes, add another `add_model` call carrying the migration fn.
+1. In `crates/authz-openfga/src/migration.rs` bump `ACTIVE_MODEL_VERSION` to the new version. For backward-compatible changes, repoint `V4_CURRENT_MODEL_JSON` to the new schema path and bump `V4_CURRENT_MODEL_VERSION` (and the version in the `expect` message of `add_model_v4_current`). For tuple-migrating changes, add another `add_model` call carrying the migration fn. At startup the server refuses a model that lacks a relation of the enums in `relations.rs`, so add each new relation to both the enum and the model.
 1. Record the change under the new version heading in `authz/openfga/README.md`.
 
 ## Building the docs locally
