@@ -108,6 +108,18 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 
+/// Waits before retry `attempt` (counted from 1) of a commit that hit a concurrent update.
+///
+/// A short jittered exponential backoff to reduce contention: the first delay is 50ms, then
+/// 100ms, 200ms, ..., up to 3200ms (50*2^6), each plus up to half of it as jitter.
+pub(crate) async fn concurrent_update_backoff(attempt: usize) {
+    let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
+    let base = 50u64.saturating_mul(1u64 << exp);
+    let jitter = fastrand::u64(..base / 2);
+    tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
+    tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
+}
+
 /// Replay a load-table operation for idempotency.
 ///
 /// Used when an idempotency check detects a replay for operations that
@@ -1429,13 +1441,7 @@ async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
                     max_attempts = MAX_RETRIES_ON_CONCURRENT_UPDATE,
                     "Concurrent update detected, retrying commit operation"
                 );
-                // Short jittered exponential backoff to reduce contention
-                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
-                let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
-                let base = 50u64.saturating_mul(1u64 << exp);
-                let jitter = fastrand::u64(..base / 2);
-                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
-                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
+                concurrent_update_backoff(attempt).await;
             }
             Err(e) => {
                 if attempt > 0 {

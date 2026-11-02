@@ -110,6 +110,15 @@ services:
       - ICEBERG_REST__LOG_CLOUDEVENTS=true
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
       - LAKEKEEPER__TASK_POLL_INTERVAL="1"
+      # Trino's catalog uses the "spark" Keycloak client. Only a trusted engine may write
+      # "trino.run-as-owner", which Trino sets on every SECURITY DEFINER view.
+      # The Python test suites and the OPA bridge of the trino-opa overlay use the "spark" client
+      # too, so their requests are trusted as Trino here. Production setups trust only Trino's
+      # own client (see docs/docs/view-security.md). These suites do not exercise the refusals
+      # of the owner property rules end to end; the Rust integration tests cover the refusals.
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["9410d0bf-4487-4177-a34f-af364cac0a59"]
       - LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES=true
       - RUST_LOG=info,lakekeeper=debug
     command: ["serve"]

@@ -4,6 +4,7 @@ pub mod drop;
 pub mod exists;
 pub mod list;
 pub mod load;
+pub(crate) mod owner_property;
 pub mod rename;
 
 use iceberg_ext::catalog::rest::ViewUpdate;

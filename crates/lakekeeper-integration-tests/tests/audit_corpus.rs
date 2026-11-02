@@ -18,7 +18,8 @@
 //! rules apply to whatever it produces. Reached today: the authorization family in both its
 //! allowed and denied form, and the `idempotent_replay` family — which carries `action` and
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
-//! `entity` would misread. Not yet reached, cheapest to add first: views and table commits;
+//! `entity` would misread. Views are reached through the owner property rules, refused before
+//! and after authorization. Not yet reached, cheapest to add first: table commits;
 //! the plural `actions`/`entities` form, since every call here checks one action against one
 //! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
 //! the operational family, which grant changes emit; and a real authorizer with an
@@ -55,8 +56,8 @@ use lakekeeper::{
     api::{
         RequestMetadataTestBuilder,
         iceberg::v1::{
-            DataAccess, NamespaceParameters, namespace::NamespaceService as _,
-            tables::TablesService as _,
+            CommitViewRequest, DataAccess, NamespaceParameters, ViewParameters,
+            namespace::NamespaceService as _, tables::TablesService as _, views::ViewService as _,
         },
         management::v1::{
             grant::{ListGrantsQuery, Service as _},
@@ -70,7 +71,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    SetupTestCatalog, create_table_request, memory_io_profile, random_request_metadata,
+    SetupTestCatalog, create_table_request, create_view_request, memory_io_profile,
+    random_request_metadata, trino_engine_request, user_request,
 };
 
 /// How many audit records the request sequence in the test below emits.
@@ -82,7 +84,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 17;
+const EXPECTED_RECORDS: usize = 22;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -395,6 +397,71 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
+    // Views and the owner property rules. Only a trusted engine that owns
+    // `trino.run-as-owner` may write it: a create by another authenticated client is refused
+    // before authorization (1 denied record), the trusted engine's create is allowed (1). On
+    // the resulting view, a commit that sets the property is refused before authorization (1).
+    // A commit that changes the view's SQL is authorized, then refused once the stored view
+    // shows it holds the property (1 allowed, 1 denied).
+    let definer_view_request = || {
+        let mut request = create_view_request(Some("definer_view"), None);
+        request
+            .properties
+            .insert("trino.run-as-owner".to_string(), "alice".to_string());
+        request
+    };
+    for request_metadata in [user_request(), trino_engine_request()] {
+        let _ = CatalogServer::create_view(
+            namespace_params.clone(),
+            definer_view_request(),
+            ctx.clone(),
+            DataAccess::not_specified(),
+            request_metadata,
+        )
+        .await;
+    }
+    let definer_view = || ViewParameters {
+        prefix: Some(warehouse.clone().into()),
+        view: iceberg::TableIdent::new(namespace.clone(), "definer_view".to_string()),
+    };
+    let view_commit = |updates: serde_json::Value| -> CommitViewRequest {
+        serde_json::from_value(serde_json::json!({ "updates": updates }))
+            .expect("a valid view commit")
+    };
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {"action": "set-properties", "updates": {"trino.run-as-owner": "bob"}}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        user_request(),
+    )
+    .await;
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {
+                "action": "add-view-version",
+                "view-version": {
+                    "version-id": 2,
+                    "schema-id": 0,
+                    "timestamp-ms": chrono::Utc::now().timestamp_millis(),
+                    "summary": {"engine-name": "spark"},
+                    "representations": [
+                        {"type": "sql", "sql": "select 1", "dialect": "spark"}
+                    ],
+                    "default-namespace": []
+                }
+            },
+            {"action": "set-current-view-version", "view-version-id": -1}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        user_request(),
+    )
+    .await;
+
     // Finally a lookup of something absent, so a genuine denial is in the corpus too.
     let _ = CatalogServer::namespace_exists(
         NamespaceParameters {
@@ -491,6 +558,44 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             serde_json::json!({"action_name": "move", "destination": ["audit_corpus_moves"]}),
         ],
         "move records:\n{}",
+        describe(&records)
+    );
+
+    // The owner property refusals: two property writes refused before authorization, one
+    // version change refused after it.
+    let mut owner_refusals = records
+        .iter()
+        .filter_map(|record| record["error"]["type"].as_str())
+        .filter(|error_type| error_type.starts_with("Protected"))
+        .collect::<Vec<_>>();
+    owner_refusals.sort_unstable();
+    assert_eq!(
+        owner_refusals,
+        vec![
+            "ProtectedPropertyModification",
+            "ProtectedPropertyModification",
+            "ProtectedViewVersionChange",
+        ],
+        "owner property refusals:\n{}",
+        describe(&records)
+    );
+
+    // The version change was refused after the request was authorized: its denial and the
+    // allowed record of the same request share one request id.
+    let version_refusal = records
+        .iter()
+        .find(|record| record["error"]["type"] == "ProtectedViewVersionChange")
+        .expect("the version change refusal is checked above");
+    let mut same_request = records
+        .iter()
+        .filter(|record| record["request_id"] == version_refusal["request_id"])
+        .map(|record| record["decision"].as_str().unwrap_or("-"))
+        .collect::<Vec<_>>();
+    same_request.sort_unstable();
+    assert_eq!(
+        same_request,
+        vec!["allowed", "denied"],
+        "records of the refused version change:\n{}",
         describe(&records)
     );
 

@@ -390,6 +390,8 @@ pub async fn get_api_context_with_registry<T: Authorizer>(
             registered_task_queues,
             license_status: &APACHE_LICENSE_STATUS,
             build_info: &DEFAULT_BUILD_INFO,
+            // Tests send the requests an authenticated server receives.
+            authentication: lakekeeper::service::ServerAuthentication::Enabled,
         },
     };
     (ctx, task_queues)
