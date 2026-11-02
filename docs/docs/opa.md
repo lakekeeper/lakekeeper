@@ -139,7 +139,7 @@ Trino and Lakekeeper change some schema and table names before they use them. Tr
 
 Spaces inside a name are allowed, for example `daily sales`.
 
-Namespaces, tables and views with such names can exist in Lakekeeper, for example if another client created them. To use one of them in Trino, rename it with the Lakekeeper API or UI.
+Namespaces, tables and views with such names can exist in Lakekeeper, for example if another client created them. To use one of them in Trino, rename it with the Lakekeeper API or UI. Lakekeeper refuses namespace names with an empty part. It refuses `+` and control characters in the names of new tables, views and generic tables and in the new name of a rename. For a new or moved namespace, it refuses `+` in any part of the name and control characters in its last part. Lakekeeper accepts white space at the start or end of a namespace part and `$` or `@` in table and view names, so for these the bridge is the only check.
 
 ### Metadata Tables
 

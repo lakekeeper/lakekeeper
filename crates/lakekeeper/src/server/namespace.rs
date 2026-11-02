@@ -1114,6 +1114,20 @@ pub(crate) fn validate_namespace_ident_creation(namespace: &NamespaceIdent) -> R
         .into());
     }
 
+    // REST clients separate namespace parts with U+001F in request paths. Only the new name is
+    // checked, so existing parents with such names keep accepting children.
+    if let Some(name) = namespace.as_ref().last()
+        && name.chars().any(char::is_control)
+    {
+        return Err(ErrorModel::bad_request(
+            "Namespace name cannot contain control characters.",
+            "InvalidNamespace",
+            None,
+        )
+        .append_detail(format!("Namespace: {namespace:?}"))
+        .into());
+    }
+
     Ok(())
 }
 
@@ -1387,6 +1401,38 @@ mod tests {
             candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![child, parent]
         );
+    }
+
+    #[test]
+    fn test_namespace_creation_refuses_control_characters() {
+        let ident = |parts: &[&str]| NamespaceIdent::from_strs(parts).unwrap();
+
+        for name in [
+            "a\u{1f}b",
+            "sa\u{0}les",
+            "sales\u{7f}",
+            "\tsales",
+            "sales\n",
+        ] {
+            for parts in [&[name][..], &["parent", name]] {
+                let err = validate_namespace_ident_creation(&ident(parts)).unwrap_err();
+                assert_eq!(err.error.code, 400, "{parts:?}");
+                assert_eq!(err.error.r#type, "InvalidNamespace", "{parts:?}");
+            }
+            // Existing namespaces with such names stay addressable.
+            validate_namespace_ident(&ident(&[name])).unwrap();
+        }
+
+        for parts in [
+            &["sales"][..],
+            &["daily sales"],
+            &[" sales "],
+            &["Café", "日本語"],
+            // A parent that exists with such a name keeps accepting children.
+            &["le\u{1f}gacy", "child"],
+        ] {
+            validate_namespace_ident_creation(&ident(parts)).unwrap();
+        }
     }
 
     #[test]

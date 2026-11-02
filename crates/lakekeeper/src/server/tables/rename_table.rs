@@ -9,7 +9,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         require_warehouse_id,
-        tables::validate_table_or_view_ident,
+        tables::{validate_table_or_view_ident, validate_table_or_view_ident_creation},
         tabular::{
             TabularRenameEnds, authorize_tabular_move, claim_rename_idempotency_key,
             commit_rename_with_reparent, ensure_authorized_destination,
@@ -43,7 +43,7 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     let source = request.source.clone();
     let destination = request.destination.clone();
     validate_table_or_view_ident(&source)?;
-    validate_table_or_view_ident(&destination)?;
+    validate_table_or_view_ident_creation(&destination)?;
     let move_destination = tabular_move_destination(&source.namespace, &destination.namespace);
 
     // ------------------- AUDIT CONTEXT -------------------

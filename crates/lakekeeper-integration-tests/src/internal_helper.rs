@@ -146,6 +146,15 @@ pub async fn drop_namespace<A: Authorizer, C: CatalogStore, S: SecretStore>(
     .await
 }
 
+/// Names that Lakekeeper refuses for a new table, view or generic table, and as the new name
+/// in a rename, with the error type `InvalidTableName`.
+pub const REFUSED_NEW_TABULAR_NAMES: [&str; 4] = [
+    "daily+sales",
+    "daily\u{1f}sales",
+    "daily\tsales",
+    "daily_sales\n",
+];
+
 pub fn create_view_request(name: Option<&str>, location: Option<&str>) -> CreateViewRequest {
     serde_json::from_value(json!({
     "name": name.unwrap_or("myview"),

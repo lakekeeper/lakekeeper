@@ -9,8 +9,8 @@ use lakekeeper::{
     service::ServerAuthentication,
 };
 use lakekeeper_integration_tests::{
-    OWNER_PROPERTY, create_view_helper, create_view_request, random_request_metadata,
-    trino_engine_request, user_request, views_test_setup,
+    OWNER_PROPERTY, REFUSED_NEW_TABULAR_NAMES, create_view_helper, create_view_request,
+    random_request_metadata, trino_engine_request, user_request, views_test_setup,
 };
 use lakekeeper_storage_postgres::namespace::tests::initialize_namespace;
 use sqlx::PgPool;
@@ -193,4 +193,22 @@ async fn test_create_view_with_owner_property_refused_from_request_without_authe
     .expect_err("a request without authentication is not a trusted engine");
     assert_eq!(err.error.code, StatusCode::FORBIDDEN);
     assert_eq!(err.error.r#type, "ProtectedPropertyModification");
+}
+
+#[sqlx::test]
+async fn test_create_view_refuses_invalid_names(pool: PgPool) {
+    let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = create_view_helper(
+            api_context.clone(),
+            namespace.clone(),
+            create_view_request(Some(name), None),
+            Some(whi.to_string()),
+        )
+        .await
+        .expect_err("The view name must be refused.");
+        assert_eq!(err.error.code, 400, "{name:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
 }
