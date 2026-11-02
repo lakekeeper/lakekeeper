@@ -1038,9 +1038,13 @@ async fn test_table_v3(pg_pool: PgPool) {
     )
     .await;
 
-    // Assert that the commit fails
-    assert!(invalid_commit_result.is_err());
-    let err_string = invalid_commit_result.as_ref().unwrap_err().to_string();
+    // Assert that the commit fails as a conflict the client can retry
+    let err = invalid_commit_result.as_ref().unwrap_err();
+    assert_eq!(
+        (err.error.code, err.error.r#type.as_str()),
+        (StatusCode::CONFLICT.as_u16(), "CommitFailedException")
+    );
+    let err_string = err.to_string();
     assert!(
         err_string.contains("first-row-id is behind table next-row-id"),
         "The error message `{err_string}` did not contain the expected text",
@@ -1701,6 +1705,104 @@ async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_poo
         expired.snapshots().map(|s| s.snapshot_id()).collect_vec(),
         vec![2]
     );
+}
+
+/// A snapshot for `main` computed before another branch's commit carries an outdated
+/// sequence number: the commit is a conflict, and the client's retry from the reloaded
+/// table commits.
+#[sqlx::test]
+async fn test_stale_snapshot_after_a_branch_commit_is_a_conflict(pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let ts = table.metadata.last_updated_ms();
+    let snapshot = |snapshot_id: i64, parent: Option<i64>, sequence_number: i64| {
+        Snapshot::builder()
+            .with_snapshot_id(snapshot_id)
+            .with_parent_snapshot_id(parent)
+            .with_timestamp_ms(ts + snapshot_id)
+            .with_sequence_number(sequence_number)
+            .with_schema_id(0)
+            .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            })
+            .build()
+    };
+    let set_ref = |ref_name: &str, snapshot_id: i64| TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: create_snapshot_reference(snapshot_id),
+    };
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(1, None, 1),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await;
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(2, Some(1), 2),
+            },
+            set_ref("audit", 2),
+        ],
+    )
+    .await;
+
+    let stale = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot(3, Some(1), 2),
+                    },
+                    set_ref(MAIN_BRANCH, 3),
+                ],
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        (stale.error.code, stale.error.r#type.as_str()),
+        (StatusCode::CONFLICT.as_u16(), "CommitFailedException")
+    );
+
+    let reloaded = load_table(&ctx, &ns_params, "tab-1").await;
+    let next_sequence_number = reloaded.metadata.last_sequence_number() + 1;
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(3, Some(1), next_sequence_number),
+            },
+            set_ref(MAIN_BRANCH, 3),
+        ],
+    )
+    .await;
+    let committed = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(committed.metadata.current_snapshot_id(), Some(3));
+    assert_eq!(committed.metadata.last_sequence_number(), 3);
 }
 
 async fn commit_test_setup(

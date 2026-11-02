@@ -116,7 +116,7 @@ hyper-util = { version = "0.1.20", features = [
     "service",
     "tokio",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "901e958a14080416084f44c4e9d74dc91fad46da" }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "bbade1a8960daba73523de15b75bdf2a31ab6918" }
 inventory = "0.3.24"
 iso8601 = "0.6.2"
 itertools = "0.14.0"

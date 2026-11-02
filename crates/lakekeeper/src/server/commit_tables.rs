@@ -151,23 +151,14 @@ pub(super) fn apply_commit(
             }
             TableUpdate::SetProperties { updates } => {
                 check_immutable_properties_not_modified(&previous_immutable_properties, updates)?;
-                builder = TableUpdate::apply(update, builder).map_err(|e| {
-                    let msg = e.message().to_string();
-                    ErrorModel::bad_request(msg, "InvalidTableUpdate", Some(Box::new(e)))
-                })?;
+                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
             }
             TableUpdate::RemoveProperties { removals } => {
                 check_immutable_properties_not_removed(&previous_immutable_properties, removals)?;
-                builder = TableUpdate::apply(update, builder).map_err(|e| {
-                    let msg = e.message().to_string();
-                    ErrorModel::bad_request(msg, "InvalidTableUpdate", Some(Box::new(e)))
-                })?;
+                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
             }
             _ => {
-                builder = TableUpdate::apply(update, builder).map_err(|e| {
-                    let msg = e.message().to_string();
-                    ErrorModel::bad_request(msg, "InvalidTableUpdate", Some(Box::new(e)))
-                })?;
+                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
             }
         }
     }
@@ -190,6 +181,19 @@ pub(super) fn apply_commit(
         build_result.metadata.last_updated_ms()
     );
     Ok(build_result)
+}
+
+/// Answer an update the builder refused.
+///
+/// A retryable error means the update was built on outdated table metadata, for example a
+/// sequence number another branch already used: the client must reload and retry, so 409.
+fn update_error(e: iceberg::Error) -> IcebergErrorResponse {
+    let msg = e.message().to_string();
+    if e.retryable() {
+        ErrorModel::conflict(msg, "CommitFailedException", Some(Box::new(e))).into()
+    } else {
+        ErrorModel::bad_request(msg, "InvalidTableUpdate", Some(Box::new(e))).into()
+    }
 }
 
 /// Names of the refs of `metadata` that no `RemoveSnapshotRef` in `updates` removes.
@@ -304,7 +308,7 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use iceberg::{
-        TableUpdate,
+        TableRequirement, TableUpdate,
         spec::{
             FormatVersion, MAIN_BRANCH, NestedField, Operation, PrimitiveType, Schema, Snapshot,
             SnapshotReference, SnapshotRetention, SortOrder, Summary, TableMetadata,
@@ -842,5 +846,182 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A snapshot whose time is after the table's history.
+    fn snapshot(
+        metadata: &TableMetadata,
+        snapshot_id: i64,
+        parent: Option<i64>,
+        sequence_number: i64,
+        row_range: Option<(u64, u64)>,
+    ) -> Snapshot {
+        let builder = Snapshot::builder()
+            .with_snapshot_id(snapshot_id)
+            .with_parent_snapshot_id(parent)
+            .with_timestamp_ms(metadata.last_updated_ms() + 1)
+            .with_sequence_number(sequence_number)
+            .with_schema_id(0)
+            .with_manifest_list(format!(
+                "s3://bucket/table/metadata/snap-{snapshot_id}.avro"
+            ))
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            });
+        match row_range {
+            Some((first_row_id, added_rows)) => {
+                builder.with_row_range(first_row_id, added_rows).build()
+            }
+            None => builder.build(),
+        }
+    }
+
+    fn add_snapshot(snapshot: Snapshot) -> TableUpdate {
+        TableUpdate::AddSnapshot { snapshot }
+    }
+
+    fn set_branch(ref_name: &str, snapshot_id: i64) -> TableUpdate {
+        TableUpdate::SetSnapshotRef {
+            ref_name: ref_name.to_string(),
+            reference: branch_ref(snapshot_id),
+        }
+    }
+
+    fn commit(metadata: TableMetadata, updates: Vec<TableUpdate>) -> TableMetadata {
+        apply_commit(metadata, None, &[], updates).unwrap().metadata
+    }
+
+    /// Snapshot 1 on `main` and its child 2 on the branch `audit`; `last-sequence-number` is 2.
+    /// On v3, `next-row-id` is 15.
+    fn metadata_with_branch_commit(format_version: FormatVersion) -> TableMetadata {
+        let mut metadata = test_metadata_with_properties(HashMap::new());
+        let v3 = format_version == FormatVersion::V3;
+        if v3 {
+            metadata = commit(
+                metadata,
+                vec![TableUpdate::UpgradeFormatVersion { format_version }],
+            );
+        }
+        let first = snapshot(&metadata, 1, None, 1, v3.then_some((0, 10)));
+        metadata = commit(
+            metadata,
+            vec![add_snapshot(first), set_branch(MAIN_BRANCH, 1)],
+        );
+        let second = snapshot(&metadata, 2, Some(1), 2, v3.then_some((10, 5)));
+        commit(metadata, vec![add_snapshot(second), set_branch("audit", 2)])
+    }
+
+    fn assert_error(result: super::Result<impl std::fmt::Debug>, code: u16, r#type: &str) {
+        let error = result.expect_err("the commit must be refused").error;
+        assert_eq!(
+            (error.code, error.r#type.as_str()),
+            (code, r#type),
+            "{error:?}"
+        );
+    }
+
+    /// A snapshot computed from metadata that another branch's commit has since outdated is a
+    /// conflict: the client reloads and its retry commits.
+    #[test]
+    fn stale_sequence_number_after_a_branch_commit_is_a_conflict() {
+        let base = metadata_with_branch_commit(FormatVersion::V2);
+        let main_at_1 = [TableRequirement::RefSnapshotIdMatch {
+            r#ref: MAIN_BRANCH.to_string(),
+            snapshot_id: Some(1),
+        }];
+
+        let stored: lakekeeper_io::Location = "s3://bucket/table/metadata/00002.metadata.json"
+            .parse()
+            .unwrap();
+
+        let stale = snapshot(&base, 3, Some(1), 2, None);
+        let result = apply_commit(
+            base.clone(),
+            Some(&stored),
+            &main_at_1,
+            vec![add_snapshot(stale), set_branch(MAIN_BRANCH, 3)],
+        );
+        assert_error(result, 409, "CommitFailedException");
+
+        let retried = snapshot(&base, 3, Some(1), 3, None);
+        let metadata = apply_commit(
+            base,
+            Some(&stored),
+            &main_at_1,
+            vec![add_snapshot(retried), set_branch(MAIN_BRANCH, 3)],
+        )
+        .unwrap()
+        .metadata;
+        assert_eq!(metadata.current_snapshot_id(), Some(3));
+        assert_eq!(metadata.last_sequence_number(), 3);
+    }
+
+    /// A staged (WAP) snapshot carries no ref and so no requirement; a stale one is a conflict too.
+    #[test]
+    fn stale_staged_snapshot_is_a_conflict() {
+        let base = metadata_with_branch_commit(FormatVersion::V2);
+        let stale = snapshot(&base, 3, Some(1), 2, None);
+        assert_error(
+            apply_commit(base, None, &[], vec![add_snapshot(stale)]),
+            409,
+            "CommitFailedException",
+        );
+    }
+
+    #[test]
+    fn stale_first_row_id_is_a_conflict() {
+        let base = metadata_with_branch_commit(FormatVersion::V3);
+        assert_eq!(base.next_row_id(), 15);
+
+        let stale = snapshot(&base, 3, Some(1), 3, Some((10, 5)));
+        assert_error(
+            apply_commit(
+                base.clone(),
+                None,
+                &[],
+                vec![add_snapshot(stale), set_branch(MAIN_BRANCH, 3)],
+            ),
+            409,
+            "CommitFailedException",
+        );
+
+        let retried = snapshot(&base, 3, Some(1), 3, Some((15, 5)));
+        let metadata = commit(
+            base,
+            vec![add_snapshot(retried), set_branch(MAIN_BRANCH, 3)],
+        );
+        assert_eq!(metadata.next_row_id(), 20);
+    }
+
+    /// A resend of a snapshot that already landed is not a conflict: a retry cannot succeed.
+    #[test]
+    fn resent_snapshot_is_refused_as_invalid() {
+        let base = metadata_with_branch_commit(FormatVersion::V2);
+        let resent = snapshot(&base, 2, Some(1), 2, None);
+        assert_error(
+            apply_commit(base, None, &[], vec![add_snapshot(resent)]),
+            400,
+            "InvalidTableUpdate",
+        );
+    }
+
+    /// A parentless snapshot below the sequence number of a retained snapshot fails the build,
+    /// which stays a conflict: a replace racing another commit heals with a reload
+    /// (lakekeeper/lakekeeper#949).
+    #[test]
+    fn parentless_stale_snapshot_stays_a_conflict() {
+        let base = metadata_with_branch_commit(FormatVersion::V2);
+        let parentless = snapshot(&base, 3, None, 1, None);
+        assert_error(
+            apply_commit(
+                base,
+                None,
+                &[],
+                vec![add_snapshot(parentless), set_branch(MAIN_BRANCH, 3)],
+            ),
+            409,
+            "CommitFailedException",
+        );
     }
 }
