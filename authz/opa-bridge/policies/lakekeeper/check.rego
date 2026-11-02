@@ -171,6 +171,76 @@ require_table_access_commit(
 	count(value.results) == 1
 }
 
+# Check that `user` may replace the table called `table_name`, if one exists.
+# Holds if no live table has this name, or if the user may commit to it.
+# Replacing a table commits a new definition and new data to it, and moves
+# `main` to the new snapshot. Every Iceberg replace sets the current schema,
+# the default partition spec and the default sort order. `updated_properties`
+# are the properties of the statement.
+require_table_replace_access(
+	lakekeeper_id, warehouse_name, namespace_name,
+	table_name, user, updated_properties,
+) if {
+	_require_tabular_access_if_exists(
+		lakekeeper_id, warehouse_name, namespace_name, table_name, user, "table",
+		{
+			"action": "commit",
+			"target_refs": ["main"],
+			"update_kinds": ["set-current-schema", "set-default-sort-order", "set-default-spec"],
+			"updated_properties": updated_properties,
+		},
+	)
+}
+
+# Check that `user` may replace the view called `view_name`, if one exists.
+# Holds if no live view has this name, or if the user may commit to it.
+# Replacing a view commits a new definition to it.
+require_view_replace_access(lakekeeper_id, warehouse_name, namespace_name, view_name, user) if {
+	_require_tabular_access_if_exists(
+		lakekeeper_id, warehouse_name, namespace_name, view_name, user, "view",
+		{"action": "commit"},
+	)
+}
+
+# Holds if `user` may do `action` on the `kind` (table or view) called `name`,
+# or if no live `kind` has this name. The check asks Lakekeeper to answer `404`
+# for a name that is free, which tells a free name apart from a denied action.
+# Every other answer denies. Trino asks for a create check before it creates or
+# replaces the table or view, so the check sees the tables and views that exist
+# at that time.
+_require_tabular_access_if_exists(lakekeeper_id, warehouse_name, namespace_name, name, user, kind, action) if {
+	response := authenticated_http_send(
+		lakekeeper_id,
+		"POST", "/management/v1/action/batch-check",
+		{
+			"error-on-not-found": true,
+			"checks": [{
+				"operation": {kind: {
+					"action": action,
+					"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+					"namespace": namespace_name,
+					"table": name,
+				}},
+				"identity": {"user": user},
+			}],
+		},
+	)
+	_allowed_or_not_found(response, kind)
+}
+
+_tabular_not_found_error_type := {"table": "NoSuchTableException", "view": "NoSuchViewException"}
+
+_allowed_or_not_found(response, _) if {
+	response.status_code == 200
+	count(response.body.results) == 1
+	response.body.results[0].allowed == true
+}
+
+_allowed_or_not_found(response, kind) if {
+	response.status_code == 404
+	response.body.error.type == _tabular_not_found_error_type[kind]
+}
+
 # Execute a batch-check, automatically chunking into multiple HTTP requests
 # if the number of checks exceeds the instance's max_batch_check_size.
 # Returns a flat array of results in the same order as the input checks.

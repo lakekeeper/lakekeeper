@@ -186,7 +186,7 @@ If `list_everything` should not show the columns and names of every table and vi
 
 ## Context Forwarding
 
-The OPA bridge forwards resource names and paths to Lakekeeper's batch-check API for create actions and for moves. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, or on where a table or view is moved from and to:
+The OPA bridge forwards resource names, paths and other context to Lakekeeper's batch-check API for create actions, replaces and moves. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, on what a replace changes, or on where a table or view is moved from and to:
 
 | Trino Operation | Lakekeeper Action | Name Forwarded |
 |-----------------|-------------------|----------------|
@@ -195,10 +195,33 @@ The OPA bridge forwards resource names and paths to Lakekeeper's batch-check API
 | `CreateTable` | `create_table` (namespace) | Table name |
 | `CreateView` / `CreateMaterializedView` | `create_view` (namespace) | View name |
 | `RenameTable` / `RenameView` into another schema | `move` (table or view) and `accept_moved_tabular` (destination namespace) | `move` carries the destination namespace path, `accept_moved_tabular` the source namespace path |
+| `CreateTable`, if a table with the name exists | `commit` (that table) | Table name, target ref `main` and the update kinds of every replace: `set-current-schema`, `set-default-spec` and `set-default-sort-order` |
+| `CreateView`, if a view with the name exists | `commit` (that view) | View name |
 
-Properties specified during creation (e.g. `WITH (format='PARQUET')`) are also forwarded.
+Properties specified during creation (e.g. `WITH (format='PARQUET')`) are also forwarded. They keep the names Trino uses, for example `format`, also in the `commit` check of `CreateTable`. See [Replacing Tables and Views](#replacing-tables-and-views) for this check.
 
 A rename into another catalog is refused.
+
+## Replacing Tables and Views
+
+Trino asks for the same permission to create a table as to replace it with `CREATE OR REPLACE TABLE`. The same is true for views and `CREATE OR REPLACE VIEW`. So when a user creates a table or view, the bridge also checks if one with this name already exists in the schema:
+
+- For `CREATE TABLE` and `CREATE TABLE AS`, the bridge looks for a table with this name. If there is none, the user needs only `create_table` on the namespace. If there is one, the user also needs `commit` on that table, because replacing gives the table a new schema, new partitioning, new properties and new data.
+- For `CREATE VIEW`, the bridge looks for a view with this name. If there is none, the user needs only `create_view` on the namespace. If there is one, the user also needs `commit` on that view, because replacing gives the view a new definition.
+
+A table or view that was dropped and can still be restored does not count.
+
+With OpenFGA, this `commit` needs `modify` or ownership on the table or view, or on anything that contains it, such as its namespace or warehouse. The [`write`](./authorization-openfga.md#write) privilege does not allow it, because replacing a table changes its schema, partitioning and sort order. See [Authorization with OpenFGA](./authorization-openfga.md). When Trino connects to Lakekeeper with its own credentials, tables and views that users create through Trino belong to Trino's service account. Roles that replace tables or views through Trino therefore need `modify` on the namespace. Examples are roles that run dbt view models, or dbt table models with `on_table_exists='replace'`.
+
+Trino checks the permission to create a view before it checks if the view exists. If a view with the name exists and the user does not have `commit` on it, `CREATE VIEW` fails with an access error, not with an error that the view already exists. `CREATE VIEW IF NOT EXISTS` with the name of an existing view also needs `commit` on that view.
+
+When Trino creates a table with a new name, Lakekeeper writes one audit record for a failed `introspect_permissions` with the reason `resource_not_found`. For a view with a new name, it writes two such records. These records are expected.
+
+If the bridge cannot find out if the name is free, for example because Lakekeeper does not answer, it denies the statement.
+
+Leave `iceberg.rest-catalog.case-insensitive-name-matching` off in the Trino catalog. Lakekeeper already matches names regardless of upper and lower case. With the option on, Trino compares names with Java's rules for upper and lower case, which treat a few letters, such as the dotless `ı`, differently from Lakekeeper.
+
+## Deployment
 
 Deploy the bridge policies together with the Lakekeeper server version they were released with. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write`](./authorization-openfga.md#write) privilege existed let a holder of `write` change a table's columns, comments and properties, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write`.
 

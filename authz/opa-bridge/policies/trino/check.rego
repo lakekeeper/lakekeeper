@@ -191,6 +191,36 @@ require_rename_target_access(kind, source_catalog, source_schema, name, target_c
 	)
 }
 
+# Trino asks the same `CreateTable` for `CREATE TABLE` and for
+# `CREATE OR REPLACE TABLE`, which replaces a table that already has the name.
+# So creating a table also needs `commit` on a live table with that name.
+require_table_replace_access(catalog_name, schema_name, table_name, updated_properties) if {
+	is_canonical_tabular_name(table_name)
+	trino_catalog := catalog_config_by_name[catalog_name]
+	lakekeeper.require_table_replace_access(
+		trino_catalog.lakekeeper_id,
+		trino_catalog.lakekeeper_warehouse,
+		namespace_for_schema(schema_name),
+		table_name,
+		lakekeeper_user_id,
+		updated_properties,
+	)
+}
+
+# The same holds for `CreateView` and `CREATE OR REPLACE VIEW`: creating a view
+# also needs `commit` on a live view with that name.
+require_view_replace_access(catalog_name, schema_name, view_name) if {
+	is_canonical_tabular_name(view_name)
+	trino_catalog := catalog_config_by_name[catalog_name]
+	lakekeeper.require_view_replace_access(
+		trino_catalog.lakekeeper_id,
+		trino_catalog.lakekeeper_warehouse,
+		namespace_for_schema(schema_name),
+		view_name,
+		lakekeeper_user_id,
+	)
+}
+
 child_schema_name(schema_name) := child_name if {
 	parts := namespace_for_schema(schema_name)
 	child_name := parts[count(parts) - 1]

@@ -42,6 +42,7 @@ allow_table_create if {
 	properties := object.get(input.action.resource.table, "properties", {})
 	flattened_properties := flatten_properties(properties)
 	require_schema_access_create(catalog, schema, "create_table", flattened_properties, table)
+	require_table_replace_access(catalog, schema, table, flattened_properties)
 }
 
 allow_table_drop if {

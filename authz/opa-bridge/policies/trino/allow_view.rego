@@ -24,6 +24,9 @@ allow_view if {
 	allow_view_read
 }
 
+# Trino's Iceberg REST catalog cannot create materialized views, so a
+# `CreateMaterializedView` that passes here fails in Trino. It is checked like
+# `CreateView`.
 allow_view_create if {
 	input.action.operation in ["CreateView", "CreateMaterializedView"]
 	catalog := input.action.resource.table.catalogName
@@ -33,6 +36,7 @@ allow_view_create if {
 	properties := object.get(input.action.resource.table, "properties", {})
 	flattened_properties := flatten_properties(properties)
 	require_schema_access_create(catalog, schema, "create_view", flattened_properties, view)
+	require_view_replace_access(catalog, schema, view)
 }
 
 allow_view_modify if {
