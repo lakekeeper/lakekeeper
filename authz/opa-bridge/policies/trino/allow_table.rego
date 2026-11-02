@@ -116,13 +116,33 @@ allow_table_read if {
 	require_table_access_simple(catalog, schema, table, "read_data")
 }
 
+# Metadata tables that list data files, manifests or partitions show values of
+# the data, such as column bounds and partition values, so reading them needs
+# `read_data` on the base table. The others show snapshots, refs and properties
+# and need `get_metadata`. A type without an entry here cannot be read.
+metadata_table_read_action := {
+	"files": "read_data",
+	"entries": "read_data",
+	"all_entries": "read_data",
+	"manifests": "read_data",
+	"all_manifests": "read_data",
+	"partitions": "read_data",
+	"materialized_view_storage": "read_data",
+	"snapshots": "get_metadata",
+	"history": "get_metadata",
+	"refs": "get_metadata",
+	"properties": "get_metadata",
+	"metadata_log_entries": "get_metadata",
+}
+
 allow_table_metadata_read if {
 	input.action.operation == "SelectFromColumns"
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	name := input.action.resource.table.tableName
 	table := split_metadata_table_name(name)
-	require_table_access_simple(catalog, schema, table, "get_metadata")
+	action := metadata_table_read_action[metadata_table_type(name)]
+	require_table_access_simple(catalog, schema, table, action)
 	require_metadata_table_view_access(catalog, schema, name)
 }
 

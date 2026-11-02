@@ -143,7 +143,12 @@ Namespaces, tables and views with such names can exist in Lakekeeper, for exampl
 
 ### Metadata Tables
 
-Trino reads a name such as `orders$files` as the `$files` metadata table of the table `orders`. Reading a metadata table needs `get_metadata` on its base table, here `orders`.
+Trino reads a name such as `orders$files` as the `$files` metadata table of the table `orders`. Reading a metadata table needs a permission on its base table, here `orders`:
+
+- `$snapshots`, `$history`, `$refs`, `$properties` and `$metadata_log_entries` need `get_metadata`.
+- `$files`, `$entries`, `$all_entries`, `$manifests`, `$all_manifests`, `$partitions` and `$materialized_view_storage` need `read_data`, because they show values of the data, such as column bounds and partition values.
+
+Users who can only see a table can list tables and columns, and run `SHOW COLUMNS`, `DESCRIBE` and `SHOW CREATE TABLE`. Tools such as Superset may read `$partitions` for such users and log the denied query. What these tools show does not change.
 
 On Trino 484 and later, such a name always means the metadata table. Older Trino versions can read a view with this name instead. On these versions the bridge also requires that no view with this name exists, or that the user has `select` on it. This costs one more request to Lakekeeper for each read of a metadata table. The bridge takes the Trino version from Trino's request. If it cannot read the version, it handles Trino as an older version.
 

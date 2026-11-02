@@ -290,3 +290,8 @@ split_metadata_table_name(table_name) := base_table_name if {
 	is_metadata_table(table_name)
 	base_table_name := split(table_name, "$")[0]
 }
+
+# The type of a metadata table in lower case, for example `files` for `orders$FILES`.
+metadata_table_type(table_name) := lower(split(table_name, "$")[1]) if {
+	is_metadata_table(table_name)
+}
