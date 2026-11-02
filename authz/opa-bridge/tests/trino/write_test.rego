@@ -33,6 +33,8 @@ _data_kinds := {
 # reads and writes the data of its tables and lists the namespace and warehouse. A commit
 # is allowed only if it names update kinds, every one of them a data kind, and changes no
 # property. Everything else is refused.
+default _writer_allows(_) := false
+
 _writer_allows(check) if {
 	action := check.operation.table.action
 	action.action == "commit"
