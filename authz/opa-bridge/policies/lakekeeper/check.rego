@@ -47,9 +47,15 @@ require_warehouse_create_namespace_access(lakekeeper_id, warehouse_name, user, p
 
 # Check access to a namespace
 require_namespace_access_simple(lakekeeper_id, warehouse_name, namespace_name, user, action) if {
+	require_namespace_access(lakekeeper_id, warehouse_name, namespace_name, user, {"action": action})
+}
+
+# Check an action on a namespace. `action` is the action object, for example
+# `{"action": "delete", "recursive": true, "purge": true}`.
+require_namespace_access(lakekeeper_id, warehouse_name, namespace_name, user, action) if {
 	_single_check_allowed(lakekeeper_id, {
 		"operation": {"namespace": {
-			"action": {"action": action},
+			"action": action,
 			"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
 			"namespace": namespace_name,
 		}},
@@ -92,9 +98,15 @@ require_namespace_access_update_properties(
 
 # Check access to a table
 require_table_access_simple(lakekeeper_id, warehouse_name, namespace_name, table_name, user, action) if {
+	require_table_access(lakekeeper_id, warehouse_name, namespace_name, table_name, user, {"action": action})
+}
+
+# Check an action on a table. `action` is the action object, for example
+# `{"action": "drop", "purge": true}`.
+require_table_access(lakekeeper_id, warehouse_name, namespace_name, table_name, user, action) if {
 	_single_check_allowed(lakekeeper_id, {
 		"operation": {"table": {
-			"action": {"action": action},
+			"action": action,
 			"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
 			"namespace": namespace_name,
 			"table": table_name,
@@ -320,9 +332,15 @@ build_namespace_check(warehouse_id, namespace_name, user, action) := {
 
 # Check access to a view
 require_view_access_simple(lakekeeper_id, warehouse_name, namespace_name, view_name, user, action) if {
+	require_view_access(lakekeeper_id, warehouse_name, namespace_name, view_name, user, {"action": action})
+}
+
+# Check an action on a view. `action` is the action object, for example
+# `{"action": "drop", "purge": true}`.
+require_view_access(lakekeeper_id, warehouse_name, namespace_name, view_name, user, action) if {
 	_single_check_allowed(lakekeeper_id, {
 		"operation": {"view": {
-			"action": {"action": action},
+			"action": action,
 			"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
 			"namespace": namespace_name,
 			"table": view_name,

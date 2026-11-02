@@ -202,9 +202,9 @@ If `list_everything` should not show the columns and names of every table and vi
 
 ## Context Forwarding
 
-The OPA bridge forwards resource names, paths and other context to Lakekeeper's batch-check API for create actions, replaces and moves. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, on what a replace changes, or on where a table or view is moved from and to:
+The OPA bridge forwards resource names, paths and other context to Lakekeeper's batch-check API for create actions, replaces, moves and drops. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, on what a replace changes, on where a table or view is moved from and to, or on the flags of a drop:
 
-| Trino Operation | Lakekeeper Action | Name Forwarded |
+| Trino Operation | Lakekeeper Action | Context Forwarded |
 |-----------------|-------------------|----------------|
 | `CreateSchema` (top-level) | `create_namespace` (warehouse) | Schema name |
 | `CreateSchema` (nested) | `create_namespace` (parent namespace) | Child schema name |
@@ -213,10 +213,17 @@ The OPA bridge forwards resource names, paths and other context to Lakekeeper's 
 | `RenameTable` / `RenameView` into another schema | `move` (table or view) and `accept_moved_tabular` (destination namespace) | `move` carries the destination namespace path, `accept_moved_tabular` the source namespace path |
 | `CreateTable`, if a table with the name exists | `commit` (that table) | Table name, target ref `main` and the update kinds of every replace: `set-current-schema`, `set-default-spec` and `set-default-sort-order` |
 | `CreateView`, if a view with the name exists | `commit` (that view) | View name |
+| `DropTable` | `drop` (table) | `purge: true` |
+| `DropView` | `drop` (view) | `purge: true` |
+| `DropSchema` | `delete` (namespace) | `recursive: true` and `purge: true` |
 
 Properties specified during creation (e.g. `WITH (format='PARQUET')`) are also forwarded. They keep the names Trino uses, for example `format`, also in the `commit` check of `CreateTable`. See [Replacing Tables and Views](#replacing-tables-and-views) for this check.
 
 A rename into another catalog is refused.
+
+Lakekeeper drops the tables and views that Trino drops with purge, so the `drop` checks of `DropTable` and `DropView` say `purge: true`. Trino's `DropSchema` request does not say whether the statement has `CASCADE`. With `CASCADE`, Trino drops and purges every table and view in the schema without checking each of them. The `delete` check of `DropSchema` therefore always says `recursive: true` and `purge: true`, also for an empty schema. Policies that look at these fields, for example in Cedar, apply to every `DROP SCHEMA` through Trino. OpenFGA does not use them.
+
+The table procedures `expire_snapshots` and `remove_orphan_files` also delete files. The bridge checks them as a `commit` of any kind on the table, which with OpenFGA needs `modify`.
 
 ## Replacing Tables and Views
 

@@ -103,6 +103,21 @@ require_schema_access_simple(catalog_name, schema_name, action) if {
 	)
 }
 
+# Trino's `DropSchema` request does not say whether the statement has
+# `CASCADE`. With `CASCADE`, Trino drops and purges every table and view in the
+# schema without checking each of them. The check describes this case for every
+# drop: `recursive` and `purge`.
+require_schema_access_drop(catalog_name, schema_name) if {
+	trino_catalog := catalog_config_by_name[catalog_name]
+	lakekeeper.require_namespace_access(
+		trino_catalog.lakekeeper_id,
+		trino_catalog.lakekeeper_warehouse,
+		namespace_for_schema(schema_name),
+		lakekeeper_user_id,
+		{"action": "delete", "recursive": true, "purge": true},
+	)
+}
+
 require_schema_access_create(catalog_name, schema_name, action, properties, name) if {
 	trino_catalog := catalog_config_by_name[catalog_name]
 	namespace_name := namespace_for_schema(schema_name)
@@ -145,6 +160,22 @@ require_table_access_simple(catalog_name, schema_name, table_name, action) if {
 	)
 }
 
+# Trino drops a table through the Iceberg REST catalog with
+# `purgeRequested=true`, so the check describes a drop with purge, as
+# Lakekeeper authorizes it.
+require_table_access_drop(catalog_name, schema_name, table_name) if {
+	is_canonical_tabular_name(table_name)
+	trino_catalog := catalog_config_by_name[catalog_name]
+	lakekeeper.require_table_access(
+		trino_catalog.lakekeeper_id,
+		trino_catalog.lakekeeper_warehouse,
+		namespace_for_schema(schema_name),
+		table_name,
+		lakekeeper_user_id,
+		{"action": "drop", "purge": true},
+	)
+}
+
 require_table_access_commit(catalog_name, schema_name, table_name, updated_properties, removed_properties) if {
 	is_canonical_tabular_name(table_name)
 	trino_catalog := catalog_config_by_name[catalog_name]
@@ -171,6 +202,22 @@ require_view_access_simple(catalog_name, schema_name, view_name, action) if {
 		view_name,
 		lakekeeper_user_id,
 		action,
+	)
+}
+
+# Trino drops a view through the Iceberg REST catalog without
+# `purgeRequested`, and Lakekeeper then drops with purge. The check describes
+# the drop as Lakekeeper authorizes it.
+require_view_access_drop(catalog_name, schema_name, view_name) if {
+	is_canonical_tabular_name(view_name)
+	trino_catalog := catalog_config_by_name[catalog_name]
+	lakekeeper.require_view_access(
+		trino_catalog.lakekeeper_id,
+		trino_catalog.lakekeeper_warehouse,
+		namespace_for_schema(schema_name),
+		view_name,
+		lakekeeper_user_id,
+		{"action": "drop", "purge": true},
 	)
 }
 

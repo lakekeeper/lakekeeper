@@ -49,7 +49,7 @@ allow_table_drop if {
 	table := input.action.resource.table.tableName
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
-	require_table_access_simple(catalog, schema, table, "drop")
+	require_table_access_drop(catalog, schema, table)
 }
 
 allow_table_rename if {

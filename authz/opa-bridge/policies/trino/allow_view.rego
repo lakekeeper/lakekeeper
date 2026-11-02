@@ -65,7 +65,7 @@ allow_view_drop if {
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	table := input.action.resource.table.tableName
-	require_view_access_simple(catalog, schema, table, "drop")
+	require_view_access_drop(catalog, schema, table)
 }
 
 allow_view_metadata if {

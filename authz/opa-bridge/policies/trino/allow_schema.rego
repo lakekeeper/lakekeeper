@@ -70,7 +70,7 @@ allow_schema_drop if {
 	input.action.operation == "DropSchema"
 	catalog := input.action.resource.schema.catalogName
 	schema := input.action.resource.schema.schemaName
-	require_schema_access_simple(catalog, schema, "delete")
+	require_schema_access_drop(catalog, schema)
 }
 
 # renameNamespace is not supported for Iceberg REST catalog in trino.
