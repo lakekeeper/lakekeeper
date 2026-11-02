@@ -36,6 +36,7 @@ allow_table_create if {
 	input.action.operation == "CreateTable"
 	table := input.action.resource.table.tableName
 	is_metadata_table(table) == false
+	is_canonical_tabular_name(table)
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	properties := object.get(input.action.resource.table, "properties", {})
@@ -59,6 +60,7 @@ allow_table_rename if {
 	source_catalog := input.action.resource.table.catalogName
 	source_schema := input.action.resource.table.schemaName
 	require_table_access_simple(source_catalog, source_schema, source_table, "rename")
+	is_canonical_tabular_name(input.action.targetResource.table.tableName)
 	target_catalog := input.action.targetResource.table.catalogName
 	target_schema := input.action.targetResource.table.schemaName
 	require_schema_access_simple(target_catalog, target_schema, "create_table")

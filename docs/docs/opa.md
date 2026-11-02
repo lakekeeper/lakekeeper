@@ -127,6 +127,19 @@ Within Lakekeeper-managed catalogs, the following schemas are treated as system 
 
 User-created schemas are authorized through Lakekeeper's permission system as usual.
 
+## Refused Schema and Table Names
+
+Trino and Lakekeeper change some schema and table names before they use them. Trino removes white space at the start and at the end of each part of a schema name, and it skips empty parts. Lakekeeper reads a `+` in a request path as a space. The bridge checks the name that Trino acts on, so it refuses every operation on the following names, and filter operations such as `SHOW TABLES` hide them:
+
+- A schema name with an empty part, for example `a..b`, `.sales` or `sales.`.
+- A schema name with a part that begins or ends with a space, a tab, a line break, another Unicode space character or a control character, for example `" sales"` or `"sales. eu"`.
+- A schema name that contains the control character U+001F.
+- A schema, table or view name that contains `+`.
+
+Spaces inside a name are allowed, for example `daily sales`.
+
+Namespaces, tables and views with such names can exist in Lakekeeper, for example if another client created them. To use one of them in Trino, rename it with the Lakekeeper API or UI.
+
 ## Extension Points
 
 The OPA bridge provides two extension points for adding custom authorization rules without modifying the built-in policies. Both default to `false` and can be extended by creating `.rego` files in the `policies/trino/` directory.
@@ -135,7 +148,7 @@ The OPA bridge provides two extension points for adding custom authorization rul
 
 Use `allow_managed` for additional rules on catalogs listed in `trino_catalog`. These rules run alongside Lakekeeper's permission checks (OR logic). For example, granting UDF management permissions on a Lakekeeper-managed catalog.
 
-To use it, create `policies/trino/allow_managed.rego` in the `trino` package and define `allow_managed` rules for the Trino operations you need. These rules bypass Lakekeeper's permission system, so review them carefully.
+To use it, create `policies/trino/allow_managed.rego` in the `trino` package and define `allow_managed` rules for the Trino operations you need. These rules bypass Lakekeeper's permission system, so review them carefully. The bridge's helpers that check an existing schema, table or view, for example `require_table_access_simple`, refuse the names listed in [Refused Schema and Table Names](#refused-schema-and-table-names). Check the name of a new table or view with `is_canonical_tabular_name`.
 
 ### `allow_unmanaged` — Unmanaged Catalog Extensions
 

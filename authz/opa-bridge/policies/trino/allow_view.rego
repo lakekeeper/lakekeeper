@@ -29,6 +29,7 @@ allow_view_create if {
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	view := input.action.resource.table.tableName
+	is_canonical_tabular_name(view)
 	properties := object.get(input.action.resource.table, "properties", {})
 	flattened_properties := flatten_properties(properties)
 	require_schema_access_create(catalog, schema, "create_view", flattened_properties, view)
@@ -48,6 +49,7 @@ allow_view_rename if {
 	source_schema := input.action.resource.table.schemaName
 	source_table := input.action.resource.table.tableName
 	require_view_access_simple(source_catalog, source_schema, source_table, "rename")
+	is_canonical_tabular_name(input.action.targetResource.table.tableName)
 	target_catalog := input.action.targetResource.table.catalogName
 	target_schema := input.action.targetResource.table.schemaName
 	require_schema_access_simple(target_catalog, target_schema, "create_view")

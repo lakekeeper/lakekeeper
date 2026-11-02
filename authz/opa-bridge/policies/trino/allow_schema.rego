@@ -43,17 +43,17 @@ allow_schema if {
 allow_schema_create if {
 	input.action.operation == "CreateSchema"
 	schema := input.action.resource.schema.schemaName
-	is_nested_schema(schema) == false
+	[name] := namespace_for_schema(schema)
 	catalog := input.action.resource.schema.catalogName
 	properties := object.get(input.action.resource.schema, "properties", {})
 	flattended_properties := flatten_properties(properties)
-	require_catalog_create_namespace_access(catalog, flattended_properties, schema)
+	require_catalog_create_namespace_access(catalog, flattended_properties, name)
 }
 
 allow_schema_create if {
 	input.action.operation == "CreateSchema"
 	schema := input.action.resource.schema.schemaName
-	is_nested_schema(schema) == true
+	count(namespace_for_schema(schema)) > 1
 	catalog := input.action.resource.schema.catalogName
 	properties := object.get(input.action.resource.schema, "properties", {})
 	flattended_properties := flatten_properties(properties)

@@ -19,14 +19,42 @@ flatten_properties(properties) := flattened if {
 
 # Iceberg REST Namespaces are multi part identifiers (arrays).
 # Trino schemas are strings separated by dots.
+#
+# Every check must name the namespace Trino's Iceberg REST catalog acts on, so
+# `namespace_for_schema` is undefined when Trino or Lakekeeper would act on
+# another name:
+# - Trino drops empty parts and trims each part with Guava's
+#   `CharMatcher.whitespace()`. A part must not be empty and must not begin or
+#   end with a Unicode separator (`\p{Z}`), a control character (`\p{Cc}`) or
+#   U+180E. This covers every character Guava trims and some it keeps.
+# - The Iceberg REST client separates namespace parts with U+001F in the
+#   request path, so a part must not contain U+001F.
+# - Lakekeeper reads a '+' in a request path as a space, so a part must not
+#   contain '+'.
 namespace_for_schema(schema_name) := namespace_name if {
 	namespace_name := split(schema_name, ".")
-	count(namespace_name) > 0
+	every part in namespace_name {
+		_is_canonical_namespace_part(part)
+	}
 }
 
-is_nested_schema(schema_name) := is_nested if {
-	namespace_name := namespace_for_schema(schema_name)
-	is_nested := count(namespace_name) > 1
+_trimmed_part_pattern := `^[\p{Z}\p{Cc}\x{180E}]|[\p{Z}\p{Cc}\x{180E}]$`
+
+_is_canonical_namespace_part(part) if {
+	part != ""
+	not regex.match(_trimmed_part_pattern, part)
+	not contains(part, "\u001f")
+	not contains(part, "+")
+}
+
+# Lakekeeper reads a '+' in a request path as a space, so for a table or view
+# name with '+' Trino would act on the name with a space. Such names are
+# refused. The rules for `CreateTable` and `CreateView` apply this to the name
+# of the new table or view, and the rename rules to the new name. The name of a
+# new child namespace is checked by `namespace_for_schema`.
+is_canonical_tabular_name(name) if {
+	name != ""
+	not contains(name, "+")
 }
 
 parent_schema(schema_name) := parent_schema if {
@@ -97,6 +125,7 @@ require_schema_access_update_properties(catalog_name, schema_name, removed_prope
 }
 
 require_table_access_simple(catalog_name, schema_name, table_name, action) if {
+	is_canonical_tabular_name(table_name)
 	trino_catalog := catalog_config_by_name[catalog_name]
 	namespace_name := namespace_for_schema(schema_name)
 	lakekeeper.require_table_access_simple(
@@ -110,6 +139,7 @@ require_table_access_simple(catalog_name, schema_name, table_name, action) if {
 }
 
 require_table_access_commit(catalog_name, schema_name, table_name, updated_properties, removed_properties) if {
+	is_canonical_tabular_name(table_name)
 	trino_catalog := catalog_config_by_name[catalog_name]
 	namespace_name := namespace_for_schema(schema_name)
 	lakekeeper.require_table_access_commit(
@@ -124,6 +154,7 @@ require_table_access_commit(catalog_name, schema_name, table_name, updated_prope
 }
 
 require_view_access_simple(catalog_name, schema_name, view_name, action) if {
+	is_canonical_tabular_name(view_name)
 	trino_catalog := catalog_config_by_name[catalog_name]
 	namespace_name := namespace_for_schema(schema_name)
 	lakekeeper.require_view_access_simple(
@@ -147,6 +178,7 @@ require_rename_target_access(_, source_catalog, source_schema, _, target_catalog
 require_rename_target_access(kind, source_catalog, source_schema, name, target_catalog, target_schema) if {
 	source_catalog == target_catalog
 	source_schema != target_schema
+	is_canonical_tabular_name(name)
 	trino_catalog := catalog_config_by_name[source_catalog]
 	lakekeeper.require_tabular_move_access(
 		trino_catalog.lakekeeper_id,
@@ -160,7 +192,7 @@ require_rename_target_access(kind, source_catalog, source_schema, name, target_c
 }
 
 child_schema_name(schema_name) := child_name if {
-	parts := split(schema_name, ".")
+	parts := namespace_for_schema(schema_name)
 	child_name := parts[count(parts) - 1]
 }
 
