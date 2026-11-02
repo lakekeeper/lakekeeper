@@ -68,21 +68,23 @@ Admin users can also be configured directly in the `trino_admin_users` list in `
 
 ### Trusted Engines and View Security
 
-If you use Lakekeeper's [DEFINER view security model](./view-security.md), Lakekeeper protects the engine's owner property (e.g. `trino.run-as-owner`) so that only trusted engines may set or remove it. Both the **Trino catalog client** and the **OPA bridge client** must be matched as trusted engines — otherwise `CREATE VIEW ... SECURITY DEFINER` and related operations will be rejected with `403 ProtectedPropertyModification`.
+Configure Trino as a [trusted engine](./configuration.md#trusted-engines) in Lakekeeper. This step is required for every deployment with authentication in which Trino creates or changes `SECURITY DEFINER` views.
 
-We recommend giving the OPA bridge its **own** Keycloak client, separate from the Trino catalog client. The OPA bridge only needs permission-check access on Lakekeeper, which is a narrower privilege scope than what the Trino catalog client needs — keeping them separate limits blast radius if either credential leaks.
+Trino runs a view as its owner by default (`SECURITY DEFINER` is the default for `CREATE VIEW`). Trino stores the owner in the view property `trino.run-as-owner`. When a user queries the view, Trino asks the OPA bridge about the tables behind the view as the owner, not as the user. So the owner's permissions decide which data the view can read. For this reason, Lakekeeper lets only a trusted engine write `trino.run-as-owner` or give a view that has it a new version. [Property Protection](./view-security.md#property-protection) describes the rules, how `CREATE OR REPLACE VIEW ... SECURITY INVOKER` behaves, and which statements fail without a trusted engine.
 
-Register both clients as identities of the same trusted engine. Tokens don't usually carry a distinguishing audience in this case, so list each client's service-account subject under `SUBJECTS`:
+Match the trusted engine to the service identity of the Trino catalog, for example the subject of its service account. A catalog with `iceberg.rest-catalog.session=USER` sends a token per user and cannot be the trusted engine; see [Property Protection](./view-security.md#property-protection).
 
 ```bash
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>","<opa-service-account-subject>"]
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
 ```
 
-Alternatively, if your IdP mints a distinguishing audience for each client, use `AUDIENCES` instead.
+Do **not** add the OPA bridge client to the trusted engine. The OPA bridge only asks Lakekeeper permission questions. It never loads views and never writes view properties, so it does not need to be trusted. If it were trusted, its credentials could write the owner of any view.
 
-See [View Security](./view-security.md) for the full configuration reference.
+We recommend giving the OPA bridge its **own** Keycloak client, separate from the Trino catalog client. The OPA bridge only needs permission-check access on Lakekeeper, which is a narrower privilege scope than what the Trino catalog client needs — keeping them separate limits blast radius if either credential leaks.
+
+When you set up the trusted engine, [check the existing views](./view-security.md#check-existing-views) that have `trino.run-as-owner`.
 
 ### Trino Configuration
 
