@@ -232,6 +232,13 @@ If the bridge cannot find out if the name is free, for example because Lakekeepe
 
 Leave `iceberg.rest-catalog.case-insensitive-name-matching` off in the Trino catalog. Lakekeeper already matches names regardless of upper and lower case. With the option on, Trino compares names with Java's rules for upper and lower case, which treat a few letters, such as the dotless `ı`, differently from Lakekeeper.
 
+## Adding Files with `add_files`
+
+The bridge allows Trino's `add_files` table procedure for users who may commit any change to the table (`commit`, with OpenFGA `modify`; `write` is not enough). The procedure reads the files at the location given in the statement. It uses the storage access that Trino has for the table:
+
+- If Lakekeeper vends credentials to Trino, these credentials only reach the table's own location. `add_files` can then only add files from inside the table's location.
+- If Trino uses its own static storage credentials, `add_files` can read every location that these credentials can read. Use `add_files` in this setup only if everyone who may commit any change to a table may read all data that Trino can read. Otherwise remove `ADD_FILES` from the allowed procedures in `policies/trino/allow_table.rego`.
+
 ## Deployment
 
 Deploy the bridge policies together with the Lakekeeper server version they were released with. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write`](./authorization-openfga.md#write) privilege existed let a holder of `write` change a table's columns, comments and properties, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write`.
