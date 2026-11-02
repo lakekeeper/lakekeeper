@@ -246,3 +246,14 @@ xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 debug-assertions = true
 opt-level = 3
 
+# sqlx 0.9.0 returns a connection to the pool still inside a transaction when `begin()` is
+# cancelled during `BEGIN` (transact-rs/sqlx#4393). The fork is 0.9.0 plus the fix #4394.
+# Drop this patch with the first sqlx release that contains #4394.
+[patch.crates-io]
+sqlx = { git = "https://github.com/lakekeeper/sqlx.git", tag = "v0.9.0-lakekeeper.1" }
+sqlx-core = { git = "https://github.com/lakekeeper/sqlx.git", tag = "v0.9.0-lakekeeper.1" }
+sqlx-macros = { git = "https://github.com/lakekeeper/sqlx.git", tag = "v0.9.0-lakekeeper.1" }
+sqlx-macros-core = { git = "https://github.com/lakekeeper/sqlx.git", tag = "v0.9.0-lakekeeper.1" }
+sqlx-mysql = { git = "https://github.com/lakekeeper/sqlx.git", tag = "v0.9.0-lakekeeper.1" }
+sqlx-postgres = { git = "https://github.com/lakekeeper/sqlx.git", tag = "v0.9.0-lakekeeper.1" }
+sqlx-sqlite = { git = "https://github.com/lakekeeper/sqlx.git", tag = "v0.9.0-lakekeeper.1" }
