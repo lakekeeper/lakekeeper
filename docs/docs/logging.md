@@ -1091,11 +1091,12 @@ Many records for one `provider_id` usually mean that the subject claim does not 
   "message": "the directory has no entry for the user; they get none of its groups",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.1"
   },
+  "event_id": "019b76da-a800-7c3e-9a41-6d2f8b1e5c07",
   "time": "2026-01-01T00:00:00.000000Z",
   "operation": "directory_resolve_roles",
   "actor": {
