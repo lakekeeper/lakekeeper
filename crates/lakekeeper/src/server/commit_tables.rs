@@ -5,7 +5,7 @@ use std::{
 
 use iceberg::{
     TableRequirement, TableUpdate,
-    spec::{SchemaRef, TableMetadata},
+    spec::{MAIN_BRANCH, SchemaRef, TableMetadata},
 };
 use iceberg_ext::{
     catalog::TableUpdateKind,
@@ -23,6 +23,9 @@ use crate::{
 /// Per the Iceberg spec, catalogs must ensure these properties are immutable
 /// after table creation. See: <https://iceberg.apache.org/docs/nightly/encryption/#catalog-security-requirements>
 const IMMUTABLE_TABLE_PROPERTIES: &[&str] = &["encryption.key-id"];
+
+/// Clock skew Iceberg tolerates between the times in table metadata.
+const ONE_MINUTE_MS: i64 = 60_000;
 
 /// Reject any `UpgradeFormatVersion` update whose target version is not permitted
 /// by the warehouse policy. Only the upgrade action is checked, so tightening a
@@ -81,11 +84,15 @@ pub(crate) fn ensure_schema_content_stable<'a>(
 }
 
 /// Apply the commits to table metadata.
+///
+/// `now_ms` is the server clock, read once per commit attempt; it becomes the new
+/// `last-updated-ms`.
 pub(super) fn apply_commit(
     metadata: TableMetadata,
     metadata_location: Option<&Location>,
     requirements: &[TableRequirement],
     updates: Vec<TableUpdate>,
+    now_ms: i64,
 ) -> Result<TableMetadataBuildResult> {
     // Check requirements
     requirements
@@ -114,11 +121,13 @@ pub(super) fn apply_commit(
     // commit that recycles a schema id onto different content (see `ensure_schema_content_stable`).
     let previous_schemas: Vec<SchemaRef> = metadata.schemas_iter().cloned().collect();
     let refs_to_keep = refs_not_removed_by_name(&metadata, &updates);
+    let commit_times = CommitTimes::new(&metadata, metadata_location, &updates);
 
     let mut builder = TableMetadataBuilder::new_from_metadata(
         metadata,
         metadata_location.map(std::string::ToString::to_string),
-    );
+    )
+    .set_last_updated_ms(now_ms);
 
     // Update!
     for update in updates {
@@ -164,12 +173,7 @@ pub(super) fn apply_commit(
     }
     let build_result = builder.build().map_err(|e| {
         tracing::debug!("Table metadata build failed: {}", e);
-        let msg = e.message().to_string();
-        IcebergErrorResponse::from(ErrorModel::conflict(
-            msg,
-            "CommitFailedException",
-            Some(Box::new(e)),
-        ))
+        commit_times.build_error(e, now_ms)
     })?;
     ensure_schema_content_stable(
         previous_schemas.iter(),
@@ -193,6 +197,97 @@ fn update_error(e: iceberg::Error) -> IcebergErrorResponse {
         ErrorModel::conflict(msg, "CommitFailedException", Some(Box::new(e))).into()
     } else {
         ErrorModel::bad_request(msg, "InvalidTableUpdate", Some(Box::new(e))).into()
+    }
+}
+
+/// The times, in ms, that tell whether a failed build is a clock problem.
+struct CommitTimes {
+    /// The previous `last-updated-ms`, which becomes the last metadata-log entry.
+    previous_last_updated: Option<i64>,
+    /// The last snapshot-log entry before the commit.
+    last_logged: Option<i64>,
+    /// The `main` snapshot-log entries the commit appends, in order: the time of a snapshot the
+    /// commit adds, or `None` for an existing snapshot, which is logged at the server clock.
+    new_main_entries: Vec<Option<i64>>,
+}
+
+impl CommitTimes {
+    fn new(
+        metadata: &TableMetadata,
+        metadata_location: Option<&Location>,
+        updates: &[TableUpdate],
+    ) -> Self {
+        let mut added = HashMap::new();
+        let mut new_main_entries = Vec::new();
+        for update in updates {
+            match update {
+                TableUpdate::AddSnapshot { snapshot } => {
+                    added.insert(snapshot.snapshot_id(), snapshot.timestamp_ms());
+                }
+                TableUpdate::SetSnapshotRef {
+                    ref_name,
+                    reference,
+                } if ref_name == MAIN_BRANCH => {
+                    new_main_entries.push(added.get(&reference.snapshot_id).copied());
+                }
+                _ => {}
+            }
+        }
+        Self {
+            previous_last_updated: metadata_location.map(|_| metadata.last_updated_ms()),
+            last_logged: metadata.history().last().map(|entry| entry.timestamp_ms),
+            new_main_entries,
+        }
+    }
+
+    /// Answer a failed build.
+    ///
+    /// The builder refuses metadata whose logs step back by more than one minute, or whose
+    /// `last-updated-ms`, the server clock, is more than one minute before the last entry of
+    /// either log. Such a build fails until the clocks agree. Iceberg Java refuses the same
+    /// metadata with an `IllegalArgumentException`, which its reference server answers with 400.
+    /// Every other build error is a conflict.
+    fn build_error(&self, e: iceberg::Error, now_ms: i64) -> IcebergErrorResponse {
+        let message = e.message().to_string();
+        let source = Some(Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>);
+        let main_entries = self
+            .new_main_entries
+            .iter()
+            .map(|entry| entry.unwrap_or(now_ms));
+        let ahead = self
+            .previous_last_updated
+            .into_iter()
+            .chain(self.last_logged)
+            .chain(main_entries.clone())
+            .max()
+            .filter(|latest| latest.saturating_sub(now_ms) > ONE_MINUTE_MS);
+        if let Some(latest) = ahead {
+            return ErrorModel::bad_request(
+                format!(
+                    "The table or this commit holds the time {latest} ms, which is more than one minute after the server clock ({now_ms} ms). Synchronize the clocks of Lakekeeper and its clients."
+                ),
+                "TimestampAheadOfServerClock",
+                source,
+            )
+            .into();
+        }
+        let mut latest = self.last_logged;
+        for entry in main_entries {
+            if let Some(earlier) = latest
+                && earlier.saturating_sub(entry) > ONE_MINUTE_MS
+            {
+                return ErrorModel::bad_request(
+                    format!(
+                        "The new main snapshot has the time {entry} ms, which is more than one minute before the table's snapshot log ({earlier} ms). Synchronize the clocks of Lakekeeper and its clients."
+                    ),
+                    "TimestampBeforeTableHistory",
+                    source,
+                )
+                .into();
+            }
+            latest = latest.max(Some(entry));
+        }
+        ErrorModel::conflict(message, "CommitFailedException", source).into()
     }
 }
 
@@ -310,9 +405,9 @@ mod tests {
     use iceberg::{
         TableRequirement, TableUpdate,
         spec::{
-            FormatVersion, MAIN_BRANCH, NestedField, Operation, PrimitiveType, Schema, Snapshot,
-            SnapshotReference, SnapshotRetention, SortOrder, Summary, TableMetadata,
-            UnboundPartitionSpec,
+            FormatVersion, MAIN_BRANCH, MetadataLog, NestedField, Operation, PrimitiveType, Schema,
+            Snapshot, SnapshotLog, SnapshotReference, SnapshotRetention, SortOrder, Summary,
+            TableMetadata, UnboundPartitionSpec,
         },
     };
     use iceberg_ext::{catalog::TableUpdateKind, spec::TableMetadataBuilder};
@@ -347,6 +442,10 @@ mod tests {
         .metadata
     }
 
+    fn now_ms() -> i64 {
+        chrono::Utc::now().timestamp_millis()
+    }
+
     fn branch_ref(snapshot_id: i64) -> SnapshotReference {
         SnapshotReference {
             snapshot_id,
@@ -374,6 +473,7 @@ mod tests {
             vec![TableUpdate::SetLocation {
                 location: "s3://bucket/table/".to_string(),
             }],
+            now_ms(),
         );
         assert!(
             result.is_ok(),
@@ -393,6 +493,7 @@ mod tests {
             vec![TableUpdate::SetLocation {
                 location: "s3://bucket/elsewhere".to_string(),
             }],
+            now_ms(),
         );
         assert!(result.is_err(), "a real relocation was accepted");
     }
@@ -464,6 +565,7 @@ mod tests {
             vec![TableUpdate::SetProperties {
                 updates: HashMap::from([("encryption.key-id".to_string(), "key-2".to_string())]),
             }],
+            now_ms(),
         );
 
         let err = result.unwrap_err();
@@ -484,6 +586,7 @@ mod tests {
             vec![TableUpdate::RemoveProperties {
                 removals: vec!["encryption.key-id".to_string()],
             }],
+            now_ms(),
         );
 
         let err = result.unwrap_err();
@@ -504,6 +607,7 @@ mod tests {
             vec![TableUpdate::SetProperties {
                 updates: HashMap::from([("encryption.key-id".to_string(), "key-1".to_string())]),
             }],
+            now_ms(),
         );
 
         assert!(result.is_ok());
@@ -520,6 +624,7 @@ mod tests {
             vec![TableUpdate::SetProperties {
                 updates: HashMap::from([("encryption.key-id".to_string(), "key-1".to_string())]),
             }],
+            now_ms(),
         );
 
         assert!(result.is_ok());
@@ -536,6 +641,7 @@ mod tests {
             vec![TableUpdate::RemoveProperties {
                 removals: vec!["encryption.key-id".to_string()],
             }],
+            now_ms(),
         );
 
         assert!(result.is_ok());
@@ -555,6 +661,7 @@ mod tests {
             vec![TableUpdate::SetProperties {
                 updates: HashMap::from([("some.other.prop".to_string(), "new-value".to_string())]),
             }],
+            now_ms(),
         );
 
         assert!(result.is_ok());
@@ -613,6 +720,7 @@ mod tests {
             None,
             &[],
             vec![TableUpdate::AddSchema { schema: schema_b }],
+            now_ms(),
         )
         .unwrap();
         // Builder assigned the new schema id 1; current stays 0.
@@ -643,6 +751,7 @@ mod tests {
             None,
             &[],
             vec![TableUpdate::AddSchema { schema: schema_b }],
+            now_ms(),
         )
         .unwrap()
         .metadata;
@@ -677,6 +786,7 @@ mod tests {
                 },
                 TableUpdate::AddSchema { schema: schema_c },
             ],
+            now_ms(),
         )
         .unwrap_err();
 
@@ -758,6 +868,7 @@ mod tests {
                         reference: branch_ref(snapshot_id),
                     },
                 ],
+                now_ms(),
             )
             .unwrap()
             .metadata;
@@ -770,6 +881,7 @@ mod tests {
                 ref_name: "keep".to_string(),
                 reference: tag_ref(2),
             }],
+            now_ms(),
         )
         .unwrap()
         .metadata
@@ -822,7 +934,13 @@ mod tests {
             ),
         ];
         for (case, updates, expected) in cases {
-            let result = apply_commit(metadata_with_tagged_snapshot(), None, &[], updates);
+            let result = apply_commit(
+                metadata_with_tagged_snapshot(),
+                None,
+                &[],
+                updates,
+                now_ms(),
+            );
             match (result, expected) {
                 (Ok(result), Ok(expected_refs)) => {
                     let mut refs: Vec<(&str, i64)> = result
@@ -846,6 +964,572 @@ mod tests {
                 }
             }
         }
+    }
+
+    const HOUR_MS: i64 = 60 * 60 * 1000;
+
+    /// Location of the stored metadata file a commit replaces.
+    fn previous_file() -> lakekeeper_io::Location {
+        "s3://bucket/table/metadata/00000-previous.metadata.json"
+            .parse()
+            .unwrap()
+    }
+
+    fn snapshot_at(
+        snapshot_id: i64,
+        parent: Option<i64>,
+        sequence_number: i64,
+        timestamp_ms: i64,
+    ) -> Snapshot {
+        Snapshot::builder()
+            .with_snapshot_id(snapshot_id)
+            .with_parent_snapshot_id(parent)
+            .with_timestamp_ms(timestamp_ms)
+            .with_sequence_number(sequence_number)
+            .with_schema_id(0)
+            .with_manifest_list(format!(
+                "s3://bucket/table/metadata/snap-{snapshot_id}.avro"
+            ))
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            })
+            .build()
+    }
+
+    fn set_property(value: &str) -> TableUpdate {
+        TableUpdate::SetProperties {
+            updates: HashMap::from([("k".to_string(), value.to_string())]),
+        }
+    }
+
+    /// Commit to a stored table with the server clock at `now`; the error's code and type.
+    fn commit_at(
+        metadata: TableMetadata,
+        updates: Vec<TableUpdate>,
+        now: i64,
+    ) -> Result<TableMetadata, (u16, String)> {
+        let previous_file = previous_file();
+        apply_commit(metadata, Some(&previous_file), &[], updates, now)
+            .map(|result| result.metadata)
+            .map_err(|e| (e.error.code, e.error.r#type))
+    }
+
+    /// `metadata` as a client parses it.
+    fn reparse(metadata: &TableMetadata) -> TableMetadata {
+        serde_json::from_value(serde_json::to_value(metadata).unwrap())
+            .expect("clients must be able to load the stored metadata")
+    }
+
+    /// A table with snapshot 1 on `main`, committed with the server clock at the returned time.
+    fn table_with_main_snapshot() -> (TableMetadata, i64) {
+        let base = test_metadata_with_properties(HashMap::new());
+        let now = base.last_updated_ms() + 1000;
+        let metadata = commit_at(
+            base,
+            vec![
+                TableUpdate::AddSnapshot {
+                    snapshot: snapshot_at(1, None, 1, now - 5),
+                },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: MAIN_BRANCH.to_string(),
+                    reference: branch_ref(1),
+                },
+            ],
+            now,
+        )
+        .unwrap();
+        (metadata, now)
+    }
+
+    #[test]
+    fn last_updated_ms_is_the_server_clock() {
+        let (metadata, now) = table_with_main_snapshot();
+        assert_eq!(metadata.last_updated_ms(), now);
+        assert_eq!(metadata.snapshot_by_id(1).unwrap().timestamp_ms(), now - 5);
+        assert_eq!(
+            metadata.history(),
+            &[SnapshotLog {
+                snapshot_id: 1,
+                timestamp_ms: now - 5,
+            }]
+        );
+
+        let metadata = commit_at(metadata, vec![set_property("v")], now + 10).unwrap();
+        assert_eq!(metadata.last_updated_ms(), now + 10);
+        assert_eq!(
+            metadata.metadata_log().last(),
+            Some(&MetadataLog {
+                metadata_file: previous_file().to_string(),
+                timestamp_ms: now,
+            })
+        );
+    }
+
+    /// A client clock two hours ahead on a branch or a staged (WAP) snapshot moves no
+    /// table time, so every following commit stores metadata that clients load.
+    #[test]
+    fn fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadable() {
+        let (base, now) = table_with_main_snapshot();
+        let fast = now + 2 * HOUR_MS;
+        let branch_b = || TableUpdate::SetSnapshotRef {
+            ref_name: "b".to_string(),
+            reference: branch_ref(2),
+        };
+
+        let on_branch = commit_at(
+            base.clone(),
+            vec![
+                TableUpdate::AddSnapshot {
+                    snapshot: snapshot_at(2, Some(1), 2, fast),
+                },
+                branch_b(),
+            ],
+            now + 1000,
+        )
+        .unwrap();
+        assert_eq!(on_branch.last_updated_ms(), now + 1000);
+        assert_eq!(on_branch.snapshot_by_id(2).unwrap().timestamp_ms(), fast);
+        let staged = commit_at(
+            base,
+            vec![TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, fast),
+            }],
+            now + 1000,
+        )
+        .unwrap();
+        assert_eq!(staged.last_updated_ms(), now + 1000);
+
+        let remove_snapshot_2 = || TableUpdate::RemoveSnapshots {
+            snapshot_ids: vec![2],
+        };
+        let remove_branch_b = || TableUpdate::RemoveSnapshotRef {
+            ref_name: "b".to_string(),
+        };
+        let sequences: Vec<(&str, TableMetadata, Vec<Vec<TableUpdate>>)> = vec![
+            (
+                "branch, then property, then expire",
+                on_branch,
+                vec![
+                    vec![set_property("v")],
+                    vec![remove_branch_b(), remove_snapshot_2()],
+                ],
+            ),
+            (
+                "staged, then property, then publish",
+                staged.clone(),
+                vec![
+                    vec![set_property("v")],
+                    vec![TableUpdate::SetSnapshotRef {
+                        ref_name: MAIN_BRANCH.to_string(),
+                        reference: branch_ref(2),
+                    }],
+                ],
+            ),
+            (
+                "staged, then expire, then property",
+                staged,
+                vec![vec![remove_snapshot_2()], vec![set_property("v")]],
+            ),
+        ];
+        for (case, mut metadata, commits) in sequences {
+            let mut clock = now + 1000;
+            for updates in commits {
+                clock += 1000;
+                metadata = commit_at(metadata, updates, clock).unwrap();
+                assert_eq!(metadata.last_updated_ms(), clock, "{case}");
+                assert_eq!(reparse(&metadata), metadata, "{case}");
+            }
+            // A client with a correct clock commits next.
+            clock += 1000;
+            let parent = metadata.current_snapshot_id();
+            let next = commit_at(
+                metadata.clone(),
+                vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot_at(
+                            3,
+                            parent,
+                            metadata.last_sequence_number() + 1,
+                            clock - 5,
+                        ),
+                    },
+                    TableUpdate::SetSnapshotRef {
+                        ref_name: MAIN_BRANCH.to_string(),
+                        reference: branch_ref(3),
+                    },
+                ],
+                clock,
+            )
+            .unwrap();
+            assert_eq!(reparse(&next), next, "{case}");
+        }
+    }
+
+    /// A snapshot that becomes `main`'s current one with a time more than a minute after the
+    /// server clock would log a time after `last-updated-ms`: refused with 400, as Java does.
+    #[test]
+    fn fast_client_on_main_is_refused() {
+        let (base, now) = table_with_main_snapshot();
+        let commit_main = |timestamp_ms: i64| {
+            commit_at(
+                base.clone(),
+                vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot_at(2, Some(1), 2, timestamp_ms),
+                    },
+                    TableUpdate::SetSnapshotRef {
+                        ref_name: MAIN_BRANCH.to_string(),
+                        reference: branch_ref(2),
+                    },
+                ],
+                now + 1000,
+            )
+        };
+        assert_eq!(
+            commit_main(now + 2 * HOUR_MS).unwrap_err(),
+            (400, "TimestampAheadOfServerClock".to_string())
+        );
+        let within_tolerance = commit_main(now + 1000 + 30_000).unwrap();
+        assert_eq!(within_tolerance.last_updated_ms(), now + 1000);
+        assert_eq!(reparse(&within_tolerance), within_tolerance);
+    }
+
+    fn add_main_snapshot(snapshot: Snapshot) -> Vec<TableUpdate> {
+        let snapshot_id = snapshot.snapshot_id();
+        vec![
+            TableUpdate::AddSnapshot { snapshot },
+            TableUpdate::SetSnapshotRef {
+                ref_name: MAIN_BRANCH.to_string(),
+                reference: branch_ref(snapshot_id),
+            },
+        ]
+    }
+
+    /// Writers whose clock is behind Lakekeeper's commit as with Iceberg Java's REST catalog:
+    /// on any branch, and as the only writer on `main`.
+    #[test]
+    fn slow_client_commits() {
+        let (base, now) = table_with_main_snapshot();
+        let behind = commit_at(
+            base.clone(),
+            add_main_snapshot(snapshot_at(2, Some(1), 2, now - 30_000)),
+            now + 1000,
+        )
+        .unwrap();
+        assert_eq!(behind.last_updated_ms(), now + 1000);
+        assert_eq!(
+            behind.snapshot_by_id(2).unwrap().timestamp_ms(),
+            now - 30_000
+        );
+        assert_eq!(reparse(&behind), behind);
+
+        // Two minutes slow on a branch, after a correct `main` snapshot, then a property change
+        // and a correct `main` snapshot.
+        let slow_ms = now + 1000 - 2 * 60_000;
+        let mut metadata = commit_at(
+            base,
+            vec![
+                TableUpdate::AddSnapshot {
+                    snapshot: snapshot_at(2, Some(1), 2, slow_ms),
+                },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: "b".to_string(),
+                    reference: branch_ref(2),
+                },
+            ],
+            now + 1000,
+        )
+        .unwrap();
+        assert_eq!(metadata.last_updated_ms(), now + 1000);
+        assert_eq!(reparse(&metadata), metadata);
+        metadata = commit_at(metadata, vec![set_property("v")], now + 2000).unwrap();
+        assert_eq!(reparse(&metadata), metadata);
+        metadata = commit_at(
+            metadata,
+            add_main_snapshot(snapshot_at(3, Some(1), 3, now + 2995)),
+            now + 3000,
+        )
+        .unwrap();
+        assert_eq!(reparse(&metadata), metadata);
+
+        // The only writer on `main`, always two minutes slow.
+        let created = test_metadata_with_properties(HashMap::new());
+        let clock = created.last_updated_ms() + 1000;
+        let first = commit_at(
+            created,
+            add_main_snapshot(snapshot_at(1, None, 1, clock - 2 * 60_000)),
+            clock,
+        )
+        .unwrap();
+        let second = commit_at(
+            first,
+            add_main_snapshot(snapshot_at(2, Some(1), 2, clock + 10 - 2 * 60_000)),
+            clock + 10,
+        )
+        .unwrap();
+        assert_eq!(second.last_updated_ms(), clock + 10);
+        assert_eq!(
+            second.history(),
+            &[
+                SnapshotLog {
+                    snapshot_id: 1,
+                    timestamp_ms: clock - 2 * 60_000,
+                },
+                SnapshotLog {
+                    snapshot_id: 2,
+                    timestamp_ms: clock + 10 - 2 * 60_000,
+                },
+            ]
+        );
+        assert_eq!(reparse(&second), second);
+    }
+
+    /// A `main` snapshot more than a minute before the table's last snapshot-log entry would
+    /// leave the snapshot log out of order: refused with 400, as Java does.
+    #[test]
+    fn slow_client_after_a_correct_main_snapshot_is_refused() {
+        let (base, now) = table_with_main_snapshot();
+        assert_eq!(
+            commit_at(
+                base,
+                add_main_snapshot(snapshot_at(2, Some(1), 2, now + 1000 - 2 * 60_000)),
+                now + 1000,
+            )
+            .unwrap_err(),
+            (400, "TimestampBeforeTableHistory".to_string())
+        );
+    }
+
+    /// A `main` snapshot-log entry more than a minute after this replica's clock, accepted by a
+    /// replica whose clock is ahead, would log a time after `last-updated-ms`: refused with 400,
+    /// as Java does.
+    #[test]
+    fn snapshot_log_ahead_of_a_lagging_replica_is_refused() {
+        let (base, now) = table_with_main_snapshot();
+        let metadata = commit_at(
+            base,
+            add_main_snapshot(snapshot_at(2, Some(1), 2, now + 59_000)),
+            now + 1000,
+        )
+        .unwrap();
+        let lagging = now - 29_000;
+        for (commit, updates) in [
+            ("property change", vec![set_property("v")]),
+            (
+                "branch snapshot",
+                vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot_at(3, Some(2), 3, lagging),
+                    },
+                    TableUpdate::SetSnapshotRef {
+                        ref_name: "b".to_string(),
+                        reference: branch_ref(3),
+                    },
+                ],
+            ),
+            (
+                "main snapshot",
+                add_main_snapshot(snapshot_at(3, Some(2), 3, lagging)),
+            ),
+            (
+                "main rollback",
+                vec![TableUpdate::SetSnapshotRef {
+                    ref_name: MAIN_BRANCH.to_string(),
+                    reference: branch_ref(1),
+                }],
+            ),
+        ] {
+            assert_eq!(
+                commit_at(metadata.clone(), updates, lagging).unwrap_err(),
+                (400, "TimestampAheadOfServerClock".to_string()),
+                "{commit}"
+            );
+        }
+    }
+
+    /// A commit that moves `main` to an existing snapshot, logged at the server clock, and then
+    /// adds a `main` snapshot more than a minute older leaves the snapshot log out of order:
+    /// refused with 400, as Java does.
+    #[test]
+    fn main_snapshot_before_a_rollback_in_the_same_commit_is_refused() {
+        let (base, now) = table_with_main_snapshot();
+        let with_branch = commit_at(
+            base,
+            vec![
+                TableUpdate::AddSnapshot {
+                    snapshot: snapshot_at(2, Some(1), 2, now + 995),
+                },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: "b".to_string(),
+                    reference: branch_ref(2),
+                },
+            ],
+            now + 1000,
+        )
+        .unwrap();
+        let clock = now + 5 * 60_000;
+        let mut updates = vec![TableUpdate::SetSnapshotRef {
+            ref_name: MAIN_BRANCH.to_string(),
+            reference: branch_ref(2),
+        }];
+        updates.extend(add_main_snapshot(snapshot_at(
+            3,
+            Some(2),
+            3,
+            clock - 2 * 60_000,
+        )));
+        assert_eq!(
+            commit_at(with_branch, updates, clock).unwrap_err(),
+            (400, "TimestampBeforeTableHistory".to_string())
+        );
+    }
+
+    /// A build error that is not about times stays a conflict, for example a parentless snapshot
+    /// below the sequence number of a retained snapshot (lakekeeper/lakekeeper#949).
+    #[test]
+    fn build_error_without_a_time_problem_is_a_conflict() {
+        let (base, now) = table_with_main_snapshot();
+        let metadata = commit_at(
+            base,
+            add_main_snapshot(snapshot_at(2, Some(1), 2, now + 995)),
+            now + 1000,
+        )
+        .unwrap();
+        assert_eq!(
+            commit_at(
+                metadata,
+                add_main_snapshot(snapshot_at(3, None, 1, now + 1995)),
+                now + 2000,
+            )
+            .unwrap_err(),
+            (409, "CommitFailedException".to_string())
+        );
+    }
+
+    /// A request that adds a snapshot on another branch and moves `main` to an existing snapshot
+    /// logs the server clock for `main`, as Java 1.11 does, whatever the branch snapshot's time.
+    #[test]
+    fn main_moved_to_an_existing_snapshot_logs_the_server_clock() {
+        let created = test_metadata_with_properties(HashMap::new());
+        let server = created.last_updated_ms() + 1000;
+        let mut base = created;
+        for (tick, snapshot_id) in [(1, 1), (2, 2)] {
+            let clock = server + tick * 10 * 60_000;
+            base = commit_at(
+                base,
+                add_main_snapshot(snapshot_at(
+                    snapshot_id,
+                    (snapshot_id > 1).then_some(snapshot_id - 1),
+                    snapshot_id,
+                    clock,
+                )),
+                clock,
+            )
+            .unwrap();
+        }
+        let now = server + 3 * 10 * 60_000;
+        // The snapshot on `b` is two minutes fast, or five minutes slow.
+        for offset in [2 * 60_000, -5 * 60_000] {
+            let metadata = commit_at(
+                base.clone(),
+                vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot_at(3, Some(2), 3, now + offset),
+                    },
+                    TableUpdate::SetSnapshotRef {
+                        ref_name: "b".to_string(),
+                        reference: branch_ref(3),
+                    },
+                    TableUpdate::SetSnapshotRef {
+                        ref_name: MAIN_BRANCH.to_string(),
+                        reference: branch_ref(1),
+                    },
+                ],
+                now,
+            )
+            .unwrap();
+            assert_eq!(metadata.last_updated_ms(), now, "{offset}");
+            assert_eq!(
+                metadata.history().last(),
+                Some(&SnapshotLog {
+                    snapshot_id: 1,
+                    timestamp_ms: now,
+                }),
+                "{offset}"
+            );
+            assert_eq!(reparse(&metadata), metadata, "{offset}");
+        }
+    }
+
+    /// Stored times more than a minute ahead of the server clock, for example from registered
+    /// metadata, would put a later entry in the metadata log than the new `last-updated-ms`:
+    /// refused with 400, and the stored metadata stays as it is.
+    #[test]
+    fn table_times_ahead_of_the_server_clock_are_refused() {
+        let base = test_metadata_with_properties(HashMap::new());
+        let now = base.last_updated_ms() + 1000;
+        let ahead = now + 2 * HOUR_MS;
+        let last_updated_ahead =
+            commit_at(base.clone(), vec![set_property("ahead")], ahead).unwrap();
+        let all_times_ahead = commit_at(
+            base.clone(),
+            vec![
+                TableUpdate::AddSnapshot {
+                    snapshot: snapshot_at(1, None, 1, ahead),
+                },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: MAIN_BRANCH.to_string(),
+                    reference: branch_ref(1),
+                },
+            ],
+            ahead,
+        )
+        .unwrap();
+        let commits = || {
+            vec![
+                ("property change", vec![set_property("v")]),
+                (
+                    "main snapshot",
+                    add_main_snapshot(snapshot_at(2, Some(1), 2, now - 5)),
+                ),
+                (
+                    "branch snapshot",
+                    vec![
+                        TableUpdate::AddSnapshot {
+                            snapshot: snapshot_at(2, Some(1), 2, now - 5),
+                        },
+                        TableUpdate::SetSnapshotRef {
+                            ref_name: "b".to_string(),
+                            reference: branch_ref(2),
+                        },
+                    ],
+                ),
+                (
+                    "staged snapshot",
+                    vec![TableUpdate::AddSnapshot {
+                        snapshot: snapshot_at(2, Some(1), 2, now - 5),
+                    }],
+                ),
+            ]
+        };
+        for (table, metadata) in [
+            ("last-updated-ms ahead", last_updated_ahead),
+            ("all times ahead", all_times_ahead),
+        ] {
+            for (commit, updates) in commits() {
+                assert_eq!(
+                    commit_at(metadata.clone(), updates, now).unwrap_err(),
+                    (400, "TimestampAheadOfServerClock".to_string()),
+                    "{table}, {commit}"
+                );
+            }
+        }
+
+        let within_tolerance = commit_at(base, vec![set_property("ahead")], now + 30_000).unwrap();
+        let metadata = commit_at(within_tolerance, vec![set_property("v")], now).unwrap();
+        assert_eq!(metadata.last_updated_ms(), now);
+        assert_eq!(reparse(&metadata), metadata);
     }
 
     /// A snapshot whose time is after the table's history.
@@ -889,7 +1573,9 @@ mod tests {
     }
 
     fn commit(metadata: TableMetadata, updates: Vec<TableUpdate>) -> TableMetadata {
-        apply_commit(metadata, None, &[], updates).unwrap().metadata
+        apply_commit(metadata, None, &[], updates, now_ms())
+            .unwrap()
+            .metadata
     }
 
     /// Snapshot 1 on `main` and its child 2 on the branch `audit`; `last-sequence-number` is 2.
@@ -941,6 +1627,7 @@ mod tests {
             Some(&stored),
             &main_at_1,
             vec![add_snapshot(stale), set_branch(MAIN_BRANCH, 3)],
+            now_ms(),
         );
         assert_error(result, 409, "CommitFailedException");
 
@@ -950,6 +1637,7 @@ mod tests {
             Some(&stored),
             &main_at_1,
             vec![add_snapshot(retried), set_branch(MAIN_BRANCH, 3)],
+            now_ms(),
         )
         .unwrap()
         .metadata;
@@ -963,7 +1651,7 @@ mod tests {
         let base = metadata_with_branch_commit(FormatVersion::V2);
         let stale = snapshot(&base, 3, Some(1), 2, None);
         assert_error(
-            apply_commit(base, None, &[], vec![add_snapshot(stale)]),
+            apply_commit(base, None, &[], vec![add_snapshot(stale)], now_ms()),
             409,
             "CommitFailedException",
         );
@@ -981,6 +1669,7 @@ mod tests {
                 None,
                 &[],
                 vec![add_snapshot(stale), set_branch(MAIN_BRANCH, 3)],
+                now_ms(),
             ),
             409,
             "CommitFailedException",
@@ -1000,7 +1689,7 @@ mod tests {
         let base = metadata_with_branch_commit(FormatVersion::V2);
         let resent = snapshot(&base, 2, Some(1), 2, None);
         assert_error(
-            apply_commit(base, None, &[], vec![add_snapshot(resent)]),
+            apply_commit(base, None, &[], vec![add_snapshot(resent)], now_ms()),
             400,
             "InvalidTableUpdate",
         );
@@ -1019,6 +1708,7 @@ mod tests {
                 None,
                 &[],
                 vec![add_snapshot(parentless), set_branch(MAIN_BRANCH, 3)],
+                now_ms(),
             ),
             409,
             "CommitFailedException",
