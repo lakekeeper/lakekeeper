@@ -1298,7 +1298,7 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.act
 4. **Log Aggregation**: In production, use a centralized logging system (ELK, Loki, Splunk) to collect and analyze logs from all Lakekeeper instances.
 
 5. **Alerts**: Set up alerts for:
-   - Multiple `decision=denied` events from the same principal
+   - Multiple `decision=denied` events from the same principal. The Trino [OPA bridge](./opa.md#replacing-tables-and-views) writes a denied `introspect_permissions` record with `resource_not_found` for each new table or view; leave these out for the bridge's identity
    - High rates of `event_source=error_response` with 5xx codes. Admission rejections are not in this log; they appear only as `admission_decided` audit records. For gates failing closed, alert on `lakekeeper_admission_gate_duration_seconds{outcome="unavailable"}` or on the `WARN` line the gate writes
    - Access to sensitive resources outside business hours
 

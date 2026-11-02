@@ -240,11 +240,11 @@ The bridge cannot see which changes Trino makes when it replaces a table or view
 
 Trino checks the permission to create a view before it checks if the view exists. If a view with the name exists and the user does not have `commit` on it, `CREATE VIEW` fails with an access error, not with an error that the view already exists. `CREATE VIEW IF NOT EXISTS` with the name of an existing view also needs `commit` on that view.
 
-When Trino creates a table with a new name, Lakekeeper writes one audit record for a failed `introspect_permissions` with the reason `resource_not_found`. For a view with a new name, it writes two such records. On Trino before 484, each read of a [metadata table](#metadata-tables) also writes one such record if no view has its name. On Trino 482 and 483, a read of `$partitions` writes two such records, because Trino also reads `$files` for it. These records are expected.
+When Trino creates a table with a new name, Lakekeeper writes one audit record for a failed `introspect_permissions` with the reason `resource_not_found`. For a view with a new name, it writes two such records. On Trino before 484, each read of a [metadata table](#metadata-tables) also writes one such record if no view has its name. On Trino 482 and 483, a read of `$partitions` writes two such records, because Trino also reads `$files` for it. These records are expected. When you alert on denied authorizations, leave out `introspect_permissions` records with `resource_not_found` from the bridge's identity.
 
 If the bridge cannot find out if the name is free, for example because Lakekeeper does not answer, it denies the statement.
 
-Leave `iceberg.rest-catalog.case-insensitive-name-matching` off in the Trino catalog. Lakekeeper already matches names regardless of upper and lower case. With the option on, Trino compares names with Java's rules for upper and lower case, which treat a few letters, such as the dotless `ı`, differently from Lakekeeper.
+The bridge requires `iceberg.rest-catalog.case-insensitive-name-matching` to be off in the Trino catalog. Lakekeeper already matches names regardless of upper and lower case. With the option on, Trino compares names with Java's rules for upper and lower case, which treat a few letters, such as the dotless `ı`, differently from Lakekeeper. Trino can then act on another table or view than the one the bridge checked.
 
 ## Adding Files with `add_files`
 
@@ -255,6 +255,6 @@ The bridge allows Trino's `add_files` table procedure for users who may commit a
 
 ## Deployment
 
-Deploy the bridge policies together with the Lakekeeper server version they were released with. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write`](./authorization-openfga.md#write) privilege existed let a holder of `write` change a table's columns, comments and properties, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write`.
+Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write`](./authorization-openfga.md#write) privilege existed let a holder of `write` change a table's columns, comments and properties, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write`.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).
