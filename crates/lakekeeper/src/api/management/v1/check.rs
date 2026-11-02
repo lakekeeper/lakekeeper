@@ -203,7 +203,9 @@ impl NamespaceIdentOrUuid {
 /// Identifier for a tabular (table, view, or generic table) — either a UUID
 /// or its name and namespace. Wire format primary names are `table-id` and
 /// `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
-/// accepted as input aliases for client ergonomics.
+/// accepted as input aliases for client ergonomics. A name addresses the live
+/// tabular. A dropped tabular that can still be restored and a staged table that
+/// was not committed yet are addressed by their UUID.
 pub enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     #[cfg_attr(feature = "open-api", schema(title = "TabularIdentOrUuidById"))]
@@ -776,12 +778,14 @@ async fn fetch_tabulars<C: CatalogStore>(
                     .iter()
                     .map(TabularIdentOwned::as_borrowed)
                     .collect_vec();
+                // A name addresses the live tabular. Dropped tabulars and staged tables that
+                // were not committed yet are addressed by id.
                 (
                     true,
                     C::get_tabular_infos_by_ident(
                         warehouse_id,
                         &tabulars,
-                        TabularListFlags::all(),
+                        TabularListFlags::active(),
                         catalog_state,
                     )
                     .await

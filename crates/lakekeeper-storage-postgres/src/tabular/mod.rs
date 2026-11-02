@@ -361,6 +361,25 @@ where
     Ok(result)
 }
 
+/// The namespaces, names and types of `tabulars`, in input order, as query parameters.
+fn ident_query_params<'a>(
+    tabulars: &'a [TabularIdentBorrowed<'_>],
+) -> Result<(serde_json::Value, Vec<&'a String>, Vec<TabularType>), GetTabularInfoError> {
+    let mut ns_names = Vec::with_capacity(tabulars.len());
+    let mut t_names = Vec::with_capacity(tabulars.len());
+    let mut t_typs = Vec::with_capacity(tabulars.len());
+    for t in tabulars {
+        let TableIdent { namespace, name } = t.as_table_ident();
+        ns_names.push(namespace.as_ref());
+        t_names.push(name);
+        t_typs.push(TabularType::from(t));
+    }
+    // Encoding `ns_names` as json is a workaround for `sqlx` not supporting `Vec<Vec<String>>`.
+    let ns_names_json =
+        serde_json::to_value(&ns_names).map_err(|e| SerializationError::new("namespace", e))?;
+    Ok((ns_names_json, t_names, t_typs))
+}
+
 /// The returned tabulars have the same case (name and namespace) as the input identifiers.
 ///
 /// These may differ from identifiers stored in the db, since case insensitivity is achieved
@@ -372,6 +391,10 @@ where
 ///
 /// In line with that, querying both `table1` and `TABLE1` returns a map with two entries,
 /// both mapping to the same table id.
+///
+/// Dropped tabulars keep their names, so with `include_deleted` several tabulars can match one
+/// identifier. The map then holds the live tabular, or the most recently dropped one if no live
+/// tabular matches.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn get_tabular_infos_by_idents<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
@@ -385,32 +408,15 @@ where
     if tabulars.is_empty() {
         return Ok(HashMap::new());
     }
-    let (ns_names, t_names, t_typs) = tabulars.iter().fold(
-        (
-            Vec::with_capacity(tabulars.len()),
-            Vec::with_capacity(tabulars.len()),
-            Vec::with_capacity(tabulars.len()),
-        ),
-        |(mut ns_names, mut t_names, mut t_typs), t| {
-            let TableIdent { namespace, name } = t.as_table_ident();
-            let typ: TabularType = t.into();
-            ns_names.push(namespace.as_ref());
-            t_names.push(name);
-            t_typs.push(typ);
-            (ns_names, t_names, t_typs)
-        },
-    );
-
-    // Encoding `ns_names` as json is a workaround for `sqlx` not supporting `Vec<Vec<String>>`.
-    let ns_names_json =
-        serde_json::to_value(&ns_names).map_err(|e| SerializationError::new("namespace", e))?;
+    let (ns_names_json, t_names, t_typs) = ident_query_params(tabulars)?;
 
     // For columns with collation, the query must return the value as in input `tables`.
     let rows = sqlx::query_as!(
         TabularRowWithProperties,
         r#"
         WITH selected_tabulars AS (
-            SELECT t.tabular_id,
+            -- One row per requested identifier: the live tabular, else the latest dropped one.
+            SELECT DISTINCT ON (in_t.idx) t.tabular_id,
                 in_ns.name as namespace_name,
                 in_t.name as tabular_name,
                 t.namespace_id,
@@ -441,6 +447,7 @@ where
                 AND w.status = 'active'
                 AND (t.deleted_at is NULL OR $5)
                 AND (t.metadata_location is not NULL OR $6 OR t.typ = 'generic-table')
+            ORDER BY in_t.idx, t.deleted_at DESC NULLS FIRST
         ),
         selected_views AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
