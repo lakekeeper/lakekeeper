@@ -16,12 +16,14 @@
 mod authz_helper;
 mod internal_helper;
 mod pagination_macro; // exports `impl_pagination_tests!` via `#[macro_export]`
+mod view_owner_helper;
 pub use authz_helper::*;
 pub use internal_helper::*;
 // `pastey` is needed at the macro call sites because `impl_pagination_tests!`
 // expands to `paste! { ... }`. Re-export it so downstream test files don't
 // need to add a direct dep.
 pub use pastey;
+pub use view_owner_helper::*;
 
 /// Lightweight setup specifically for the views test suite: applies
 /// migrations, initializes one warehouse + one namespace via the storage

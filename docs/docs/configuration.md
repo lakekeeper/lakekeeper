@@ -768,10 +768,12 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 
 ### Trusted Engines
 
-Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). When configured, Lakekeeper:
+Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). A trusted engine:
 
-1. **Protects the owner property** — only requests from a matched engine can set or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`).
-2. **Evaluates `referenced-by` chains** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+1. **Can write its owner property** — only requests from a matched engine can set, change or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`), or change the current version of a view that has this property.
+2. **Has `referenced-by` chains evaluated** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+
+The protection applies only if [authentication](./authentication.md) is enabled; Lakekeeper logs a warning at startup if trusted engines are configured without authentication. Lakekeeper reserves `trino.run-as-owner` for a trusted engine even if no trusted engine is configured. If no trusted engine is configured, no request can write it, and Trino can create views only with `SECURITY INVOKER`: a `CREATE VIEW` with `SECURITY DEFINER`, which is Trino's default, fails with `403 ProtectedPropertyModification`. Views that already have the property cannot get a new view version. Configure Trino as a trusted engine for any Trino that creates or changes `SECURITY DEFINER` views. See [Property Protection](./view-security.md#property-protection) for all rules.
 
 For a detailed explanation of DEFINER vs INVOKER views, see the [View Security](./view-security.md) guide.
 
@@ -782,7 +784,7 @@ Trusted engines are configured as a map under `LAKEKEEPER__TRUSTED_ENGINES`. Eac
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | — | Engine type. Currently only `trino` is supported. |
-| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property that identifies the owner for delegated execution. |
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property in which the engine stores the owner of a DEFINER view. For `trino`, set `trino.run-as-owner`: Trino always stores the owner there, and only an engine with exactly this owner property can write it. Lakekeeper logs a warning at startup for a `trino` engine with another value. |
 
 Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches AND (any audience matches OR any subject matches). Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
 
