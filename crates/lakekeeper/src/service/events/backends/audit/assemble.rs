@@ -7,7 +7,7 @@ use super::{
     enrichment::Enrichment,
     parts::{
         ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityFields, EntityRecord,
-        ErrorRecord, HandlerContext, SubjectRecord, include_role_source_id,
+        ErrorRecord, EventId, HandlerContext, RecordTime, SubjectRecord, include_role_source_id,
     },
     shapes::{AuthorizationRecord, ReplayRecord},
 };
@@ -72,6 +72,7 @@ fn authorization<'a>(
     failure: Option<(&AuthorizationFailureReason, &'a AuthorizationError)>,
     enrichment: &Enrichment<'_>,
 ) -> AuthorizationRecord<'a> {
+    let time = RecordTime::from(occurred_at);
     AuthorizationRecord {
         emitters: Emitters::of(
             EmitterStamp::of::<crate::Lakekeeper>(),
@@ -80,7 +81,8 @@ fn authorization<'a>(
         actions: self::actions(actions, enrichment),
         entities: self::entities(entities),
         request_id: request_metadata.request_id().clone(),
-        time: occurred_at.into(),
+        event_id: EventId::at(time),
+        time,
         actor: actor(request_metadata, enrichment),
         privilege_source: request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(request_metadata),
@@ -98,6 +100,7 @@ pub(crate) fn replay<'a>(
     event: &'a IdempotentReplayEvent,
     enrichment: &Enrichment<'_>,
 ) -> ReplayRecord<'a> {
+    let time = RecordTime::from(event.occurred_at);
     ReplayRecord {
         emitters: Emitters::of(
             EmitterStamp::of::<crate::Lakekeeper>(),
@@ -106,7 +109,8 @@ pub(crate) fn replay<'a>(
         actions: actions(&event.actions, enrichment),
         entities: entities(&event.entities),
         request_id: event.request_metadata.request_id().clone(),
-        time: event.occurred_at.into(),
+        event_id: EventId::at(time),
+        time,
         actor: actor(&event.request_metadata, enrichment),
         privilege_source: event.request_metadata.privilege_source().as_wire(),
         user_agent: user_agent(&event.request_metadata),
