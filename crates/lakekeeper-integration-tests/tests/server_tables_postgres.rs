@@ -306,6 +306,17 @@ fn schema() -> Schema {
         .unwrap()
 }
 
+/// `expected` with the `last-updated-ms` the server stamped on `stored`.
+fn with_server_time(expected: &TableMetadata, stored: &TableMetadata) -> TableMetadata {
+    expected
+        .clone()
+        .into_builder(None)
+        .set_last_updated_ms(stored.last_updated_ms())
+        .build()
+        .unwrap()
+        .metadata
+}
+
 fn assert_table_metadata_are_equal(expected: &TableMetadata, actual: &TableMetadata) {
     assert_eq!(actual.location(), expected.location());
     assert_eq!(actual.properties(), expected.properties());
@@ -619,7 +630,10 @@ async fn test_set_ref(pool: PgPool) {
         panic!("Expected LoadTableResult, got NotModified");
     };
 
-    assert_eq!(&*tab.metadata, &builder.metadata);
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
 }
 
 #[sqlx::test]
@@ -1397,16 +1411,17 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         panic!("Expected LoadTableResult, got NotModified");
     };
 
-    assert_eq!(tab.metadata.history(), builder.metadata.history());
-    assert_eq!(&*tab.metadata, &builder.metadata);
+    let expected = with_server_time(&builder.metadata, &tab.metadata);
+    assert_eq!(tab.metadata.history(), expected.history());
+    assert_eq!(&*tab.metadata, &expected);
 
     assert_json_diff::assert_json_eq!(
         serde_json::to_value(tab.metadata.clone()).unwrap(),
-        serde_json::to_value(builder.metadata.clone()).unwrap()
+        serde_json::to_value(expected).unwrap()
     );
 
     let last_updated = tab.metadata.last_updated_ms();
-    let builder = builder.metadata.into_builder(tab.metadata_location);
+    let builder = (*tab.metadata).clone().into_builder(tab.metadata_location);
 
     let snap = Snapshot::builder()
         .with_snapshot_id(2)
@@ -1465,10 +1480,13 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         panic!("Expected LoadTableResult, got NotModified");
     };
 
-    assert_eq!(&*tab.metadata, &builder.metadata);
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
 
     let last_updated = tab.metadata.last_updated_ms();
-    let builder = builder.metadata.into_builder(tab.metadata_location);
+    let builder = (*tab.metadata).clone().into_builder(tab.metadata_location);
 
     let snap = Snapshot::builder()
         .with_snapshot_id(3)
@@ -1527,10 +1545,13 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         panic!("Expected LoadTableResult, got NotModified");
     };
 
-    assert_eq!(&*tab.metadata, &builder.metadata);
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
 
-    let builder = builder
-        .metadata
+    let builder = (*tab.metadata)
+        .clone()
         .into_builder(tab.metadata_location)
         .remove_snapshots(&[2])
         .build()
@@ -1704,6 +1725,356 @@ async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_poo
     assert_eq!(
         expired.snapshots().map(|s| s.snapshot_id()).collect_vec(),
         vec![2]
+    );
+}
+
+// ------------------- Commit times -------------------
+
+const HOUR_MS: i64 = 60 * 60 * 1000;
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn snapshot_at(
+    snapshot_id: i64,
+    parent: Option<i64>,
+    sequence_number: i64,
+    timestamp_ms: i64,
+) -> Snapshot {
+    Snapshot::builder()
+        .with_snapshot_id(snapshot_id)
+        .with_parent_snapshot_id(parent)
+        .with_timestamp_ms(timestamp_ms)
+        .with_sequence_number(sequence_number)
+        .with_schema_id(0)
+        .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::new(),
+        })
+        .build()
+}
+
+fn set_ref(ref_name: &str, snapshot_id: i64) -> TableUpdate {
+    TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: create_snapshot_reference(snapshot_id),
+    }
+}
+
+fn set_property(value: &str) -> TableUpdate {
+    TableUpdate::SetProperties {
+        updates: HashMap::from([("k".to_string(), value.to_string())]),
+    }
+}
+
+/// Commit the updates of the named tables in one transaction; the error's code and type.
+async fn try_commit_named(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    changes: Vec<(&str, Vec<TableUpdate>)>,
+) -> Result<(), (u16, String)> {
+    commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: changes
+                .into_iter()
+                .map(|(name, updates)| CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns_params.namespace.clone(),
+                        name: name.to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                })
+                .collect(),
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| (e.error.code, e.error.r#type))
+}
+
+async fn try_commit_tab_1(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    updates: Vec<TableUpdate>,
+) -> Result<(), (u16, String)> {
+    try_commit_named(ctx, ns_params, vec![("tab-1", updates)]).await
+}
+
+/// A table as an Iceberg client parses it.
+async fn load_as_client(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    name: &str,
+) -> TableMetadata {
+    let loaded = load_table(ctx, ns_params, name).await;
+    serde_json::from_value(serde_json::to_value(&*loaded.metadata).unwrap())
+        .expect("clients must be able to load the table")
+}
+
+/// Every table of a commit gets the server clock as `last-updated-ms`; snapshot times and
+/// snapshot-log entries keep the client's time.
+#[sqlx::test]
+async fn test_commit_stamps_last_updated_ms_with_the_server_clock(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("tab-2".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let before = now_ms();
+    let client_ms = before - 5;
+    try_commit_named(
+        &ctx,
+        &ns_params,
+        vec![
+            (
+                "tab-1",
+                vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot_at(1, None, 1, client_ms),
+                    },
+                    set_ref(MAIN_BRANCH, 1),
+                ],
+            ),
+            ("tab-2", vec![set_property("v")]),
+        ],
+    )
+    .await
+    .unwrap();
+    let after = now_ms();
+
+    let tab_1 = load_as_client(&ctx, &ns_params, "tab-1").await;
+    let tab_2 = load_as_client(&ctx, &ns_params, "tab-2").await;
+    assert!(
+        (before..=after).contains(&tab_1.last_updated_ms()),
+        "{before} <= {} <= {after}",
+        tab_1.last_updated_ms()
+    );
+    assert_eq!(tab_2.last_updated_ms(), tab_1.last_updated_ms());
+    assert_eq!(tab_1.snapshot_by_id(1).unwrap().timestamp_ms(), client_ms);
+    assert_eq!(tab_1.history().last().unwrap().timestamp_ms, client_ms);
+}
+
+/// A client clock two hours ahead on a branch or a staged (WAP) snapshot leaves every stored
+/// metadata file loadable, and a client with a correct clock commits next.
+#[sqlx::test]
+async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadable(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let fast = now_ms() + 2 * HOUR_MS;
+    let before = now_ms();
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, fast),
+            },
+            set_ref("b", 2),
+        ],
+    )
+    .await
+    .unwrap();
+    let after = now_ms();
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.snapshot_by_id(2).unwrap().timestamp_ms(), fast);
+    assert!((before..=after).contains(&metadata.last_updated_ms()));
+
+    let commits = [
+        vec![set_property("after-branch")],
+        vec![
+            TableUpdate::RemoveSnapshotRef {
+                ref_name: "b".to_string(),
+            },
+            TableUpdate::RemoveSnapshots {
+                snapshot_ids: vec![2],
+            },
+        ],
+        vec![TableUpdate::AddSnapshot {
+            snapshot: snapshot_at(3, Some(1), 3, fast),
+        }],
+        vec![set_property("after-stage")],
+        vec![set_ref(MAIN_BRANCH, 3)],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(4, Some(3), 4, now_ms() + 1000),
+            },
+            set_ref(MAIN_BRANCH, 4),
+        ],
+    ];
+    for (i, updates) in commits.into_iter().enumerate() {
+        try_commit_tab_1(&ctx, &ns_params, updates)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e:?}"));
+        load_as_client(&ctx, &ns_params, "tab-1").await;
+    }
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.current_snapshot_id(), Some(4));
+    assert_eq!(metadata.snapshot_by_id(3).unwrap().timestamp_ms(), fast);
+}
+
+/// A writer whose clock is two minutes behind the server commits back to back on `main` and
+/// on a branch, as with Iceberg Java's REST catalog, and every stored file loads.
+#[sqlx::test]
+async fn test_slow_writer_commits(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let slow_ms = || now_ms() - 2 * 60 * 1000;
+    let commits = vec![
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, slow_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, slow_ms() + 1),
+            },
+            set_ref(MAIN_BRANCH, 2),
+        ],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(3, Some(2), 3, slow_ms() + 2),
+            },
+            set_ref("b", 3),
+        ],
+    ];
+    for (i, updates) in commits.into_iter().enumerate() {
+        try_commit_tab_1(&ctx, &ns_params, updates)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e:?}"));
+        load_as_client(&ctx, &ns_params, "tab-1").await;
+    }
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.current_snapshot_id(), Some(2));
+    assert_eq!(metadata.snapshot_for_ref("b").unwrap().snapshot_id(), 3);
+}
+
+/// A new `main` snapshot more than a minute ahead of the server clock is refused with 400, as
+/// Iceberg Java refuses it, and the table does not change.
+#[sqlx::test]
+async fn test_fast_client_on_main_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+    let before = load_table(&ctx, &ns_params, "tab-1").await;
+
+    let result = try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, now_ms() + 2 * HOUR_MS),
+            },
+            set_ref(MAIN_BRANCH, 2),
+        ],
+    )
+    .await;
+    assert_eq!(
+        result,
+        Err((400, "TimestampAheadOfServerClock".to_string()))
+    );
+    let after = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(after.metadata_location, before.metadata_location);
+    assert_eq!(after.metadata, before.metadata);
+}
+
+/// Registered metadata whose `last-updated-ms` is two hours ahead of the server clock: a
+/// commit is refused with 400, and the stored metadata stays loadable.
+#[sqlx::test]
+async fn test_commit_to_registered_metadata_ahead_of_the_server_clock_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let created = load_table(&ctx, &ns_params, "tab-1").await;
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent {
+                namespace: ns_params.namespace.clone(),
+                name: "tab-1".to_string(),
+            },
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let ahead = now_ms() + 2 * HOUR_MS;
+    let mut metadata = serde_json::to_value(&*created.metadata).unwrap();
+    metadata["last-updated-ms"] = serde_json::json!(ahead);
+    let metadata_location = format!(
+        "{}/metadata/00001-registered.metadata.json",
+        created.metadata.location()
+    );
+    let io = memory_io_profile().file_io(None).await.unwrap();
+    io.write(
+        &metadata_location,
+        serde_json::to_vec(&metadata).unwrap().into(),
+    )
+    .await
+    .unwrap();
+    CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("tab-1".to_string())
+            .metadata_location(metadata_location.clone())
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let result = try_commit_tab_1(&ctx, &ns_params, vec![set_property("v")]).await;
+    assert_eq!(
+        result,
+        Err((400, "TimestampAheadOfServerClock".to_string()))
+    );
+    let loaded = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(loaded.metadata_location, Some(metadata_location));
+    assert_eq!(
+        load_as_client(&ctx, &ns_params, "tab-1")
+            .await
+            .last_updated_ms(),
+        ahead
     );
 }
 

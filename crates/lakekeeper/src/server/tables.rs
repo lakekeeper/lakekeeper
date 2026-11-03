@@ -1706,6 +1706,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     transaction.commit().await?;
 
     let mut expired_metadata_files: Vec<Location> = vec![];
+    let now_ms = chrono::Utc::now().timestamp_millis();
 
     // Apply changes
     let commits = request
@@ -1749,6 +1750,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                 previous_table_metadata.metadata_location.as_ref(),
                 &change.requirements,
                 change.updates.clone(),
+                now_ms,
             )?;
 
             let number_expired_metadata_log_entries = this_expired.len();
