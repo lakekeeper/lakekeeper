@@ -225,13 +225,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Serve { force_start }) => {
             print_info();
-            // Allocator accounting: tells a genuine leak (`allocated` grows)
-            // from allocator retention (`resident` grows while `allocated` is
-            // flat) from THP-trapped pages (both look fine but RSS climbs).
-            // This call also keeps `lakekeeper-alloc` linked, which is what
-            // preserves its exported `malloc_conf` symbol.
-            lakekeeper_alloc::log_effective_config();
-            tokio::spawn(lakekeeper_alloc::run(std::time::Duration::from_secs(30)));
             serve_and_maybe_migrate(force_start).await?;
         }
         Some(Commands::Healthcheck {
@@ -300,6 +293,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn serve_and_maybe_migrate(force_start: bool) -> anyhow::Result<()> {
+    // Allocator accounting: tells a genuine leak (`allocated` grows) from
+    // allocator retention (`resident` grows while `allocated` is flat) from
+    // THP-trapped pages (both look fine but RSS climbs). Here so that
+    // `debug.auto_serve` reports too. This call also keeps `lakekeeper-alloc`
+    // linked, which is what preserves its exported `malloc_conf` symbol.
+    lakekeeper_alloc::log_effective_config();
+    tokio::spawn(lakekeeper_alloc::run(std::time::Duration::from_secs(30)));
+
     if CONFIG_BIN.debug.migrate_before_serve {
         wait_for_db::wait_for_db(false, 15, 2, true).await?;
         // Never forced here: recovery is a deliberate operator action via `migrate`.
