@@ -1,4 +1,7 @@
-use std::{collections::HashSet, str::FromStr as _};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr as _,
+};
 
 use iceberg::spec::{TableMetadata, TableMetadataRef};
 use itertools::Itertools;
@@ -12,7 +15,7 @@ use lakekeeper::{
     },
 };
 use lakekeeper_io::Location;
-use sqlx::{FromRow, Postgres, Row, Transaction};
+use sqlx::{FromRow, Postgres, Row, Transaction, postgres::PgRow};
 
 use crate::{
     dbutils::DBErrorHandler,
@@ -34,7 +37,6 @@ impl From<FromTabularRowError> for CommitTableTransactionError {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn commit_table_transaction(
     warehouse_id: WarehouseId,
     commits: impl IntoIterator<Item = TableCommit> + Send,
@@ -75,6 +77,8 @@ pub(crate) async fn commit_table_transaction(
     let (location_metadata_pairs, table_change_operations): (Vec<_>, Vec<_>) =
         results?.into_iter().unzip();
 
+    lock_tables_for_commit(warehouse_id, &location_metadata_pairs, transaction).await?;
+
     // Perform changes in the DB to all sub-tables (schemas, snapshots, partitions etc.)
     for ((updates, diffs), TableMetadataTransition { new_metadata, .. }) in table_change_operations
         .into_iter()
@@ -87,7 +91,7 @@ pub(crate) async fn commit_table_transaction(
     let new_metadata_lookup = location_metadata_pairs
         .iter()
         .map(|t| (t.new_metadata.uuid(), t.new_metadata.clone()))
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<HashMap<_, _>>();
 
     // Update tabular (metadata location, fs_location, fs_protocol) and top level table metadata
     // (format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id)
@@ -115,52 +119,7 @@ pub(crate) async fn commit_table_transaction(
         })?;
     let table_infos = updated_tabulars
         .iter()
-        .map(|row| {
-            let mut table_or_view_info = TabularRowCore::from_row(row)
-                .map_err(|e| {
-                    e.into_catalog_backend_error()
-                        .append_detail("Failed to build `TabularRowCore` after table commit")
-                })?
-                .try_into_table_or_view(warehouse_id)
-                .map_err(CommitTableTransactionError::from)?;
-
-            // Update properties from new metadata, as we don't return them from DB
-            // for performance reasons
-            let Some(properties) = new_metadata_lookup
-                .get(&*table_or_view_info.tabular_id())
-                .map(|m| m.properties().clone()) else {
-                    return Err(CommitTableTransactionError::from(
-                        UnexpectedTabularInResponse::new()
-                            .append_detail(format!(
-                                "Updated tabular id {} which was not part of the commit",
-                                table_or_view_info.tabular_id()
-                            )),
-                    ));
-                };
-            match &mut table_or_view_info {
-                ViewOrTableInfo::Table(table_info) => {
-                    table_info.properties = properties;
-                }
-                ViewOrTableInfo::View(_view_info) => {
-                    // This commit is for tables only
-                    debug_assert!(false, "Commit should not return views");
-                }
-                ViewOrTableInfo::GenericTable(_) => {
-                    debug_assert!(false, "Commit should not return generic tables");
-                }
-            }
-
-            let tabular_id = table_or_view_info.tabular_id();
-            let Some(table_info) = table_or_view_info.into_table_info() else {
-                return Err(UnexpectedTabularInResponse::new()
-                    .append_detail(format!(
-                        "Expected table commit to only return tables, found {tabular_id} among tabulars"
-                    ))
-                    .into());
-            };
-
-            Ok(table_info)
-        })
+        .map(|row| table_info_from_updated_row(row, warehouse_id, &new_metadata_lookup))
         .collect::<Result<Vec<TableInfo>, CommitTableTransactionError>>()?;
     let updated_tabulars_ids = table_infos
         .iter()
@@ -177,6 +136,115 @@ pub(crate) async fn commit_table_transaction(
     )?;
 
     Ok(table_infos)
+}
+
+/// The [`TableInfo`] of a row returned by the `tabular` update, with the properties of the
+/// committed metadata.
+fn table_info_from_updated_row(
+    row: &PgRow,
+    warehouse_id: WarehouseId,
+    new_metadata_lookup: &HashMap<uuid::Uuid, TableMetadataRef>,
+) -> Result<TableInfo, CommitTableTransactionError> {
+    let mut table_or_view_info = TabularRowCore::from_row(row)
+        .map_err(|e| {
+            e.into_catalog_backend_error()
+                .append_detail("Failed to build `TabularRowCore` after table commit")
+        })?
+        .try_into_table_or_view(warehouse_id)
+        .map_err(CommitTableTransactionError::from)?;
+
+    // Update properties from new metadata, as we don't return them from DB
+    // for performance reasons
+    let Some(properties) = new_metadata_lookup
+        .get(&*table_or_view_info.tabular_id())
+        .map(|m| m.properties().clone())
+    else {
+        return Err(CommitTableTransactionError::from(
+            UnexpectedTabularInResponse::new().append_detail(format!(
+                "Updated tabular id {} which was not part of the commit",
+                table_or_view_info.tabular_id()
+            )),
+        ));
+    };
+    match &mut table_or_view_info {
+        ViewOrTableInfo::Table(table_info) => {
+            table_info.properties = properties;
+        }
+        ViewOrTableInfo::View(_view_info) => {
+            // This commit is for tables only
+            debug_assert!(false, "Commit should not return views");
+        }
+        ViewOrTableInfo::GenericTable(_) => {
+            debug_assert!(false, "Commit should not return generic tables");
+        }
+    }
+
+    let tabular_id = table_or_view_info.tabular_id();
+    let Some(table_info) = table_or_view_info.into_table_info() else {
+        return Err(UnexpectedTabularInResponse::new()
+            .append_detail(format!(
+                "Expected table commit to only return tables, found {tabular_id} among tabulars"
+            ))
+            .into());
+    };
+
+    Ok(table_info)
+}
+
+/// Locks the committed tables' `tabular` rows in id order and fails with
+/// [`TabularNotFound`] if a row is missing, or [`ConcurrentUpdateError`] if its metadata
+/// location differs from the one the commit was built on.
+///
+/// Runs before any sub-table write, so commits to one table queue here and a stale commit
+/// fails before its writes can collide with the winner's, on a unique key or by locking
+/// the same rows in another order. Id order keeps commits to several tables from crossing.
+/// `FOR NO KEY UPDATE` is the lock the final `tabular` update takes, so it does not block
+/// foreign-key checks of rows that reference the table. While it is held, that update's
+/// compare-and-set cannot fail and is a backstop.
+async fn lock_tables_for_commit(
+    warehouse_id: WarehouseId,
+    transitions: &[TableMetadataTransition],
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), CommitTableTransactionError> {
+    let table_ids = transitions
+        .iter()
+        .map(|t| t.new_metadata.uuid())
+        .collect::<Vec<_>>();
+    let current_locations = sqlx::query!(
+        r#"
+        SELECT tabular_id, metadata_location
+        FROM tabular
+        WHERE warehouse_id = $1 AND tabular_id = ANY($2::uuid[]) AND typ = 'table'
+        ORDER BY tabular_id
+        FOR NO KEY UPDATE
+        "#,
+        *warehouse_id,
+        &table_ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error locking tables for commit")
+    })?
+    .into_iter()
+    .map(|row| (row.tabular_id, row.metadata_location))
+    .collect::<HashMap<_, _>>();
+
+    for transition in transitions {
+        let table_id = TableId::from(transition.new_metadata.uuid());
+        let current_location = current_locations
+            .get(&*table_id)
+            .ok_or_else(|| TabularNotFound::new(warehouse_id, table_id))?;
+        let expected_location = transition
+            .previous_metadata_location
+            .as_ref()
+            .map(Location::as_str);
+        if current_location.as_deref() != expected_location {
+            return Err(ConcurrentUpdateError::new(warehouse_id, table_id).into());
+        }
+    }
+    Ok(())
 }
 
 struct TableMetadataTransition {
@@ -647,7 +715,7 @@ mod tests {
     use super::*;
     use crate::{
         CatalogState, PostgresBackend, namespace::tests::initialize_namespace,
-        warehouse::test::initialize_warehouse,
+        tabular::drop_tabular, warehouse::test::initialize_warehouse,
     };
 
     const TEST_LOCATION: &str = "s3://bucket/test/location";
@@ -704,6 +772,18 @@ mod tests {
     }
 
     async fn setup_table(pool: sqlx::PgPool) -> (TableInfo, TableMetadata) {
+        let metadata_location =
+            Location::from_str("s3://bucket/test/location/metadata/metadata1.json").unwrap();
+        let (table_info, metadata) = create_test_table(pool, Some(&metadata_location)).await;
+        assert_eq!(table_info.metadata_location, Some(metadata_location));
+        (table_info, metadata)
+    }
+
+    /// Creates a table at `metadata_location`, or a staged table without one.
+    async fn create_test_table(
+        pool: sqlx::PgPool,
+        metadata_location: Option<&Location>,
+    ) -> (TableInfo, TableMetadata) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let namespace_ident = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
@@ -714,8 +794,6 @@ mod tests {
             .build()
             .unwrap()
             .metadata;
-        let metadata_location =
-            Location::from_str("s3://bucket/test/location/metadata/metadata1.json").unwrap();
 
         let table_creation = TableCreation {
             warehouse_id,
@@ -724,7 +802,7 @@ mod tests {
                 namespace: namespace.namespace_ident().clone(),
                 name: format!("table_{}", uuid::Uuid::now_v7()),
             },
-            metadata_location: Some(&metadata_location),
+            metadata_location,
             table_metadata: &metadata,
         };
 
@@ -733,8 +811,6 @@ mod tests {
             .await
             .unwrap();
         t.commit().await.unwrap();
-
-        assert_eq!(table_info.metadata_location, Some(metadata_location));
 
         (table_info, metadata)
     }
@@ -1150,5 +1226,216 @@ mod tests {
         .unwrap();
         t.commit().await.unwrap();
         pretty_assertions::assert_eq!(loaded[0].table_metadata.refs(), after_move_metadata.refs());
+    }
+
+    /// A commit that applies `change` to `base`, read from `base_location` (`None` for a
+    /// staged table), and writes `file_name` in the table's metadata directory.
+    fn commit_on(
+        base: &TableMetadata,
+        base_location: Option<&Location>,
+        file_name: &str,
+        change: impl FnOnce(TableMetadataBuilder) -> TableMetadataBuilder,
+    ) -> TableCommit {
+        let build = change(
+            base.clone()
+                .into_builder(base_location.map(ToString::to_string)),
+        )
+        .build()
+        .unwrap();
+        TableCommit {
+            diffs: calculate_diffs(
+                &build.metadata,
+                base,
+                usize::from(base_location.is_some()),
+                0,
+            ),
+            new_metadata: Arc::new(build.metadata),
+            new_metadata_location: Location::from_str(&format!(
+                "{TEST_LOCATION}/metadata/{file_name}"
+            ))
+            .unwrap(),
+            previous_metadata_location: base_location.cloned(),
+            updates: Arc::new(build.changes),
+        }
+    }
+
+    fn set_property(builder: TableMetadataBuilder) -> TableMetadataBuilder {
+        builder
+            .set_properties(HashMap::from([("k".to_string(), "v".to_string())]))
+            .unwrap()
+    }
+
+    /// Concurrent commits to one table that change properties each rewrite the table's
+    /// full property set. Exactly one wins; the others must fail with the retryable
+    /// `ConcurrentUpdateError`, never deadlock on the property rows.
+    #[sqlx::test]
+    async fn test_concurrent_property_commits_do_not_deadlock(pool: sqlx::PgPool) {
+        const WRITERS: usize = 8;
+        let (table_info, metadata) = setup_table(pool.clone()).await;
+        let warehouse_id = table_info.warehouse_id;
+
+        // Enough shared properties that two writers' row-lock orders almost always cross.
+        let base = commit_on(
+            &metadata,
+            table_info.metadata_location.as_ref(),
+            "metadata2.json",
+            |b| {
+                b.set_properties(
+                    (0..50)
+                        .map(|i| (format!("p{i}"), "v".to_string()))
+                        .collect(),
+                )
+                .unwrap()
+            },
+        );
+        let base_location = base.new_metadata_location.clone();
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![base], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Each writer loads the table itself, as a request does: clones of one
+        // `TableMetadata` share the property map's iteration order, so their lock orders
+        // would never cross. Each writer also sets a property of its own.
+        let mut commits = Vec::with_capacity(WRITERS);
+        for i in 0..WRITERS {
+            let mut t = pool.begin().await.unwrap();
+            let loaded = PostgresBackend::load_tables(
+                warehouse_id,
+                [table_info.tabular_id],
+                false,
+                &LoadTableFilters::default(),
+                &mut t,
+            )
+            .await
+            .unwrap();
+            t.commit().await.unwrap();
+            commits.push(commit_on(
+                &loaded[0].table_metadata,
+                Some(&base_location),
+                &format!("w{i}.json"),
+                |b| {
+                    b.set_properties(HashMap::from([(format!("k{i}"), "v".to_string())]))
+                        .unwrap()
+                },
+            ));
+        }
+        let outcomes = futures::future::join_all(commits.into_iter().map(|commit| {
+            let pool = pool.clone();
+            async move {
+                let mut t = pool.begin().await.unwrap();
+                let result = commit_table_transaction(warehouse_id, vec![commit], &mut t).await;
+                if result.is_ok() {
+                    t.commit().await.unwrap();
+                } else {
+                    t.rollback().await.unwrap();
+                }
+                result
+            }
+        }))
+        .await;
+
+        let mut winners = 0;
+        for outcome in outcomes {
+            match outcome {
+                Ok(_) => winners += 1,
+                Err(CommitTableTransactionError::ConcurrentUpdateError(_)) => {}
+                Err(e) => panic!("expected a win or a ConcurrentUpdateError, got {e:?}"),
+            }
+        }
+        assert_eq!(winners, 1);
+    }
+
+    /// A commit built on metadata another commit has replaced fails with the retryable
+    /// `ConcurrentUpdateError` before it writes anything, so its writes cannot collide
+    /// with the winner's: here both commits add schema 1.
+    #[sqlx::test]
+    async fn test_stale_commit_fails_with_concurrent_update_error(pool: sqlx::PgPool) {
+        let (table_info, metadata) = setup_table(pool.clone()).await;
+        let warehouse_id = table_info.warehouse_id;
+        let location = table_info.metadata_location.clone().unwrap();
+        let add_schema = |b: TableMetadataBuilder| {
+            let mut fields = schema().as_struct().fields().to_vec();
+            fields.push(NestedField::optional(4, "w", Type::Primitive(PrimitiveType::Long)).into());
+            b.add_current_schema(Schema::builder().with_fields(fields).build().unwrap())
+                .unwrap()
+        };
+        let winner = commit_on(&metadata, Some(&location), "metadata2.json", add_schema);
+        let stale = commit_on(&metadata, Some(&location), "metadata3.json", add_schema);
+
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![winner], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = pool.begin().await.unwrap();
+        let err = commit_table_transaction(warehouse_id, vec![stale], &mut t)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CommitTableTransactionError::ConcurrentUpdateError(_)),
+            "expected ConcurrentUpdateError, got {err:?}"
+        );
+    }
+
+    /// A commit to a table dropped after the commit was built fails with `TabularNotFound`,
+    /// not with the retryable `ConcurrentUpdateError`.
+    #[sqlx::test]
+    async fn test_commit_to_dropped_table_fails_with_not_found(pool: sqlx::PgPool) {
+        let (table_info, metadata) = setup_table(pool.clone()).await;
+        let commit = commit_on(
+            &metadata,
+            table_info.metadata_location.as_ref(),
+            "metadata2.json",
+            set_property,
+        );
+
+        let mut t = pool.begin().await.unwrap();
+        drop_tabular(
+            table_info.warehouse_id,
+            table_info.tabular_id.into(),
+            false,
+            None,
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = pool.begin().await.unwrap();
+        let err = commit_table_transaction(table_info.warehouse_id, vec![commit], &mut t)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CommitTableTransactionError::TabularNotFound(_)),
+            "expected TabularNotFound, got {err:?}"
+        );
+    }
+
+    /// The first commit to a staged table, which has no metadata location yet, succeeds;
+    /// a second commit built on the staged table fails with `ConcurrentUpdateError`.
+    #[sqlx::test]
+    async fn test_staged_table_accepts_one_first_commit(pool: sqlx::PgPool) {
+        let (table_info, metadata) = create_test_table(pool.clone(), None).await;
+        let warehouse_id = table_info.warehouse_id;
+        let first = commit_on(&metadata, None, "metadata1.json", set_property);
+        let second = commit_on(&metadata, None, "metadata2.json", set_property);
+
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![first], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = pool.begin().await.unwrap();
+        let err = commit_table_transaction(warehouse_id, vec![second], &mut t)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CommitTableTransactionError::ConcurrentUpdateError(_)),
+            "expected ConcurrentUpdateError, got {err:?}"
+        );
     }
 }
