@@ -11,7 +11,7 @@ MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Adds a `write_data` privilege between `select` and `modify`, for principals that change a table's data but not its structure, and cannot drop, rename or protect it. No tuple is written, rewritten or backfilled: `modify` implies `write_data`, so every existing grant authorizes exactly what it did before.
+Adds a `write_data` privilege between `select` and `modify`, for principals that change a table's data but not its structure, and cannot drop, rename or protect it. No tuple is written, rewritten or backfilled: `modify` implies `write_data`, so every grant from `v4.13` authorizes exactly what it did before.
 
 `project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_generic_table`:
 
@@ -29,7 +29,7 @@ Adds a `write_data` privilege between `select` and `modify`, for principals that
 
 Views get no `write_data`: a view commit replaces its definition. A `write_data` grant on a namespace or above still yields `select` on the views below it.
 
-Supersedes `v4.14`, which did not reach a release. `v4.14` carried the same privilege under the name `write`. A store already provisioned with `v4.14` from a `main` build must see a higher version to pick up the renamed relations, hence the bump. `v4.14` is not registered any more; stores on it migrate straight to `v4.15`. Grants of `write` made on such a store do not carry over; grant `write_data` again.
+Supersedes `v4.14`, which did not reach a release. `v4.14` carried the same privilege under the name `write`. A store already provisioned with `v4.14` from a `main` build must see a higher version to pick up the renamed relations, hence the bump. `v4.14` is not registered any more; stores on it migrate straight to `v4.15`. Grants of `write` made on such a store do not carry over, and Lakekeeper's grant listings do not show them after the upgrade. List them before upgrading, or read them from OpenFGA directly afterwards, and grant `write_data` again.
 
 ## `v4.13`
 
