@@ -1,5 +1,5 @@
-//! The `write` privilege end-to-end against a real OpenFGA store plus a Postgres catalog: a
-//! principal granted `write` on a namespace commits data to a table below it through the
+//! The `write_data` privilege end-to-end against a real OpenFGA store plus a Postgres catalog: a
+//! principal granted `write_data` on a namespace commits data to a table below it through the
 //! REST endpoints, but cannot change the table's structure or properties, nor drop it.
 //!
 //! The model tests pin the relations and `authz-openfga`'s own tests pin the mapping of a
@@ -12,7 +12,7 @@
 
 // Nested one level deep so the test path contains `::openfga_integration_tests::`,
 // which the default nextest filter excludes (a root module would not match).
-mod write_tier {
+mod write_data {
     mod openfga_integration_tests {
         use std::{collections::HashMap, sync::Arc};
 
@@ -132,7 +132,7 @@ mod write_tier {
             ]
         }
 
-        /// Creates namespace `ns` with the given tables as `admin` and grants `write` on the
+        /// Creates namespace `ns` with the given tables as `admin` and grants `write_data` on the
         /// namespace to a new principal, whose request metadata it returns.
         async fn namespace_with_writer(
             ctx: &Ctx,
@@ -177,7 +177,15 @@ mod write_tier {
             .namespace_id();
 
             let writer = UserId::new_unchecked("oidc", "writer");
-            grant_on_namespace(ctx, admin_md, warehouse_id, namespace_id, "write", &writer).await;
+            grant_on_namespace(
+                ctx,
+                admin_md,
+                warehouse_id,
+                namespace_id,
+                "write_data",
+                &writer,
+            )
+            .await;
             principal_metadata(&writer, project_id)
         }
 
@@ -188,7 +196,7 @@ mod write_tier {
             let writer_md =
                 namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
 
-            // Reading and appending are what `write` is for.
+            // Reading and appending are what `write_data` is for.
             CatalogServer::load_table(
                 table_params(warehouse_id),
                 LoadTableRequest::default(),
@@ -196,7 +204,7 @@ mod write_tier {
                 writer_md.clone(),
             )
             .await
-            .expect("write implies select");
+            .expect("write_data implies select");
             commit(&ctx, &writer_md, warehouse_id, append(1))
                 .await
                 .expect("an append is a data commit");
@@ -330,7 +338,7 @@ mod write_tier {
                 writer_md.clone(),
             )
             .await
-            .expect("a transaction of data commits needs only write");
+            .expect("a transaction of data commits needs only write_data");
         }
     }
 }

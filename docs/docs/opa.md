@@ -236,7 +236,7 @@ Trino asks for the same permission to create a table as to replace it with `CREA
 
 A table or view that was dropped and can still be restored does not count.
 
-The bridge cannot see which changes Trino makes when it replaces a table or view, so it checks a `commit` of any kind. With OpenFGA, a `commit` of any kind needs `modify` or ownership on the table or view, or on anything that contains it, such as its namespace or warehouse. The [`write`](./authorization-openfga.md#write) privilege is not enough. See [Authorization with OpenFGA](./authorization-openfga.md). When Trino connects to Lakekeeper with its own credentials, tables and views that users create through Trino belong to Trino's service account. Roles that replace tables or views through Trino therefore need `modify` on the namespace. Examples are roles that run dbt view models, or dbt table models with `on_table_exists='replace'`.
+The bridge cannot see which changes Trino makes when it replaces a table or view, so it checks a `commit` of any kind. With OpenFGA, a `commit` of any kind needs `modify` or ownership on the table or view, or on anything that contains it, such as its namespace or warehouse. The [`write_data`](./authorization-openfga.md#write-data) privilege is not enough. See [Authorization with OpenFGA](./authorization-openfga.md). When Trino connects to Lakekeeper with its own credentials, tables and views that users create through Trino belong to Trino's service account. Roles that replace tables or views through Trino therefore need `modify` on the namespace. Examples are roles that run dbt view models, or dbt table models with `on_table_exists='replace'`.
 
 Trino checks the permission to create a view before it checks if the view exists. If a view with the name exists and the user does not have `commit` on it, `CREATE VIEW` fails with an access error, not with an error that the view already exists. `CREATE VIEW IF NOT EXISTS` with the name of an existing view also needs `commit` on that view.
 
@@ -248,13 +248,13 @@ The bridge requires `iceberg.rest-catalog.case-insensitive-name-matching` to be 
 
 ## Adding Files with `add_files`
 
-The bridge allows Trino's `add_files` table procedure for users who may commit any change to the table (`commit`, with OpenFGA `modify`; `write` is not enough). The procedure reads the files at the location given in the statement. It uses the storage access that Trino has for the table:
+The bridge allows Trino's `add_files` table procedure for users who may commit any change to the table (`commit`, with OpenFGA `modify`; `write_data` is not enough). The procedure reads the files at the location given in the statement. It uses the storage access that Trino has for the table:
 
 - If Lakekeeper vends credentials to Trino, these credentials only reach the table's own location. `add_files` can then only add files from inside the table's location.
 - If Trino uses its own static storage credentials, `add_files` can read every location that these credentials can read. Use `add_files` in this setup only if everyone who may commit any change to a table may read all data that Trino can read. Otherwise remove `ADD_FILES` from the allowed procedures in `policies/trino/allow_table.rego`.
 
 ## Deployment
 
-Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write`](./authorization-openfga.md#write) privilege existed let a holder of `write` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write`.
+Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write_data`](./authorization-openfga.md#write-data) privilege existed let a holder of `write_data` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write_data`.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).

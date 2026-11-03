@@ -191,11 +191,12 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         "describe" => ("metadata", "Read the object's metadata."),
         "select" => ("read", "Read the object's data."),
         "create" => ("create", "Create new objects inside this one."),
-        "write" => ("write", {
+        "write_data" => ("write", {
             "Write the data of tables: add snapshots, create and move branches and tags, \
-             and record statistics. Does not change a table's schema, partitioning, sort \
-             order or properties, expire its snapshots or remove its branches and tags, and \
-             does not drop, rename or protect anything. Gives write and delete access to the \
+             set their retention, and record statistics. Snapshot expiry follows that \
+             retention. Does not change a table's schema, partitioning, sort order or \
+             properties, expire its snapshots or remove its branches and tags, and does \
+             not drop, rename or protect anything. Gives write and delete access to the \
              files of tables and generic tables, so for a generic table it changes everything \
              stored in its files."
         }),
@@ -813,7 +814,7 @@ mod tests {
                 "describe",
                 "select",
                 "create",
-                "write",
+                "write_data",
                 "modify",
                 "manage_tags"
             ]
@@ -849,7 +850,7 @@ mod tests {
                 "{privilege} is not delegable, so its two directions share a relation"
             );
         }
-        for privilege in ["describe", "select", "create", "write", "modify"] {
+        for privilege in ["describe", "select", "create", "write_data", "modify"] {
             assert_ne!(
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Grant),
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Revoke),

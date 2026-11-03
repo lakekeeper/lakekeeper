@@ -2635,11 +2635,11 @@ pub(crate) mod tests {
             )));
         }
 
-        /// A `write` grant on a namespace lets a principal write data to a table below it
+        /// A `write_data` grant on a namespace lets a principal write data to a table below it
         /// and commit snapshots, refs and statistics, but not change the table's
         /// structure, properties or history, nor drop, rename or protect it.
         #[tokio::test]
-        async fn test_write_commits_data_but_not_structure() {
+        async fn test_write_data_commits_data_but_not_structure() {
             use lakekeeper::service::authz::{CatalogTableAction, TableUpdateKind};
 
             let authorizer = new_authorizer_in_empty_store().await;
@@ -2665,7 +2665,7 @@ pub(crate) mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: format!("user:{writer}"),
-                        relation: NamespaceRelation::Write.to_string(),
+                        relation: NamespaceRelation::WriteData.to_string(),
                         object: format!("namespace:{namespace_id}"),
                         condition: None,
                     }]),
