@@ -255,6 +255,6 @@ The bridge allows Trino's `add_files` table procedure for users who may commit a
 
 ## Deployment
 
-Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write`](./authorization-openfga.md#write) privilege existed let a holder of `write` change a table's columns, comments and properties, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write`.
+Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write`](./authorization-openfga.md#write) privilege existed let a holder of `write` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write`.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).
