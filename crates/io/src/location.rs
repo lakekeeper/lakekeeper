@@ -152,13 +152,19 @@ impl Location {
             result
         };
 
+        let extension = if self.authority_and_path.ends_with('/') {
+            extension.strip_prefix('/').unwrap_or(&extension)
+        } else {
+            &extension
+        };
+
         if !self.authority_and_path.ends_with('/')
             && !extension.starts_with('/')
             && !extension.is_empty()
         {
             self.authority_and_path.push('/');
         }
-        self.authority_and_path.push_str(&extension);
+        self.authority_and_path.push_str(extension);
         self.full_location = format!("{}://{}", self.scheme, self.authority_and_path);
         self
     }
@@ -817,6 +823,22 @@ mod tests {
         let mut location = Location::from_str("s3://bucket/").unwrap();
         location.extend(["foo", "bar"]);
         assert_eq!(location.as_str(), "s3://bucket/foo/bar");
+    }
+
+    #[test]
+    fn test_extend_slashes_at_boundary() {
+        for (base, segments, expected) in [
+            ("s3://bucket/", vec!["/foo"], "s3://bucket/foo"),
+            ("s3://bucket/foo/", vec!["/bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket/foo/", vec!["", "bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket/foo/", vec!["/"], "s3://bucket/foo/"),
+            ("s3://bucket/foo", vec!["/bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket/foo/", vec![], "s3://bucket/foo/"),
+        ] {
+            let mut location = Location::from_str(base).unwrap();
+            location.extend(segments);
+            assert_eq!(location.as_str(), expected);
+        }
     }
 
     #[test]
