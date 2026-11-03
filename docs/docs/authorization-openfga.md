@@ -83,7 +83,7 @@ Moving branches and tags is part of writing data, so a user with `write` can als
 
 Generic tables keep their structure in their own files, so for them `write` allows every change to the table's contents and structure. Managing the table itself, such as dropping, restoring, renaming or protecting it, needs `modify`.
 
-If Trino reaches Lakekeeper through the [OPA bridge](./opa.md), upgrade the bridge policies before granting `write`. Bridge policies from releases before `write` existed let a user with `write` change a table's columns, comments and properties, add files, expire snapshots and remove orphan files through Trino.
+If Trino reaches Lakekeeper through the [OPA bridge](./opa.md), upgrade the bridge policies before granting `write`. Bridge policies from releases before `write` existed let a user with `write` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino.
 
 The `write` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants. It exists on projects, warehouses, namespaces, tables and generic tables. Views have no data of their own, so they have no `write` grant; a `write` grant on a namespace or above lets a user read the views below it.
 

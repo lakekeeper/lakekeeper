@@ -48,9 +48,10 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    assert_advertises_client_planning, create_ns, create_table as create_table_helper,
-    create_table_request as create_request, create_view, drop_table as drop_table_helper,
-    impl_pagination_tests, memory_io_profile, setup_simple, tabular_test_multi_warehouse_setup,
+    REFUSED_NEW_TABULAR_NAMES, assert_advertises_client_planning, create_ns,
+    create_table as create_table_helper, create_table_request as create_request, create_view,
+    drop_table as drop_table_helper, impl_pagination_tests, memory_io_profile, setup_simple,
+    tabular_test_multi_warehouse_setup,
 };
 use lakekeeper_io::LakekeeperStorage as _;
 use lakekeeper_storage_postgres::{
@@ -3651,6 +3652,28 @@ async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: 
     assert_eq!(err.error.r#type, "NoSuchNamespaceException");
 }
 
+#[sqlx::test]
+async fn test_register_table_refuses_invalid_names(pool: PgPool) {
+    let (ctx, _, ns_params, existing_location, _) = register_table_setup(pool).await;
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name(name.to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+}
+
 /// `create_table` is checked after the metadata file is read: a caller who can see the
 /// namespace but may not create tables in it is refused.
 #[sqlx::test]
@@ -4288,4 +4311,71 @@ mod register_data_access {
             );
         }
     }
+}
+
+#[sqlx::test]
+async fn test_rename_table_refuses_invalid_destination_names(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let namespace = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "sales".to_string(),
+    )
+    .await
+    .namespace;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: namespace.clone(),
+    };
+    let table_id = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("daily_sales".to_string()), None),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap()
+    .metadata
+    .uuid();
+    let source = TableIdent::new(namespace.clone(), "daily_sales".to_string());
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::rename_table(
+            ns_params.prefix.clone(),
+            RenameTableRequest {
+                source: source.clone(),
+                destination: TableIdent::new(namespace.clone(), name.to_string()),
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+
+        let err = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some(name.to_string()), None),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+
+    let loaded = load_table(&ctx, &ns_params, "daily_sales").await;
+    assert_eq!(loaded.metadata.uuid(), table_id);
 }

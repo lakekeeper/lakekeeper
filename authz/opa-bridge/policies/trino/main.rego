@@ -137,8 +137,8 @@ batch contains i if {
 	allow with input.action.resource as raw_resource
 }
 
-# Metadata tables in managed catalogs need per-resource evaluation
-# (excluded from Lakekeeper batch since they resolve to base table permissions)
+# Metadata tables in managed catalogs are decided one by one: reading one is
+# checked on its base table and, on Trino before 484, on a view with its name.
 batch contains i if {
 	input.action.operation in {"FilterTables", "FilterColumns", "SelectFromColumns"}
 	some i, raw_resource in input.action.filterResources

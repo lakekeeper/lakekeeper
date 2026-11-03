@@ -4606,6 +4606,20 @@ pub mod tests {
             blocked.contains(action) || blocked.iter().any(|b| action.starts_with(b.as_str()))
         }
 
+        /// Answering for another principal discloses that principal's access, so the
+        /// [`Authorizer`] trait requires a gate. Blocking `<kind>:ReadGrants` closes it,
+        /// keyed like the action checks.
+        fn require_inspect_permissions(
+            &self,
+            kind: &str,
+            for_other_principal: bool,
+        ) -> Result<(), IsAllowedActionError> {
+            if for_other_principal && self.action_is_blocked(&format!("{kind}:ReadGrants")) {
+                return Err(CannotInspectPermissions::new(&kind).into());
+            }
+            Ok(())
+        }
+
         /// # Panics
         /// Panics if the internal `RwLock` is poisoned.
         pub fn block_action(&self, object: &str) {
@@ -4690,8 +4704,6 @@ pub mod tests {
             target: &GrantTarget<'_>,
             checks: &[GrantAuthorityCheck<'_>],
         ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-            // Answering for another principal is gated here, as the trait requires.
-            // Blocking `<level>:ReadGrants` refuses it, keyed like the action checks.
             let level = match target.resource_type() {
                 ResourceType::Server => "server",
                 ResourceType::Project => "project",
@@ -4702,9 +4714,7 @@ pub mod tests {
                 ResourceType::GenericTable => "generic_table",
                 ResourceType::Tag => "tag",
             };
-            if for_user.is_some() && self.action_is_blocked(&format!("{level}:ReadGrants")) {
-                return Err(CannotInspectPermissions::new(&level).into());
-            }
+            self.require_inspect_permissions(level, for_user.is_some())?;
             // Authority per direction, so a test can hold revoke authority alone and
             // watch the grant side of a diff be refused.
             Ok(checks
@@ -4945,6 +4955,13 @@ pub mod tests {
                     })
                     .collect(),
             )?;
+            // A delegated check runs as the DEFINER owner and needs no inspection.
+            self.require_inspect_permissions(
+                "table",
+                actions
+                    .iter()
+                    .any(|(_, action)| action.user.is_some() && !action.is_delegated_execution),
+            )?;
             // `action.user == None` means "acting as self" (subject = actor),
             // so per-user hiding for the actor must still apply.
             let actor_identity = metadata.actor().to_user_or_role();
@@ -4995,6 +5012,12 @@ pub mod tests {
                         is_delegated_execution: action.is_delegated_execution,
                     })
                     .collect(),
+            )?;
+            self.require_inspect_permissions(
+                "view",
+                actions
+                    .iter()
+                    .any(|(_, action)| action.user.is_some() && !action.is_delegated_execution),
             )?;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
@@ -5047,6 +5070,12 @@ pub mod tests {
                         is_delegated_execution: action.is_delegated_execution,
                     })
                     .collect(),
+            )?;
+            self.require_inspect_permissions(
+                "generic_table",
+                actions
+                    .iter()
+                    .any(|(_, action)| action.user.is_some() && !action.is_delegated_execution),
             )?;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();

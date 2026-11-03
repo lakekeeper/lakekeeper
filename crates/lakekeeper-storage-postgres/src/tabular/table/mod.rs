@@ -2209,6 +2209,81 @@ pub mod tests {
     }
 
     #[sqlx::test]
+    async fn test_by_ident_lookup_with_dropped_prefers_live_then_latest_dropped(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let create = || {
+            initialize_table(
+                warehouse_id,
+                state.clone(),
+                false,
+                Some(namespace.clone()),
+                None,
+                Some("reused_name".to_string()),
+            )
+        };
+        let lookup = |ident: TableIdent| {
+            let state = state.clone();
+            async move {
+                get_tabular_infos_by_idents(
+                    warehouse_id,
+                    &[TabularIdentBorrowed::Table(&ident)],
+                    TabularListFlags::all(),
+                    &state.read_pool(),
+                )
+                .await
+                .unwrap()
+                .into_values()
+                .map(|info| info.tabular_id())
+                .collect::<Vec<_>>()
+            }
+        };
+
+        let drop = |table_id: TableId| {
+            let pool = pool.clone();
+            async move {
+                let mut transaction = pool.begin().await.unwrap();
+                mark_tabular_as_deleted(
+                    warehouse_id,
+                    table_id.into(),
+                    false,
+                    None,
+                    &mut transaction,
+                )
+                .await
+                .unwrap();
+                transaction.commit().await.unwrap();
+            }
+        };
+
+        let mut last_dropped = None;
+        for _ in 0..3 {
+            let table = create().await;
+            drop(table.table_id).await;
+            assert_eq!(
+                lookup(table.table_ident.clone()).await,
+                vec![table.table_id.into()]
+            );
+            last_dropped = Some(table.table_id);
+        }
+
+        let live = create().await;
+        assert_ne!(last_dropped, Some(live.table_id));
+        assert_eq!(
+            lookup(live.table_ident.clone()).await,
+            vec![live.table_id.into()]
+        );
+
+        drop(live.table_id).await;
+        assert_eq!(lookup(live.table_ident).await, vec![live.table_id.into()]);
+    }
+
+    #[sqlx::test]
     async fn test_list_tables(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 

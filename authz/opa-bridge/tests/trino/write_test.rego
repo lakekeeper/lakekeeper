@@ -178,11 +178,12 @@ mock_http_any_commit(request) := {"status_code": 200, "body": {"access_token": "
 }
 
 # The bridge cannot see which updates Trino sends for these, so it asks about a
-# commit of any kind.
+# commit of any kind. `CreateTable` asks it on the table with the same name,
+# which this mock reports as taken.
 test_structural_changes_ask_a_commit_of_any_kind if {
 	every operation in [
 		"AddColumn", "AlterColumn", "DropColumn", "RenameColumn",
-		"SetColumnComment", "SetTableComment", "SetTableProperties",
+		"SetColumnComment", "SetTableComment", "SetTableProperties", "CreateTable",
 	] {
 		trino.allow with input as _table_input(operation)
 			with data.configuration.lakekeeper as mock_lakekeeper

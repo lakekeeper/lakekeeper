@@ -2308,16 +2308,28 @@ pub(crate) fn validate_table_or_view_ident(table: &TableIdent) -> Result<()> {
     Ok(())
 }
 
+/// Validates the identifier of a new table or view, and the destination of a table, view or
+/// generic-table rename.
 pub(crate) fn validate_table_or_view_ident_creation(table: &TableIdent) -> Result<()> {
     validate_table_or_view_ident(table)?;
-    // Deny a "+" in names, since some clients (spark, trino) encode space as "+" in URLs and supporting
-    // space is more important. Other clients properly encode space as "%20".
-    if table.name.contains('+') {
+    validate_new_tabular_name(&table.name)
+}
+
+/// Validates the name of a new table, view or generic table, and the new name in a rename.
+///
+/// - Some clients (Spark, Trino) encode a space as "+" in URLs, and supporting spaces is more
+///   important. A "+" in a request path is read as a space, so a name with "+" could not be
+///   addressed there. Other clients encode a space as "%20".
+/// - Request parameters that name a view (`referenced-by`) separate the parts of an identifier
+///   with U+001F. Names must not contain this or any other control character.
+pub(crate) fn validate_new_tabular_name(name: &str) -> Result<()> {
+    if name.contains('+') || name.chars().any(char::is_control) {
         return Err(ErrorModel::bad_request(
-            "Table name cannot contain '+' character.",
+            "Table, view or generic table name cannot contain '+' or control characters.",
             "InvalidTableName",
             None,
         )
+        .append_detail(format!("Name: {name:?}"))
         .into());
     }
     Ok(())
