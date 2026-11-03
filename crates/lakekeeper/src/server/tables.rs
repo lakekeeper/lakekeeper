@@ -108,6 +108,18 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 
+/// Waits before retry `attempt` (counted from 1) of a commit that hit a concurrent update.
+///
+/// A short jittered exponential backoff to reduce contention: the first delay is 50ms, then
+/// 100ms, 200ms, ..., up to 3200ms (50*2^6), each plus up to half of it as jitter.
+pub(crate) async fn concurrent_update_backoff(attempt: usize) {
+    let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
+    let base = 50u64.saturating_mul(1u64 << exp);
+    let jitter = fastrand::u64(..base / 2);
+    tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
+    tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
+}
+
 /// Replay a load-table operation for idempotency.
 ///
 /// Used when an idempotency check detects a replay for operations that
@@ -1429,13 +1441,7 @@ async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
                     max_attempts = MAX_RETRIES_ON_CONCURRENT_UPDATE,
                     "Concurrent update detected, retrying commit operation"
                 );
-                // Short jittered exponential backoff to reduce contention
-                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
-                let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
-                let base = 50u64.saturating_mul(1u64 << exp);
-                let jitter = fastrand::u64(..base / 2);
-                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
-                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
+                concurrent_update_backoff(attempt).await;
             }
             Err(e) => {
                 if attempt > 0 {
@@ -1700,6 +1706,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     transaction.commit().await?;
 
     let mut expired_metadata_files: Vec<Location> = vec![];
+    let now_ms = chrono::Utc::now().timestamp_millis();
 
     // Apply changes
     let commits = request
@@ -1743,6 +1750,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                 previous_table_metadata.metadata_location.as_ref(),
                 &change.requirements,
                 change.updates.clone(),
+                now_ms,
             )?;
 
             let number_expired_metadata_log_entries = this_expired.len();
@@ -2300,16 +2308,28 @@ pub(crate) fn validate_table_or_view_ident(table: &TableIdent) -> Result<()> {
     Ok(())
 }
 
+/// Validates the identifier of a new table or view, and the destination of a table, view or
+/// generic-table rename.
 pub(crate) fn validate_table_or_view_ident_creation(table: &TableIdent) -> Result<()> {
     validate_table_or_view_ident(table)?;
-    // Deny a "+" in names, since some clients (spark, trino) encode space as "+" in URLs and supporting
-    // space is more important. Other clients properly encode space as "%20".
-    if table.name.contains('+') {
+    validate_new_tabular_name(&table.name)
+}
+
+/// Validates the name of a new table, view or generic table, and the new name in a rename.
+///
+/// - Some clients (Spark, Trino) encode a space as "+" in URLs, and supporting spaces is more
+///   important. A "+" in a request path is read as a space, so a name with "+" could not be
+///   addressed there. Other clients encode a space as "%20".
+/// - Request parameters that name a view (`referenced-by`) separate the parts of an identifier
+///   with U+001F. Names must not contain this or any other control character.
+pub(crate) fn validate_new_tabular_name(name: &str) -> Result<()> {
+    if name.contains('+') || name.chars().any(char::is_control) {
         return Err(ErrorModel::bad_request(
-            "Table name cannot contain '+' character.",
+            "Table, view or generic table name cannot contain '+' or control characters.",
             "InvalidTableName",
             None,
         )
+        .append_detail(format!("Name: {name:?}"))
         .into());
     }
     Ok(())

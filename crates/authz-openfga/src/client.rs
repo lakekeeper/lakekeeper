@@ -6,7 +6,7 @@ use openfga_client::client::{
 };
 
 use super::{AUTH_CONFIG, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult};
-use crate::{config::OpenFGAAuth, migration::get_active_auth_model_id};
+use crate::{config::OpenFGAAuth, migration::get_active_auth_model};
 
 pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
 pub type BearerOpenFGAAuthorizer = OpenFGAAuthorizer;
@@ -112,16 +112,14 @@ pub(crate) async fn new_authorizer(
     default_consistency: ConsistencyPreference,
     server_id: ServerId,
 ) -> OpenFGAResult<OpenFGAAuthorizer> {
-    let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
-    let auth_model_id =
-        get_active_auth_model_id(&mut service_client, Some(store_name.clone())).await?;
-    let store = service_client
-        .get_store_by_name(&store_name)
-        .await?
-        .ok_or_else(|| OpenFGAError::StoreNotFound(store_name.clone()))?;
+    let active_model = get_active_auth_model(&mut service_client, store_name).await?;
 
-    let client = BasicOpenFgaClient::new(service_client, &store.id, &auth_model_id)
-        .set_consistency(default_consistency);
+    let client = BasicOpenFgaClient::new(
+        service_client,
+        &active_model.store_id,
+        &active_model.model_id,
+    )
+    .set_consistency(default_consistency);
 
     // A grant diff is written as one batch, so the API's cap and this client's batch
     // limit are a single invariant split across two crates with nothing linking them.

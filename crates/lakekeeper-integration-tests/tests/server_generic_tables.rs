@@ -27,7 +27,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    create_ns, get_api_context, memory_io_profile, random_request_metadata, setup_simple,
+    REFUSED_NEW_TABULAR_NAMES, create_ns, get_api_context, memory_io_profile,
+    random_request_metadata, setup_simple,
 };
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
@@ -887,4 +888,66 @@ async fn test_list_generic_tables_pagination(pool: PgPool) {
         pages >= 2,
         "page_size=3 over {total} rows should span >=2 pages"
     );
+}
+
+#[sqlx::test]
+async fn test_generic_tables_refuse_invalid_names(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        },
+        create_request("daily_sales"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::rename_generic_table(
+            Some(prefix.clone().into()),
+            RenameGenericTableRequest {
+                source: rename_target(&namespace, "daily_sales"),
+                destination: rename_target(&namespace, name),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("The destination name must be refused.");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+
+        let err = CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+            },
+            create_request(name),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("The name must be refused.");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+
+    let loaded = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.into()),
+            namespace,
+            table_name: "daily_sales".to_string(),
+        },
+        ctx,
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(loaded.table.name, "daily_sales");
 }

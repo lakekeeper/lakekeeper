@@ -3,12 +3,20 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper::{
+    WarehouseId,
     api::{
-        RequestMetadata,
+        ApiContext, RequestMetadata,
+        data::v1::generic_tables::{
+            GenericTableParameters, GenericTableService as _, ListGenericTablesQuery,
+        },
         iceberg::{
             types::Prefix,
-            v1::{DataAccess, NamespaceParameters, tables::TablesService},
+            v1::{
+                DataAccess, DropParams, NamespaceParameters, TableParameters, ViewParameters,
+                tables::TablesService, views::ViewService,
+            },
         },
         management::v1::{
             check::{
@@ -21,15 +29,17 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{
-        CatalogNamespaceOps, NamespaceIdent, UserId,
+        CatalogNamespaceOps, NamespaceIdent, State, UserId,
         authz::{
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogServerAction,
-            CatalogTableAction, CatalogWarehouseAction, tests::HidingAuthorizer,
+            self, CatalogGenericTableAction, CatalogNamespaceAction, CatalogServerAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, tests::HidingAuthorizer,
         },
     },
 };
-use lakekeeper_integration_tests::{create_generic_table, create_table_request};
-use lakekeeper_storage_postgres::{CatalogState, PostgresBackend};
+use lakekeeper_integration_tests::{
+    create_generic_table, create_table_request, create_view_request,
+};
+use lakekeeper_storage_postgres::{CatalogState, PostgresBackend, SecretsState};
 
 #[sqlx::test]
 async fn test_check_internal_basic_permissions(pool: sqlx::PgPool) {
@@ -1211,4 +1221,446 @@ async fn test_check_internal_generic_table_operation(pool: sqlx::PgPool) {
     assert!(response.results.iter().all(|r| r.allowed));
     assert_eq!(response.results[0].id, Some("by-name".to_string()));
     assert_eq!(response.results[1].id, Some("by-id".to_string()));
+}
+
+type HidingContext = ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>;
+
+#[derive(Debug, Clone, Copy)]
+enum TabularKind {
+    Table,
+    View,
+    GenericTable,
+}
+
+/// A warehouse with soft deletion and one namespace, in which `name` was created and
+/// dropped three times as `kind`.
+struct DroppedTabulars {
+    api_context: HidingContext,
+    authz: HidingAuthorizer,
+    warehouse_id: WarehouseId,
+    namespace: NamespaceIdent,
+    kind: TabularKind,
+    name: &'static str,
+    dropped_ids: Vec<uuid::Uuid>,
+}
+
+impl DroppedTabulars {
+    async fn new(pool: sqlx::PgPool, kind: TabularKind, name: &'static str) -> Self {
+        let authz = HidingAuthorizer::new();
+        let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+            pool,
+            lakekeeper_integration_tests::memory_io_profile(),
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(3600),
+            },
+            None,
+        )
+        .await;
+        let warehouse_id = test_warehouse.warehouse_id;
+        let namespace = lakekeeper_integration_tests::create_ns(
+            api_context.clone(),
+            warehouse_id.to_string(),
+            "test_namespace".to_string(),
+        )
+        .await
+        .namespace;
+
+        let mut setup = Self {
+            api_context,
+            authz,
+            warehouse_id,
+            namespace,
+            kind,
+            name,
+            dropped_ids: Vec::new(),
+        };
+        for _ in 0..3 {
+            let id = setup.create().await;
+            setup.drop().await;
+            setup.dropped_ids.push(id);
+        }
+        setup
+    }
+
+    fn prefix(&self) -> Option<Prefix> {
+        Some(Prefix(self.warehouse_id.to_string()))
+    }
+
+    fn ident(&self) -> iceberg::TableIdent {
+        iceberg::TableIdent::new(self.namespace.clone(), self.name.to_string())
+    }
+
+    async fn create(&self) -> uuid::Uuid {
+        let parameters = NamespaceParameters {
+            prefix: self.prefix(),
+            namespace: self.namespace.clone(),
+        };
+        let metadata = RequestMetadata::new_unauthenticated();
+        match self.kind {
+            TabularKind::Table => CatalogServer::create_table(
+                parameters,
+                create_table_request(Some(self.name.to_string()), None),
+                DataAccess::not_specified(),
+                self.api_context.clone(),
+                metadata,
+            )
+            .await
+            .unwrap()
+            .metadata
+            .uuid(),
+            TabularKind::View => CatalogServer::create_view(
+                parameters,
+                create_view_request(Some(self.name), None),
+                self.api_context.clone(),
+                DataAccess::not_specified(),
+                metadata,
+            )
+            .await
+            .unwrap()
+            .metadata
+            .uuid(),
+            TabularKind::GenericTable => {
+                create_generic_table(
+                    self.api_context.clone(),
+                    self.warehouse_id.to_string(),
+                    self.namespace_name(),
+                    self.name,
+                )
+                .await
+                .unwrap();
+                self.live_generic_table_id().await
+            }
+        }
+    }
+
+    fn namespace_name(&self) -> String {
+        self.namespace.as_ref()[0].clone()
+    }
+
+    /// Generic-table responses carry no id; the listing names the live generic table.
+    async fn live_generic_table_id(&self) -> uuid::Uuid {
+        let listed = CatalogServer::list_generic_tables(
+            NamespaceParameters {
+                prefix: self.prefix(),
+                namespace: self.namespace.clone(),
+            },
+            ListGenericTablesQuery::default(),
+            self.api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        let ids = listed
+            .identifiers
+            .iter()
+            .filter(|ident| ident.name == self.name)
+            .map(|ident| ident.id.expect("generic table id"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 1);
+        *ids[0]
+    }
+
+    async fn drop(&self) {
+        let drop_params = DropParams {
+            purge_requested: false,
+            force: false,
+        };
+        let metadata = RequestMetadata::new_unauthenticated();
+        match self.kind {
+            TabularKind::Table => CatalogServer::drop_table(
+                TableParameters {
+                    prefix: self.prefix(),
+                    table: self.ident(),
+                },
+                drop_params,
+                self.api_context.clone(),
+                metadata,
+            )
+            .await
+            .unwrap(),
+            TabularKind::View => CatalogServer::drop_view(
+                ViewParameters {
+                    prefix: self.prefix(),
+                    view: self.ident(),
+                },
+                drop_params,
+                self.api_context.clone(),
+                metadata,
+            )
+            .await
+            .unwrap(),
+            TabularKind::GenericTable => CatalogServer::drop_generic_table(
+                GenericTableParameters {
+                    prefix: self.prefix(),
+                    namespace: self.namespace.clone(),
+                    table_name: self.name.to_string(),
+                },
+                drop_params,
+                self.api_context.clone(),
+                metadata,
+            )
+            .await
+            .unwrap(),
+        }
+    }
+
+    fn authz_object(&self, id: uuid::Uuid) -> String {
+        match self.kind {
+            TabularKind::Table => format!("table:{}/{id}", self.warehouse_id),
+            TabularKind::View => format!("view:{}/{id}", self.warehouse_id),
+            TabularKind::GenericTable => format!("generic_table:{}/{id}", self.warehouse_id),
+        }
+    }
+
+    fn check_by_name(&self, identity: Option<UserOrRole>) -> CatalogActionCheckItem {
+        self.check_by_other_name(self.name, identity)
+    }
+
+    fn check_by_other_name(
+        &self,
+        name: &str,
+        identity: Option<UserOrRole>,
+    ) -> CatalogActionCheckItem {
+        let tabular = TabularIdentOrUuid::Name {
+            namespace: self.namespace.clone(),
+            table: name.to_string(),
+            warehouse_id: self.warehouse_id,
+        };
+        let operation = match self.kind {
+            TabularKind::Table => CatalogActionCheckOperation::Table {
+                action: CatalogTableAction::ReadData,
+                table: tabular,
+            },
+            TabularKind::View => CatalogActionCheckOperation::View {
+                action: CatalogViewAction::Select,
+                view: tabular,
+            },
+            TabularKind::GenericTable => CatalogActionCheckOperation::GenericTable {
+                action: CatalogGenericTableAction::ReadData,
+                generic_table: tabular,
+            },
+        };
+        CatalogActionCheckItem {
+            id: None,
+            identity,
+            operation,
+        }
+    }
+
+    async fn check(
+        &self,
+        checks: Vec<CatalogActionCheckItem>,
+        error_on_not_found: bool,
+    ) -> Result<Vec<bool>, ErrorModel> {
+        check_internal(
+            self.api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+            CatalogActionsBatchCheckRequest {
+                checks,
+                error_on_not_found,
+            },
+        )
+        .await
+        .map(|response| response.results.iter().map(|r| r.allowed).collect())
+    }
+}
+
+/// A by-name check is decided on the live tabular only. Each user is blind to one side:
+/// a check decided on a dropped tabular would allow the first user and deny the second.
+async fn assert_by_name_check_decides_on_live(pool: sqlx::PgPool, kind: TabularKind) {
+    let setup = DroppedTabulars::new(pool, kind, "shared_name").await;
+    let live_id = setup.create().await;
+    assert!(!setup.dropped_ids.contains(&live_id));
+
+    let blind_to_live = UserId::new_unchecked("oidc", "blind-to-live");
+    let blind_to_dropped = UserId::new_unchecked("oidc", "blind-to-dropped");
+    setup.authz.hide_for_user(
+        &authz::UserOrRole::User(blind_to_live.clone()),
+        &setup.authz_object(live_id),
+    );
+    for id in &setup.dropped_ids {
+        setup.authz.hide_for_user(
+            &authz::UserOrRole::User(blind_to_dropped.clone()),
+            &setup.authz_object(*id),
+        );
+    }
+
+    let allowed = setup
+        .check(
+            vec![
+                setup.check_by_name(Some(UserOrRole::User(blind_to_live))),
+                setup.check_by_name(Some(UserOrRole::User(blind_to_dropped))),
+            ],
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed, vec![false, true]);
+}
+
+/// A name whose tabulars were all dropped addresses nothing.
+async fn assert_by_name_check_ignores_dropped(
+    pool: sqlx::PgPool,
+    kind: TabularKind,
+    not_found_type: &str,
+) {
+    let setup = DroppedTabulars::new(pool, kind, "dropped_name").await;
+
+    let err = setup
+        .check(vec![setup.check_by_name(None)], true)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, 404);
+    assert_eq!(err.r#type, not_found_type);
+
+    let allowed = setup
+        .check(vec![setup.check_by_name(None)], false)
+        .await
+        .unwrap();
+    assert_eq!(allowed, vec![false]);
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_decides_on_live_table(pool: sqlx::PgPool) {
+    assert_by_name_check_decides_on_live(pool, TabularKind::Table).await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_decides_on_live_view(pool: sqlx::PgPool) {
+    assert_by_name_check_decides_on_live(pool, TabularKind::View).await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_ignores_dropped_table(pool: sqlx::PgPool) {
+    assert_by_name_check_ignores_dropped(pool, TabularKind::Table, "NoSuchTableException").await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_ignores_dropped_view(pool: sqlx::PgPool) {
+    assert_by_name_check_ignores_dropped(pool, TabularKind::View, "NoSuchViewException").await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_decides_on_live_generic_table(pool: sqlx::PgPool) {
+    assert_by_name_check_decides_on_live(pool, TabularKind::GenericTable).await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_ignores_dropped_generic_table(pool: sqlx::PgPool) {
+    assert_by_name_check_ignores_dropped(
+        pool,
+        TabularKind::GenericTable,
+        "NoSuchGenericTableException",
+    )
+    .await;
+}
+
+/// With `error_on_not_found`, a by-name check tells every caller whether the name is
+/// taken, before any authorization. The Trino bridge relies on it to tell a free name
+/// apart from a denied check.
+async fn assert_by_name_check_reports_free_names(
+    pool: sqlx::PgPool,
+    kind: TabularKind,
+    not_found_type: &str,
+    read_grants: &str,
+) {
+    let setup = DroppedTabulars::new(pool, kind, "taken_name").await;
+    setup.create().await;
+    let other_user = UserOrRole::User(UserId::new_unchecked("oidc", "other-user"));
+    let free_name = || setup.check_by_other_name("free_name", Some(other_user.clone()));
+    let taken_name = || setup.check_by_name(Some(other_user.clone()));
+
+    let err = setup.check(vec![free_name()], true).await.unwrap_err();
+    assert_eq!((err.code, err.r#type.as_str()), (404, not_found_type));
+    assert_eq!(
+        setup.check(vec![taken_name()], true).await.unwrap(),
+        vec![true]
+    );
+
+    // From here on, the caller may not inspect the permissions of other principals.
+    setup.authz.block_action(read_grants);
+    let err = setup.check(vec![taken_name()], true).await.unwrap_err();
+    assert_eq!(
+        (err.code, err.r#type.as_str()),
+        (403, "CannotInspectPermissions")
+    );
+    let err = setup.check(vec![free_name()], true).await.unwrap_err();
+    assert_eq!((err.code, err.r#type.as_str()), (404, not_found_type));
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_table_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::Table,
+        "NoSuchTableException",
+        "table:ReadGrants",
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_view_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::View,
+        "NoSuchViewException",
+        "view:ReadGrants",
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_generic_table_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::GenericTable,
+        "NoSuchGenericTableException",
+        "generic_table:ReadGrants",
+    )
+    .await;
+}
+
+/// A staged table that was not committed yet is addressed by its id only.
+#[sqlx::test]
+async fn test_check_internal_by_name_ignores_staged_table(pool: sqlx::PgPool) {
+    let setup = DroppedTabulars::new(pool, TabularKind::Table, "staged_name").await;
+    let mut request = create_table_request(Some(setup.name.to_string()), None);
+    request.stage_create = Some(true);
+    let staged_id = CatalogServer::create_table(
+        NamespaceParameters {
+            prefix: setup.prefix(),
+            namespace: setup.namespace.clone(),
+        },
+        request,
+        DataAccess::not_specified(),
+        setup.api_context.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap()
+    .metadata
+    .uuid();
+
+    let err = setup
+        .check(vec![setup.check_by_name(None)], true)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, 404);
+    assert_eq!(err.r#type, "NoSuchTableException");
+
+    let by_id = CatalogActionCheckItem {
+        id: None,
+        identity: None,
+        operation: CatalogActionCheckOperation::Table {
+            action: CatalogTableAction::ReadData,
+            table: TabularIdentOrUuid::IdInWarehouse {
+                warehouse_id: setup.warehouse_id,
+                table_id: staged_id,
+            },
+        },
+    };
+    assert_eq!(setup.check(vec![by_id], true).await.unwrap(), vec![true]);
 }

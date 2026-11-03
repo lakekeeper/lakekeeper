@@ -68,21 +68,23 @@ Admin users can also be configured directly in the `trino_admin_users` list in `
 
 ### Trusted Engines and View Security
 
-If you use Lakekeeper's [DEFINER view security model](./view-security.md), Lakekeeper protects the engine's owner property (e.g. `trino.run-as-owner`) so that only trusted engines may set or remove it. Both the **Trino catalog client** and the **OPA bridge client** must be matched as trusted engines — otherwise `CREATE VIEW ... SECURITY DEFINER` and related operations will be rejected with `403 ProtectedPropertyModification`.
+Configure Trino as a [trusted engine](./configuration.md#trusted-engines) in Lakekeeper. This step is required for every deployment with authentication in which Trino creates or changes `SECURITY DEFINER` views.
 
-We recommend giving the OPA bridge its **own** Keycloak client, separate from the Trino catalog client. The OPA bridge only needs permission-check access on Lakekeeper, which is a narrower privilege scope than what the Trino catalog client needs — keeping them separate limits blast radius if either credential leaks.
+Trino runs a view as its owner by default (`SECURITY DEFINER` is the default for `CREATE VIEW`). Trino stores the owner in the view property `trino.run-as-owner`. When a user queries the view, Trino asks the OPA bridge about the tables behind the view as the owner, not as the user. So the owner's permissions decide which data the view can read. For this reason, Lakekeeper lets only a trusted engine write `trino.run-as-owner` or give a view that has it a new version. [Property Protection](./view-security.md#property-protection) describes the rules, how `CREATE OR REPLACE VIEW ... SECURITY INVOKER` behaves, and which statements fail without a trusted engine.
 
-Register both clients as identities of the same trusted engine. Tokens don't usually carry a distinguishing audience in this case, so list each client's service-account subject under `SUBJECTS`:
+Match the trusted engine to the service identity of the Trino catalog, for example the subject of its service account. A catalog with `iceberg.rest-catalog.session=USER` sends a token per user and cannot be the trusted engine; see [Property Protection](./view-security.md#property-protection).
 
 ```bash
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>","<opa-service-account-subject>"]
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
 ```
 
-Alternatively, if your IdP mints a distinguishing audience for each client, use `AUDIENCES` instead.
+Do **not** add the OPA bridge client to the trusted engine. The OPA bridge only asks Lakekeeper permission questions. It never loads views and never writes view properties, so it does not need to be trusted. If it were trusted, its credentials could write the owner of any view.
 
-See [View Security](./view-security.md) for the full configuration reference.
+We recommend giving the OPA bridge its **own** Keycloak client, separate from the Trino catalog client. The OPA bridge only needs permission-check access on Lakekeeper, which is a narrower privilege scope than what the Trino catalog client needs — keeping them separate limits blast radius if either credential leaks.
+
+When you set up the trusted engine, [check the existing views](./view-security.md#check-existing-views) that have `trino.run-as-owner`.
 
 ### Trino Configuration
 
@@ -125,6 +127,35 @@ Within Lakekeeper-managed catalogs, the following schemas are treated as system 
 
 User-created schemas are authorized through Lakekeeper's permission system as usual.
 
+## Refused Schema and Table Names
+
+Trino and Lakekeeper change some schema and table names before they use them. Trino removes white space at the start and at the end of each part of a schema name, and it skips empty parts. Lakekeeper reads a `+` in a request path as a space. The bridge checks the name that Trino acts on, so it refuses every operation on the following names, and filter operations such as `SHOW TABLES` hide them:
+
+- A schema name with an empty part, for example `a..b`, `.sales` or `sales.`.
+- A schema name with a part that begins or ends with a space, a tab, a line break, another Unicode space character or a control character, for example `" sales"` or `"sales. eu"`.
+- A schema name that contains the control character U+001F.
+- A schema, table or view name that contains `+`.
+- A table or view name that contains `$` or `@`. Reading a metadata table such as `orders$files` is the only exception, see [Metadata Tables](#metadata-tables).
+
+Spaces inside a name are allowed, for example `daily sales`.
+
+Namespaces, tables and views with such names can exist in Lakekeeper, for example if another client created them. To use one of them in Trino, rename it with the Lakekeeper API or UI. Lakekeeper refuses namespace names with an empty part. It refuses `+` and control characters in the names of new tables, views and generic tables and in the new name of a rename. For a new or moved namespace, it refuses `+` in any part of the name and control characters in its last part. Lakekeeper accepts white space at the start or end of a namespace part and `$` or `@` in table and view names, so for these the bridge is the only check.
+
+### Metadata Tables
+
+Trino reads a name such as `orders$files` as the `$files` metadata table of the table `orders`. Reading a metadata table needs a permission on its base table, here `orders`:
+
+- `$snapshots`, `$history`, `$refs`, `$properties` and `$metadata_log_entries` need `get_metadata`.
+- `$files`, `$entries`, `$all_entries`, `$manifests`, `$all_manifests` and `$partitions` need `read_data`, because they show values of the data, such as column bounds and partition values.
+
+Users who can only see a table can list tables and columns, and run `SHOW COLUMNS`, `DESCRIBE` and `SHOW CREATE TABLE`. Tools such as Superset may read `$partitions` for such users and log the denied query. What these tools show does not change.
+
+The bridge denies `$materialized_view_storage`. Trino cannot read it from Lakekeeper, because Trino's Iceberg REST catalog has no materialized views.
+
+Trino 484 and later always read a name such as `orders$files` as the metadata table. Older Trino versions read a view with this name if Trino does not find the base table, or if the Trino version does not know the type, for example `$entries` before Trino 469. So on these versions the bridge also requires that no view with this name exists, or that the user has `select` on it. This costs one more request to Lakekeeper for each read of a metadata table. The bridge takes the Trino version from Trino's request. If it cannot read the version, it handles Trino as an older version.
+
+The bridge refuses all other table and view names with `$` or `@`. If a later Trino version adds a type of metadata table, names with this type are then denied, and not checked on the wrong object.
+
 ## Extension Points
 
 The OPA bridge provides two extension points for adding custom authorization rules without modifying the built-in policies. Both default to `false` and can be extended by creating `.rego` files in the `policies/trino/` directory.
@@ -133,7 +164,7 @@ The OPA bridge provides two extension points for adding custom authorization rul
 
 Use `allow_managed` for additional rules on catalogs listed in `trino_catalog`. These rules run alongside Lakekeeper's permission checks (OR logic). For example, granting UDF management permissions on a Lakekeeper-managed catalog.
 
-To use it, create `policies/trino/allow_managed.rego` in the `trino` package and define `allow_managed` rules for the Trino operations you need. These rules bypass Lakekeeper's permission system, so review them carefully.
+To use it, create `policies/trino/allow_managed.rego` in the `trino` package and define `allow_managed` rules for the Trino operations you need. These rules bypass Lakekeeper's permission system, so review them carefully. The bridge's helpers that check an existing schema, table or view, for example `require_table_access_simple`, refuse the names listed in [Refused Schema and Table Names](#refused-schema-and-table-names). Check the name of a new table or view with `is_canonical_tabular_name`.
 
 ### `allow_unmanaged` — Unmanaged Catalog Extensions
 
@@ -159,6 +190,8 @@ For table/column/select operations, each resource generates two checks (table + 
 
 When the number of checks exceeds the configured batch size, the bridge automatically splits them into multiple `batch-check` requests (chunking) and concatenates the results. The batch size can be configured per Lakekeeper instance via the `LAKEKEEPER_MAX_BATCH_CHECK_SIZE` environment variable or the `max_batch_check_size` field in `configuration.rego` (default: 1000, matching Lakekeeper's server limit). When using OpenFGA as the authorization backend, this value should be tuned to match the OpenFGA and Lakekeeper batch check settings to avoid overloading the authorization backend.
 
+The bridge uses the results of a batch only if every `batch-check` request of it succeeds and returns one result for each check. Otherwise it allows none of the resources that these requests check, so a filter operation does not show them. If a `list_everything` check of the [shortcut for broad access](#shortcut-for-broad-access) fails, the bridge continues as if the check did not allow broad access.
+
 System schemas (`information_schema`, `schema_discovery`, `system`) and metadata tables (e.g., `foo$snapshots`) within managed catalogs are excluded from this batch optimization: they are not included in the `batch-check` request and are instead evaluated per-resource by the OPA policies. These per-resource evaluations may still trigger Lakekeeper calls (for example, catalog-level `get_config` checks), but they do not participate in the batched table/schema authorization request.
 
 This optimization is transparent — it produces the same results as per-resource evaluation but with significantly fewer HTTP round-trips to Lakekeeper for non-system resources.
@@ -171,20 +204,57 @@ If `list_everything` should not show the columns and names of every table and vi
 
 ## Context Forwarding
 
-The OPA bridge forwards resource names and paths to Lakekeeper's batch-check API for create actions and for moves. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, or on where a table or view is moved from and to:
+The OPA bridge forwards resource names, paths and other context to Lakekeeper's batch-check API for create actions, replaces, moves and drops. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created, on the properties of a create or replace statement, on where a table or view is moved from and to, or on the flags of a drop:
 
-| Trino Operation | Lakekeeper Action | Name Forwarded |
+| Trino Operation | Lakekeeper Action | Context Forwarded |
 |-----------------|-------------------|----------------|
 | `CreateSchema` (top-level) | `create_namespace` (warehouse) | Schema name |
 | `CreateSchema` (nested) | `create_namespace` (parent namespace) | Child schema name |
 | `CreateTable` | `create_table` (namespace) | Table name |
 | `CreateView` / `CreateMaterializedView` | `create_view` (namespace) | View name |
 | `RenameTable` / `RenameView` into another schema | `move` (table or view) and `accept_moved_tabular` (destination namespace) | `move` carries the destination namespace path, `accept_moved_tabular` the source namespace path |
+| `CreateTable`, if a table with the name exists | `commit` (that table) | Table name and target ref `main` |
+| `CreateView`, if a view with the name exists | `commit` (that view) | View name |
+| `DropTable` | `drop` (table) | `purge: true` |
+| `DropView` | `drop` (view) | `purge: true` |
+| `DropSchema` | `delete` (namespace) | `recursive: true` and `purge: true` |
 
-Properties specified during creation (e.g. `WITH (format='PARQUET')`) are also forwarded.
+Properties specified during creation (e.g. `WITH (format='PARQUET')`) are also forwarded. They keep the names Trino uses, for example `format`, also in the `commit` check of `CreateTable`. See [Replacing Tables and Views](#replacing-tables-and-views) for this check.
 
 A rename into another catalog is refused.
 
-Deploy the bridge policies together with the Lakekeeper server version they were released with. The policies ask the server for actions, such as `move`, that older servers do not know.
+Lakekeeper drops the tables and views that Trino drops with purge, so the `drop` checks of `DropTable` and `DropView` say `purge: true`. Trino's `DropSchema` request does not say whether the statement has `CASCADE`. With `CASCADE`, Trino drops and purges every table and view in the schema without checking each of them. The `delete` check of `DropSchema` therefore always says `recursive: true` and `purge: true`, also for an empty schema. Policies that look at these fields, for example in Cedar, apply to every `DROP SCHEMA` through Trino. OpenFGA does not use them.
+
+The table procedures `expire_snapshots` and `remove_orphan_files` also delete files. The bridge checks them as a `commit` of any kind on the table, which with OpenFGA needs `modify`.
+
+## Replacing Tables and Views
+
+Trino asks for the same permission to create a table as to replace it with `CREATE OR REPLACE TABLE`. The same is true for views and `CREATE OR REPLACE VIEW`. So when a user creates a table or view, the bridge also checks if one with this name already exists in the schema:
+
+- For `CREATE TABLE` and `CREATE TABLE AS`, the bridge looks for a table with this name. If there is none, the user needs only `create_table` on the namespace. If there is one, the user also needs `commit` on that table, because replacing gives the table a new schema, new partitioning, new properties and new data.
+- For `CREATE VIEW`, the bridge looks for a view with this name. If there is none, the user needs only `create_view` on the namespace. If there is one, the user also needs `commit` on that view, because replacing gives the view a new definition.
+
+A table or view that was dropped and can still be restored does not count.
+
+The bridge cannot see which changes Trino makes when it replaces a table or view, so it checks a `commit` of any kind. With OpenFGA, a `commit` of any kind needs `modify` or ownership on the table or view, or on anything that contains it, such as its namespace or warehouse. The [`write`](./authorization-openfga.md#write) privilege is not enough. See [Authorization with OpenFGA](./authorization-openfga.md). When Trino connects to Lakekeeper with its own credentials, tables and views that users create through Trino belong to Trino's service account. Roles that replace tables or views through Trino therefore need `modify` on the namespace. Examples are roles that run dbt view models, or dbt table models with `on_table_exists='replace'`.
+
+Trino checks the permission to create a view before it checks if the view exists. If a view with the name exists and the user does not have `commit` on it, `CREATE VIEW` fails with an access error, not with an error that the view already exists. `CREATE VIEW IF NOT EXISTS` with the name of an existing view also needs `commit` on that view.
+
+When Trino creates a table with a new name, Lakekeeper writes one audit record for a failed `introspect_permissions` with the reason `resource_not_found`. For a view with a new name, it writes two such records. On Trino before 484, each read of a [metadata table](#metadata-tables) also writes one such record if no view has its name. On Trino 482 and 483, a read of `$partitions` writes two such records, because Trino also reads `$files` for it. These records are expected. When you alert on denied authorizations, leave out `introspect_permissions` records with `resource_not_found` from the bridge's identity.
+
+If the bridge cannot find out if the name is free, for example because Lakekeeper does not answer, it denies the statement.
+
+The bridge requires `iceberg.rest-catalog.case-insensitive-name-matching` to be off in the Trino catalog. Lakekeeper already matches names regardless of upper and lower case. With the option on, Trino compares names with Java's rules for upper and lower case, which treat a few letters, such as the dotless `ı`, differently from Lakekeeper. Trino can then act on another table or view than the one the bridge checked.
+
+## Adding Files with `add_files`
+
+The bridge allows Trino's `add_files` table procedure for users who may commit any change to the table (`commit`, with OpenFGA `modify`; `write` is not enough). The procedure reads the files at the location given in the statement. It uses the storage access that Trino has for the table:
+
+- If Lakekeeper vends credentials to Trino, these credentials only reach the table's own location. `add_files` can then only add files from inside the table's location.
+- If Trino uses its own static storage credentials, `add_files` can read every location that these credentials can read. Use `add_files` in this setup only if everyone who may commit any change to a table may read all data that Trino can read. Otherwise remove `ADD_FILES` from the allowed procedures in `policies/trino/allow_table.rego`.
+
+## Deployment
+
+Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write`](./authorization-openfga.md#write) privilege existed let a holder of `write` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write`.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).

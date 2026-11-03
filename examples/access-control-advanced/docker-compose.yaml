@@ -98,10 +98,11 @@ services:
       - LAKEKEEPER__UI__OPENID_CLIENT_ID=lakekeeper
       - LAKEKEEPER__UI__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg
       - LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES=true
-      # Optional: Restrict who can set / modify security sensitive "trino.run-as-owner" property
+      # Required for Trino DEFINER views: only a trusted engine may set or modify the security sensitive "trino.run-as-owner" property
       - LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
       - LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-      # Allow "trino" keycloak service principal (also used for OPA for simplicity) to modify the property also without using trino.
+      # The "trino" Keycloak service principal of Trino's catalog. For simplicity, this example also uses the "trino" client for the OPA bridge, so the OPA bridge's credentials are trusted too.
+      # In production, give the OPA bridge its own client and do not add it to the trusted engine: it never writes view properties.
       - LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["94eb1d88-7854-43a0-b517-a75f92c533a5"]
       - RUST_LOG=info,lakekeeper=debug
     command: [ "serve" ]

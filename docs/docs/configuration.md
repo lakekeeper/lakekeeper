@@ -425,9 +425,9 @@ We strongly recommend bootstrapping new deployments with authorization already e
 | `LAKEKEEPER__OPENFGA__CLIENT_SECRET` | `abcd` | — | Client Secret for the Client ID. |
 | `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT` | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | — | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
 | `LAKEKEEPER__OPENFGA__SCOPE` | `openfga` | — | Additional scopes to request in the Client Credential flow. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX` | `collaboration` | — | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `3.1` | — | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
-| `LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE` | `50` | — | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX` | `collaboration` | — | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION`. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `<major>.<minor>` | — | Version of the OpenFGA authorization model that the server uses. If it is not set, the server uses the model version that `lakekeeper migrate` of the same release installs. If it is set, `lakekeeper migrate` does not change OpenFGA, and the server uses the model with this version. With the default model prefix `collaboration`, this is one of Lakekeeper's own models, and the version must be the one that your Lakekeeper release installs. To use a model that you manage outside of Lakekeeper, also set `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. Such a model must contain every type and relation that the server checks or writes, with the names of the model version that your release installs. It can contain more. The server compares only the names, not the definitions. The model must already exist in the store. If any of this is not true, the server does not start, and the error says what is wrong. |
+| `LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE` | `50` | — | The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
 
 #### Cedar { .lkp }
 
@@ -768,10 +768,12 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 
 ### Trusted Engines
 
-Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). When configured, Lakekeeper:
+Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). A trusted engine:
 
-1. **Protects the owner property** — only requests from a matched engine can set or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`).
-2. **Evaluates `referenced-by` chains** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+1. **Can write its owner property** — only requests from a matched engine can set, change or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`), or change the current version of a view that has this property.
+2. **Has `referenced-by` chains evaluated** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+
+The protection applies only if [authentication](./authentication.md) is enabled; Lakekeeper logs a warning at startup if trusted engines are configured without authentication. Lakekeeper reserves `trino.run-as-owner` for a trusted engine even if no trusted engine is configured. If no trusted engine is configured, no request can write it, and Trino can create views only with `SECURITY INVOKER`: a `CREATE VIEW` with `SECURITY DEFINER`, which is Trino's default, fails with `403 ProtectedPropertyModification`. Views that already have the property cannot get a new view version. Configure Trino as a trusted engine for any Trino that creates or changes `SECURITY DEFINER` views. See [Property Protection](./view-security.md#property-protection) for all rules.
 
 For a detailed explanation of DEFINER vs INVOKER views, see the [View Security](./view-security.md) guide.
 
@@ -782,7 +784,7 @@ Trusted engines are configured as a map under `LAKEKEEPER__TRUSTED_ENGINES`. Eac
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | — | Engine type. Currently only `trino` is supported. |
-| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property that identifies the owner for delegated execution. |
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property in which the engine stores the owner of a DEFINER view. For `trino`, set `trino.run-as-owner`: Trino always stores the owner there, and only an engine with exactly this owner property can write it. Lakekeeper logs a warning at startup for a `trino` engine with another value. |
 
 Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches AND (any audience matches OR any subject matches). Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
 

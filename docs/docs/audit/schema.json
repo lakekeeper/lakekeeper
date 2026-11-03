@@ -4,7 +4,7 @@
   "$ref": "#/$defs/AuditRecord",
   "x-audit-emitter": {
     "name": "lakekeeper",
-    "format": "1.0"
+    "format": "1.1"
   },
   "$defs": {
     "ActionRecord": {
@@ -887,6 +887,11 @@
           },
           "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
+        "event_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "This record's id, unique to it: the same on every copy of the line, so it can be used\nto remove duplicates. A UUIDv7, so ids sort roughly by time."
+        },
         "request_id": {
           "$ref": "#/$defs/RequestId",
           "description": "The request this record belongs to: the `x-request-id` the caller sent, or the one\nLakekeeper generated and returned in that header."
@@ -957,6 +962,7 @@
       "required": [
         "record_type",
         "emitters",
+        "event_id",
         "request_id",
         "time",
         "actions",
@@ -1649,6 +1655,11 @@
           },
           "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
+        "event_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "This record's id, unique to it: the same on every copy of the line, so it can be used\nto remove duplicates. A UUIDv7, so ids sort roughly by time."
+        },
         "request_id": {
           "description": "The request this record belongs to. Absent for an operation no request triggered.",
           "$ref": "#/$defs/RequestId"
@@ -1679,6 +1690,7 @@
       "required": [
         "record_type",
         "emitters",
+        "event_id",
         "time",
         "operation",
         "actor",
@@ -1788,6 +1800,11 @@
           },
           "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
+        "event_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "This record's id, unique to it: the same on every copy of the line, so it can be used\nto remove duplicates. A UUIDv7, so ids sort roughly by time."
+        },
         "request_id": {
           "$ref": "#/$defs/RequestId",
           "description": "The request this record belongs to: the `x-request-id` the caller sent, or the one\nLakekeeper generated and returned in that header."
@@ -1831,6 +1848,7 @@
       "required": [
         "record_type",
         "emitters",
+        "event_id",
         "request_id",
         "time",
         "actions",
