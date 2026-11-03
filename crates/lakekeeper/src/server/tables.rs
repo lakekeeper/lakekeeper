@@ -68,14 +68,15 @@ use crate::{
     server::{
         self,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
-        tabular::{authorize_entities, fetch_entities},
+        tabular::{authorize_entities, claim_idempotency_key, fetch_entities},
     },
     service::{
         ArcResolvedWarehouse, AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
         CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
-        CatalogTabularOps, CatalogWarehouseOps, NamedEntity, ResolvedWarehouse, State, TableCommit,
-        TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed,
-        TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        CatalogTabularOps, CatalogWarehouseOps, LoadTableResponse as CatalogLoadTableResult,
+        NamedEntity, ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId,
+        TableInfo, TabularId, TabularIdentBorrowed, TabularInfo, TabularListFlags, TabularNotFound,
+        Transaction, WarehouseStatus,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
@@ -1334,6 +1335,15 @@ pub(crate) fn interpret_authz_results_for_load_table(
 /// # Errors
 /// Returns an error if any validation fails.
 fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
+    if request.table_changes.is_empty() {
+        return Err(ErrorModel::bad_request(
+            "CommitTransactionRequest must contain at least one table change",
+            "EmptyCommitTransaction",
+            None,
+        )
+        .into());
+    }
+
     for change in &request.table_changes {
         validate_table_updates(&change.updates)?;
         change
@@ -1386,8 +1396,10 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 /// Commit updates to multiple tables without authorization checks
+///
+/// A commit that changes no table writes nothing, and Lakekeeper does not call
+/// `transaction_committed` for it.
 ///
 /// # Errors
 /// Returns an error if the commit fails or if a DB error occurs.
@@ -1416,7 +1428,7 @@ async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
         .await;
 
         match result {
-            Ok(commits) => {
+            Ok(CommitOutcome::Written(commits)) => {
                 state
                     .v1_state
                     .events
@@ -1429,6 +1441,7 @@ async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
                     .await;
                 return Ok(commits);
             }
+            Ok(CommitOutcome::Unchanged(commits)) => return Ok(commits),
             Err(e)
                 if e.error.r#type == CONCURRENT_UPDATE_ERROR_TYPE
                     && attempt < MAX_RETRIES_ON_CONCURRENT_UPDATE =>
@@ -1564,7 +1577,8 @@ struct CommitAuthorizationResult<'a> {
 /// was committed or is a replay of a previously committed idempotent request.
 #[derive(Debug)]
 pub enum CommitTablesResult {
-    /// The commit was executed successfully.
+    /// The commit was executed successfully. If it changed no table, it wrote nothing, and
+    /// each [`CommitContext`] carries the stored metadata as the new metadata.
     Committed(Arc<Vec<CommitContext>>),
     /// An idempotency check determined this is a replay of an already-committed
     /// request. The caller must reconstruct the response appropriately.
@@ -1676,8 +1690,16 @@ async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
     })
 }
 
+/// What a commit attempt did to the catalog.
+enum CommitOutcome {
+    /// Every table got a new metadata file, which is now current.
+    Written(Arc<Vec<CommitContext>>),
+    /// No table changed, so nothing was written. Each context carries the stored metadata and
+    /// its location as the new ones.
+    Unchanged(Arc<Vec<CommitContext>>),
+}
+
 // Extract the core commit logic to a separate function for retry purposes
-#[allow(clippy::too_many_lines)]
 async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     request: &CommitTransactionRequest,
     warehouse: &ResolvedWarehouse,
@@ -1685,7 +1707,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
     idempotency: Option<&IdempotencyInfo>,
-) -> Result<Arc<Vec<CommitContext>>> {
+) -> Result<CommitOutcome> {
     let warehouse_id = warehouse.warehouse_id;
     let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
@@ -1705,11 +1727,10 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
 
     transaction.commit().await?;
 
-    let mut expired_metadata_files: Vec<Location> = vec![];
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     // Apply changes
-    let commits = request
+    let applied = request
         .table_changes
         .iter()
         .map(|change| {
@@ -1731,81 +1752,28 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                     )
                 })?
                 .clone();
-            let table_id = table_info.table_id();
-            let previous_table_metadata =
-                previous_metadatas.remove(&table_id).ok_or_else(|| {
+            let previous_table_metadata = previous_metadatas
+                .remove(&table_info.table_id())
+                .ok_or_else(|| {
                     TabularNotFound::new(warehouse_id, TableIdentOrId::from(table_ident.clone()))
                         .append_detail("Table metadata not returned from table load".to_string())
                 })?;
-            ensure_format_version_upgrades_allowed(
-                &change.updates,
-                &warehouse.allowed_format_versions,
-            )?;
-            let TableMetadataBuildResult {
-                metadata: new_metadata,
-                changes: _,
-                expired_metadata_logs: this_expired,
-            } = apply_commit(
-                previous_table_metadata.table_metadata.clone(),
-                previous_table_metadata.metadata_location.as_ref(),
-                &change.requirements,
-                change.updates.clone(),
-                now_ms,
-            )?;
-
-            let number_expired_metadata_log_entries = this_expired.len();
-
-            let next_metadata_count = previous_table_metadata
-                .metadata_location
-                .as_ref()
-                .and_then(extract_count_from_metadata_location)
-                .map_or(0, |v| v + 1);
-
-            let new_table_location =
-                parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
-            if new_metadata.location() != previous_table_metadata.table_metadata.location() {
-                warehouse
-                    .storage_profile
-                    .require_allowed_location(&new_table_location)?;
-            }
-            if delete_after_commit_enabled(new_metadata.properties()) {
-                expired_metadata_files.extend(expired_metadata_files_to_delete(
-                    this_expired,
-                    &new_table_location,
-                ));
-            }
-            let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
-            let new_metadata_location = warehouse.storage_profile.default_metadata_location(
-                &new_table_location,
-                &new_compression_codec,
-                Uuid::now_v7(),
-                next_metadata_count,
-            );
-
-            let number_added_metadata_log_entries = (new_metadata.metadata_log().len()
-                + number_expired_metadata_log_entries)
-                .saturating_sub(previous_table_metadata.table_metadata.metadata_log().len());
-
-            Ok(CommitContext {
-                new_metadata: Arc::new(new_metadata),
-                new_metadata_location,
+            apply_table_change(
+                change,
                 table_info,
-                new_compression_codec,
-                previous_metadata_location: previous_table_metadata.metadata_location,
-                updates: Arc::new(change.updates.clone()),
-                previous_metadata: Arc::new(previous_table_metadata.table_metadata),
-                number_expired_metadata_log_entries,
-                number_added_metadata_log_entries,
-            })
+                previous_table_metadata,
+                warehouse,
+                now_ms,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 
     // Check contract verification
-    let futures = commits.iter().map(|c| {
+    let futures = applied.iter().map(|a| {
         state
             .v1_state
             .contract_verifiers
-            .check_table_updates(&c.updates, &c.previous_metadata)
+            .check_table_updates(&a.commit.updates, &a.commit.previous_metadata)
     });
 
     futures::future::try_join_all(futures)
@@ -1813,6 +1781,175 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         .into_iter()
         .map(ContractVerificationOutcome::into_result)
         .collect::<Result<Vec<()>, ErrorModel>>()?;
+
+    // A commit that changes no table writes nothing, as in Iceberg's reference catalog. Its
+    // requirements held when the tables were loaded. A commit that changes one table writes
+    // every table, so a change to any of them since the load is detected and the commit is
+    // retried.
+    if let Some(unchanged) = applied
+        .iter()
+        .map(AppliedTableChange::unchanged_commit)
+        .collect::<Option<Vec<_>>>()
+    {
+        record_idempotency_key::<C>(warehouse_id, idempotency, state.v1_state.catalog.clone())
+            .await?;
+        return Ok(CommitOutcome::Unchanged(Arc::new(unchanged)));
+    }
+
+    write_commits(
+        applied,
+        warehouse,
+        state,
+        idempotency,
+        event_ctx.request_metadata().received_at(),
+    )
+    .await
+    .map(CommitOutcome::Written)
+}
+
+/// The updates of one table applied to its stored metadata, in memory.
+struct AppliedTableChange {
+    /// The commit that writes the new metadata.
+    commit: CommitContext,
+    /// Whether an update changed the stored metadata.
+    changed: bool,
+    /// The metadata-log entries the new metadata drops, whose files are deleted after the
+    /// commit. Empty if `write.metadata.delete-after-commit.enabled` is off.
+    expired_metadata_logs: Vec<MetadataLog>,
+    /// The table location of the new metadata.
+    table_location: Location,
+}
+
+impl AppliedTableChange {
+    /// The commit that keeps the stored metadata current, if no update changed it.
+    ///
+    /// A staged table has no metadata file yet, so a commit to it always writes one.
+    fn unchanged_commit(&self) -> Option<CommitContext> {
+        if self.changed {
+            return None;
+        }
+        let stored_location = self.commit.previous_metadata_location.clone()?;
+        Some(CommitContext {
+            new_metadata: self.commit.previous_metadata.clone(),
+            new_metadata_location: stored_location,
+            number_expired_metadata_log_entries: 0,
+            number_added_metadata_log_entries: 0,
+            ..self.commit.clone()
+        })
+    }
+}
+
+/// Apply the updates of `change` to the stored metadata of its table, in memory.
+fn apply_table_change(
+    change: &CommitTableRequest,
+    table_info: Arc<TableInfo>,
+    previous: CatalogLoadTableResult,
+    warehouse: &ResolvedWarehouse,
+    now_ms: i64,
+) -> Result<AppliedTableChange> {
+    ensure_format_version_upgrades_allowed(&change.updates, &warehouse.allowed_format_versions)?;
+    let TableMetadataBuildResult {
+        metadata: new_metadata,
+        changes,
+        expired_metadata_logs,
+    } = apply_commit(
+        previous.table_metadata.clone(),
+        previous.metadata_location.as_ref(),
+        &change.requirements,
+        change.updates.clone(),
+        now_ms,
+    )?;
+
+    let number_expired_metadata_log_entries = expired_metadata_logs.len();
+
+    let next_metadata_count = previous
+        .metadata_location
+        .as_ref()
+        .and_then(extract_count_from_metadata_location)
+        .map_or(0, |v| v + 1);
+
+    let new_table_location =
+        parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
+    if new_metadata.location() != previous.table_metadata.location() {
+        warehouse
+            .storage_profile
+            .require_allowed_location(&new_table_location)?;
+    }
+    let expired_metadata_logs = if delete_after_commit_enabled(new_metadata.properties()) {
+        expired_metadata_logs
+    } else {
+        Vec::new()
+    };
+    let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
+    let new_metadata_location = warehouse.storage_profile.default_metadata_location(
+        &new_table_location,
+        &new_compression_codec,
+        Uuid::now_v7(),
+        next_metadata_count,
+    );
+
+    let number_added_metadata_log_entries = (new_metadata.metadata_log().len()
+        + number_expired_metadata_log_entries)
+        .saturating_sub(previous.table_metadata.metadata_log().len());
+
+    Ok(AppliedTableChange {
+        commit: CommitContext {
+            new_metadata: Arc::new(new_metadata),
+            new_metadata_location,
+            table_info,
+            new_compression_codec,
+            previous_metadata_location: previous.metadata_location,
+            updates: Arc::new(change.updates.clone()),
+            previous_metadata: Arc::new(previous.table_metadata),
+            number_expired_metadata_log_entries,
+            number_added_metadata_log_entries,
+        },
+        changed: !changes.is_empty(),
+        expired_metadata_logs,
+        table_location: new_table_location,
+    })
+}
+
+/// Record the idempotency key, if any, in a transaction of its own.
+///
+/// A commit that wrote nothing has no other transaction to record it in. The record lets a
+/// retry replay the commit.
+async fn record_idempotency_key<C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    idempotency: Option<&IdempotencyInfo>,
+    catalog_state: C::State,
+) -> Result<()> {
+    if idempotency.is_none() {
+        return Ok(());
+    }
+    let transaction = C::Transaction::begin_write(catalog_state).await?;
+    claim_idempotency_key::<C>(transaction, warehouse_id, idempotency)
+        .await?
+        .commit()
+        .await
+}
+
+/// Write the new metadata files and make them current in one transaction, which also claims
+/// the idempotency key. Then delete the files of the metadata-log entries the commit drops.
+async fn write_commits<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    applied: Vec<AppliedTableChange>,
+    warehouse: &ResolvedWarehouse,
+    state: &ApiContext<State<A, C, S>>,
+    idempotency: Option<&IdempotencyInfo>,
+    received_at: tokio::time::Instant,
+) -> Result<Arc<Vec<CommitContext>>> {
+    let warehouse_id = warehouse.warehouse_id;
+    let mut expired_metadata_files: Vec<Location> = vec![];
+    let commits = applied
+        .into_iter()
+        .map(|change| {
+            expired_metadata_files.extend(expired_metadata_files_to_delete(
+                change.expired_metadata_logs,
+                &change.table_location,
+            ));
+            change.commit
+        })
+        .collect::<Vec<_>>();
 
     // We don't commit the transaction yet, first we need to write the metadata file.
     let storage_secret =
@@ -1848,26 +1985,16 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         )
         .await?;
 
-        // Insert idempotency key in the same transaction.
-        if let Some(info) = idempotency
-            && !C::try_insert_idempotency_key(warehouse_id, info, transaction.transaction()).await?
-        {
-            transaction
-                .rollback()
-                .await
-                .inspect_err(|e| {
-                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
-                })
-                .ok();
-            return Err(ErrorModel::request_in_progress().into());
-        }
-
-        transaction.commit().await
+        // Claim the idempotency key in the same transaction.
+        claim_idempotency_key::<C>(transaction, warehouse_id, idempotency)
+            .await?
+            .commit()
+            .await
     })
     .await?;
 
     if !expired_metadata_files.is_empty() {
-        cleanup_in_background(event_ctx.request_metadata().received_at(), async move {
+        cleanup_in_background(received_at, async move {
             delete_files(&file_io, &expired_metadata_files).await;
         })
         .await;

@@ -20,33 +20,21 @@ use crate::{
     },
 };
 
-/// Claim the request's idempotency key inside the rename transaction.
+/// Claim the request's idempotency key in `transaction`.
 ///
 /// Returns the transaction so the caller can go on to commit it. A key another in-flight
 /// request already holds is not an error the caller can recover from, so the transaction is
-/// rolled back here and the request fails; `None` is a no-op. Every rename endpoint answers
-/// 204, which is the status recorded against the key.
-pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
+/// rolled back here and the request fails; `None` is a no-op.
+pub(crate) async fn claim_idempotency_key<C: CatalogStore>(
     mut transaction: C::Transaction,
     warehouse_id: WarehouseId,
-    key: Option<IdempotencyKey>,
-    endpoint: EndpointFlat,
+    idempotency: Option<&IdempotencyInfo>,
 ) -> Result<C::Transaction> {
-    let Some(key) = key else {
+    let Some(info) = idempotency else {
         return Ok(transaction);
     };
 
-    let claimed = C::try_insert_idempotency_key(
-        warehouse_id,
-        &IdempotencyInfo::builder()
-            .key(key)
-            .endpoint(endpoint)
-            .http_status(StatusCode::NO_CONTENT)
-            .build(),
-        transaction.transaction(),
-    )
-    .await?;
-    if claimed {
+    if C::try_insert_idempotency_key(warehouse_id, info, transaction.transaction()).await? {
         return Ok(transaction);
     }
 
@@ -58,6 +46,25 @@ pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
         })
         .ok();
     Err(ErrorModel::request_in_progress().into())
+}
+
+/// Claim the request's idempotency key inside the rename transaction, as
+/// [`claim_idempotency_key`] does. Every rename endpoint answers 204, which is the status
+/// recorded against the key.
+pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
+    transaction: C::Transaction,
+    warehouse_id: WarehouseId,
+    key: Option<IdempotencyKey>,
+    endpoint: EndpointFlat,
+) -> Result<C::Transaction> {
+    let idempotency = key.map(|key| {
+        IdempotencyInfo::builder()
+            .key(key)
+            .endpoint(endpoint)
+            .http_status(StatusCode::NO_CONTENT)
+            .build()
+    });
+    claim_idempotency_key::<C>(transaction, warehouse_id, idempotency.as_ref()).await
 }
 
 /// Fail a rename whose row landed in a different namespace than authorization was

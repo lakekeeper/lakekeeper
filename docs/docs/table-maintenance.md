@@ -10,6 +10,8 @@ Lakekeeper honors the Iceberg table properties `write.metadata.delete-after-comm
 
 For example: if `write.metadata.previous-versions-max=20`, Lakekeeper retains 21 files in total (the current plus 20 previous); committing a 22nd version deletes the oldest tracked metadata file.
 
+Lakekeeper writes no new metadata file for a commit without updates to a table that is not staged. The same applies to some updates that change nothing, for example removing statistics that the table does not have. Lakekeeper checks the requirements of such a commit and returns the current metadata. The table keeps its metadata file, its metadata log and its last-updated time, and no metadata file is deleted. Lakekeeper publishes no `updateTable` event for such a commit. In a transaction across several tables, Lakekeeper writes nothing only if this holds for every table.
+
 Link to [Expire Snapshots](#expire-snapshots)
 
 ## Expire Snapshots { #expire-snapshots .lkp }
