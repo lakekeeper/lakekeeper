@@ -152,6 +152,11 @@ impl Location {
             result
         };
 
+        if !extension.is_empty() && self.authority_and_path.ends_with('/') {
+            let len = self.authority_and_path.trim_end_matches('/').len();
+            self.authority_and_path.truncate(len + 1);
+        }
+
         let extension = if self.authority_and_path.ends_with('/') {
             extension.strip_prefix('/').unwrap_or(&extension)
         } else {
@@ -834,6 +839,11 @@ mod tests {
             ("s3://bucket/foo/", vec!["/"], "s3://bucket/foo/"),
             ("s3://bucket/foo", vec!["/bar"], "s3://bucket/foo/bar"),
             ("s3://bucket/foo/", vec![], "s3://bucket/foo/"),
+            ("s3://bucket/foo///", vec!["/bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket/foo///", vec!["bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket///", vec!["bar"], "s3://bucket/bar"),
+            ("s3://bucket/foo///", vec!["/"], "s3://bucket/foo/"),
+            ("s3://bucket/foo///", vec![], "s3://bucket/foo///"),
         ] {
             let mut location = Location::from_str(base).unwrap();
             location.extend(segments);
