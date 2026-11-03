@@ -25,6 +25,45 @@ Three metrics cover all HTTP traffic:
 
 Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics), including "unstable" metrics. A detailed description of these metrics, including how they are derived, can be found in the [tokio_metrics crate documentation](https://docs.rs/tokio-metrics/latest/tokio_metrics/struct.RuntimeMetrics.html#fields).
 
+### Task Queue Metrics
+
+These metrics show when tasks wait too long, for example because too few workers run a queue, workers stopped, or an autoscaler reached its limit.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_age_seconds</code> | Gauge | `queue_name`, `class` | Seconds the longest waiting task of the queue has waited. `0` if no task waits, `NaN` if the last sample failed |
+| <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_<wbr>last_success_timestamp_seconds</code> | Gauge | — | Unix time of the last sample in which every queue succeeded |
+| <code class="selectable">lakekeeper_task_queue_<wbr>timed_out_attempts_total</code> | Counter | `queue_name` | Task attempts that failed because their worker stopped sending heartbeats |
+
+A task waits from the time it is scheduled for. A task whose worker stopped responding waits from the time its heartbeat expired. With a heartbeat timeout of 1 hour, for example, such a task starts to wait 1 hour after its last heartbeat.
+
+Every pod that serves the API samples all queues every 15 seconds. `class` is empty for the whole queue. If a queue is split into size classes by the resource demand of its tasks, it also has one series per size class, with the name of the size class in `class`. A pod in read-only [maintenance mode](./configuration.md#maintenance-mode) reports `0`, and a pod that started in it has no series for the built-in queues.
+
+If the tasks of a queue wait too long, run more workers: raise `LAKEKEEPER__TASK_*_WORKERS` of the queue, or with an autoscaler, check that it runs and how many workers it may start.
+
+!!! tip "Alerting on waiting tasks"
+    All pods read the same tasks, so use `max` over the pods. `max` skips the `NaN` of a failed sample. We recommend this rule:
+
+    ```yaml
+    - alert: LakekeeperTasksWaitTooLong
+      expr: max by (queue_name) (lakekeeper_task_queue_oldest_due_age_seconds{class=""}) > 3600
+      for: 10m
+    ```
+
+    A task can be scheduled for a time in the past, for example a run of a schedule that was missed, so the age can start high. `for: 10m` waits until a worker had time to take such a task. Leave out queues that you run with 0 workers on purpose, with `queue_name!="<queue>"` in the selector. If every sample fails, the age is `NaN` and this rule cannot fire. Also alert on `time() - max(lakekeeper_task_queue_oldest_due_last_success_timestamp_seconds) > 120`.
+
+A worker that stops during a task, for example because it ran out of memory, leaves a task log entry that starts with "Attempt timed out.". A worker of the same queue counts that attempt in `lakekeeper_task_queue_timed_out_attempts_total`. The counter rises only after the heartbeat timeout of the queue, when a worker of the queue next looks for a task. With a heartbeat timeout of 1 hour, for example, it rises at least 1 hour after the worker stopped. The worker that counts the attempt also writes the log line "Task attempt timed out" at level WARN, with the queue and the task, so you can also alert on it with a log-based tool.
+
+!!! tip "Alerting on timed-out attempts"
+    Each pod counts only the attempts it failed, so use `sum` over the pods. We recommend this rule:
+
+    ```yaml
+    - alert: LakekeeperTaskAttemptsTimedOut
+      expr: sum by (queue_name) (increase(lakekeeper_task_queue_timed_out_attempts_total[1h])) > 0
+    ```
+
+    The counter is reliable for workers that run for a long time, for example API pods that also run workers. A worker Job usually exits before Prometheus reads its counter. For worker Jobs, see [Alerting](./task-workers.md#alerting) in Task Workers on Kubernetes.
+
 ### Cache Metrics
 
 Lakekeeper maintains in-memory caches for Short-Term Credentials, S3 Signing Identities, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Ancestors, and Users. All caches share three metric names, differentiated by the `cache_type` label:
@@ -114,23 +153,26 @@ These go through the role cache (`cache_type="role"`).
 
 ### Role Provider Metrics { .lkp }
 
-When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
+When a Role Provider (e.g. LDAP, Entra ID or Okta) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
 
 | Metric                                                                                             | Type      | Labels                   | Description |
 |----------------------------------------------------------------------------------------------------|-----------|--------------------------|-----|
 | <code class="selectable">lakekeeper_<wbr>role_provider_up</code>                                   | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable |
 | <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code> | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call |
 | <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>               | Counter   | `provider_id`            | Failures writing fresh roles back to the Postgres catalog cache |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>directory_<wbr>user_not_found_total</code> | Counter   | `provider_id`            | Answers of the directory that it has no entry for the user it was asked about |
 | <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>      | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts |
 
-Only providers with an external backend (LDAP) emit `up`, the role-lookup histogram and the reconnect counter. The periodic health-check loop refreshes `up`. On the reconnect counter, `outcome` is `success` or `error`. The OIDC token provider has no external dependency, so it reports none of those. It emits `sync_errors_total` alone, and only with `persist_token_roles` enabled.
+The LDAP, Entra ID and Okta providers emit `up`, the role-lookup histogram and the user-not-found counter. Only the LDAP provider emits the reconnect counter. The periodic health-check loop refreshes `up`. On the reconnect counter, `outcome` is `success` or `error`. The OIDC token provider has no external dependency, so it reports none of those. It emits `sync_errors_total` alone, and only with `persist_token_roles` enabled.
+
+A user that the directory does not know gets none of that provider's groups. A growing `lakekeeper_role_provider_directory_user_not_found_total` for one `provider_id` usually means that the subject claim does not name users the way the directory does. With Okta, service apps also count, because Okta has no user with their client id.
 
 `outcome` values on the role-lookup histogram:
 
 | Value                         | Meaning                                      |
 |-------------------------------|----------------------------------------------|
 | `cache_hit`                   | All applicable providers were fresh; the external provider was not contacted. |
-| `success`                     | Fresh roles were fetched from the external provider and synced to Postgres. |
+| `success`                     | The directory was asked. For the caller's own request in a project, Lakekeeper syncs the answer to Postgres. An answer that the directory does not know the user is also `success`. |
 | `stale_fallback` | The external provider was unreachable; cached roles from Postgres were served instead. |
 | `error`                       | Unrecoverable error — the provider failed and no cached roles were available. |
 
@@ -139,7 +181,7 @@ Only providers with an external backend (LDAP) emit `up`, the role-lookup histog
 The Postgres connection differs. If Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below). `/health` returns `200 OK` only when the aggregate health state is `ok`. It returns `503 Service Unavailable` when that state is `error` or `unknown`.
 
 !!! tip "Alerting on role provider health"
-    Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported. The series exists only for external-backed providers (LDAP), and only after the first health-check cycle. Pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms Lakekeeper is falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` means roles are not reaching Postgres. For an LDAP provider that is a database connectivity or permissions problem. For the OIDC token provider (`persist_token_roles`) it is a failure persisting token roles for definer-view reuse.
+    Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported. The series exists only for the LDAP, Entra ID and Okta providers, and only after the first health-check cycle. Pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms Lakekeeper is falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` means roles are not reaching Postgres. For an LDAP, Entra ID or Okta provider that is a database connectivity or permissions problem. For the OIDC token provider (`persist_token_roles`) it is a failure persisting token roles for definer-view reuse.
 
 ### Cedar Policy Refresh Metrics { .lkp }
 
@@ -220,15 +262,17 @@ scrape_configs:
 
 ## Task Queue Demand
 
-Lakekeeper can tell an autoscaler, such as [KEDA](https://keda.sh/docs/latest/scalers/metrics-api/), how many tasks of a queue wait or run. This lets you run worker pods only while there are tasks.
+Lakekeeper can tell an autoscaler, such as [KEDA](https://keda.sh/docs/latest/scalers/metrics-api/), how many tasks of a queue wait or run. This lets you run worker pods only while there are tasks. For a complete setup, see [Task Workers on Kubernetes](./task-workers.md).
 
 The metrics port (default `9000`) answers `GET /task-queue/<queue>/demand`:
 
 ```json
-{"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2}
+{"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2, "oldest-due-seconds": 95}
 ```
 
 We recommend scaling on `demand`. It adds up the tasks that wait to start (`due`), the tasks that run (`running`), and the tasks whose worker stopped responding (`heartbeat-expired`). Each pod reuses an answer for 5 seconds, so frequent requests do not load the database.
+
+`oldest-due-seconds` is how long the longest waiting task has waited, or `null` if no task waits. The same value is available as a metric, see [Task Queue Metrics](#task-queue-metrics).
 
 The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots` and `remove_orphan_files`.
 
@@ -251,7 +295,7 @@ We recommend these settings:
 - `LAKEKEEPER__TASK_*_WORKERS` of the queue on the API pods: `0`, so that only the autoscaled workers run the queue. Otherwise KEDA also counts the tasks that the API pods run, and starts workers for them.
 - `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` on the headless workers: a short time such as `180s`, so that a worker Job ends when no tasks are left. See [Stopping Task Workers](./configuration.md#stopping-task-workers).
 
-When all API pods are in read-only [maintenance mode](./configuration.md#maintenance-mode), the endpoint answers `0`, so KEDA starts no new workers. Workers that already run keep taking tasks. Like `/metrics`, the endpoint has no authentication and shows only counts. We recommend keeping the metrics port inside the cluster.
+When all API pods are in read-only [maintenance mode](./configuration.md#maintenance-mode), the endpoint reports no tasks (`0`, and `null` for `oldest-due-seconds`), so KEDA starts no new workers. Workers that already run keep taking tasks. Like `/metrics`, the endpoint has no authentication and shows only counts. We recommend keeping the metrics port inside the cluster.
 
 ## Database (Postgres) Monitoring
 

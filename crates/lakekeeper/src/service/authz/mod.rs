@@ -4,7 +4,7 @@ use std::{
 };
 
 use axum::Router;
-use iceberg_ext::catalog::TableUpdateKind;
+pub use iceberg_ext::catalog::TableUpdateKind;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
 use strum_macros::EnumString;
@@ -1692,7 +1692,8 @@ pub enum CatalogTableAction {
         // lets an authorizer decide per branch (e.g. protect `main`).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
         target_refs: Arc<BTreeSet<String>>,
-        /// The kinds of metadata updates this commit contains.
+        /// The kinds of metadata updates this commit contains. A check that names none
+        /// asks about a commit of any kind.
         // Lets an authorizer require table-wide authority for anything beyond a
         // branch-ref move (schema, spec, properties, snapshot expiry, …).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -1753,6 +1754,26 @@ impl CatalogTableAction {
     #[must_use]
     pub fn variants() -> &'static [CatalogTableAction; 14] {
         &TABLE_ACTION_VARIANTS
+    }
+
+    /// Whether this is a commit that only changes the table's data; see
+    /// [`TableUpdateKind::changes_only_data`]. A commit check that names no update kinds
+    /// asks about commits in general, so it is not one.
+    #[must_use]
+    pub fn is_data_commit(&self) -> bool {
+        match self {
+            Self::Commit {
+                updated_properties,
+                removed_properties,
+                target_refs: _,
+                update_kinds,
+            } => {
+                updated_properties.is_empty()
+                    && removed_properties.is_empty()
+                    && TableUpdateKind::changes_only_data(update_kinds)
+            }
+            _ => false,
+        }
     }
 }
 impl EventAction for CatalogTableAction {
@@ -3904,6 +3925,36 @@ pub mod tests {
         );
     }
 
+    /// A data commit adds snapshots, moves refs or records statistics and touches no
+    /// property; a check without update kinds is a commit of any kind.
+    #[test]
+    fn test_is_data_commit() {
+        let commit = |updated: &[(&str, &str)], removed: &[&str], kinds: &[TableUpdateKind]| {
+            CatalogTableAction::Commit {
+                updated_properties: Arc::new(
+                    updated
+                        .iter()
+                        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                        .collect(),
+                ),
+                removed_properties: Arc::new(removed.iter().map(|k| (*k).to_string()).collect()),
+                target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
+                update_kinds: Arc::new(kinds.iter().copied().collect()),
+            }
+        };
+        let append = [
+            TableUpdateKind::AddSnapshot,
+            TableUpdateKind::SetSnapshotRef,
+        ];
+
+        assert!(commit(&[], &[], &append).is_data_commit());
+        assert!(!commit(&[("owner", "team")], &[], &append).is_data_commit());
+        assert!(!commit(&[], &["owner"], &append).is_data_commit());
+        assert!(!commit(&[], &[], &[]).is_data_commit());
+        assert!(!commit(&[], &[], &[TableUpdateKind::AddSchema]).is_data_commit());
+        assert!(!CatalogTableAction::WriteData.is_data_commit());
+    }
+
     /// Locks the wire shape of the ref/kind fields — kinds serialize as their kebab-case
     /// Iceberg action names. This is a serialized contract that authorizers parse, so a
     /// change here is a change to their input, not an internal rename.
@@ -4555,6 +4606,20 @@ pub mod tests {
             blocked.contains(action) || blocked.iter().any(|b| action.starts_with(b.as_str()))
         }
 
+        /// Answering for another principal discloses that principal's access, so the
+        /// [`Authorizer`] trait requires a gate. Blocking `<kind>:ReadGrants` closes it,
+        /// keyed like the action checks.
+        fn require_inspect_permissions(
+            &self,
+            kind: &str,
+            for_other_principal: bool,
+        ) -> Result<(), IsAllowedActionError> {
+            if for_other_principal && self.action_is_blocked(&format!("{kind}:ReadGrants")) {
+                return Err(CannotInspectPermissions::new(&kind).into());
+            }
+            Ok(())
+        }
+
         /// # Panics
         /// Panics if the internal `RwLock` is poisoned.
         pub fn block_action(&self, object: &str) {
@@ -4639,8 +4704,6 @@ pub mod tests {
             target: &GrantTarget<'_>,
             checks: &[GrantAuthorityCheck<'_>],
         ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-            // Answering for another principal is gated here, as the trait requires.
-            // Blocking `<level>:ReadGrants` refuses it, keyed like the action checks.
             let level = match target.resource_type() {
                 ResourceType::Server => "server",
                 ResourceType::Project => "project",
@@ -4651,9 +4714,7 @@ pub mod tests {
                 ResourceType::GenericTable => "generic_table",
                 ResourceType::Tag => "tag",
             };
-            if for_user.is_some() && self.action_is_blocked(&format!("{level}:ReadGrants")) {
-                return Err(CannotInspectPermissions::new(&level).into());
-            }
+            self.require_inspect_permissions(level, for_user.is_some())?;
             // Authority per direction, so a test can hold revoke authority alone and
             // watch the grant side of a diff be refused.
             Ok(checks
@@ -4894,6 +4955,13 @@ pub mod tests {
                     })
                     .collect(),
             )?;
+            // A delegated check runs as the DEFINER owner and needs no inspection.
+            self.require_inspect_permissions(
+                "table",
+                actions
+                    .iter()
+                    .any(|(_, action)| action.user.is_some() && !action.is_delegated_execution),
+            )?;
             // `action.user == None` means "acting as self" (subject = actor),
             // so per-user hiding for the actor must still apply.
             let actor_identity = metadata.actor().to_user_or_role();
@@ -4944,6 +5012,12 @@ pub mod tests {
                         is_delegated_execution: action.is_delegated_execution,
                     })
                     .collect(),
+            )?;
+            self.require_inspect_permissions(
+                "view",
+                actions
+                    .iter()
+                    .any(|(_, action)| action.user.is_some() && !action.is_delegated_execution),
             )?;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
@@ -4996,6 +5070,12 @@ pub mod tests {
                         is_delegated_execution: action.is_delegated_execution,
                     })
                     .collect(),
+            )?;
+            self.require_inspect_permissions(
+                "generic_table",
+                actions
+                    .iter()
+                    .any(|(_, action)| action.user.is_some() && !action.is_delegated_execution),
             )?;
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();

@@ -6,6 +6,7 @@ use crate::{
     CancellationToken,
     service::tasks::{
         TaskQueueName,
+        queue_metrics::init_timed_out_attempts,
         task_drain::{ArcTaskRunnerControl, run_as_worker},
     },
 };
@@ -16,7 +17,8 @@ use crate::{
 /// A worker runs one task at a time: it finishes a task before it picks or polls again. A task
 /// it picked counts as running until then, or until its future ends; a drain of the process
 /// waits for it. Pick or poll inside the returned future: a task spawned from it is outside the
-/// worker, so its picks are neither gated by a drain nor counted.
+/// worker, so its picks are neither gated by a drain nor counted. Inside the returned future,
+/// [`drain_token`](super::drain_token) is cancelled when the process starts to drain.
 pub type TaskQueueWorkerFn = Arc<
     dyn Fn(tokio_util::sync::CancellationToken) -> BoxFuture<'static, ()> + Send + Sync + 'static,
 >;
@@ -86,6 +88,9 @@ impl TaskQueuesRunner {
                 "Starting {} workers for task queue `{queue_name}`.",
                 queue.num_workers
             );
+            if queue.num_workers > 0 {
+                init_timed_out_attempts(queue_name);
+            }
 
             for worker_id in 0..queue.num_workers {
                 tracing::debug!(
@@ -180,5 +185,85 @@ impl TaskQueuesRunner {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "router"))]
+mod tests {
+    use std::{sync::LazyLock, time::Duration};
+
+    use axum_prometheus::metrics;
+
+    use super::*;
+    use crate::service::tasks::drain_token;
+
+    static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| TaskQueueName::new("test"));
+    static QUEUE_WITHOUT_WORKERS: LazyLock<TaskQueueName> =
+        LazyLock::new(|| TaskQueueName::new("test-without-workers"));
+
+    #[tokio::test]
+    async fn a_drain_fires_the_drain_token_of_the_workers() {
+        let worker_fn: TaskQueueWorkerFn =
+            Arc::new(|_| Box::pin(async { drain_token().cancelled().await }));
+        let runner = TaskQueuesRunner {
+            registered_queues: Arc::new(HashMap::from([(
+                &*QUEUE_NAME,
+                QueueWorkerConfig {
+                    worker_fn,
+                    num_workers: 1,
+                },
+            )])),
+            cancellation_token: CancellationToken::new(),
+            control: ArcTaskRunnerControl::default(),
+        };
+        let control = ArcTaskRunnerControl::default();
+        let runner = runner.with_control(Arc::clone(&control));
+        control.stop_picking();
+        tokio::time::timeout(Duration::from_secs(5), runner.run_queue_workers(false))
+            .await
+            .expect("the worker sees the drain");
+    }
+
+    #[tokio::test]
+    async fn queues_with_workers_report_zero_timed_out_attempts() {
+        let recorder =
+            axum_prometheus::metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let _local_recorder = metrics::set_default_local_recorder(&recorder);
+        let worker_fn: TaskQueueWorkerFn = Arc::new(|_| Box::pin(async {}));
+        let runner = TaskQueuesRunner {
+            registered_queues: Arc::new(HashMap::from([
+                (
+                    &*QUEUE_NAME,
+                    QueueWorkerConfig {
+                        worker_fn: Arc::clone(&worker_fn),
+                        num_workers: 1,
+                    },
+                ),
+                (
+                    &*QUEUE_WITHOUT_WORKERS,
+                    QueueWorkerConfig {
+                        worker_fn,
+                        num_workers: 0,
+                    },
+                ),
+            ])),
+            cancellation_token: CancellationToken::new(),
+            control: ArcTaskRunnerControl::default(),
+        };
+        tokio::time::timeout(Duration::from_secs(5), runner.run_queue_workers(false))
+            .await
+            .expect("the worker ends");
+
+        let counted: Vec<_> = recorder
+            .handle()
+            .render()
+            .lines()
+            .filter(|line| line.starts_with("lakekeeper_task_queue_timed_out_attempts_total"))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            counted,
+            vec![r#"lakekeeper_task_queue_timed_out_attempts_total{queue_name="test"} 0"#]
+        );
     }
 }

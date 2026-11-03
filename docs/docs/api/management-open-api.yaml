@@ -9493,6 +9493,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write_data
         - grant_modify
         - change_ownership
     GenericTableAssignment:
@@ -9502,6 +9503,7 @@ components:
         - $ref: '#/components/schemas/GenericTableAssignmentManageGrants'
         - $ref: '#/components/schemas/GenericTableAssignmentDescribe'
         - $ref: '#/components/schemas/GenericTableAssignmentSelect'
+        - $ref: '#/components/schemas/GenericTableAssignmentWriteData'
         - $ref: '#/components/schemas/GenericTableAssignmentModify'
         - $ref: '#/components/schemas/GenericTableAssignmentManageTags'
       discriminator:
@@ -9514,6 +9516,7 @@ components:
           ownership: '#/components/schemas/GenericTableAssignmentOwnership'
           pass_grants: '#/components/schemas/GenericTableAssignmentPassGrants'
           select: '#/components/schemas/GenericTableAssignmentSelect'
+          write_data: '#/components/schemas/GenericTableAssignmentWriteData'
     GenericTableAssignmentDescribe:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -9591,6 +9594,17 @@ components:
               type: string
               enum:
                 - select
+    GenericTableAssignmentWriteData:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write_data
     GenericTableRelation:
       type: string
       enum:
@@ -9599,6 +9613,7 @@ components:
         - manage_grants
         - describe
         - select
+        - write_data
         - modify
         - manage_tags
     GetEndpointStatisticsRequest:
@@ -11951,7 +11966,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableUpdateKind'
-          description: The kinds of metadata updates this commit contains.
+          description: |-
+            The kinds of metadata updates this commit contains. A check that names none
+            asks about a commit of any kind.
           uniqueItems: true
         updated_properties:
           type: object
@@ -13861,6 +13878,7 @@ components:
         - read_assignments
         - grant_create
         - grant_describe
+        - grant_write_data
         - grant_modify
         - grant_select
         - grant_pass_grants
@@ -13875,6 +13893,7 @@ components:
         - $ref: '#/components/schemas/NamespaceAssignmentDescribe'
         - $ref: '#/components/schemas/NamespaceAssignmentSelect'
         - $ref: '#/components/schemas/NamespaceAssignmentCreate'
+        - $ref: '#/components/schemas/NamespaceAssignmentWriteData'
         - $ref: '#/components/schemas/NamespaceAssignmentModify'
         - $ref: '#/components/schemas/NamespaceAssignmentManageTags'
       discriminator:
@@ -13888,6 +13907,7 @@ components:
           ownership: '#/components/schemas/NamespaceAssignmentOwnership'
           pass_grants: '#/components/schemas/NamespaceAssignmentPassGrants'
           select: '#/components/schemas/NamespaceAssignmentSelect'
+          write_data: '#/components/schemas/NamespaceAssignmentWriteData'
     NamespaceAssignmentCreate:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -13976,6 +13996,17 @@ components:
               type: string
               enum:
                 - select
+    NamespaceAssignmentWriteData:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write_data
     NamespaceIdentOrUuid:
       oneOf:
         - type: object
@@ -14013,6 +14044,7 @@ components:
         - describe
         - select
         - create
+        - write_data
         - modify
         - manage_tags
     OneLakeProfile:
@@ -14081,6 +14113,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write_data
         - grant_modify
         - change_ownership
     OpenFGANamespaceAction:
@@ -14089,6 +14122,7 @@ components:
         - read_assignments
         - grant_create
         - grant_describe
+        - grant_write_data
         - grant_modify
         - grant_select
         - grant_pass_grants
@@ -14102,6 +14136,7 @@ components:
         - grant_tag_creator
         - grant_create
         - grant_describe
+        - grant_write_data
         - grant_modify
         - grant_select
         - grant_project_admin
@@ -14128,6 +14163,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write_data
         - grant_modify
         - change_ownership
     OpenFGAViewAction:
@@ -14147,6 +14183,7 @@ components:
         - read_assignments
         - grant_create
         - grant_describe
+        - grant_write_data
         - grant_modify
         - grant_select
         - grant_pass_grants
@@ -14211,6 +14248,7 @@ components:
         - grant_tag_creator
         - grant_create
         - grant_describe
+        - grant_write_data
         - grant_modify
         - grant_select
         - grant_project_admin
@@ -14227,6 +14265,7 @@ components:
         - $ref: '#/components/schemas/ProjectAssignmentDescribe'
         - $ref: '#/components/schemas/ProjectAssignmentSelect'
         - $ref: '#/components/schemas/ProjectAssignmentCreate'
+        - $ref: '#/components/schemas/ProjectAssignmentWriteData'
         - $ref: '#/components/schemas/ProjectAssignmentModify'
       discriminator:
         propertyName: type
@@ -14240,6 +14279,7 @@ components:
           security_admin: '#/components/schemas/ProjectAssignmentSecurityAdmin'
           select: '#/components/schemas/ProjectAssignmentSelect'
           tag_creator: '#/components/schemas/ProjectAssignmentTagCreator'
+          write_data: '#/components/schemas/ProjectAssignmentWriteData'
     ProjectAssignmentCreate:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -14339,6 +14379,17 @@ components:
               type: string
               enum:
                 - tag_creator
+    ProjectAssignmentWriteData:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write_data
     ProjectRelation:
       type: string
       enum:
@@ -14350,6 +14401,7 @@ components:
         - describe
         - select
         - create
+        - write_data
         - modify
     ProjectTaskInfo:
       type: object
@@ -16319,6 +16371,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write_data
         - grant_modify
         - change_ownership
         - get_tasks
@@ -16331,6 +16384,7 @@ components:
         - $ref: '#/components/schemas/TableAssignmentManageGrants'
         - $ref: '#/components/schemas/TableAssignmentDescribe'
         - $ref: '#/components/schemas/TableAssignmentSelect'
+        - $ref: '#/components/schemas/TableAssignmentWriteData'
         - $ref: '#/components/schemas/TableAssignmentModify'
         - $ref: '#/components/schemas/TableAssignmentManageTags'
       discriminator:
@@ -16343,6 +16397,7 @@ components:
           ownership: '#/components/schemas/TableAssignmentOwnership'
           pass_grants: '#/components/schemas/TableAssignmentPassGrants'
           select: '#/components/schemas/TableAssignmentSelect'
+          write_data: '#/components/schemas/TableAssignmentWriteData'
     TableAssignmentDescribe:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -16420,6 +16475,17 @@ components:
               type: string
               enum:
                 - select
+    TableAssignmentWriteData:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write_data
     TableRelation:
       type: string
       enum:
@@ -16428,6 +16494,7 @@ components:
         - manage_grants
         - describe
         - select
+        - write_data
         - modify
         - manage_tags
     TableUpdateKind:
@@ -16525,7 +16592,9 @@ components:
         Identifier for a tabular (table, view, or generic table) — either a UUID
         or its name and namespace. Wire format primary names are `table-id` and
         `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
-        accepted as input aliases for client ergonomics.
+        accepted as input aliases for client ergonomics. A name addresses the live
+        tabular. A dropped tabular that can still be restored and a staged table that
+        was not committed yet are addressed by their UUID.
     TabularIdentUuid:
       oneOf:
         - $ref: '#/components/schemas/TabularIdentUuidTable'
@@ -17676,6 +17745,7 @@ components:
         - read_assignments
         - grant_create
         - grant_describe
+        - grant_write_data
         - grant_modify
         - grant_select
         - grant_pass_grants
@@ -17695,6 +17765,7 @@ components:
         - $ref: '#/components/schemas/WarehouseAssignmentDescribe'
         - $ref: '#/components/schemas/WarehouseAssignmentSelect'
         - $ref: '#/components/schemas/WarehouseAssignmentCreate'
+        - $ref: '#/components/schemas/WarehouseAssignmentWriteData'
         - $ref: '#/components/schemas/WarehouseAssignmentModify'
         - $ref: '#/components/schemas/WarehouseAssignmentManageTags'
       discriminator:
@@ -17708,6 +17779,7 @@ components:
           ownership: '#/components/schemas/WarehouseAssignmentOwnership'
           pass_grants: '#/components/schemas/WarehouseAssignmentPassGrants'
           select: '#/components/schemas/WarehouseAssignmentSelect'
+          write_data: '#/components/schemas/WarehouseAssignmentWriteData'
     WarehouseAssignmentCreate:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -17796,6 +17868,17 @@ components:
               type: string
               enum:
                 - select
+    WarehouseAssignmentWriteData:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write_data
     WarehouseFilter:
       oneOf:
         - $ref: '#/components/schemas/WarehouseFilterWarehouseId'
@@ -17850,6 +17933,7 @@ components:
         - describe
         - select
         - create
+        - write_data
         - modify
         - manage_tags
     WarehouseStatistics:

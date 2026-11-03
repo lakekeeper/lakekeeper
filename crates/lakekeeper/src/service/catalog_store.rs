@@ -871,6 +871,9 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ViewOrTableInfo, SetTabularProtectionError>;
 
+    /// Dropped tabulars keep their names, so with `include_deleted` several tabulars can match
+    /// one identifier. The map then holds the live tabular, or the most recently dropped one if
+    /// no live tabular matches.
     async fn get_tabular_infos_by_ident_impl(
         warehouse_id: WarehouseId,
         tabulars: &[TabularIdentBorrowed<'_>],
@@ -1608,6 +1611,11 @@ where
         request: TaskQueueDemandRequest<'_>,
         state: Self::State,
     ) -> std::result::Result<TaskQueueDemand, CatalogBackendError>;
+
+    async fn task_queue_oldest_due_impl(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<Option<chrono::DateTime<chrono::Utc>>, CatalogBackendError>;
 
     async fn resolve_tasks_impl(
         scope: TaskResolveScope,

@@ -11,8 +11,8 @@ use lakekeeper::{
     service::{UserId, authz::tests::HidingAuthorizer},
 };
 use lakekeeper_integration_tests::{
-    create_ns, create_view, create_view_helper, create_view_request, load_view_helper,
-    memory_io_profile, setup_simple, views_test_setup,
+    REFUSED_NEW_TABULAR_NAMES, create_ns, create_view, create_view_helper, create_view_request,
+    load_view_helper, memory_io_profile, setup_simple, views_test_setup,
 };
 use lakekeeper_storage_postgres::namespace::tests::initialize_namespace;
 use sqlx::PgPool;
@@ -253,4 +253,46 @@ async fn test_move_view_without_accept_moved_tabular_on_destination(pool: PgPool
             }]],
         )
     );
+}
+
+#[sqlx::test]
+async fn test_rename_view_refuses_invalid_destination_names(pool: PgPool) {
+    let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
+    let prefix = Prefix(whi.to_string());
+    let created_view = create_view_helper(
+        api_context.clone(),
+        namespace.clone(),
+        create_view_request(Some("daily_sales"), None),
+        Some(prefix.clone().into_string()),
+    )
+    .await
+    .unwrap();
+    let source = TableIdent::new(namespace.clone(), "daily_sales".to_string());
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = rename_view(
+            Some(prefix.clone()),
+            RenameTableRequest {
+                source: source.clone(),
+                destination: TableIdent::new(namespace.clone(), name.to_string()),
+            },
+            api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .expect_err("The destination name must be refused.");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+
+    let loaded = load_view_helper(
+        api_context,
+        ViewParameters {
+            view: source,
+            prefix: Some(prefix),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(loaded, created_view);
 }

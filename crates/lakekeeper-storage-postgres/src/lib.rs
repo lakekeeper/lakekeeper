@@ -456,6 +456,7 @@ mod search_path_tests {
 
 #[cfg(test)]
 mod transaction_tests {
+    use futures::FutureExt;
     use sqlx::AssertSqlSafe;
 
     use super::*;
@@ -575,6 +576,57 @@ mod transaction_tests {
         // 25P03 is mapped to a conflict like other aborted transactions.
         assert_eq!(error.error.r#type, "TransactionFailed");
         assert_eq!(probe_rows(&pool).await, 0);
+    }
+
+    /// A request dropped while its `BEGIN` is in flight must not leave the pooled connection
+    /// inside a transaction: the next user's statements would silently run in it.
+    #[sqlx::test(migrations = false)]
+    async fn cancelled_begin_leaves_no_open_transaction(admin_pool: PgPool) {
+        const APPLICATION_NAME: &str = "cancelled-begin-probe";
+        let connect_opts = (*admin_pool.connect_options())
+            .clone()
+            .application_name(APPLICATION_NAME);
+        // Lakekeeper's default. With a ping on acquire, one poll would not reach `BEGIN`.
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .test_before_acquire(false)
+            .connect_with(connect_opts)
+            .await
+            .unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let connection_idle = async || {
+            let idle = async {
+                while pool.num_idle() == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(10), idle)
+                .await
+                .expect("the connection returns to the pool");
+        };
+        drop(pool.acquire().await.unwrap());
+        connection_idle().await;
+
+        for i in 0..200 {
+            // One poll sends `BEGIN`; dropping the future cancels it before the reply arrives.
+            let begin = if i % 2 == 0 {
+                PostgresTransaction::begin_write(state.clone())
+            } else {
+                PostgresTransaction::begin_read(state.clone())
+            };
+            drop(begin.now_or_never());
+            connection_idle().await;
+
+            let states: Vec<String> = sqlx::query_scalar(
+                "SELECT state FROM pg_stat_activity \
+                 WHERE datname = current_database() AND application_name = $1",
+            )
+            .bind(APPLICATION_NAME)
+            .fetch_all(&admin_pool)
+            .await
+            .unwrap();
+            assert_eq!(states, vec!["idle".to_string()], "iteration {i}");
+        }
     }
 
     #[test]

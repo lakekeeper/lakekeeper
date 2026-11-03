@@ -1,0 +1,58 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.1",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.1"
+  },
+  "event_id": "019b76da-a800-7000-8000-000000000000",
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "commit",
+      "updated_properties": {},
+      "removed_properties": []
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "view",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "namespace": "sales",
+      "view": "orders_by_day"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "commit",
+        "updated_properties": {},
+        "removed_properties": []
+      },
+      "entity": {
+        "entity_type": "view",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace": "sales",
+        "view": "orders_by_day"
+      },
+      "allowed": false,
+      "determined_by": []
+    }
+  ],
+  "decision": "denied",
+  "failure_reason": "action_forbidden",
+  "error": {
+    "type": "ProtectedViewVersionChange",
+    "code": 403,
+    "message": "Query engines run this view as the user in view property 'trino.run-as-owner'. Only a trusted engine whose owner property is exactly 'trino.run-as-owner' may change which view version is current. Make the change from that engine. If no such engine is configured, an operator must configure it first (see \"Trusted Engines\" in the Lakekeeper configuration documentation).",
+    "stack": [],
+    "error_id": "019684ff-0000-7000-8000-000000000006"
+  }
+}

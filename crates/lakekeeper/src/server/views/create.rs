@@ -17,15 +17,15 @@ use crate::{
         compression_codec::CompressionCodec,
         io::{delete_on_failure, write_file},
         maybe_get_secret, require_warehouse_id,
-        tables::{require_active_warehouse, validate_table_or_view_ident},
+        tables::{require_active_warehouse, validate_table_or_view_ident_creation},
         tabular::determine_tabular_location,
-        views::{commit::validate_trusted_engine_properties_on_create, validate_view_properties},
+        views::{owner_property, validate_view_properties},
     },
     service::{
         COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogStore, CatalogViewOps, Result,
-        SecretStore, State, TabularId, Transaction, ViewId,
+        SecretStore, State, TabularId, Transaction, ViewId, WarehouseId,
         authz::{
-            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource, GrantSpec,
             emit_bootstrap_grants_async, write_bootstrap_grants,
         },
         contract_verification::ContractVerification,
@@ -56,9 +56,8 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     let view = TableIdent::new(provided_ns.clone(), request.name.clone());
 
-    validate_table_or_view_ident(&view)?;
+    validate_table_or_view_ident_creation(&view)?;
     validate_view_properties(request.properties.keys())?;
-    validate_trusted_engine_properties_on_create(&request.properties, &request_metadata)?;
 
     if request.view_version.representations().is_empty() {
         return Err(ErrorModel::bad_request(
@@ -80,6 +79,15 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         provided_ns.clone(),
         action.clone(),
     );
+
+    // Security: an engine owner property (e.g. `trino.run-as-owner`) names the user an engine
+    // runs the view as. Only a trusted engine that owns the property may set it.
+    owner_property::check_property_writes(
+        request.properties.keys().map(String::as_str),
+        owner_property::protected_properties(state.v1_state.authentication),
+        request_metadata.engines(),
+    )
+    .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = &state.v1_state.authz;
@@ -182,33 +190,10 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-        let committed: Result<_> = async {
-            let bootstrap_grants = write_bootstrap_grants::<C, A>(
-                authorizer,
-                &request_metadata,
-                &GrantResource::View {
-                    warehouse_id,
-                    view_id,
-                },
-                t.transaction(),
-            )
-            .await?;
-            t.commit().await?;
-            Ok(bootstrap_grants)
-        }
-        .await;
-        // The view entry outlives a rolled-back transaction; keep it if the commit may have
-        // been applied.
-        if let Err(e) = &committed
-            && e.error.r#type != COMMIT_STATE_UNKNOWN_ERROR_TYPE
-            && let Err(e) = authorizer.delete_view(warehouse_id, view_id).await
-        {
-            tracing::warn!(
-                %view_id,
-                "Failed to remove the authorizer entry of a view that was not created: {e}"
-            );
-        }
-        Ok((config, committed?))
+        let committed =
+            commit_created_view::<C, A>(authorizer, &request_metadata, warehouse_id, view_id, t)
+                .await?;
+        Ok((config, committed))
     })
     .await?;
 
@@ -241,6 +226,44 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     };
 
     Ok(load_view_result)
+}
+
+/// Writes the bootstrap grants of a created view and commits its transaction. If that fails,
+/// removes the authorizer entry of the view, unless the commit may have been applied.
+async fn commit_created_view<C: CatalogStore, A: Authorizer>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    view_id: ViewId,
+    mut t: C::Transaction,
+) -> Result<Vec<GrantSpec>> {
+    let committed: Result<_> = async {
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
+            authorizer,
+            request_metadata,
+            &GrantResource::View {
+                warehouse_id,
+                view_id,
+            },
+            t.transaction(),
+        )
+        .await?;
+        t.commit().await?;
+        Ok(bootstrap_grants)
+    }
+    .await;
+    // The view entry outlives a rolled-back transaction; keep it if the commit may have
+    // been applied.
+    if let Err(e) = &committed
+        && e.error.r#type != COMMIT_STATE_UNKNOWN_ERROR_TYPE
+        && let Err(e) = authorizer.delete_view(warehouse_id, view_id).await
+    {
+        tracing::warn!(
+            %view_id,
+            "Failed to remove the authorizer entry of a view that was not created: {e}"
+        );
+    }
+    committed
 }
 
 /// Build the metadata of a new view.

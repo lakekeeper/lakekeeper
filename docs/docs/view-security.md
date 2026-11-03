@@ -103,17 +103,17 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-
 **What happens when a request is not matched as a trusted engine:**
 
 - `loadTable` / `loadView` requests that include a `referenced-by` parameter are **silently ignored** with respect to that parameter — the load still succeeds, but the DEFINER chain is not resolved and permissions are evaluated against the caller only. This is logged at debug level; no error is returned. The exceptions are malformed chains, rejected with `400` before engine trust is considered: a chain deeper than the configured maximum (`ReferencedByDepthExceeded`), or one that names the object being loaded (`ReferencedByContainsTarget`).
-- Only **commits that actually attempt to set or remove a protected owner property** (`create-view` or `commit-view` writing `trino.run-as-owner`) are rejected with `403 ProtectedPropertyModification`. An ignored `referenced-by` on a load does **not** trigger this error.
+- A view create or commit that writes a protected owner property is rejected with `403 ProtectedPropertyModification`. A commit that changes the current version of a view that has a protected owner property is rejected with `403 ProtectedViewVersionChange`. See [Property Protection](#property-protection). An ignored `referenced-by` on a load does **not** trigger these errors.
 
 !!! note "When using the OPA bridge"
 
     The [OPA bridge](./opa.md) authenticates to Lakekeeper with its own client credentials to evaluate permission checks. We recommend it runs under a **dedicated** Keycloak client with narrower privileges than the Trino catalog client — not a shared one.
 
-    If the OPA bridge issues `loadTable` / `loadView` requests with `referenced-by` on behalf of Trino, its client must be matched as a trusted engine so DEFINER chains are resolved rather than ignored. Add its service-account subject under `SUBJECTS` (or its audience under `AUDIENCES` if your IdP mints distinguishing audiences). Permission-check traffic itself is not gated by trusted-engine status — the `ProtectedPropertyModification` rejection only applies to DDL that writes a protected owner property, not to the OPA bridge's routine check calls.
+    Do **not** match the OPA bridge client as a trusted engine. The OPA bridge only sends permission checks. It does not load tables or views and does not write view properties. Trino itself sends `referenced-by` when it loads a table or view through a view chain.
 
 ### Creating DEFINER Views
 
-Once trusted engines are configured, only matched engines can set the owner property on views. In Trino, DEFINER views are created with:
+Only matched trusted engines can set the owner property on views. If authentication is enabled and Trino is not configured as a trusted engine, `CREATE VIEW` in Trino fails with `403 ProtectedPropertyModification` unless the view is created with `SECURITY INVOKER`. In Trino, DEFINER views are created with:
 
 ```sql
 CREATE VIEW my_schema.my_view
@@ -121,22 +121,15 @@ SECURITY DEFINER
 AS SELECT * FROM my_schema.my_table;
 ```
 
-Trino automatically sets the `trino.run-as-owner` property on the view with the creating user as the owner.
+Trino automatically sets the `trino.run-as-owner` property on the view with the creating user as the owner. `SECURITY DEFINER` is Trino's default, so a `CREATE VIEW` without a `SECURITY` clause also sets the property.
 
 !!! warning "Enabling trusted engines with existing views"
 
     When you enable trusted engines in an existing deployment, any views that **already** have the owner property set (e.g. `trino.run-as-owner`) will **immediately** be treated as DEFINER views. Lakekeeper will start checking permissions against the owner specified in that property.
 
-    **Before enabling**, audit your existing views:
+    **Before enabling**, [check your existing views](#check-existing-views). Ensure that:
 
-    ```sql
-    -- In Trino, check for views with the owner property
-    SELECT * FROM my_catalog.information_schema.views;
-    ```
-
-    Ensure that:
-
-    1. The owner values in existing view properties are valid users in your identity provider.
+    1. The owner values in existing view properties are valid users in your identity provider, and each owner is the user who should own the view.
     2. Those owners have appropriate permissions on the underlying tables.
     3. You have tested the authorization chain in a non-production environment first.
 
@@ -144,17 +137,45 @@ Trino automatically sets the `trino.run-as-owner` property on the view with the 
 
 ### Property Protection
 
-Once a trusted engine is configured, the owner property (e.g. `trino.run-as-owner`) becomes **protected**: only requests from a matched engine can set or remove it. This prevents privilege escalation — without this protection, any user who can commit to a view could set themselves as the DEFINER owner and gain access to tables they shouldn't see.
+The protection applies only if [authentication](./authentication.md) is enabled. Without authentication, Lakekeeper cannot tell clients apart and cannot trust any of them as an engine.
 
-Non-engine requests that attempt to modify a protected property receive a `403 Forbidden` error with type `ProtectedPropertyModification`.
+Lakekeeper protects views that an engine runs as their owner. It protects `trino.run-as-owner` and the owner property of every configured trusted engine:
 
-Protection is **case-insensitive on the match, case-sensitive on the accepted value**: a property key that differs from the configured owner property only in casing (e.g. `Trino.Run-As-Owner` when the admin configured `trino.run-as-owner`) is also rejected. Most engines read the owner property with fixed casing, so a case variant would silently have no effect on the security model while appearing to set it — only the exact key configured by the admin is accepted.
+- **Owner property:** only a request from a matched engine whose owner property is exactly that key can set, change or remove it. Other requests that name the property receive `403 ProtectedPropertyModification`, even if they send the value the view already has. A commit that leaves the property out can change the other properties of the view.
+- **View version:** on a view that has a protected owner property, only a request from a matched engine that owns this property can change the current view version, for example add a version with new SQL or go back to an older version. Other requests receive `403 ProtectedViewVersionChange`.
+- **New query:** if the matched engine changes the SQL, default catalog or default namespace of such a view, and the same commit leaves the owner property out, Lakekeeper removes the owner property in that commit. The view becomes an INVOKER view, so the new query never runs as the previous owner. `CREATE OR REPLACE VIEW ... SECURITY DEFINER` in Trino sends the owner property with the user who runs the statement as the new owner, and the view stays a DEFINER view.
+- **Same query:** a change that keeps the SQL, default catalog and default namespace keeps the owner, for example `COMMENT ON COLUMN` in Trino. Lakekeeper cannot tell such a change from `CREATE OR REPLACE VIEW ... SECURITY INVOKER` with the same query, so that statement also leaves the view a DEFINER view. To make it an INVOKER view, change the query in the same statement, or drop the view and create it again; dropping loses the grants on the view.
+
+When Lakekeeper removes the owner property, the commit includes a `remove-properties` update for it. The stored view, the response, the view-committed event and the published CloudEvent show the removal. The authorization record in the audit log lists the properties as the engine sent them.
+
+Trino runs a DEFINER view with the permissions of the user named in `trino.run-as-owner`, even if Lakekeeper itself has no trusted engine. With the [OPA bridge](./opa.md), Trino asks for the permissions of that user. So these rules apply with or without configured trusted engines. Refused requests are recorded in the [audit log](./logging.md) as denied authorizations.
+
+If no trusted engine is configured, no request can write `trino.run-as-owner`, and views that already have it cannot get a new view version from any client:
+
+- Statements that send the owner fail with `403 ProtectedPropertyModification`: in Trino, `CREATE VIEW` and `CREATE OR REPLACE VIEW` with `SECURITY DEFINER`, and `ALTER VIEW ... REFRESH` of a DEFINER view.
+- Statements that change the version and leave the owner out fail with `403 ProtectedViewVersionChange`: in Trino, `CREATE OR REPLACE VIEW ... SECURITY INVOKER` and `COMMENT ON COLUMN`; in Spark, `CREATE OR REPLACE VIEW`.
+- Queries, `COMMENT ON VIEW`, rename and drop keep working. Configure the trusted engine to change these views again.
+
+Lakekeeper trusts the identity of the token, not the client software. Match the trusted engine to an identity that belongs to the engine alone, for example the subject of its service account. A Trino catalog that sends a token per user (`iceberg.rest-catalog.session=USER`) cannot be a trusted engine: Lakekeeper sees the token of the user, never Trino's own identity. Create and change DEFINER views through a catalog that authenticates with Trino's own service identity. Never match the engine by an audience that user tokens carry: then every user with such a token is trusted as the engine, even from other clients.
+
+Lakekeeper compares keys without regard to upper and lower case, and accepts only the exact key: a key that differs from an owner property only in upper and lower case (e.g. `Trino.Run-As-Owner` for `trino.run-as-owner`) is rejected, even from the trusted engine. Engines read the exact key, so such a key would not change whom the view runs as.
+
+### Check Existing Views
+
+Views that already exist can carry a `trino.run-as-owner` value that a client other than Trino wrote. When you set up the trusted engine, check every view that has this property, and make sure that each owner is the user who should own the view:
+
+- Trino's `information_schema.views` does not show view properties. List the views of each namespace and read the properties of each view, for example with the `list_views` and `load_view` functions of PyIceberg 0.12 or later.
+- If the [audit log](./logging.md) was enabled, search it for `create_view` records whose `properties` contain `trino.run-as-owner`, and for `commit` records on views whose `updated_properties` or `removed_properties` contain it. Check the records whose actor is not the service identity of Trino.
+
+To correct the owner of a view, run `CREATE OR REPLACE VIEW ... SECURITY DEFINER` in Trino as the user who should own it. The view keeps its id and the grants on it. Drop the view and create it again only if this is not possible: this loses the grants on the view.
 
 ## Security Considerations
 
 ### Delegated Execution
 
 When a user accesses a table through a DEFINER view, the table load happens with the **owner's** permissions. This is flagged as "delegated execution" in authorization checks and audit logs. Authorization backends can use this flag to apply different policies — for example, skipping permission-inspection rights that would normally be required.
+
+A DEFINER view runs everything it references with the owner's rights. So whoever can change a table or view that a DEFINER view references also changes what runs with the owner's rights.
 
 ### Metadata vs. execution: `get_metadata` and `select`
 
@@ -180,7 +201,7 @@ Every view in a referenced-by chain is checked for *both* actions. The target of
 
 The owner property on a view is critical for security. Lakekeeper ensures that:
 
-- Only matched trusted engines can **set or remove** the owner property.
+- Only matched trusted engines can **set or remove** the owner property, and change the current version of a view that has it.
 - The owner string is resolved to a user in the engine's Identity Provider.
 - If the owner cannot be resolved, the request fails with a clear error.
 

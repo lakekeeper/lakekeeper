@@ -17,7 +17,8 @@ use crate::{
     },
     metrics::MetricsServer,
     service::{
-        CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
+        CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore,
+        ServerAuthentication, ServerInfo, State,
         admission::AdmissionGates,
         authz::{AllowAllAuthorizer, Authorizer, ConfiguredInstanceAdmins},
         contract_verification::ContractVerifiers,
@@ -520,6 +521,7 @@ async fn serve_inner<
             events: dispatcher,
             license_status,
             build_info,
+            authentication: ServerAuthentication::of(authenticator.as_ref()),
         },
     };
 
@@ -583,6 +585,24 @@ async fn serve_inner<
         cancellation_token.clone(),
     ));
     service_ids.insert(metrics_handle.id(), "Metrics Server".to_string());
+
+    // How long tasks wait. Headless workers come and go with the autoscaler, so they add no
+    // series or queries.
+    if CONFIG.serve_http_api {
+        let sampler = crate::api::task_queue_demand::OldestDueSampler::new::<C>(
+            state.v1_state.catalog.clone(),
+            state.v1_state.registered_task_queues.clone(),
+        );
+        let sampler_cancellation_token = cancellation_token.clone();
+        let sampler_abort_handle = service_futures.spawn(async move {
+            sampler.run(sampler_cancellation_token).await;
+            Ok(())
+        });
+        service_ids.insert(
+            sampler_abort_handle.id(),
+            "Oldest Due Task Sampler".to_string(),
+        );
+    }
 
     // Periodic health checks:
     let health_abort_handles =

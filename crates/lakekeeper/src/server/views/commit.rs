@@ -19,25 +19,30 @@ use crate::{
             ViewParameters, views::LoadViewRequest,
         },
     },
-    config::MatchedEngines,
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
         io::{cleanup_before_response, delete_on_failure, remove_all, write_file},
-        require_warehouse_id,
+        maybe_get_secret, require_warehouse_id,
         tables::{
-            MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
+            MAX_RETRIES_ON_CONCURRENT_UPDATE, concurrent_update_backoff, determine_table_ident,
             extract_count_from_metadata_location, validate_table_or_view_ident,
         },
-        views::validate_view_updates,
+        views::{
+            owner_property::{self, PropertyWrites},
+            validate_view_updates,
+        },
     },
     service::{
         AuthZViewInfo, CONCURRENT_UPDATE_ERROR_TYPE, CatalogIdempotencyOps, CatalogStore,
         CatalogView, CatalogViewOps, InternalParseLocationError, State, TabularListFlags,
-        Transaction, ViewCommit, ViewId, ViewInfo,
+        Transaction, ViewCommit, ViewId,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
-        events::{APIEventContext, ViewEventTransition, context::ResolvedView},
+        events::{
+            APIEventContext, ViewEventTransition,
+            context::{AuthzChecked, Resolved, ResolvedView, UserProvidedView},
+        },
         idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
         storage::{StoragePermissions, StorageProfile},
@@ -45,8 +50,6 @@ use crate::{
 };
 
 /// Commit updates to a view
-// TODO: break up into smaller fns
-#[allow(clippy::too_many_lines)]
 pub async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     request: CommitViewRequest,
@@ -89,29 +92,33 @@ pub async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     // ------------------- AUTHZ + BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz.clone();
 
-    let (property_updates, property_removals) = parse_view_property_updates(&request.updates);
-
-    // Security: Trusted engine properties (e.g. `trino.run-as-owner`) determine the
-    // DEFINER/INVOKER security model. Only the corresponding trusted engine may set or
-    // remove these properties — otherwise a user could escalate privileges.
-    validate_trusted_engine_property_changes(
-        &property_updates,
-        &property_removals,
-        &request_metadata,
-    )?;
-
-    let action = CatalogViewAction::Commit {
-        updated_properties: Arc::new(property_updates.clone()),
-        removed_properties: Arc::new(property_removals.clone()),
-    };
-
+    let (updated_properties, removed_properties) = parse_view_property_updates(&request.updates);
+    let (updated_properties, removed_properties) =
+        (Arc::new(updated_properties), Arc::new(removed_properties));
     let event_ctx = APIEventContext::for_view(
         Arc::new(request_metadata),
         state.v1_state.events.clone(),
         warehouse_id,
         parameters.view,
-        action.clone(),
+        CatalogViewAction::Commit {
+            updated_properties: updated_properties.clone(),
+            removed_properties: removed_properties.clone(),
+        },
     );
+    let property_writes = PropertyWrites {
+        updated: &updated_properties,
+        removed: &removed_properties,
+    };
+    let protected_properties = owner_property::protected_properties(state.v1_state.authentication);
+
+    // Security: an engine owner property (e.g. `trino.run-as-owner`) names the user an engine
+    // runs the view as. Only a trusted engine that owns the property may set or remove it.
+    owner_property::check_property_writes(
+        property_writes.keys(),
+        protected_properties,
+        event_ctx.request_metadata().engines(),
+    )
+    .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
 
     let authz_result = authorizer
         .load_and_authorize_view_operation::<C>(
@@ -135,33 +142,31 @@ pub async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     // Verify assertions
     check_requirements(request.requirements.as_ref(), view_id)?;
 
-    let storage_profile = &warehouse.storage_profile;
-    let storage_secret_id = warehouse.storage_secret_id;
-
-    // Start the retry loop
     let request = Arc::new(request);
+    let ctx = CommitViewContext {
+        event_ctx: &event_ctx,
+        storage_profile: &warehouse.storage_profile,
+        storage_secret_id: warehouse.storage_secret_id,
+        request: &request,
+        property_writes,
+        protected_properties,
+        data_access,
+    };
+    let (result, commit, committed_request) =
+        commit_with_retries::<C, A, S>(&ctx, &state, idempotency_key.as_ref()).await?;
+    event_ctx.emit_view_committed_async(Arc::new(commit), data_access, committed_request);
+    Ok(result)
+}
+
+/// Runs [`try_commit_view`], and runs it again after a concurrent update.
+async fn commit_with_retries<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    ctx: &CommitViewContext<'_>,
+    state: &ApiContext<State<A, C, S>>,
+    idempotency_key: Option<&IdempotencyKey>,
+) -> Result<(LoadViewResult, ViewEventTransition, Arc<CommitViewRequest>)> {
     let mut attempt = 0;
     loop {
-        let result = try_commit_view::<C, A, S>(
-            CommitViewContext {
-                view_info: &event_ctx.resolved().view,
-                storage_profile,
-                storage_secret_id,
-                request: request.as_ref(),
-                data_access,
-            },
-            &state,
-            event_ctx.request_metadata(),
-            idempotency_key.as_ref(),
-        )
-        .await;
-
-        match result {
-            Ok((result, commit)) => {
-                event_ctx.emit_view_committed_async(Arc::new(commit), data_access, request);
-
-                return Ok(result);
-            }
+        match try_commit_view::<C, A, S>(ctx, state, idempotency_key).await {
             Err(e)
                 if e.error.r#type == CONCURRENT_UPDATE_ERROR_TYPE
                     && attempt < MAX_RETRIES_ON_CONCURRENT_UPDATE =>
@@ -170,43 +175,46 @@ pub async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 tracing::info!(
                     "Concurrent update detected (attempt {attempt}/{MAX_RETRIES_ON_CONCURRENT_UPDATE}), retrying view commit operation",
                 );
-                // Short jittered exponential backoff to reduce contention
-                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
-                let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
-                let base = 50u64.saturating_mul(1u64 << exp);
-                let jitter = fastrand::u64(..base / 2);
-                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
-                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
+                concurrent_update_backoff(attempt).await;
             }
-            Err(e) => return Err(e),
+            result => return result,
         }
     }
 }
 
+type CommitViewEventContext =
+    APIEventContext<UserProvidedView, Resolved<ResolvedView>, CatalogViewAction, AuthzChecked>;
+
 // Context structure to hold static parameters for retry function
 struct CommitViewContext<'a> {
-    view_info: &'a ViewInfo,
+    event_ctx: &'a CommitViewEventContext,
     storage_profile: &'a StorageProfile,
     storage_secret_id: Option<SecretId>,
-    request: &'a CommitViewRequest,
+    request: &'a Arc<CommitViewRequest>,
+    /// The properties the authorized commit sets and removes.
+    property_writes: PropertyWrites<'a>,
+    /// `None` if the owner property rules are off.
+    protected_properties: Option<&'static HashSet<String>>,
     data_access: DataAccessMode,
 }
 
-// Core commit logic that may be retried
+// Core commit logic that may be retried. Also returns the request the commit applied, which
+// can carry a `remove-properties` update that Lakekeeper adds.
 #[allow(clippy::too_many_lines)]
 async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
-    ctx: CommitViewContext<'_>,
+    ctx: &CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
     idempotency_key: Option<&IdempotencyKey>,
-) -> Result<(LoadViewResult, ViewEventTransition)> {
-    let warehouse_id = ctx.view_info.warehouse_id;
+) -> Result<(LoadViewResult, ViewEventTransition, Arc<CommitViewRequest>)> {
+    let request_metadata = ctx.event_ctx.request_metadata();
+    let view_info = &*ctx.event_ctx.resolved().view;
+    let warehouse_id = view_info.warehouse_id;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // These operations need fresh data on each retry
     let previous_view = C::load_view(
-        ctx.view_info.warehouse_id,
-        ctx.view_info.tabular_id,
+        view_info.warehouse_id,
+        view_info.tabular_id,
         false,
         t.transaction(),
     )
@@ -216,19 +224,19 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .map_err(InternalParseLocationError::from)?;
     let previous_metadata_location = previous_view.metadata_location.clone();
 
+    let CommittedMetadata {
+        request,
+        metadata: new_metadata,
+        delete_old_location,
+    } = build_committed_metadata(ctx, &previous_view.metadata, &previous_view_location)?;
+    let new_metadata = Arc::new(new_metadata);
+
     state
         .v1_state
         .contract_verifiers
-        .check_view_updates(&ctx.request.updates, &previous_view.metadata)
+        .check_view_updates(&request.updates, &previous_view.metadata)
         .await?
         .into_result()?;
-
-    let (new_metadata, delete_old_location) = build_new_metadata(
-        ctx.request.clone(),
-        (*previous_view.metadata).clone(),
-        &previous_view_location,
-    )?;
-    let new_metadata = Arc::new(new_metadata);
 
     let new_location =
         Location::from_str(new_metadata.location()).map_err(InternalParseLocationError::from)?;
@@ -254,27 +262,15 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     C::commit_view(
         ViewCommit {
             previous_view: &previous_view,
-            namespace_id: ctx.view_info.namespace_id,
-            warehouse_id: ctx.view_info.warehouse_id,
+            namespace_id: view_info.namespace_id,
+            warehouse_id: view_info.warehouse_id,
             new_view: &new_view,
         },
         t.transaction(),
     )
     .await?;
 
-    // Get storage secret
-    let storage_secret = if let Some(secret_id) = ctx.storage_secret_id {
-        Some(
-            state
-                .v1_state
-                .secrets
-                .require_storage_secret_by_id(secret_id)
-                .await?
-                .secret,
-        )
-    } else {
-        None
-    };
+    let storage_secret = maybe_get_secret(ctx.storage_secret_id, &state.v1_state.secrets).await?;
     let storage_secret_ref = storage_secret.as_deref();
 
     // Write the metadata file and commit
@@ -302,7 +298,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 &new_view.metadata_location,
                 StoragePermissions::ReadWriteDelete,
                 request_metadata,
-                ctx.view_info,
+                view_info,
             )
             .await?;
 
@@ -360,7 +356,63 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             old_metadata_location: previous_metadata_location,
             new_metadata_location: new_view.metadata_location,
         },
+        request,
     ))
+}
+
+/// The metadata a commit produces from the stored view, and the request it is built from.
+struct CommittedMetadata<'l> {
+    /// The client's request, with a `remove-properties` update appended if the owner property
+    /// rules remove owner properties.
+    request: Arc<CommitViewRequest>,
+    metadata: ViewMetadata,
+    delete_old_location: Option<DeleteLocation<'l>>,
+}
+
+/// Builds the metadata a commit produces from the stored view and applies the owner property
+/// rules of [`owner_property::check_version_change`]. A refusal follows the request's
+/// authorization record. If the rules remove owner properties, the metadata is built again from
+/// the stored view, with the removal appended to the request.
+fn build_committed_metadata<'l>(
+    ctx: &CommitViewContext<'_>,
+    previous_metadata: &ViewMetadata,
+    previous_location: &'l Location,
+) -> Result<CommittedMetadata<'l>> {
+    let (metadata, delete_old_location) = build_new_metadata(
+        &ctx.request.updates,
+        previous_metadata.clone(),
+        previous_location,
+    )?;
+    let stale_owner_properties = owner_property::check_version_change(
+        previous_metadata,
+        &metadata,
+        ctx.property_writes,
+        ctx.protected_properties,
+        ctx.event_ctx.request_metadata().engines(),
+    )
+    .map_err(|e| ctx.event_ctx.emit_late_authz_failure(e))?;
+    if stale_owner_properties.is_empty() {
+        return Ok(CommittedMetadata {
+            request: ctx.request.clone(),
+            metadata,
+            delete_old_location,
+        });
+    }
+
+    let mut request = CommitViewRequest::clone(ctx.request);
+    request.updates.push(ViewUpdate::RemoveProperties {
+        removals: stale_owner_properties,
+    });
+    let (metadata, delete_old_location) = build_new_metadata(
+        &request.updates,
+        previous_metadata.clone(),
+        previous_location,
+    )?;
+    Ok(CommittedMetadata {
+        request: Arc::new(request),
+        metadata,
+        delete_old_location,
+    })
 }
 
 /// Removes the location a view moved away from, and logs a failure.
@@ -395,11 +447,11 @@ fn check_requirements(requirements: Option<&Vec<ViewRequirement>>, view_id: View
 
 struct DeleteLocation<'c>(&'c Location);
 
-fn build_new_metadata(
-    request: CommitViewRequest,
+fn build_new_metadata<'l>(
+    updates: &[ViewUpdate],
     before_update_metadata: ViewMetadata,
-    before_location: &Location,
-) -> Result<(ViewMetadata, Option<DeleteLocation<'_>>)> {
+    before_location: &'l Location,
+) -> Result<(ViewMetadata, Option<DeleteLocation<'l>>)> {
     let previous_location = before_update_metadata.location().to_string();
     // Snapshot persisted schemas before the builder consumes the metadata, to reject a commit that
     // recycles a schema id onto different content (defense-in-depth: views have no RemoveSchema
@@ -408,7 +460,7 @@ fn build_new_metadata(
 
     let mut m = ViewMetadataBuilder::new_from_metadata(before_update_metadata);
     let mut delete_old_location = None;
-    for upd in request.updates {
+    for upd in updates {
         m = match upd {
             ViewUpdate::AssignUuid { .. } => {
                 return Err(ErrorModel::bad_request(
@@ -428,26 +480,28 @@ fn build_new_metadata(
                 if location.trim_end_matches('/') != previous_location.trim_end_matches('/') {
                     delete_old_location = Some(DeleteLocation(before_location));
                 }
-                m.set_location(location)
+                m.set_location(location.clone())
             }
 
-            ViewUpdate::UpgradeFormatVersion { format_version } => match format_version {
+            ViewUpdate::UpgradeFormatVersion { format_version } => match *format_version {
                 ViewFormatVersion::V1 => m,
             },
             ViewUpdate::AddSchema {
                 schema,
                 last_column_id: _,
-            } => m.add_schema(schema),
-            ViewUpdate::SetProperties { updates } => m.set_properties(updates).map_err(|e| {
-                ErrorModel::bad_request(
-                    format!("Error setting properties: {e}"),
-                    "AddSchemaError",
-                    Some(Box::new(e)),
-                )
-            })?,
-            ViewUpdate::RemoveProperties { removals } => m.remove_properties(&removals),
+            } => m.add_schema(schema.clone()),
+            ViewUpdate::SetProperties { updates } => {
+                m.set_properties(updates.clone()).map_err(|e| {
+                    ErrorModel::bad_request(
+                        format!("Error setting properties: {e}"),
+                        "AddSchemaError",
+                        Some(Box::new(e)),
+                    )
+                })?
+            }
+            ViewUpdate::RemoveProperties { removals } => m.remove_properties(removals),
             ViewUpdate::AddViewVersion { view_version } => {
-                m.add_version(view_version).map_err(|e| {
+                m.add_version(view_version.clone()).map_err(|e| {
                     ErrorModel::bad_request(
                         format!("Error appending view version: {e}"),
                         "AppendViewVersionError".to_string(),
@@ -456,7 +510,7 @@ fn build_new_metadata(
                 })?
             }
             ViewUpdate::SetCurrentViewVersion { view_version_id } => {
-                m.set_current_version_id(view_version_id).map_err(|e| {
+                m.set_current_version_id(*view_version_id).map_err(|e| {
                     ErrorModel::bad_request(
                         format!("Error setting current view version: {e}"),
                         "SetCurrentViewVersionError",
@@ -500,226 +554,6 @@ pub(crate) fn parse_view_property_updates(
     }
 
     (property_updates, property_removals)
-}
-
-/// Checks that none of the given property keys correspond to a trusted engine's
-/// owner property unless the request comes from that engine.
-///
-/// These properties control delegated execution and are a privilege escalation
-/// vector if modifiable by untrusted users.
-fn check_protected_properties<'a>(
-    property_keys: impl Iterator<Item = &'a str>,
-    protected_properties: &HashSet<String>,
-    matched_engines: &MatchedEngines,
-) -> Result<()> {
-    if protected_properties.is_empty() {
-        return Ok(());
-    }
-
-    for key in property_keys {
-        // Case-insensitive match: a key that differs only in casing from a
-        // protected property is still rejected unless the caller is the owning
-        // engine *and* uses the exact configured casing. Engines read these
-        // properties with fixed casing, so a case variant would silently have
-        // no effect on the security model while misleading readers.
-        let matches_protected = protected_properties
-            .iter()
-            .any(|p| p.eq_ignore_ascii_case(key));
-
-        if matches_protected && !matched_engines.owns_property(key) {
-            return Err(ErrorModel::builder()
-                .code(StatusCode::FORBIDDEN.as_u16())
-                .r#type("ProtectedPropertyModification")
-                .message(format!(
-                    "Property '{key}' controls the view security model and may only be modified by the corresponding trusted engine using the exact configured property key"
-                ))
-                .build()
-                .into());
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_trusted_engine_property_changes(
-    property_updates: &BTreeMap<String, String>,
-    property_removals: &[String],
-    request_metadata: &RequestMetadata,
-) -> Result<()> {
-    let all_keys = property_updates
-        .keys()
-        .map(String::as_str)
-        .chain(property_removals.iter().map(String::as_str));
-    check_protected_properties(
-        all_keys,
-        &crate::config::CONFIG.protected_properties,
-        request_metadata.engines(),
-    )
-}
-
-pub(super) fn validate_trusted_engine_properties_on_create(
-    properties: &std::collections::HashMap<String, String>,
-    request_metadata: &RequestMetadata,
-) -> Result<()> {
-    check_protected_properties(
-        properties.keys().map(String::as_str),
-        &crate::config::CONFIG.protected_properties,
-        request_metadata.engines(),
-    )
-}
-
-#[cfg(test)]
-mod test_check_protected_properties {
-    use std::collections::{HashMap, HashSet};
-
-    use super::check_protected_properties;
-    use crate::config::{MatchedEngines, TrinoEngineConfig, TrustedEngine};
-
-    fn protected() -> HashSet<String> {
-        ["trino.run-as-owner".to_string()].into_iter().collect()
-    }
-
-    #[test]
-    fn allows_unrelated_property() {
-        let result = check_protected_properties(
-            ["some.other.property"].into_iter(),
-            &protected(),
-            &MatchedEngines::default(),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn rejects_protected_property_from_non_engine() {
-        let result = check_protected_properties(
-            ["trino.run-as-owner"].into_iter(),
-            &protected(),
-            &MatchedEngines::default(),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn rejects_protected_property_from_wrong_engine() {
-        let other_matched = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
-            owner_property: "other.property".to_string(),
-            identities: HashMap::new(),
-        }));
-        let result = check_protected_properties(
-            ["trino.run-as-owner"].into_iter(),
-            &protected(),
-            &other_matched,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn allows_protected_property_from_correct_engine() {
-        let trino = TrustedEngine::Trino(TrinoEngineConfig {
-            owner_property: "trino.run-as-owner".to_string(),
-            identities: HashMap::new(),
-        });
-        let result = check_protected_properties(
-            ["trino.run-as-owner"].into_iter(),
-            &protected(),
-            &MatchedEngines::single(trino),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn allows_all_properties_when_no_engines_configured() {
-        let result = check_protected_properties(
-            ["trino.run-as-owner"].into_iter(),
-            &HashSet::new(),
-            &MatchedEngines::default(),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn rejects_when_one_of_many_properties_is_protected() {
-        let result = check_protected_properties(
-            ["safe.prop", "trino.run-as-owner", "another.safe"].into_iter(),
-            &protected(),
-            &MatchedEngines::default(),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn rejects_case_variant_of_protected_property_from_non_engine() {
-        let result = check_protected_properties(
-            ["Trino.Run-As-Owner"].into_iter(),
-            &protected(),
-            &MatchedEngines::default(),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn rejects_case_variant_of_protected_property_from_correct_engine() {
-        let trino = TrustedEngine::Trino(TrinoEngineConfig {
-            owner_property: "trino.run-as-owner".to_string(),
-            identities: HashMap::new(),
-        });
-        let result = check_protected_properties(
-            ["TRINO.RUN-AS-OWNER"].into_iter(),
-            &protected(),
-            &MatchedEngines::single(trino),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn allows_exact_casing_configured_by_admin() {
-        let protected: HashSet<String> = ["Trino.Run-As-Owner".to_string()].into_iter().collect();
-        let trino = TrustedEngine::Trino(TrinoEngineConfig {
-            owner_property: "Trino.Run-As-Owner".to_string(),
-            identities: HashMap::new(),
-        });
-        let result = check_protected_properties(
-            ["Trino.Run-As-Owner"].into_iter(),
-            &protected,
-            &MatchedEngines::single(trino),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn rejects_lowercase_when_admin_configured_mixed_case() {
-        let protected: HashSet<String> = ["Trino.Run-As-Owner".to_string()].into_iter().collect();
-        let trino = TrustedEngine::Trino(TrinoEngineConfig {
-            owner_property: "Trino.Run-As-Owner".to_string(),
-            identities: HashMap::new(),
-        });
-        let result = check_protected_properties(
-            ["trino.run-as-owner"].into_iter(),
-            &protected,
-            &MatchedEngines::single(trino),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn allows_property_when_any_matched_engine_owns_it() {
-        let trino_a = TrustedEngine::Trino(TrinoEngineConfig {
-            owner_property: "trino.run-as-owner".to_string(),
-            identities: HashMap::new(),
-        });
-        let trino_b = TrustedEngine::Trino(TrinoEngineConfig {
-            owner_property: "spark.run-as-owner".to_string(),
-            identities: HashMap::new(),
-        });
-        let protected: HashSet<String> = ["trino.run-as-owner", "spark.run-as-owner"]
-            .into_iter()
-            .map(String::from)
-            .collect();
-        let matched = MatchedEngines::new(vec![trino_a, trino_b]);
-        let result =
-            check_protected_properties(["trino.run-as-owner"].into_iter(), &protected, &matched);
-        assert!(result.is_ok());
-    }
 }
 
 #[cfg(test)]
@@ -795,7 +629,7 @@ mod tests {
     fn recommitting_the_same_location_with_a_slash_deletes_nothing() {
         let before = Location::from_str("s3://bucket/view").unwrap();
         let (metadata, delete_old) = build_new_metadata(
-            set_location("s3://bucket/view/"),
+            &set_location("s3://bucket/view/").updates,
             view_metadata("s3://bucket/view"),
             &before,
         )
@@ -813,7 +647,7 @@ mod tests {
     fn relocating_a_view_deletes_the_old_location() {
         let before = Location::from_str("s3://bucket/view").unwrap();
         let (metadata, delete_old) = build_new_metadata(
-            set_location("s3://bucket/elsewhere"),
+            &set_location("s3://bucket/elsewhere").updates,
             view_metadata("s3://bucket/view"),
             &before,
         )

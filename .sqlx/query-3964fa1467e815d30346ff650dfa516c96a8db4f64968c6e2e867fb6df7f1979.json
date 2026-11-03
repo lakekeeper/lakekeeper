@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT LEAST(\n            -- The oldest due task per queue name, in index order as the pick reads it.\n            (SELECT MIN(d.scheduled_for)\n            FROM unnest($1::text[]) AS q(queue_name)\n            CROSS JOIN LATERAL (\n                SELECT t.scheduled_for\n                FROM task t\n                WHERE t.queue_name = q.queue_name AND t.status = 'scheduled'\n                    AND t.scheduled_for <= now()\n                    AND COALESCE(t.resource_demand, 0) > $3\n                    AND COALESCE(t.resource_demand, 0) <= $4\n                ORDER BY t.scheduled_for\n                LIMIT 1\n            ) d),\n            -- When the heartbeat expired, as in `task_queue_demand`.\n            (SELECT MIN(t.last_heartbeat_at + COALESCE(tc.max_time_since_last_heartbeat, $5))\n            FROM task t\n            LEFT JOIN LATERAL (\n                SELECT cfg.max_time_since_last_heartbeat\n                FROM task_config cfg\n                WHERE cfg.queue_name = ANY($1)\n                    AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))\n                    AND cfg.project_id = t.project_id\n                ORDER BY (cfg.queue_name = $2) DESC\n                LIMIT 1\n            ) tc ON true\n            WHERE t.queue_name = ANY($1) AND t.status IN ('running', 'should-stop')\n                AND COALESCE(t.resource_demand, 0) > $3\n                AND COALESCE(t.resource_demand, 0) <= $4\n                AND now() - t.last_heartbeat_at > COALESCE(tc.max_time_since_last_heartbeat, $5))\n        ) AS \"oldest_due_since\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oldest_due_since",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Text",
+        "Int8",
+        "Int8",
+        "Interval"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3964fa1467e815d30346ff650dfa516c96a8db4f64968c6e2e867fb6df7f1979"
+}

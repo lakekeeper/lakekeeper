@@ -150,8 +150,8 @@ The following global configuration options are available:
 | `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
 | `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 | `LAKEKEEPER__TASK_DRAIN_TIMEOUT` | 300s | 0s | How long running tasks may continue after a stop signal (SIGTERM or SIGINT) before Lakekeeper stops the workers. `0s` does not wait. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
-| `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` | 180s | — | Stop the process after it ran no task for this long. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
-| `LAKEKEEPER__TASK_MAX_LIFETIME` | 3600s | — | Stop the process this long after it started. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` | 180s | — | Stop the process after it ran no task for this long. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. The value must be greater than 0. Leave it unset to turn it off. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
+| `LAKEKEEPER__TASK_MAX_LIFETIME` | 3600s | — | Stop the process this long after it started. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. The value must be greater than 0. Leave it unset to turn it off. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
 
 #### Stopping Task Workers
 
@@ -425,9 +425,9 @@ We strongly recommend bootstrapping new deployments with authorization already e
 | `LAKEKEEPER__OPENFGA__CLIENT_SECRET` | `abcd` | — | Client Secret for the Client ID. |
 | `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT` | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | — | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
 | `LAKEKEEPER__OPENFGA__SCOPE` | `openfga` | — | Additional scopes to request in the Client Credential flow. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX` | `collaboration` | — | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `3.1` | — | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
-| `LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE` | `50` | — | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX` | `collaboration` | — | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION`. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `<major>.<minor>` | — | Version of the OpenFGA authorization model that the server uses. If it is not set, the server uses the model version that `lakekeeper migrate` of the same release installs. If it is set, `lakekeeper migrate` does not change OpenFGA, and the server uses the model with this version. With the default model prefix `collaboration`, this is one of Lakekeeper's own models, and the version must be the one that your Lakekeeper release installs. To use a model that you manage outside of Lakekeeper, also set `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. Such a model must contain every type and relation that the server checks or writes, with the names of the model version that your release installs. It can contain more. The server compares only the names, not the definitions. The model must already exist in the store. If any of this is not true, the server does not start, and the error says what is wrong. |
+| `LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE` | `50` | — | The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
 
 #### Cedar { .lkp }
 
@@ -768,10 +768,12 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 
 ### Trusted Engines
 
-Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). When configured, Lakekeeper:
+Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). A trusted engine:
 
-1. **Protects the owner property** — only requests from a matched engine can set or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`).
-2. **Evaluates `referenced-by` chains** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+1. **Can write its owner property** — only requests from a matched engine can set, change or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`), or change the current version of a view that has this property.
+2. **Has `referenced-by` chains evaluated** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+
+The protection applies only if [authentication](./authentication.md) is enabled; Lakekeeper logs a warning at startup if trusted engines are configured without authentication. Lakekeeper reserves `trino.run-as-owner` for a trusted engine even if no trusted engine is configured. If no trusted engine is configured, no request can write it, and Trino can create views only with `SECURITY INVOKER`: a `CREATE VIEW` with `SECURITY DEFINER`, which is Trino's default, fails with `403 ProtectedPropertyModification`. Views that already have the property cannot get a new view version. Configure Trino as a trusted engine for any Trino that creates or changes `SECURITY DEFINER` views. See [Property Protection](./view-security.md#property-protection) for all rules.
 
 For a detailed explanation of DEFINER vs INVOKER views, see the [View Security](./view-security.md) guide.
 
@@ -782,7 +784,7 @@ Trusted engines are configured as a map under `LAKEKEEPER__TRUSTED_ENGINES`. Eac
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | — | Engine type. Currently only `trino` is supported. |
-| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property that identifies the owner for delegated execution. |
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property in which the engine stores the owner of a DEFINER view. For `trino`, set `trino.run-as-owner`: Trino always stores the owner there, and only an engine with exactly this owner property can write it. Lakekeeper logs a warning at startup for a `trino` engine with another value. |
 
 Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches AND (any audience matches OR any subject matches). Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
 
@@ -847,7 +849,7 @@ The LDAP, Entra ID and Okta providers share one two-layer cache, so a request ra
 1. **In-memory layer** — role assignments are held in a per-node moka cache (see [User Assignments Cache](#caching) above). Reads that hit this layer incur no I/O at all.
 2. **Database layer** — on an in-memory miss, role assignments are read from (and re-populate) the database. The database record includes a `synced_at` timestamp that is compared against the provider's `SYNC_INTERVAL_SECS` to decide whether the data is still fresh.
 
-Groups do not depend on the project, so a fresh record in any project answers every project. If the request's project lacks one of the groups in that record, for example after the role was deleted there, Lakekeeper asks the directory and stores the answer in that project. When no project holds a record younger than `SYNC_INTERVAL_SECS`, Lakekeeper asks the directory and writes the answer to the request's project and the in-memory cache. Only a user's own requests store anything: when Lakekeeper looks up someone else's groups, such as a grantee in a grant check, the subject of a permission check or the owner of a DEFINER view, it uses a fresh stored record or asks the directory, keeps the answer in memory for `SYNC_INTERVAL_SECS`, and writes nothing. A server action, such as creating a project or listing users, uses a fresh record from any project or asks the directory, and stores nothing. If the directory is unreachable, Lakekeeper serves the newest stored record from any project and emits an audit warning. A user with no stored record for the provider in any project, such as a user the directory has not been asked about yet, gets errors until the directory is reachable again.
+Groups do not depend on the project, so a fresh record in any project answers every project. If the request's project lacks one of the groups in that record, for example after the role was deleted there, Lakekeeper asks the directory and stores the answer in that project. When no project holds a record younger than `SYNC_INTERVAL_SECS`, Lakekeeper asks the directory and writes the answer to the request's project and the in-memory cache. Only a user's own requests store anything: when Lakekeeper looks up someone else's groups, such as a grantee in a grant check, the subject of a permission check or the owner of a DEFINER view, it uses a fresh stored record or asks the directory, keeps the answer in memory for `SYNC_INTERVAL_SECS`, and writes nothing. A server action, such as creating a project or listing users, uses a fresh record from any project or asks the directory, and stores nothing. A user that the directory does not know, such as a deleted user, gets none of its groups. Lakekeeper caches this answer like any other answer. If the directory is unreachable or answers with an error, Lakekeeper serves the newest stored record from any project and emits an audit warning. A user with no stored record for the provider in any project, such as a user the directory has not been asked about yet, gets errors until the directory is reachable again.
 
 #### LDAP role provider
 
@@ -1006,9 +1008,21 @@ LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_PASSWORD_FILE=/run/secrets/ldap-passwor
 
 _Available since Lakekeeper Plus 0.13.0_
 
-Resolves a user's **transitive** Microsoft Entra ID group memberships via the Microsoft Graph API and maps each group to a role — keyed by the group's object id, with the group `displayName` as the role name. Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
+Resolves the **transitive** Microsoft Entra ID group memberships of users and service principals via the Microsoft Graph API and maps each group to a role — keyed by the group's object id, with the group `displayName` as the role name. A service principal is an application, such as a query engine, or a managed identity, that signs in as itself. Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
 
-The app registration this provider authenticates as needs the Microsoft Graph **application** permissions `GroupMember.Read.All` and `User.Read.All`, admin-consented.
+The app registration this provider authenticates as needs the Microsoft Graph **application** permissions `GroupMember.Read.All`, `User.Read.All` and `Application.Read.All`, admin-consented. Without `Application.Read.All`, requests of service principals fail, and Lakekeeper does not detect a deleted user: the user keeps the groups that Lakekeeper stored last.
+
+The provider looks up each user and service principal by its Entra object id, which is the `oid` claim of the token. By default, Lakekeeper uses the `oid` claim as the subject. If you set `LAKEKEEPER__OPENID_SUBJECT_CLAIM`, or `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__SUBJECT_CLAIMS` for an [additional OIDC provider](#multiple-oidc-providers), set it to `oid`. Do not use `sub`, `appid` or `azp`. For users, `sub` is a different id for each application. `appid` and `azp` hold the client id of the calling application, not an object id. A user or service principal that Microsoft Graph does not know gets no groups from this provider. A new service principal can be unknown to Microsoft Graph for a short time. If it calls Lakekeeper in that time, it gets no groups until Lakekeeper asks Microsoft Graph again after `SYNC_INTERVAL_SECS`.
+
+When a service principal makes a request, Lakekeeper stores it as a user of type `application`.
+
+!!! warning "Choose which applications may sign in to Lakekeeper"
+    By default, Entra ID gives a token for Lakekeeper to every application in your tenant that asks for one. This includes managed identities and applications of other organizations that a user or an administrator in your tenant has consented to. A service principal that is in no group still gets every permission that your policies give to all signed-in users and applications. To allow only the applications you choose, add an app role to the Lakekeeper API app (App 2 in the [Entra ID setup](./authentication.md#app-2-lakekeeper-application)). Assign the app role to each of these applications directly. If you assign the app role to a group, Entra ID does not put it in the tokens of service principals in that group. Then do one of the following:
+
+    - Turn on "Assignment required" for the enterprise application of the Lakekeeper API app. Entra ID then gives tokens only to users and applications that are assigned to it, so also assign your users or their groups. Users can then no longer consent to applications that use Lakekeeper, so an administrator must grant consent for the whole organization.
+    - Add a [required-claim rule](#required-claims) that requires this app role in the `roles` claim. The rule also checks the tokens of users, so set "Allowed member types" of the app role to both users/groups and applications, and you must also assign it to your users or their groups.
+
+    To assign the app role to groups of users, you need Microsoft Entra ID P1 or P2. Only direct members of the group get the app role. Members of nested groups do not.
 
 **Required fields:**
 
@@ -1088,6 +1102,8 @@ LAKEKEEPER__ROLE_PROVIDER__ENTRA__IDP_IDS=["oidc"]
 _Available since Lakekeeper Plus 0.13.1_
 
 Resolves a user's Okta group memberships via the Okta management API and maps each group to a role — keyed by the group's immutable `id`, with the group `profile.name` as the role name and `profile.description` as the description. Okta groups are flat, so a single call returns the user's effective membership (direct plus group-rule assignments). Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
+
+Lakekeeper looks up each user by the subject of the token, which must be the user's Okta id or login. By default, a custom authorization server of Okta puts the user's login in the `sub` claim. A subject that Okta does not know gets no groups from this provider. A service app is one example: its token carries the app's client id as the subject, and Okta has no user with that id. Okta keeps the groups of a deactivated user, so Lakekeeper gives a deactivated user the roles of these groups until you delete the user in Okta.
 
 Authentication uses OAuth 2.0 client-credentials with a **private-key-JWT** client assertion — the only client-auth method Okta supports for org-scoped service apps. No static client secret is stored.
 
