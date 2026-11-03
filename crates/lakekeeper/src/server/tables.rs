@@ -36,9 +36,7 @@ pub(crate) use authorize_load::*;
 
 use super::{
     CatalogServer,
-    commit_tables::{
-        apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
-    },
+    commit_tables::{apply_commit, commit_action, ensure_format_version_upgrades_allowed},
     io::{cleanup_in_background, delete_files, delete_on_failure, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
@@ -77,9 +75,9 @@ use crate::{
         TableCreation, TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed,
         TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
-            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
+            ActionOnTableOrView, AuthZCannotSeeTable, AuthZCannotSeeView, AuthZError,
+            AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch, Authorizer,
+            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
             CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction, GrantResource,
             RequireNamespaceActionError, RequireTableActionError, emit_bootstrap_grants_async,
             write_bootstrap_grants,
@@ -1485,18 +1483,9 @@ pub async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S:
         .table_changes
         .iter()
         .filter_map(|c| {
-            c.identifier.as_ref().map(|ti| {
-                let (updated_properties, removed_properties) =
-                    parse_table_property_updates(&c.updates);
-                let action = CatalogTableAction::Commit {
-                    updated_properties: Arc::new(updated_properties),
-                    removed_properties: Arc::new(removed_properties),
-                    target_refs: Arc::new(refs_from_updates(&c.updates)),
-                    update_kinds: Arc::new(update_kinds(&c.updates)),
-                };
-
-                (ti.clone(), action)
-            })
+            c.identifier
+                .as_ref()
+                .map(|ti| (ti.clone(), commit_action(&c.updates)))
         })
         .multiunzip();
 
@@ -1652,22 +1641,19 @@ async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
         warehouse = authorizer.require_warehouse_presence(warehouse_id, refreshed_warehouse)?;
     }
 
+    let mut required = Vec::with_capacity(table_infos_with_actions.len());
+    for (info, action) in table_infos_with_actions.values() {
+        let namespace = require_namespace_for_tabular(&namespaces, &**info)?;
+        required.push((namespace, &**info, (**action).clone()));
+        // A commit to a staged table finishes the table's creation, so it also needs the
+        // permission to make a commit of any kind. The audit record lists the actions of
+        // the request.
+        if info.is_staged() {
+            required.push((namespace, &**info, CatalogTableAction::any_commit()));
+        }
+    }
     authorizer
-        .require_table_actions(
-            request_metadata,
-            &warehouse,
-            &namespaces,
-            &table_infos_with_actions
-                .values()
-                .map(|(ti, a)| {
-                    Ok::<_, AuthZCannotSeeNamespace>((
-                        require_namespace_for_tabular(&namespaces, &**ti)?,
-                        &**ti,
-                        (**a).clone(),
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        )
+        .require_table_actions(request_metadata, &warehouse, &namespaces, &required)
         .await?;
 
     Ok(CommitAuthorizationResult {

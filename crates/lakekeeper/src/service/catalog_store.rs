@@ -948,7 +948,7 @@ where
     ) -> std::result::Result<(TableInfo, Option<StagedTableId>), CreateTableError>;
 
     /// Load tables by table id.
-    /// Does not return staged tables.
+    /// Returns staged tables too, with no metadata location.
     /// If a table does not exist, it is not included in the response.
     async fn load_tables_impl<'a>(
         warehouse_id: WarehouseId,

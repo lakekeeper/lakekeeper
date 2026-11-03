@@ -205,7 +205,8 @@ where
     }
 
     /// Load tables by table id.
-    /// Does not return staged tables.
+    /// Returns staged tables too, with no metadata location: a commit loads the table it
+    /// applies to, and a commit to a staged table finishes its creation.
     /// If a table does not exist, do not include it in the response.
     async fn load_tables<'a>(
         warehouse_id: WarehouseId,

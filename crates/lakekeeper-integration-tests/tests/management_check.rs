@@ -950,6 +950,7 @@ fn test_table_action_update_property_serde() {
         }),
         target_refs: Arc::default(),
         update_kinds: Arc::default(),
+        update_kinds_listing: authz::UpdateKindsListing::default(),
     };
     let item = CatalogActionCheckItem {
         id: None,
