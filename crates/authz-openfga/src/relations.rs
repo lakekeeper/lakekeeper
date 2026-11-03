@@ -2902,6 +2902,42 @@ pub(crate) mod test {
         );
     }
 
+    /// A commit asks `can_commit_data` when it only changes data, which includes a commit
+    /// request without updates, and `can_commit` otherwise. A check that names no update kinds
+    /// asks about a commit of any kind.
+    #[test]
+    fn a_commit_maps_to_can_commit_data_only_when_it_only_changes_data() {
+        use std::sync::Arc;
+
+        use lakekeeper::service::authz::{TableUpdateKind, UpdateKindsListing};
+
+        let commit = |kinds: &[TableUpdateKind], update_kinds_listing| {
+            CatalogTableAction::Commit {
+                updated_properties: Arc::default(),
+                removed_properties: Arc::default(),
+                target_refs: Arc::default(),
+                update_kinds: Arc::new(kinds.iter().copied().collect()),
+                update_kinds_listing,
+            }
+            .to_openfga()
+        };
+        let check = UpdateKindsListing::default();
+        let request = UpdateKindsListing::every_update_for_tests();
+        let append = [
+            TableUpdateKind::AddSnapshot,
+            TableUpdateKind::SetSnapshotRef,
+        ];
+
+        assert_eq!(commit(&append, check), TableRelation::CanCommitData);
+        assert_eq!(commit(&append, request), TableRelation::CanCommitData);
+        assert_eq!(commit(&[], request), TableRelation::CanCommitData);
+        assert_eq!(commit(&[], check), TableRelation::CanCommit);
+        assert_eq!(
+            commit(&[TableUpdateKind::AddSchema], request),
+            TableRelation::CanCommit
+        );
+    }
+
     #[test]
     fn tag_creator_maps_to_its_own_grant_and_stored_relations() {
         assert_eq!(

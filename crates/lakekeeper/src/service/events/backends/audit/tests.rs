@@ -360,18 +360,12 @@ fn fixture_drop_action() -> ActionDescriptor {
     .action_descriptor()
 }
 
-/// A commit whose every collection is empty, built from the action's own descriptor.
+/// A commit request without updates, built by the handler's own constructor.
 ///
 /// A commit that changed no properties, targeted no refs and carried no update kinds still
 /// names all four keys: "nothing" is an empty value, not a missing key.
 fn fixture_empty_collections_action() -> ActionDescriptor {
-    CatalogTableAction::Commit {
-        updated_properties: Arc::new(std::collections::BTreeMap::new()),
-        removed_properties: Arc::new(Vec::new()),
-        target_refs: Arc::new(std::collections::BTreeSet::new()),
-        update_kinds: Arc::new(std::collections::BTreeSet::new()),
-    }
-    .action_descriptor()
+    crate::server::commit_tables::commit_action(&[]).action_descriptor()
 }
 
 /// A grant apply, built by the handler's own `event_actions()`, so it matches the running

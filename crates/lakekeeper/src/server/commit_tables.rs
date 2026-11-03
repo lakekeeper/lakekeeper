@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     str::FromStr as _,
+    sync::Arc,
 };
 
 use iceberg::{
@@ -14,8 +15,11 @@ use iceberg_ext::{
 use lakekeeper_io::Location;
 
 use crate::{
-    server::tables::create_table::ensure_format_version_allowed,
-    service::{AllowedFormatVersions, ErrorModel, IcebergErrorResponse, Result},
+    server::tables::{create_table::ensure_format_version_allowed, parse_table_property_updates},
+    service::{
+        AllowedFormatVersions, ErrorModel, IcebergErrorResponse, Result,
+        authz::{CatalogTableAction, UpdateKindsListing},
+    },
 };
 
 /// Table properties that must not be modified or removed once set.
@@ -332,13 +336,28 @@ fn ensure_refs_kept(refs_to_keep: Vec<String>, new_metadata: &TableMetadata) -> 
     .into())
 }
 
+/// The action to authorize for one table's commit request, built from its updates.
+///
+/// The only place that marks an action's `update_kinds` as listing every update of a commit
+/// request; see [`UpdateKindsListing`].
+pub(crate) fn commit_action(updates: &[TableUpdate]) -> CatalogTableAction {
+    let (updated_properties, removed_properties) = parse_table_property_updates(updates);
+    CatalogTableAction::Commit {
+        updated_properties: Arc::new(updated_properties),
+        removed_properties: Arc::new(removed_properties),
+        target_refs: Arc::new(refs_from_updates(updates)),
+        update_kinds: Arc::new(update_kinds(updates)),
+        update_kinds_listing: UpdateKindsListing::every_update(),
+    }
+}
+
 /// Collect the branch/tag ref names a commit explicitly writes, from its
 /// `SetSnapshotRef` / `RemoveSnapshotRef` updates.
 ///
 /// A `RemoveSnapshots` update names no ref. [`apply_commit`] refuses one that would
 /// drop a ref the commit does not remove by name, and [`update_kinds`] lets a policy
 /// require table-wide authority for it.
-pub(super) fn refs_from_updates(updates: &[TableUpdate]) -> BTreeSet<String> {
+fn refs_from_updates(updates: &[TableUpdate]) -> BTreeSet<String> {
     updates
         .iter()
         .filter_map(|update| match update {
@@ -354,7 +373,7 @@ pub(super) fn refs_from_updates(updates: &[TableUpdate]) -> BTreeSet<String> {
 /// Passed to the authorizer so a policy can require table-wide authority when a
 /// commit contains table-global changes (schema/spec/sort-order/properties)
 /// rather than only moving a branch ref.
-pub(super) fn update_kinds(updates: &[TableUpdate]) -> BTreeSet<TableUpdateKind> {
+fn update_kinds(updates: &[TableUpdate]) -> BTreeSet<TableUpdateKind> {
     updates.iter().map(TableUpdateKind::from).collect()
 }
 
@@ -400,7 +419,10 @@ fn check_immutable_properties_not_removed(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashMap};
+    use std::{
+        collections::{BTreeSet, HashMap},
+        sync::Arc,
+    };
 
     use iceberg::{
         TableRequirement, TableUpdate,
@@ -413,9 +435,10 @@ mod tests {
     use iceberg_ext::{catalog::TableUpdateKind, spec::TableMetadataBuilder};
 
     use super::{
-        AllowedFormatVersions, apply_commit, ensure_format_version_upgrades_allowed,
+        AllowedFormatVersions, apply_commit, commit_action, ensure_format_version_upgrades_allowed,
         ensure_schema_content_stable, refs_from_updates, update_kinds,
     };
+    use crate::service::authz::{CatalogTableAction, UpdateKindsListing};
 
     fn test_metadata_with_properties(
         props: HashMap<String, String>,
@@ -548,6 +571,52 @@ mod tests {
                 TableUpdateKind::UpgradeFormatVersion,
                 TableUpdateKind::SetProperties,
             ])
+        );
+    }
+
+    /// The action of a commit request without updates lists no update kinds, and lists
+    /// them as every update of the request.
+    #[test]
+    fn commit_action_of_a_request_without_updates() {
+        assert_eq!(
+            commit_action(&[]),
+            CatalogTableAction::Commit {
+                updated_properties: Arc::default(),
+                removed_properties: Arc::default(),
+                target_refs: Arc::default(),
+                update_kinds: Arc::default(),
+                update_kinds_listing: UpdateKindsListing::every_update(),
+            }
+        );
+    }
+
+    #[test]
+    fn commit_action_lists_properties_refs_and_kinds() {
+        let action = commit_action(&[
+            TableUpdate::SetSnapshotRef {
+                ref_name: MAIN_BRANCH.to_string(),
+                reference: branch_ref(1),
+            },
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("owner".to_string(), "team".to_string())]),
+            },
+            TableUpdate::RemoveProperties {
+                removals: vec!["comment".to_string()],
+            },
+        ]);
+        assert_eq!(
+            action,
+            CatalogTableAction::Commit {
+                updated_properties: Arc::new([("owner".to_string(), "team".to_string())].into()),
+                removed_properties: Arc::new(vec!["comment".to_string()]),
+                target_refs: Arc::new(BTreeSet::from([MAIN_BRANCH.to_string()])),
+                update_kinds: Arc::new(BTreeSet::from([
+                    TableUpdateKind::SetSnapshotRef,
+                    TableUpdateKind::SetProperties,
+                    TableUpdateKind::RemoveProperties,
+                ])),
+                update_kinds_listing: UpdateKindsListing::every_update(),
+            }
         );
     }
 
@@ -801,7 +870,7 @@ mod tests {
         // schema. Rebuild both schemas each iteration (fresh HashSet orders) and repeat so an
         // order-sensitive regression fails with overwhelming probability.
         let build = || -> iceberg::spec::SchemaRef {
-            std::sync::Arc::new(
+            Arc::new(
                 Schema::builder()
                     .with_schema_id(1)
                     .with_identifier_field_ids(vec![1, 2])
