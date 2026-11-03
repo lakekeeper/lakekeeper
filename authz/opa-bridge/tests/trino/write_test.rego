@@ -29,7 +29,7 @@ _data_kinds := {
 	"set-partition-statistics", "remove-partition-statistics",
 }
 
-# Answers as Lakekeeper does for a principal holding only `write` on the namespace: it
+# Answers as Lakekeeper does for a principal holding only `write_data` on the namespace: it
 # reads and writes the data of its tables and lists the namespace and warehouse. A commit
 # is allowed only if it names update kinds, every one of them a data kind, and changes no
 # property. Everything else is refused.
@@ -134,7 +134,7 @@ writer_allowed contains concat("", [procedure, " on t$snapshots"]) if {
 	_writer_may(_with_table(_procedure_input(procedure), "t$snapshots"))
 }
 
-# Pins every Trino operation a principal holding only `write` may run: reading, data
+# Pins every Trino operation a principal holding only `write_data` may run: reading, data
 # changes, compaction and statistics. Structural changes, history removal, drops,
 # renames, replacing and procedures stay refused.
 test_writer_may_run_exactly_these_operations if {

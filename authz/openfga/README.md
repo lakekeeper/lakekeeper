@@ -4,30 +4,32 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
-## `v4.14`
+## `v4.15`
 
 ```text
 MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Adds a `write` privilege between `select` and `modify`, for principals that change a table's data but not its structure, and cannot drop, rename or protect it. No tuple is written, rewritten or backfilled: `modify` implies `write`, so every existing grant authorizes exactly what it did before.
+Adds a `write_data` privilege between `select` and `modify`, for principals that change a table's data but not its structure, and cannot drop, rename or protect it. No tuple is written, rewritten or backfilled: `modify` implies `write_data`, so every grant from `v4.13` authorizes exactly what it did before.
 
 `project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_generic_table`:
 
-- Add `write` (`[user, role#assignee]`) and `write_effective`: `write or modify_effective` on the project, and `write or ownership or modify_effective` plus `write_effective` from the parent below it. `select_effective` now reads `write_effective` where it read `modify_effective`, which still includes it.
-- Add `can_grant_write` and, below the project, `can_revoke_write`, following `select`; below the project, `can_read_assignments` includes `can_grant_write`.
-- Below the project, `write` is a visibility source in `visible_below`, like the other grantable privileges, so a principal granted `write` on one deep table reaches the warehouse and the listings above it.
+- Add `write_data` (`[user, role#assignee]`) and `write_data_effective`: `write_data or modify_effective` on the project, and `write_data or ownership or modify_effective` plus `write_data_effective` from the parent below it. `select_effective` now reads `write_data_effective` where it read `modify_effective`, which still includes it.
+- Add `can_grant_write_data` and, below the project, `can_revoke_write_data`, following `select`; below the project, `can_read_assignments` includes `can_grant_write_data`.
+- Below the project, `write_data` is a visibility source in `visible_below`, like the other grantable privileges, so a principal granted `write_data` on one deep table reaches the warehouse and the listings above it.
 
 `lakekeeper_table`, `lakekeeper_generic_table`:
 
-- `can_write_data` reads `write_effective`.
+- `can_write_data` reads `write_data_effective`.
 
 `lakekeeper_table`:
 
-- Add `can_commit_data` (from `write_effective`), asked for a commit whose updates only change data: snapshots, branch and tag moves, and statistics, plus the encryption key of a snapshot it adds. Every other commit still asks `can_commit`, which stays at `modify_effective`.
+- Add `can_commit_data` (from `write_data_effective`), asked for a commit whose updates only change data: snapshots, branch and tag moves, and statistics, plus the encryption key of a snapshot it adds. Every other commit still asks `can_commit`, which stays at `modify_effective`.
 
-Views get no `write`: a view commit replaces its definition. A `write` grant on a namespace or above still yields `select` on the views below it.
+Views get no `write_data`: a view commit replaces its definition. A `write_data` grant on a namespace or above still yields `select` on the views below it.
+
+Supersedes `v4.14`, which did not reach a release. `v4.14` carried the same privilege under the name `write`. A store already provisioned with `v4.14` from a `main` build must see a higher version to pick up the renamed relations, hence the bump. `v4.14` is not registered any more; stores on it migrate straight to `v4.15`. Grants of `write` made on such a store do not carry over, and Lakekeeper's grant listings do not show them after the upgrade. List them before upgrading, or read them from OpenFGA directly afterwards, and grant `write_data` again.
 
 ## `v4.13`
 
