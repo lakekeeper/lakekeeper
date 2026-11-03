@@ -67,8 +67,6 @@ allow_table_rename if {
 
 allow_table_modify if {
 	input.action.operation in [
-		"SetTableComment", "SetColumnComment",
-		"AddColumn", "AlterColumn", "DropColumn", "RenameColumn",
 		"InsertIntoTable", "DeleteFromTable", "TruncateTable",
 		"UpdateTableColumns",
 	]
@@ -77,6 +75,21 @@ allow_table_modify if {
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_simple(catalog, schema, table, "write_data")
+}
+
+# Column changes add a schema, and comments and column changes can also change
+# properties, such as the name mapping. The bridge cannot see which updates Trino
+# will send, so it asks about a commit of any kind.
+allow_table_modify if {
+	input.action.operation in [
+		"SetColumnComment", "AddColumn", "AlterColumn", "DropColumn", "RenameColumn",
+		"SetTableComment",
+	]
+	table := input.action.resource.table.tableName
+	is_metadata_table(table) == false
+	catalog := input.action.resource.table.catalogName
+	schema := input.action.resource.table.schemaName
+	require_table_access_commit(catalog, schema, table, {}, [])
 }
 
 allow_table_modify if {
@@ -121,14 +134,24 @@ allow_table_procedure if {
 	input.action.resource.function.functionName in [
 		"OPTIMIZE",
 		"OPTIMIZE_MANIFESTS",
-		"EXPIRE_SNAPSHOTS",
 		"DROP_EXTENDED_STATS",
-		"REMOVE_ORPHAN_FILES",
-		"ADD_FILES",
 	]
 	table := input.action.resource.table.tableName
 	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	require_table_access_simple(catalog, schema, table, "write_data")
+}
+
+# Adding files also sets the table's name mapping if it has none. Expiring snapshots
+# removes history, and removing orphan files deletes files without a commit. All of
+# them ask about a commit of any kind.
+allow_table_procedure if {
+	input.action.operation == "ExecuteTableProcedure"
+	input.action.resource.function.functionName in ["ADD_FILES", "EXPIRE_SNAPSHOTS", "REMOVE_ORPHAN_FILES"]
+	table := input.action.resource.table.tableName
+	is_metadata_table(table) == false
+	catalog := input.action.resource.table.catalogName
+	schema := input.action.resource.table.schemaName
+	require_table_access_commit(catalog, schema, table, {}, [])
 }

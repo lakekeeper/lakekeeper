@@ -24,7 +24,7 @@ pub(super) static V4_0_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| AuthorizationModelVersion::new(4, 0));
 
 pub(super) static V4_CURRENT_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
-    LazyLock::new(|| AuthorizationModelVersion::new(4, 13));
+    LazyLock::new(|| AuthorizationModelVersion::new(4, 14));
 
 const V4_0_MODEL_JSON: &str = include_str!(
     // Change this for backward compatible changes.
@@ -35,7 +35,7 @@ const V4_0_MODEL_JSON: &str = include_str!(
 const V4_CURRENT_MODEL_JSON: &str = include_str!(
     // Change this for backward compatible changes.
     // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
-    "../../../authz/openfga/v4.13/schema.json"
+    "../../../authz/openfga/v4.14/schema.json"
 );
 
 #[cfg(test)]
@@ -102,7 +102,7 @@ pub(crate) fn add_model_v4_current(
     manager.add_model(
         serde_json::from_str(V4_CURRENT_MODEL_JSON)
             // Change also the model version in this string:
-            .expect("Model v4.13 is a valid AuthorizationModel in JSON format."),
+            .expect("Model v4.14 is a valid AuthorizationModel in JSON format."),
         *V4_CURRENT_MODEL_VERSION,
         // For major version upgrades, this is where tuple migrations go.
         None::<MigrationFn<_, _>>,
