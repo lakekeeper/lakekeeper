@@ -77,9 +77,8 @@ static VARY_ON_REQUEST_IDENTITY: HeaderValue =
 /// principal-specific.
 ///
 /// `Cache-Control` is set `if_not_present` so that a route that decides its
-/// own caching keeps its directive: the S3 signer sends `private` or
-/// `no-cache` depending on the signed request's method, as the Iceberg REST
-/// spec defines.
+/// own caching keeps its directive: the S3 signer sends `no-cache`, so that
+/// clients do not cache its signatures.
 /// `Vary` is *appended*: it is a list-valued header, so a route that names a
 /// further request header must not lose the fields below. Caches combine the
 /// field lines, which is also how `CompressionLayer` adds `accept-encoding`.
@@ -845,8 +844,8 @@ mod test {
         assert!(!cache_control.contains("no-store"), "{cache_control}");
     }
 
-    /// The S3 signer relies on this: a sign response for a write carries
-    /// `no-cache`, which the layer must not replace with `private`.
+    /// The S3 signer relies on this: a sign response carries `no-cache`,
+    /// which the layer must not replace with `private`.
     #[tokio::test]
     async fn a_route_keeps_its_own_cache_directives() {
         let headers = cache_directive_headers(&[(header::CACHE_CONTROL, "no-cache")]).await;
