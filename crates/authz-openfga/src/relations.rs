@@ -2909,20 +2909,20 @@ pub(crate) mod test {
     fn a_commit_maps_to_can_commit_data_only_when_it_only_changes_data() {
         use std::sync::Arc;
 
-        use lakekeeper::service::authz::{TableUpdateKind, UpdateKindsListing};
+        use lakekeeper::service::authz::{CommitFacts, TableUpdateKind};
 
-        let commit = |kinds: &[TableUpdateKind], update_kinds_listing| {
+        let commit = |kinds: &[TableUpdateKind], commit_facts| {
             CatalogTableAction::Commit {
                 updated_properties: Arc::default(),
                 removed_properties: Arc::default(),
                 target_refs: Arc::default(),
                 update_kinds: Arc::new(kinds.iter().copied().collect()),
-                update_kinds_listing,
+                commit_facts,
             }
             .to_openfga()
         };
-        let check = UpdateKindsListing::default();
-        let request = UpdateKindsListing::every_update_for_tests();
+        let check = CommitFacts::default();
+        let request = CommitFacts::of_request_for_tests();
         let append = [
             TableUpdateKind::AddSnapshot,
             TableUpdateKind::SetSnapshotRef,

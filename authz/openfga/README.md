@@ -25,7 +25,7 @@ Adds a `write_data` privilege between `select` and `modify`, for principals that
 
 `lakekeeper_table`:
 
-- Add `can_commit_data` (from `write_data_effective`), asked for a commit whose updates only change data: snapshots, branch and tag moves, and statistics, plus the encryption key of a snapshot it adds. It is also asked for a commit request without updates. Every other commit still asks `can_commit`, which stays at `modify_effective`. A commit to a staged table finishes the table's creation, so it asks `can_commit` as well, whatever it contains.
+- Add `can_commit_data` (from `write_data_effective`), asked for a commit whose updates only change data: snapshots, branch and tag moves, and statistics, plus the encryption key of a snapshot it adds. It is also asked for a commit request without updates. Every other commit still asks `can_commit`, which stays at `modify_effective`. A commit to a staged table finishes the table's creation, so it asks `can_commit`, whatever it contains.
 
 Views get no `write_data`: a view commit replaces its definition. A `write_data` grant on a namespace or above still yields `select` on the views below it.
 

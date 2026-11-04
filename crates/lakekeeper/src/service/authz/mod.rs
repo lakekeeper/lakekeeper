@@ -1698,12 +1698,11 @@ pub enum CatalogTableAction {
         // branch-ref move (schema, spec, properties, snapshot expiry, …).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
         update_kinds: Arc<BTreeSet<TableUpdateKind>>,
-        /// Whether `update_kinds` lists every update of a commit request the server
-        /// applies; see [`UpdateKindsListing`].
+        /// What the server establishes about this commit; see [`CommitFacts`].
         // Skipped by serde, so no client can claim it, and kept out of the audit record.
         #[serde(skip)]
         #[audit(expands_to = "")]
-        update_kinds_listing: UpdateKindsListing,
+        commit_facts: CommitFacts,
     },
     Rename,
     /// Rename this table into another namespace. Asked in addition to `rename` when a
@@ -1760,7 +1759,8 @@ impl CatalogTableAction {
     /// Whether this is a commit that only changes the table's data; see
     /// [`TableUpdateKind::changes_only_data`]. A commit request without updates is one: it
     /// changes neither data nor structure. A commit check that names no update kinds asks
-    /// about commits in general, so it is not one.
+    /// about commits in general, so it is not one. A commit to a staged table is not one
+    /// either: it finishes the table's creation.
     #[must_use]
     pub fn is_data_commit(&self) -> bool {
         match self {
@@ -1769,20 +1769,30 @@ impl CatalogTableAction {
                 removed_properties,
                 target_refs: _,
                 update_kinds,
-                update_kinds_listing,
+                commit_facts,
             } => {
-                updated_properties.is_empty()
+                !commit_facts.to_staged_table
+                    && updated_properties.is_empty()
                     && removed_properties.is_empty()
-                    && ((update_kinds_listing.every_update && update_kinds.is_empty())
+                    && ((commit_facts.lists_every_update && update_kinds.is_empty())
                         || TableUpdateKind::changes_only_data(update_kinds))
             }
             _ => false,
         }
     }
 
+    /// This action, asked on `table`. A commit to a staged table finishes the table's
+    /// creation, so it is marked as such; every other action stays as it is.
+    #[must_use]
+    pub(crate) fn on_table(mut self, table: &TableInfo) -> Self {
+        if let Self::Commit { commit_facts, .. } = &mut self {
+            commit_facts.to_staged_table = table.is_staged();
+        }
+        self
+    }
+
     /// A commit of any kind: the commit check that names no update kinds and changes no
-    /// property. A commit to a staged table finishes the table's creation, so the server
-    /// asks this action for it as well.
+    /// property.
     #[must_use]
     pub(crate) fn any_commit() -> Self {
         Self::Commit {
@@ -1790,34 +1800,41 @@ impl CatalogTableAction {
             removed_properties: Arc::default(),
             target_refs: Arc::default(),
             update_kinds: Arc::default(),
-            update_kinds_listing: UpdateKindsListing::default(),
+            commit_facts: CommitFacts::default(),
         }
     }
 }
 
-/// How the `update_kinds` of a [`CatalogTableAction::Commit`] list the commit's updates.
+/// What the server establishes about a [`CatalogTableAction::Commit`], beyond what a
+/// permission check can name.
 ///
-/// The default lists the kinds a permission check names. A check that names none asks about a
-/// commit of any kind. The server marks the action of a commit request it applies: its
-/// `update_kinds` list every update, so an empty list means a commit request without updates.
-/// [`CatalogTableAction::is_data_commit`] is the only method that interprets it.
+/// No client can claim any of it: serde skips it. The default describes a permission check,
+/// whose `update_kinds` are the kinds it names; a check that names none asks about a commit
+/// of any kind. [`CatalogTableAction::is_data_commit`] is the only method that interprets it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct UpdateKindsListing {
-    every_update: bool,
+pub struct CommitFacts {
+    /// `update_kinds` lists every update of a commit request the server applies, so an
+    /// empty list means a commit request without updates.
+    lists_every_update: bool,
+    /// The commit goes to a staged table, so it finishes the table's creation.
+    to_staged_table: bool,
 }
 
-impl UpdateKindsListing {
-    /// The listing of a commit request the server applies: every update.
+impl CommitFacts {
+    /// The facts of a commit request the server applies: `update_kinds` lists every update.
     #[must_use]
-    pub(crate) fn every_update() -> Self {
-        Self { every_update: true }
+    pub(crate) fn of_request() -> Self {
+        Self {
+            lists_every_update: true,
+            to_staged_table: false,
+        }
     }
 
-    /// [`Self::every_update`], for tests outside this crate.
+    /// [`Self::of_request`], for tests outside this crate.
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
-    pub fn every_update_for_tests() -> Self {
-        Self::every_update()
+    pub fn of_request_for_tests() -> Self {
+        Self::of_request()
     }
 }
 impl EventAction for CatalogTableAction {
@@ -1831,7 +1848,7 @@ impl EventAction for CatalogTableAction {
                 target_refs,
                 update_kinds,
                 // The record states the commit as the request does.
-                update_kinds_listing: _,
+                commit_facts: _,
             } => {
                 b = b.context(ActionContextKey::UpdatedProperties(
                     updated_properties.as_ref().clone(),
@@ -3610,13 +3627,13 @@ pub mod tests {
             d.context.iter().map(|k| k.as_str().to_string()).collect()
         };
 
-        // `update_kinds_listing` never reaches the record.
+        // `commit_facts` never reaches the record.
         let commit = CatalogTableAction::Commit {
             updated_properties: Arc::new(BTreeMap::new()),
             removed_properties: Arc::new(Vec::new()),
             target_refs: Arc::new(BTreeSet::new()),
             update_kinds: Arc::new(BTreeSet::new()),
-            update_kinds_listing: UpdateKindsListing::every_update(),
+            commit_facts: CommitFacts::of_request(),
         };
         assert_eq!(
             keys(commit.action_descriptor()),
@@ -3904,7 +3921,7 @@ pub mod tests {
                     removed_properties: Arc::new(Vec::new()),
                     target_refs: Arc::new(BTreeSet::new()),
                     update_kinds: Arc::new(BTreeSet::new()),
-                    update_kinds_listing: UpdateKindsListing::default(),
+                    commit_facts: CommitFacts::default(),
                 },
                 serde_json::json!({"action": "commit"}),
             ),
@@ -3931,7 +3948,7 @@ pub mod tests {
             removed_properties: Arc::new(vec!["key2".to_string(), "key3".to_string()]),
             target_refs: Arc::new(BTreeSet::new()),
             update_kinds: Arc::new(BTreeSet::new()),
-            update_kinds_listing: UpdateKindsListing::default(),
+            commit_facts: CommitFacts::default(),
         };
         let serialized = serde_json::to_value(&action).expect("Failed to serialize");
         let expected_serialized = serde_json::json!({
@@ -3960,7 +3977,7 @@ pub mod tests {
                 TableUpdateKind::SetSnapshotRef,
                 TableUpdateKind::AddSchema,
             ])),
-            update_kinds_listing: UpdateKindsListing::default(),
+            commit_facts: CommitFacts::default(),
         };
         let context: BTreeMap<&str, String> = action
             .action_descriptor()
@@ -3981,7 +3998,7 @@ pub mod tests {
     #[test]
     fn test_is_data_commit() {
         let commit = |updated: &[(&str, &str)], removed: &[&str], kinds: &[TableUpdateKind]| {
-            commit_with_listing(updated, removed, kinds, UpdateKindsListing::default())
+            commit_with_facts(updated, removed, kinds, CommitFacts::default())
         };
         let append = [
             TableUpdateKind::AddSnapshot,
@@ -3997,11 +4014,11 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    fn commit_with_listing(
+    fn commit_with_facts(
         updated: &[(&str, &str)],
         removed: &[&str],
         kinds: &[TableUpdateKind],
-        update_kinds_listing: UpdateKindsListing,
+        commit_facts: CommitFacts,
     ) -> CatalogTableAction {
         CatalogTableAction::Commit {
             updated_properties: Arc::new(
@@ -4013,7 +4030,7 @@ pub mod tests {
             removed_properties: Arc::new(removed.iter().map(|k| (*k).to_string()).collect()),
             target_refs: Arc::default(),
             update_kinds: Arc::new(kinds.iter().copied().collect()),
-            update_kinds_listing,
+            commit_facts,
         }
     }
 
@@ -4021,25 +4038,22 @@ pub mod tests {
     /// kinds asks about a commit of any kind, so it is not.
     #[test]
     fn test_is_data_commit_of_a_request_without_updates() {
-        let every = UpdateKindsListing::every_update();
+        let every = CommitFacts::of_request();
         let append = [
             TableUpdateKind::AddSnapshot,
             TableUpdateKind::SetSnapshotRef,
         ];
 
-        assert!(commit_with_listing(&[], &[], &[], every).is_data_commit());
+        assert!(commit_with_facts(&[], &[], &[], every).is_data_commit());
+        assert!(!commit_with_facts(&[], &[], &[], CommitFacts::default()).is_data_commit());
+        assert!(!commit_with_facts(&[("owner", "team")], &[], &[], every).is_data_commit());
         assert!(
-            !commit_with_listing(&[], &[], &[], UpdateKindsListing::default()).is_data_commit()
+            !commit_with_facts(&[], &[], &[TableUpdateKind::AddSchema], every).is_data_commit()
         );
-        assert!(!commit_with_listing(&[("owner", "team")], &[], &[], every).is_data_commit());
-        assert!(
-            !commit_with_listing(&[], &[], &[TableUpdateKind::AddSchema], every).is_data_commit()
-        );
-        assert!(commit_with_listing(&[], &[], &append, every).is_data_commit());
+        assert!(commit_with_facts(&[], &[], &append, every).is_data_commit());
     }
 
-    /// The commit of any kind, which the server asks for a commit to a staged table, is
-    /// the check `{"action": "commit"}`, and not a data commit.
+    /// The commit of any kind is the check `{"action": "commit"}`, and not a data commit.
     #[test]
     fn test_any_commit_is_the_commit_check_without_update_kinds() {
         let check: CatalogTableAction =
@@ -4048,27 +4062,62 @@ pub mod tests {
         assert!(!CatalogTableAction::any_commit().is_data_commit());
     }
 
-    /// JSON can neither set nor carry `update_kinds_listing`: a check that claims to list
+    /// JSON can neither set nor carry `commit_facts`: a check that claims to list
     /// every update stays a check, and a commit request serializes as that check.
     #[test]
-    fn test_update_kinds_listing_never_reaches_or_leaves_json() {
+    fn test_commit_facts_never_reach_or_leave_json() {
         let claimed: CatalogTableAction = serde_json::from_value(serde_json::json!({
             "action": "commit",
-            "update_kinds_listing": {"every_update": true}
+            "commit_facts": {"lists_every_update": true, "to_staged_table": false}
         }))
         .unwrap();
         assert_eq!(claimed, CatalogTableAction::any_commit());
         assert!(!claimed.is_data_commit());
 
         assert_eq!(
-            serde_json::to_value(commit_with_listing(
-                &[],
-                &[],
-                &[],
-                UpdateKindsListing::every_update()
-            ))
-            .unwrap(),
+            serde_json::to_value(commit_with_facts(&[], &[], &[], CommitFacts::of_request()))
+                .unwrap(),
             serde_json::json!({"action": "commit"})
+        );
+    }
+
+    /// A commit to a staged table is never a data commit, whatever it contains, and the
+    /// request or check still carries its content as before. On a live table, and for
+    /// actions other than a commit, `on_table` changes nothing.
+    #[test]
+    fn test_a_commit_to_a_staged_table_is_never_a_data_commit() {
+        let live = crate::service::TableInfo::new_random(Uuid::nil().into());
+        let staged = crate::service::TableInfo {
+            metadata_location: None,
+            ..live.clone()
+        };
+        let request = CommitFacts::of_request();
+        let append = [
+            TableUpdateKind::AddSnapshot,
+            TableUpdateKind::SetSnapshotRef,
+        ];
+
+        for (facts, kinds) in [
+            (request, &append[..]),
+            (request, &[][..]),
+            (CommitFacts::default(), &append[..]),
+        ] {
+            let action = commit_with_facts(&[], &[], kinds, facts);
+            assert!(action.clone().on_table(&live).is_data_commit());
+            let on_staged = action.clone().on_table(&staged);
+            assert!(!on_staged.is_data_commit());
+            assert_eq!(
+                serde_json::to_value(&on_staged).unwrap(),
+                serde_json::to_value(&action).unwrap()
+            );
+            assert_eq!(
+                format!("{:?}", on_staged.action_descriptor()),
+                format!("{:?}", action.action_descriptor())
+            );
+        }
+        assert_eq!(
+            CatalogTableAction::ReadData.on_table(&staged),
+            CatalogTableAction::ReadData
         );
     }
 
@@ -4082,7 +4131,7 @@ pub mod tests {
             removed_properties: Arc::default(),
             target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
             update_kinds: Arc::new(BTreeSet::from([TableUpdateKind::SetSnapshotRef])),
-            update_kinds_listing: UpdateKindsListing::default(),
+            commit_facts: CommitFacts::default(),
         };
         let serialized = serde_json::to_value(&action).expect("Failed to serialize");
         assert_eq!(

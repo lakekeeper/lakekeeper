@@ -1,9 +1,13 @@
 // Extracted from crates/lakekeeper/src/api/management/v1/check.rs.
 // VAK-437 split.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::Arc,
+};
 
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg::TableUpdate;
+use iceberg_ext::catalog::rest::{CommitTableRequest, ErrorModel};
 use lakekeeper::{
     WarehouseId,
     api::{
@@ -32,7 +36,8 @@ use lakekeeper::{
         CatalogNamespaceOps, NamespaceIdent, State, UserId,
         authz::{
             self, CatalogGenericTableAction, CatalogNamespaceAction, CatalogServerAction,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, tests::HidingAuthorizer,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, TableUpdateKind,
+            tests::HidingAuthorizer,
         },
     },
 };
@@ -950,7 +955,7 @@ fn test_table_action_update_property_serde() {
         }),
         target_refs: Arc::default(),
         update_kinds: Arc::default(),
-        update_kinds_listing: authz::UpdateKindsListing::default(),
+        commit_facts: authz::CommitFacts::default(),
     };
     let item = CatalogActionCheckItem {
         id: None,
@@ -1664,4 +1669,128 @@ async fn test_check_internal_by_name_ignores_staged_table(pool: sqlx::PgPool) {
         },
     };
     assert_eq!(setup.check(vec![by_id], true).await.unwrap(), vec![true]);
+}
+
+/// A commit check on a staged table asks the authorizer what the server asks for a commit
+/// request with the same content. This authorizer allows a commit only if it sets a property.
+#[sqlx::test]
+async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: sqlx::PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool,
+        lakekeeper_integration_tests::memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+    let prefix = Some(Prefix(warehouse_id.to_string()));
+    let namespace = lakekeeper_integration_tests::create_ns(
+        api_context.clone(),
+        warehouse_id.to_string(),
+        "test_namespace".to_string(),
+    )
+    .await
+    .namespace;
+    let mut request = create_table_request(Some("staged".to_string()), None);
+    request.stage_create = Some(true);
+    let staged_id = CatalogServer::create_table(
+        NamespaceParameters {
+            prefix: prefix.clone(),
+            namespace: namespace.clone(),
+        },
+        request,
+        DataAccess::not_specified(),
+        api_context.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap()
+    .metadata
+    .uuid();
+    authz.block_action("table:Commit { updated_properties: {}");
+
+    let check = async |updated: &[(&str, &str)], removed: &[&str], kind: TableUpdateKind| {
+        let action = CatalogTableAction::Commit {
+            updated_properties: Arc::new(
+                updated
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect(),
+            ),
+            removed_properties: Arc::new(removed.iter().map(|k| (*k).to_string()).collect()),
+            target_refs: Arc::default(),
+            update_kinds: Arc::new(BTreeSet::from([kind])),
+            commit_facts: authz::CommitFacts::default(),
+        };
+        check_internal(
+            api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+            CatalogActionsBatchCheckRequest {
+                checks: vec![CatalogActionCheckItem {
+                    id: None,
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Table {
+                        action,
+                        table: TabularIdentOrUuid::IdInWarehouse {
+                            warehouse_id,
+                            table_id: staged_id,
+                        },
+                    },
+                }],
+                error_on_not_found: true,
+            },
+        )
+        .await
+        .unwrap()
+        .results
+        .iter()
+        .map(|r| r.allowed)
+        .collect::<Vec<_>>()
+    };
+    let commit = async |update: TableUpdate| {
+        let table = iceberg::TableIdent::new(namespace.clone(), "staged".to_string());
+        CatalogServer::commit_table(
+            TableParameters {
+                prefix: prefix.clone(),
+                table: table.clone(),
+            },
+            CommitTableRequest {
+                identifier: Some(table),
+                requirements: vec![],
+                updates: vec![update],
+            },
+            api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.error.code)
+    };
+
+    assert_eq!(
+        check(&[], &["owner"], TableUpdateKind::RemoveProperties).await,
+        vec![false]
+    );
+    assert_eq!(
+        commit(TableUpdate::RemoveProperties {
+            removals: vec!["owner".to_string()],
+        })
+        .await,
+        Err(403)
+    );
+
+    assert_eq!(
+        check(&[("owner", "team")], &[], TableUpdateKind::SetProperties).await,
+        vec![true]
+    );
+    assert_eq!(
+        commit(TableUpdate::SetProperties {
+            updates: HashMap::from([("owner".to_string(), "team".to_string())]),
+        })
+        .await,
+        Ok(())
+    );
 }

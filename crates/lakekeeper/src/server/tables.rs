@@ -1658,13 +1658,7 @@ async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
     let mut required = Vec::with_capacity(table_infos_with_actions.len());
     for (info, action) in table_infos_with_actions.values() {
         let namespace = require_namespace_for_tabular(&namespaces, &**info)?;
-        required.push((namespace, &**info, (**action).clone()));
-        // A commit to a staged table finishes the table's creation, so it also needs the
-        // permission to make a commit of any kind. The audit record lists the actions of
-        // the request.
-        if info.is_staged() {
-            required.push((namespace, &**info, CatalogTableAction::any_commit()));
-        }
+        required.push((namespace, &**info, (**action).clone().on_table(info)));
     }
     authorizer
         .require_table_actions(request_metadata, &warehouse, &namespaces, &required)
