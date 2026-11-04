@@ -14,7 +14,7 @@ The gate seam itself ([`AdmissionGate`](https://github.com/lakekeeper/lakekeeper
 
 This gate is for deployments whose IdP issues **broad, non-instance-scoped tokens**, where a separate service — not the token — is authoritative for whether the caller may use *this* Lakekeeper instance. After authentication, the gate asks that service, per caller, and either lets the request through or rejects it.
 
-If your tokens already carry the entitlement (claims, roles, audience), rely on [authentication](./authentication.md) and [authorization](./authorization.md) alone.
+If your tokens already carry the entitlement of every user (claims, roles, audience), rely on [authentication](./authentication.md) with [required claims](./configuration.md#required-claims) and on [authorization](./authorization.md) alone. If they carry it for some users only, for example the members of one group, a check can [admit those users on their token](#satisfied-by-claims) and ask the service about everyone else.
 
 ## How it works
 
@@ -28,11 +28,12 @@ The gate evaluates one or more named **checks** against a configured enforce end
 
 Only an exact `403` is read as an authoritative deny. Every other non-`2xx` status — including other `4xx` (e.g. `400`, `401`, `404`, `429`) and any `5xx` — is treated as the endpoint being unable to give a verdict, so the gate fails closed with a `503`. This is deliberate: a misconfigured or malfunctioning enforce endpoint must never silently admit. If your endpoint signals "denied" with a status other than `403`, map it to `403` on its side.
 
-On admit, each passing check contributes its role to the request's admission roles, consumed by authorization downstream. Under [Cedar](./authorization-cedar.md#role-matching-with-project_roles), name an admission role like any group, for example `principal.project_roles.contains({provider_id: "control-plane", source_id: "instance-access"})` for the [example](#example) below.
+On admit, each check the endpoint passes contributes its role to the request's admission roles, consumed by authorization downstream. Under [Cedar](./authorization-cedar.md#role-matching-with-project_roles), name an admission role like any group, for example `principal.project_roles.contains({provider_id: "control-plane", source_id: "instance-access"})` for the [example](#example) below.
 
 - **Operator-defined body.** A check's `body` is a JSON string of arbitrary shape, parsed and validated once at startup. The only substitutions the gate makes are the user-derived placeholders `{{subject}}` (the user's subject in its identity provider) and `{{idp_id}}` inside string values; everything else is sent literally. Invalid JSON or an unknown placeholder is rejected at startup. The gate models no "actions"/"resource" concepts — those are just whatever you write in the body.
 - **IdP-scoped.** The gate only governs users of the configured `idp_id`. Users of any other identity provider pass through untouched and are reported as `skipped`, not `admitted`, so the requests the gate approved stay distinguishable from the ones it never examined. At startup the `idp_id` is checked against the providers the server authenticates. An id matching none of them would govern nobody while the gate still looked healthy, so the server refuses to start instead.
 - **Cached.** Decisions are cached in memory per `(subject, check)` for `cache_ttl_secs`. Both allow *and* deny are cached, so a denied-but-authenticated caller triggers at most one upstream call per TTL and cannot amplify load; transient `5xx`/timeout results are never cached.
+- **Satisfied by claims.** A gating check can list claim rules. A token that satisfies all of them passes the check without a call to the endpoint, and the check grants no role. See [Satisfied by claims](#satisfied-by-claims).
 - **Fail closed.** Anything other than `2xx`/`403` becomes a `503` with `Retry-After`.
 
 ## Monitoring
@@ -70,6 +71,19 @@ Each check is keyed by a name you choose (used in the cache key and logs). Use l
 | `body`             | yes      | —                | This check's complete request body as a JSON string (any shape; parsed at startup). `{{subject}}`/`{{idp_id}}` are substituted; everything else is literal. |
 | `role_source_id`   | yes      | —                | Source id of the admission role granted when the check passes.        |
 | `role_provider_id` | no       | gate-level value | Override the role provider namespace for this check.                  |
+| `satisfied_by_claims` | no    | —                | Gating checks only. Claim rules, keyed by a rule name you choose, that pass this check without the endpoint. See [Satisfied by claims](#satisfied-by-claims). |
+
+### Satisfied by claims { #satisfied-by-claims }
+
+A gating check passes without asking the endpoint when the request's token satisfies **all** of the check's `satisfied_by_claims` rules. The check then reads "the endpoint allows the user, **or** the token carries these claims", for example to admit the members of an identity-provider group alongside the users the control plane entitles.
+
+Each rule is written like a [required claim](./configuration.md#required-claims) and matches the same way: a `claim` path, exactly one of `any_of`, `all_of`, `none_of` or `exists`, and an optional `separator`.
+
+- **Admits, grants no role.** The endpoint is not asked, so a user who passes on their token gets no role from this check, even one the endpoint would have granted.
+- **Judged per request.** The claims belong to the token, so the result is never cached, and a cached deny does not hold back a token that carries the claims. A user who loses a claim in the identity provider keeps passing until their token expires.
+- **Only its own check.** Every other check still asks the endpoint, and still fails closed when it is unreachable.
+
+Startup refuses rules on a `role_granting` check, an empty `satisfied_by_claims`, a malformed rule, and rules that only exclude (`none_of`, `exists = false`), which alone would admit almost every token.
 
 ## Example
 
@@ -90,6 +104,12 @@ body = '''
   "resourceType": "project",
   "actions": ["workflows.instance.read"] }
 '''
+
+# Members of the `data-team` group pass `instance_access` on their token;
+# the endpoint decides for everyone else.
+[admission_enforce.checks.instance_access.satisfied_by_claims.data_team]
+claim  = "groups"
+any_of = ["data-team"]
 
 # A `403` here only withholds the role; the request still proceeds.
 [admission_enforce.checks.workflow_editor]
@@ -123,6 +143,8 @@ LAKEKEEPER__ADMISSION_ENFORCE__ROLE_PROVIDER_ID='control-plane'
 LAKEKEEPER__ADMISSION_ENFORCE__CHECKS__INSTANCE_ACCESS__KIND='gating'
 LAKEKEEPER__ADMISSION_ENFORCE__CHECKS__INSTANCE_ACCESS__ROLE_SOURCE_ID='instance-access'
 LAKEKEEPER__ADMISSION_ENFORCE__CHECKS__INSTANCE_ACCESS__BODY='{"subject":"{{subject}}","resource":"102befc3-424d-479e-b1f7-bb47c1e1a1a2","resourceType":"project","actions":["workflows.instance.read"]}'
+LAKEKEEPER__ADMISSION_ENFORCE__CHECKS__INSTANCE_ACCESS__SATISFIED_BY_CLAIMS__DATA_TEAM__CLAIM='groups'
+LAKEKEEPER__ADMISSION_ENFORCE__CHECKS__INSTANCE_ACCESS__SATISFIED_BY_CLAIMS__DATA_TEAM__ANY_OF='["data-team"]'
 ```
 
 !!! note "Body is one variable"

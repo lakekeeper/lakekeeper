@@ -232,11 +232,11 @@ Label values:
 |---------------------------------------|--------|
 | `kind`                                | `gating`, `role_granting` |
 | `decision`                            | `allow`, `deny` |
-| `source`                              | `cache`, `upstream` |
+| `source`                              | `cache`, `upstream`, `claims` (the token passed the check on its [claims](./admission.md#satisfied-by-claims)) |
 | `outcome`                             | `allow` (`2xx`), `deny` (exactly `403`), `unavailable` (anything else, including timeouts) |
 | `reason` on `fail_closed_total`       | `upstream` |
 
-Buckets stop at 10s. Cached decisions make no call, so `_count` measures load on your endpoint, not the request rate.
+Buckets stop at 10s. Cached decisions and checks passed on claims make no call, so `_count` measures load on your endpoint, not the request rate.
 
 A check that fails closed records no decision. `upstream` counts per failed check, so one rejected request can increment it several times.
 
