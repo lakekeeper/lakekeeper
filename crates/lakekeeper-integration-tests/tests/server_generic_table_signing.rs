@@ -1187,11 +1187,11 @@ mod s3_compat_integration_tests {
         request.send().await.unwrap()
     }
 
-    /// Iceberg's signer client reuses a GET signature for the same URI, so the next
-    /// ranged read of an object goes out with the cached signature and a different
-    /// `Range`, and the AWS SDK v2 counts each attempt in `amz-sdk-request`. Both
-    /// come in title case from the SDK, and the store must still accept the
-    /// signature.
+    /// A client that caches signatures reuses a GET signature for the same URI, so
+    /// the next ranged read of an object goes out with the cached signature and a
+    /// different `Range`, and the AWS SDK v2 counts each attempt in
+    /// `amz-sdk-request`. Both come in title case from the SDK, and the store must
+    /// still accept the signature.
     #[sqlx::test]
     async fn test_cached_signature_serves_another_range(pool: PgPool) {
         let (profile, cred) = s3_compatible_profile();
