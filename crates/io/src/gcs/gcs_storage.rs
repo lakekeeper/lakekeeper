@@ -124,6 +124,31 @@ impl GcsStorage {
     async fn control(&self) -> Arc<StorageControl> {
         self.control.get().await
     }
+
+    /// A read pinned to a generation fails with `NotFound` once an overwrite
+    /// replaces that generation, while the object still exists. That failure
+    /// is reported as `ErrorKind::ConditionNotMatch`, the error S3 and ADLS
+    /// return for an overwrite during a read. A deleted object stays
+    /// `NotFound`.
+    async fn overwrite_error(&self, location: &GcsLocation, error: ReadError) -> ReadError {
+        let ReadError::IOError(io_error) = error else {
+            return error;
+        };
+        if io_error.kind() != ErrorKind::NotFound {
+            return ReadError::IOError(io_error);
+        }
+        match head(&*self.control().await, location).await {
+            Ok(_) => ReadError::IOError(
+                IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "The object was overwritten during the read",
+                    location.as_str().to_string(),
+                )
+                .set_source(io_error),
+            ),
+            Err(_) => ReadError::IOError(io_error),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -241,25 +266,33 @@ impl LakekeeperStorage for GcsStorage {
             gcs_location.as_str(),
         );
 
+        let pinned_read = async {
+            if reads_in_one_request(&object, file_size) {
+                fetch_range(
+                    &self.storage,
+                    &gcs_location,
+                    FetchRange::whole(Some(object.generation), Some(file_size)),
+                )
+                .await
+                .map_err(|e| ReadError::IOError(e.with_context("Failed to download object.")))
+            } else {
+                parallel_chunked_read_with_fixed_generation(
+                    &self.storage,
+                    &gcs_location,
+                    0,
+                    file_size,
+                    object.generation,
+                )
+                .await
+            }
+        };
         let bytes = if file_size == 0 {
             Bytes::new()
-        } else if reads_in_one_request(&object, file_size) {
-            fetch_range(
-                &self.storage,
-                &gcs_location,
-                FetchRange::whole(Some(object.generation), Some(file_size)),
-            )
-            .await
-            .map_err(|e| ReadError::IOError(e.with_context("Failed to download object.")))?
         } else {
-            parallel_chunked_read_with_fixed_generation(
-                &self.storage,
-                &gcs_location,
-                0,
-                file_size,
-                object.generation,
-            )
-            .await?
+            match pinned_read.await {
+                Ok(bytes) => bytes,
+                Err(e) => return Err(self.overwrite_error(&gcs_location, e).await),
+            }
         };
 
         Ok(ObjectRead { bytes, info })
@@ -305,7 +338,7 @@ impl LakekeeperStorage for GcsStorage {
         }
 
         let object = head(&*self.control().await, &gcs_location).await?;
-        parallel_chunked_read_with_fixed_generation(
+        match parallel_chunked_read_with_fixed_generation(
             &self.storage,
             &gcs_location,
             range.start,
@@ -313,6 +346,10 @@ impl LakekeeperStorage for GcsStorage {
             object.generation,
         )
         .await
+        {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => Err(self.overwrite_error(&gcs_location, e).await),
+        }
     }
 
     async fn list(
@@ -528,6 +565,8 @@ async fn parallel_chunked_read_with_fixed_generation(
     let storage = storage.clone();
     let location = gcs_location.clone();
     crate::parallel_chunked_read(
+        std::future::ready(Ok(Bytes::new())),
+        0,
         range_size,
         CHUNK_SIZE,
         READ_PARALLELISM,

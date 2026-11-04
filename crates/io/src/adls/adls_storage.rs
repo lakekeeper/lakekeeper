@@ -20,7 +20,7 @@ use azure_storage_datalake::{
 };
 use bytes::{Bytes, BytesMut};
 use chrono::DateTime;
-use futures::StreamExt as _;
+use futures::{StreamExt as _, future::BoxFuture};
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
@@ -39,6 +39,7 @@ pub struct AdlsStorage {
 
 const MAX_BYTES_PER_REQUEST: usize = 7 * 1024 * 1024;
 const DEFAULT_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
+const READ_PARALLELISM: usize = 10;
 /// Upper bound on best-effort cleanup work spawned from `Drop`. The delete
 /// future is dropped on elapse; we still log the timeout so a partial file
 /// left behind is observable.
@@ -377,50 +378,37 @@ impl LakekeeperStorage for AdlsStorage {
         require_key(&adls_location)?;
         let client = self.get_file_client(&adls_location)?;
 
-        let head_response = head(&client, &adls_location).await?;
-
-        // The `head` above already carries the object metadata, so it is
-        // surfaced here; a second request is not needed. Built before
-        // `adls_location` is moved into the fetch calls below.
+        // The first window is read in one ranged GET. Its `Content-Range`
+        // carries the file size and its `Last-Modified`/`ETag` describe the
+        // version served, so a file that fits the window costs one request and
+        // `info` describes exactly the bytes returned.
+        let Some(window) = fetch_first_window(&client, &adls_location).await? else {
+            // Empty file, or a response without the file size.
+            return read_via_head(&client, adls_location).await;
+        };
         let info = FileInfo::new(
-            parse_offsetdatetime(&head_response.last_modified),
+            parse_offsetdatetime(&window.last_modified),
             adls_location.location().clone(),
-            head_response
-                .content_length
-                .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str())),
+            Some(window.total_size),
         )
-        .with_e_tag(Some(head_response.etag.clone()));
+        .with_e_tag(Some(window.etag.clone()));
 
-        let Some(content_length) = head_response.content_length else {
-            // If we do not get content_length, we cannot read in chunks,
-            // so read the file in one request. We can use `fetch_range`
-            // with `u64::MAX`, which is set by client if no range is provided
-            let bytes = fetch_range(&client, 0..u64::MAX, adls_location)
-                .await
-                .map(|gfr| gfr.data)?;
-            return Ok(ObjectRead { bytes, info });
-        };
-        let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
-
-        let bytes = if file_size == 0 {
-            Bytes::new()
-        } else if file_size < MAX_BYTES_PER_REQUEST {
-            // If the file is small enough, read it in a single request
-            fetch_range(&client, 0..file_size as u64, adls_location)
-                .await
-                .map(|gfr| gfr.data)?
-        } else {
-            parallel_chunked_read_with_integrity(
+        // The bytes after the window are pinned to the window's `ETag`.
+        let bytes = crate::read_from_window(
+            std::future::ready(Ok(window.data)),
+            MAX_BYTES_PER_REQUEST,
+            window.total_size,
+            DEFAULT_BYTES_PER_REQUEST,
+            READ_PARALLELISM,
+            adls_location.location().as_str(),
+            chunk_fetcher(
                 &client,
-                path,
-                0,
-                file_size,
-                head_response.last_modified,
-                adls_location,
-            )
-            .await?
-        };
-
+                &adls_location,
+                MAX_BYTES_PER_REQUEST as u64,
+                window.etag,
+            ),
+        )
+        .await?;
         Ok(ObjectRead { bytes, info })
     }
 
@@ -457,19 +445,18 @@ impl LakekeeperStorage for AdlsStorage {
         let client = self.get_file_client(&adls_location)?;
 
         if range_size <= MAX_BYTES_PER_REQUEST {
-            return fetch_range(&client, range, adls_location)
+            return fetch_range(&client, range, None, &adls_location)
                 .await
                 .map(|gfr| gfr.data);
         }
 
         let head_response = head(&client, &adls_location).await?;
-        parallel_chunked_read_with_integrity(
+        parallel_chunked_read(
             &client,
-            path,
+            &adls_location,
             range.start,
             range_size,
-            head_response.last_modified,
-            adls_location,
+            head_response.etag,
         )
         .await
     }
@@ -712,12 +699,19 @@ async fn head(client: &FileClient, location: &AdlsLocation) -> Result<HeadPathRe
     })
 }
 
+/// Download `range`, with `If-Match: <etag>` if `if_match` is set. A file
+/// overwritten since that `ETag` fails with `ErrorKind::ConditionNotMatch`.
 async fn fetch_range(
     client: &FileClient,
     range: std::ops::Range<u64>,
-    adls_location: AdlsLocation,
+    if_match: Option<&str>,
+    adls_location: &AdlsLocation,
 ) -> Result<GetFileResponse, ReadError> {
-    client.read().range(range).await.map_err(|e| {
+    let mut request = client.read().range(range);
+    if let Some(etag) = if_match {
+        request = request.if_match_condition(IfMatchCondition::Match(etag.to_string()));
+    }
+    request.await.map_err(|e| {
         ReadError::IOError(
             parse_error(e, &adls_location.to_string())
                 .with_context("Failed to download byte range."),
@@ -725,56 +719,161 @@ async fn fetch_range(
     })
 }
 
-/// Run a parallel-chunked download over `[range_start, range_start + range_size)`
-/// and verify each chunk's `last_modified` against `head_last_modified`. A
-/// mismatch is surfaced as an error so concurrent overwrites cannot
-/// silently produce a corrupt download.
-async fn parallel_chunked_read_with_integrity(
+/// The first window of a file and the metadata of the response that served it.
+struct FirstWindow {
+    data: Bytes,
+    total_size: u64,
+    last_modified: time::OffsetDateTime,
+    etag: String,
+}
+
+/// Read `[0, MAX_BYTES_PER_REQUEST)` of a file in one GET.
+///
+/// Returns `None` when the response does not give the file size: the range is
+/// unsatisfiable (`416`, an empty file), or `Content-Range` is missing. The
+/// caller sizes the file with a `HEAD` then, so a server that ignores the range
+/// cannot truncate the read.
+async fn fetch_first_window(
     client: &FileClient,
-    error_context: &str,
+    adls_location: &AdlsLocation,
+) -> Result<Option<FirstWindow>, ReadError> {
+    let response = match client.read().range(0..MAX_BYTES_PER_REQUEST as u64).await {
+        Ok(response) => response,
+        Err(e)
+            if e.as_http_error().map(azure_core::error::HttpError::status)
+                == Some(azure_core::StatusCode::RequestedRangeNotSatisfiable) =>
+        {
+            return Ok(None);
+        }
+        Err(e) => {
+            return Err(ReadError::IOError(
+                parse_error(e, &adls_location.to_string())
+                    .with_context("Failed to download byte range."),
+            ));
+        }
+    };
+    let Some(content_range) = response.content_range else {
+        return Ok(None);
+    };
+    Ok(Some(FirstWindow {
+        data: response.data,
+        total_size: content_range.total_length(),
+        last_modified: response.last_modified,
+        etag: response.etag,
+    }))
+}
+
+/// Read a file after sizing it with a `HEAD`.
+async fn read_via_head(
+    client: &FileClient,
+    adls_location: AdlsLocation,
+) -> Result<ObjectRead, ReadError> {
+    let head_response = head(client, &adls_location).await?;
+
+    let info = FileInfo::new(
+        parse_offsetdatetime(&head_response.last_modified),
+        adls_location.location().clone(),
+        head_response
+            .content_length
+            .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str())),
+    )
+    .with_e_tag(Some(head_response.etag.clone()));
+
+    let Some(content_length) = head_response.content_length else {
+        // If we do not get content_length, we cannot read in chunks,
+        // so read the file in one request. We can use `fetch_range`
+        // with `u64::MAX`, which is set by client if no range is provided
+        let bytes = fetch_range(
+            client,
+            0..u64::MAX,
+            Some(&head_response.etag),
+            &adls_location,
+        )
+        .await?
+        .data;
+        return Ok(ObjectRead { bytes, info });
+    };
+    let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
+
+    let bytes = if file_size == 0 {
+        Bytes::new()
+    } else if file_size < MAX_BYTES_PER_REQUEST {
+        // If the file is small enough, read it in a single request
+        fetch_range(
+            client,
+            0..file_size as u64,
+            Some(&head_response.etag),
+            &adls_location,
+        )
+        .await?
+        .data
+    } else {
+        parallel_chunked_read(client, &adls_location, 0, file_size, head_response.etag).await?
+    };
+
+    Ok(ObjectRead { bytes, info })
+}
+
+/// Run a parallel-chunked download over `[range_start, range_start + range_size)`,
+/// every chunk with `If-Match: <if_match>`. A file overwritten while the
+/// download is in flight fails it with `ErrorKind::ConditionNotMatch`.
+async fn parallel_chunked_read(
+    client: &FileClient,
+    adls_location: &AdlsLocation,
     range_start: u64,
     range_size: usize,
-    head_last_modified: time::OffsetDateTime,
-    adls_location: AdlsLocation,
+    if_match: String,
 ) -> Result<Bytes, ReadError> {
     if range_size == 0 {
         return Ok(Bytes::new());
     }
-    let client = client.clone();
     crate::parallel_chunked_read(
+        std::future::ready(Ok(Bytes::new())),
+        0,
         range_size,
         DEFAULT_BYTES_PER_REQUEST,
-        10,
-        error_context,
-        move |rel_start, rel_end, chunk_index| {
-            let client = client.clone();
-            let abs_start = range_start + rel_start as u64;
-            let abs_end = range_start + rel_end as u64 + 1;
-            let adls_location = adls_location.clone();
-            async move {
-                let response = fetch_range(&client, abs_start..abs_end, adls_location.clone())
+        READ_PARALLELISM,
+        adls_location.location().as_str(),
+        chunk_fetcher(client, adls_location, range_start, if_match),
+    )
+    .await
+}
+
+/// Fetches the chunks of a parallel download that starts at `range_start`,
+/// each with `If-Match: <if_match>`.
+fn chunk_fetcher(
+    client: &FileClient,
+    adls_location: &AdlsLocation,
+    range_start: u64,
+    if_match: String,
+) -> impl Fn(usize, usize, usize) -> BoxFuture<'static, Result<(usize, Bytes), ReadError>>
++ Send
++ Sync
++ Clone
++ 'static {
+    let client = client.clone();
+    let adls_location = adls_location.clone();
+    move |rel_start, rel_end, chunk_index| {
+        let client = client.clone();
+        let adls_location = adls_location.clone();
+        let if_match = if_match.clone();
+        let abs_start = range_start + rel_start as u64;
+        let abs_end = range_start + rel_end as u64 + 1;
+        Box::pin(async move {
+            let response =
+                fetch_range(&client, abs_start..abs_end, Some(&if_match), &adls_location)
                     .await
                     .map_err(|e| match e {
                         ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
                             "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
                         ))),
-                        invalid_location_error @ ReadError::InvalidLocation(_) => invalid_location_error,
+                        invalid_location_error @ ReadError::InvalidLocation(_) => {
+                            invalid_location_error
+                        }
                     })?;
-                if response.last_modified != head_last_modified {
-                    return Err(ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!(
-                            "File was modified during chunked parallel download: expected last modified time {}, got {}",
-                            head_last_modified, response.last_modified
-                        ),
-                        adls_location.to_string(),
-                    )));
-                }
-                Ok((chunk_index, response.data))
-            }
-        },
-    )
-        .await
+            Ok((chunk_index, response.data))
+        })
+    }
 }
 
 /// Create the empty target file. ADLS requires an explicit `create` before
