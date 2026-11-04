@@ -85,15 +85,19 @@ class Settings(BaseSettings):
     def token_endpoint(self) -> str:
         return f"{self.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token"
 
+    def spark_iceberg_at_least(self, major: int, minor: int) -> bool:
+        version = self.spark_iceberg_version.split(".")
+        return (int(version[0]), int(version[1])) >= (major, minor)
+
     @property
     def spark_supports_v3(self) -> bool:
-        version = self.spark_iceberg_version
         # Versions above 1.10.0 support Iceberg table format v3
-        major_version = int(version.split(".")[0])
-        minor_version = int(version.split(".")[1])
-        if major_version < 1 or (major_version == 1 and minor_version < 10):
-            return False
-        return True
+        return self.spark_iceberg_at_least(1, 10)
+
+    @property
+    def spark_supports_rest_catalog_purge(self) -> bool:
+        # The Spark catalog option `rest-catalog-purge` ships with Iceberg 1.12.0
+        return self.spark_iceberg_at_least(1, 12)
 
 
 settings = Settings()

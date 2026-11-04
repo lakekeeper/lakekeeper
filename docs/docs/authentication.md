@@ -420,6 +420,8 @@ That's it! We can now use the third App Registration to sign into Lakekeeper usi
 
 If Authorization is enabled, the client will throw an error as no permissions have been granted yet. During this initial connect to the `/config` endpoint of Lakekeeper, the user is automatically provisioned so that it should show up when searching for users in the "Grant" dialog and user search endpoints. While we try to extract the name of the application from its token, this might not be possible in all setups. As a fallback we use the `Client ID` as the name of the user. Once permissions have been granted, the user is able to perform actions.
 
+With the [Entra ID role provider](./configuration.md#microsoft-graph-entra-id-role-provider), machine users get their Entra ID groups as roles, so choose which applications may sign in to Lakekeeper, as the warning "Choose which applications may sign in to Lakekeeper" in that section describes.
+
 ### Google Identity Platform
 
 !!! warning

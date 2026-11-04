@@ -11,6 +11,7 @@ use crate::{
     },
     audit::validate::contract_fields,
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
+    server::views::owner_property::{ProtectedPropertyModification, ProtectedViewVersionChange},
     service::{
         admission::{
             AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, AdmissionTrigger,
@@ -19,9 +20,9 @@ use crate::{
         authn::{Actor, UserId},
         authz::{
             ActionDescriptor, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
-            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, ResourceType,
-            RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges,
-            SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
+            CatalogViewAction, DeterminingFactor, EventAction as _, GrantResource, PolicyEffect,
+            ResourceType, RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal,
+            SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
         },
         events::{
             Authorization, EventDispatcher,
@@ -29,7 +30,8 @@ use crate::{
                 APIEventActions as _, EntityDescriptor, EntityType, EventEntities,
                 FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
                 FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID, HandlerContextKey,
-                UserProvidedEntity as _, UserProvidedTable, synthesise_authorizations,
+                UserProvidedEntity as _, UserProvidedNamespace, UserProvidedTable,
+                UserProvidedView, synthesise_authorizations,
             },
         },
         idempotency::IdempotencyKey,
@@ -169,6 +171,7 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
     crate::audit::validate::assert_valid_record(&schema, emitted, name);
     let mut emitted = emitted.clone();
+    crate::audit::validate::pin_event_id(&mut emitted, name);
     crate::audit::validate::pin_time(&mut emitted, name);
     let emitted = &emitted;
     let path = fixture_path(name);
@@ -357,18 +360,12 @@ fn fixture_drop_action() -> ActionDescriptor {
     .action_descriptor()
 }
 
-/// A commit whose every collection is empty, built from the action's own descriptor.
+/// A commit request without updates, built by the handler's own constructor.
 ///
 /// A commit that changed no properties, targeted no refs and carried no update kinds still
 /// names all four keys: "nothing" is an empty value, not a missing key.
 fn fixture_empty_collections_action() -> ActionDescriptor {
-    CatalogTableAction::Commit {
-        updated_properties: Arc::new(std::collections::BTreeMap::new()),
-        removed_properties: Arc::new(Vec::new()),
-        target_refs: Arc::new(std::collections::BTreeSet::new()),
-        update_kinds: Arc::new(std::collections::BTreeSet::new()),
-    }
-    .action_descriptor()
+    crate::server::commit_tables::commit_action(&[]).action_descriptor()
 }
 
 /// A grant apply, built by the handler's own `event_actions()`, so it matches the running
@@ -563,6 +560,9 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_context",
     "authz_failed_admission_gate",
     "authz_failed_tabular_move",
+    "authz_failed_create_view_owner_property",
+    "authz_failed_view_commit_owner_property",
+    "authz_failed_view_version_change",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
@@ -1140,6 +1140,137 @@ fn fixture_authz_failed_tabular_move() {
     });
 
     assert_matches_fixture("authz_failed_tabular_move", &contract_fields(record));
+}
+
+/// A refusal by the view owner property rules, recorded as the view handlers record it:
+/// entities and actions from the handler's own types, error from the refusal's own type.
+fn owner_property_refusal_record(
+    entities: EventEntities,
+    actions: Vec<ActionDescriptor>,
+    refusal: impl crate::service::events::AuthorizationFailureSource,
+) -> serde_json::Value {
+    let entities = Arc::new(entities);
+    let actions = Arc::new(actions);
+    let authorizations = Arc::new(synthesise_authorizations(
+        &entities,
+        &actions,
+        None,
+        Some(false),
+    ));
+    let failure_reason = refusal.to_failure_reason();
+    let error = crate::service::events::AuthorizationError {
+        error_id: FIXTURE_ERROR_ID.to_string(),
+        ..crate::service::events::AuthorizationError::clone_from_error_model(
+            &refusal.into_error_model(),
+        )
+    };
+    emit_and_capture_one(|| {
+        LISTENER.authorization_failed(AuthorizationFailedEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
+            entities,
+            actions,
+            failure_reason,
+            error: Arc::new(error),
+            extra_context: fixture_context(&[]),
+            authorizations,
+        })
+    })
+}
+
+fn fixture_view() -> UserProvidedView {
+    UserProvidedView {
+        warehouse_id: crate::service::WarehouseId::new(
+            FIXTURE_WAREHOUSE_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        ),
+        view: TableIdent::new(
+            NamespaceIdent::new("sales".to_string()),
+            "orders_by_day".to_string(),
+        )
+        .into(),
+    }
+}
+
+/// A view create refused because a client that is not a trusted engine sent an engine owner
+/// property. The namespace is the entity, and `create_view` carries the properties as sent.
+#[test]
+fn fixture_authz_failed_create_view_owner_property() {
+    let action = CatalogNamespaceAction::CreateView {
+        name: Some("orders_by_day".to_string()),
+        properties: Arc::new(std::collections::BTreeMap::from([(
+            "trino.run-as-owner".to_string(),
+            "bob".to_string(),
+        )])),
+    };
+    let entities = UserProvidedNamespace::new(
+        crate::service::WarehouseId::new(
+            FIXTURE_WAREHOUSE_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        ),
+        NamespaceIdent::new("sales".to_string()),
+    )
+    .event_entities();
+    let record = owner_property_refusal_record(
+        entities,
+        action.event_actions(),
+        ProtectedPropertyModification {
+            key: "trino.run-as-owner".to_string(),
+            protected: "trino.run-as-owner".to_string(),
+        },
+    );
+
+    assert_matches_fixture(
+        "authz_failed_create_view_owner_property",
+        &contract_fields(record),
+    );
+}
+
+/// A view commit refused because a client that is not a trusted engine set an engine owner
+/// property.
+#[test]
+fn fixture_authz_failed_view_commit_owner_property() {
+    let action = CatalogViewAction::Commit {
+        updated_properties: Arc::new(std::collections::BTreeMap::from([(
+            "trino.run-as-owner".to_string(),
+            "bob".to_string(),
+        )])),
+        removed_properties: Arc::new(Vec::new()),
+    };
+    let record = owner_property_refusal_record(
+        fixture_view().event_entities(),
+        action.event_actions(),
+        ProtectedPropertyModification {
+            key: "trino.run-as-owner".to_string(),
+            protected: "trino.run-as-owner".to_string(),
+        },
+    );
+
+    assert_matches_fixture(
+        "authz_failed_view_commit_owner_property",
+        &contract_fields(record),
+    );
+}
+
+/// A view commit refused after authorization: it changes the current version of a view an
+/// engine runs as its owner, and does not come from that trusted engine.
+#[test]
+fn fixture_authz_failed_view_version_change() {
+    let action = CatalogViewAction::Commit {
+        updated_properties: Arc::new(std::collections::BTreeMap::new()),
+        removed_properties: Arc::new(Vec::new()),
+    };
+    let record = owner_property_refusal_record(
+        fixture_view().event_entities(),
+        action.event_actions(),
+        ProtectedViewVersionChange {
+            owner_property: "trino.run-as-owner".to_string(),
+        },
+    );
+
+    assert_matches_fixture("authz_failed_view_version_change", &contract_fields(record));
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`

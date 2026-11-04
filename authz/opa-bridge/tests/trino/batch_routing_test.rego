@@ -58,7 +58,9 @@ test_batch_filter_schemas_managed_system_schema if {
 # ===================================================================
 
 # Metadata tables (e.g., foo$snapshots) are excluded from Lakekeeper batch
-# and evaluated per-resource via allow_table_metadata_read
+# and evaluated per-resource. Only `SelectFromColumns` reads them (see
+# allow_table_metadata_read), so `FilterTables` hides them, even if every
+# check is allowed.
 test_batch_filter_tables_managed_metadata_table if {
 	result := trino.batch with input as {
 		"context": mock_context,
@@ -74,8 +76,7 @@ test_batch_filter_tables_managed_metadata_table if {
 		with data.configuration.trino_catalog as mock_trino_catalog
 		with http.send as mock_http_allow_all
 
-	0 in result
-	1 in result
+	result == set()
 }
 
 # ===================================================================

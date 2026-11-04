@@ -66,6 +66,7 @@ uuid = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
+axum-prometheus = { workspace = true }
 fastrand = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router"] }

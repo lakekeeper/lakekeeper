@@ -133,11 +133,8 @@ pub(crate) fn get_config() -> DynAppConfig {
             );
         }
     }
-    config.protected_properties = config
-        .trusted_engines
-        .values()
-        .map(|e| e.owner_property().to_string())
-        .collect();
+    warn_about_trino_owner_properties(&config.trusted_engines);
+    config.protected_properties = protected_properties(&config.trusted_engines);
 
     // Fail early if the base_uri is not a valid URL
     if let Some(uri) = &config.base_uri {
@@ -351,30 +348,68 @@ fn validate_required_claims(config: &DynAppConfig) {
                 "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': rule name \
                  must match `[a-z0-9-]+`; write `tenant-filter`, not `tenant_filter`"
             );
-            // For a deny, splitting on any whitespace finds everything a whitespace literal
-            // finds and the values it misses, so the literal form is dominated — and its one
-            // distinguishing behaviour is to admit a token it was written to reject.
-            assert!(
-                !(rule.none_of.is_some()
-                    && rule
-                        .separator
-                        .as_deref()
-                        .is_some_and(|s| { !s.is_empty() && s.chars().all(char::is_whitespace) })),
-                "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': a \
-                 whitespace `separator` on `none_of` reads only that exact character, so a \
-                 value delimited by any other whitespace is admitted. Write \
-                 `SEPARATOR=whitespace`."
-            );
-            assert!(
-                !(rule.exists.is_some() && rule.separator.is_some()),
-                "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': `separator` \
-                 has no effect on `exists`; remove one of them"
-            );
             if let Err(e) = rule.to_rule() {
                 panic!("Invalid required claim rule '{name}' for OIDC provider '{idp_id}': {e}");
             }
         }
     }
+}
+
+/// The view property in which Trino stores the user a `SECURITY DEFINER` view runs as. Trino
+/// reads and writes exactly this key.
+pub(crate) const TRINO_OWNER_PROPERTY: &str = "trino.run-as-owner";
+
+/// View properties that engines read to run a view as the user they name.
+///
+/// Trino runs a view as the user in `trino.run-as-owner`, so whoever writes that property chooses
+/// whose permissions the view's query uses. These keys are protected with or without configured
+/// trusted engines: only a trusted engine whose owner property is the exact key may write them.
+pub(crate) const ENGINE_OWNER_PROPERTIES: &[&str] = &[TRINO_OWNER_PROPERTY];
+
+/// Trino reads the owner of a view only from [`TRINO_OWNER_PROPERTY`]. A Trino engine configured
+/// with another owner property cannot write that key, so its `SECURITY DEFINER` views fail.
+fn warn_about_trino_owner_properties(trusted_engines: &HashMap<String, TrustedEngine>) {
+    for (name, owner_property) in trino_engines_with_other_owner_property(trusted_engines) {
+        tracing::warn!(
+            "Trusted engine '{name}' has type 'trino' and owner property '{owner_property}'. \
+             Trino stores the owner of a view in '{TRINO_OWNER_PROPERTY}', and only a trusted \
+             engine with exactly this owner property may write it. Set \
+             LAKEKEEPER__TRUSTED_ENGINES__{}__OWNER_PROPERTY={TRINO_OWNER_PROPERTY}, or Trino \
+             cannot create SECURITY DEFINER views.",
+            name.to_uppercase()
+        );
+    }
+}
+
+/// `(name, owner property)` of each Trino engine whose owner property is not
+/// [`TRINO_OWNER_PROPERTY`], sorted by name.
+fn trino_engines_with_other_owner_property(
+    trusted_engines: &HashMap<String, TrustedEngine>,
+) -> Vec<(&str, &str)> {
+    trusted_engines
+        .iter()
+        .filter_map(|(name, engine)| match engine {
+            TrustedEngine::Trino(trino) => (trino.owner_property != TRINO_OWNER_PROPERTY)
+                .then_some((name.as_str(), trino.owner_property.as_str())),
+        })
+        .sorted_unstable()
+        .collect()
+}
+
+/// The view properties only a trusted engine may write: [`ENGINE_OWNER_PROPERTIES`] and the owner
+/// properties of the given trusted engines.
+pub(crate) fn protected_properties(
+    trusted_engines: &HashMap<String, TrustedEngine>,
+) -> HashSet<String> {
+    ENGINE_OWNER_PROPERTIES
+        .iter()
+        .map(ToString::to_string)
+        .chain(
+            trusted_engines
+                .values()
+                .map(|e| e.owner_property().to_string()),
+        )
+        .collect()
 }
 
 /// Identifies who is trusted to act as this engine from a specific `IdP`.
@@ -699,7 +734,9 @@ pub struct DynAppConfig {
     // ------------- TRUSTED ENGINES -------------
     #[serde(default)]
     pub trusted_engines: HashMap<String, TrustedEngine>,
-    /// Owner properties from all trusted engines, pre-computed at startup.
+    /// View properties only a trusted engine may write: the engine owner properties Lakekeeper
+    /// knows (`trino.run-as-owner`) and the owner properties of all trusted engines, pre-computed
+    /// at startup.
     #[serde(skip)]
     pub protected_properties: HashSet<String>,
     // ------------- Health -------------
@@ -1518,7 +1555,7 @@ impl Default for DynAppConfig {
             authz_backend: AuthZBackend::default(),
             instance_admins: HashSet::new(),
             trusted_engines: HashMap::new(),
-            protected_properties: HashSet::new(),
+            protected_properties: protected_properties(&HashMap::new()),
             openid_provider_uri: None,
             openid_audience: None,
             openid_additional_issuers: None,
@@ -3177,10 +3214,65 @@ mod test {
     }
 
     #[test]
+    fn trino_engines_with_another_owner_property_are_reported() {
+        let trino = |owner_property: &str| {
+            TrustedEngine::Trino(TrinoEngineConfig {
+                owner_property: owner_property.to_string(),
+                identities: HashMap::new(),
+            })
+        };
+        let engines = HashMap::from([
+            ("trino".to_string(), trino("trino.run-as-owner")),
+            ("trino_b".to_string(), trino("custom.run-as-owner")),
+            ("trino_a".to_string(), trino("Trino.Run-As-Owner")),
+        ]);
+        assert_eq!(
+            trino_engines_with_other_owner_property(&engines),
+            vec![
+                ("trino_a", "Trino.Run-As-Owner"),
+                ("trino_b", "custom.run-as-owner"),
+            ]
+        );
+    }
+
+    #[test]
     fn test_trusted_engine_configuration() {
+        // Engine owner properties are protected without any trusted engine.
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
             assert!(config.trusted_engines.is_empty());
+            assert_eq!(
+                config.protected_properties,
+                HashSet::from(["trino.run-as-owner".to_string()])
+            );
+            Ok(())
+        });
+
+        // The default configuration protects the built-in keys too.
+        assert_eq!(
+            DynAppConfig::default().protected_properties,
+            HashSet::from(["trino.run-as-owner".to_string()])
+        );
+
+        // A trusted engine with another owner property adds it to the built-in ones.
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TRUSTED_ENGINES__CUSTOM__TYPE", "trino");
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__CUSTOM__OWNER_PROPERTY",
+                "custom.run-as-owner",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__CUSTOM__IDENTITIES__OIDC__AUDIENCES",
+                "[custom]",
+            );
+            let config = get_config();
+            assert_eq!(
+                config.protected_properties,
+                HashSet::from([
+                    "trino.run-as-owner".to_string(),
+                    "custom.run-as-owner".to_string()
+                ])
+            );
             Ok(())
         });
 

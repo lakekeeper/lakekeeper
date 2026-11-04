@@ -21,19 +21,22 @@ use crate::{
 };
 
 mod queue_demand;
+mod queue_metrics;
 pub(crate) mod task_drain;
 #[cfg(feature = "test-utils")]
 pub use task_drain::TestTaskRunner;
+pub use task_drain::drain_token;
 mod task_queues_runner;
 mod task_registry;
 pub use queue_demand::{TaskDemandClass, TaskQueueDemand, TaskQueueDemandRequest};
+pub use queue_metrics::record_timed_out_attempt;
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
-#[cfg(feature = "router")]
-pub(crate) use task_registry::DemandTarget;
 pub use task_registry::{
     ConfigCheckFn, QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues,
     ScheduleEligibilityFn, TaskQueueRegistry, UserScheduling, ValidatorFn,
 };
+#[cfg(feature = "router")]
+pub(crate) use task_registry::{DemandLookupError, DemandTarget};
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
@@ -1339,8 +1342,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 return None;
             }
             // Not raced against cancellation: a pick dropped mid-flight can leave a task it claimed
-            // running until its heartbeat times out, or, while its `BEGIN` is in flight, return its
-            // connection to the pool inside an open transaction.
+            // running until its heartbeat times out.
             let task = match Self::pick_new_task_with_resource_demand::<C>(
                 catalog_state.clone(),
                 resource_demand(),

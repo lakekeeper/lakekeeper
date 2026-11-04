@@ -56,6 +56,37 @@ pub struct State<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> {
     pub registered_task_queues: RegisteredTaskQueues,
     pub license_status: &'static LicenseStatus,
     pub build_info: &'static BuildInfo,
+    /// Whether this server authenticates requests. The view owner property rules apply only if
+    /// it does. [`new_full_router`](crate::api::router::new_full_router) sets it from
+    /// [`RouterArgs::authenticator`](crate::api::router::RouterArgs::authenticator); code that
+    /// calls handlers with this state directly reads the value it set.
+    pub authentication: ServerAuthentication,
+}
+
+/// Whether a server authenticates requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerAuthentication {
+    /// Every request passes the authentication middleware, which also matches trusted engines.
+    Enabled,
+    /// No authenticator: every request is anonymous.
+    Disabled,
+}
+
+impl ServerAuthentication {
+    /// `Enabled` if `authenticator` is present.
+    #[must_use]
+    pub fn of<N>(authenticator: Option<&N>) -> Self {
+        if authenticator.is_some() {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+
+    #[must_use]
+    pub fn is_enabled(self) -> bool {
+        self == Self::Enabled
+    }
 }
 
 impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> ServiceState for State<A, C, S> {}

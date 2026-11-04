@@ -871,6 +871,9 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ViewOrTableInfo, SetTabularProtectionError>;
 
+    /// Dropped tabulars keep their names, so with `include_deleted` several tabulars can match
+    /// one identifier. The map then holds the live tabular, or the most recently dropped one if
+    /// no live tabular matches.
     async fn get_tabular_infos_by_ident_impl(
         warehouse_id: WarehouseId,
         tabulars: &[TabularIdentBorrowed<'_>],
@@ -945,7 +948,7 @@ where
     ) -> std::result::Result<(TableInfo, Option<StagedTableId>), CreateTableError>;
 
     /// Load tables by table id.
-    /// Does not return staged tables.
+    /// Returns staged tables too, with no metadata location.
     /// If a table does not exist, it is not included in the response.
     async fn load_tables_impl<'a>(
         warehouse_id: WarehouseId,
@@ -1608,6 +1611,11 @@ where
         request: TaskQueueDemandRequest<'_>,
         state: Self::State,
     ) -> std::result::Result<TaskQueueDemand, CatalogBackendError>;
+
+    async fn task_queue_oldest_due_impl(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<Option<chrono::DateTime<chrono::Utc>>, CatalogBackendError>;
 
     async fn resolve_tasks_impl(
         scope: TaskResolveScope,

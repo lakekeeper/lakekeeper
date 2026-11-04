@@ -15,7 +15,10 @@ use crate::{
         iceberg::v1::namespace::NamespaceParameters,
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tabular::determine_tabular_location},
+    server::{
+        require_warehouse_id, tables::validate_new_tabular_name,
+        tabular::determine_tabular_location,
+    },
     service::{
         COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogGenericTableOps,
         CatalogIdempotencyOps, CatalogStore, GenericTableCreation, GenericTableId, Result,
@@ -44,14 +47,7 @@ fn validate_create_request(request: &CreateGenericTableRequest) -> Result<()> {
         )
         .into());
     }
-    if request.name.contains('+') {
-        return Err(ErrorModel::bad_request(
-            "Generic table name cannot contain '+' character.",
-            "InvalidName",
-            None,
-        )
-        .into());
-    }
+    validate_new_tabular_name(&request.name)?;
     validate_format(request.format.as_str())?;
     validate_blob_size("schema", request.schema.as_ref())?;
     validate_blob_size("statistics", request.statistics.as_ref())?;

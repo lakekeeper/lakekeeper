@@ -140,7 +140,7 @@ use crate::{
         materialize_due_task_schedules, pick_task_with_retry_policy, queue_task_batch,
         record_failure, record_success, reparent_pending_task, request_tasks_stop,
         reschedule_tasks_for, resolve_tasks, set_task_queue_config, task_queue_demand,
-        trigger_task_schedule, upsert_task_schedule,
+        task_queue_oldest_due, trigger_task_schedule, upsert_task_schedule,
     },
     user::{create_or_update_user, delete_user, list_users, search_user},
     warehouse::{
@@ -1357,6 +1357,13 @@ impl CatalogStore for super::PostgresBackend {
         state: Self::State,
     ) -> std::result::Result<TaskQueueDemand, CatalogBackendError> {
         task_queue_demand(&state.read_pool(), request).await
+    }
+
+    async fn task_queue_oldest_due_impl(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<Option<chrono::DateTime<chrono::Utc>>, CatalogBackendError> {
+        task_queue_oldest_due(&state.read_pool(), request).await
     }
 
     async fn resolve_tasks_impl(

@@ -7,6 +7,7 @@ import botocore.config
 import conftest
 import fsspec
 import pandas as pd
+import pyiceberg.exceptions
 import pyiceberg.io as io
 import pytest
 import requests
@@ -354,6 +355,50 @@ def s3_files(storage_config, location: str) -> list[str]:
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
         keys.extend(item["Key"] for item in page.get("Contents", []))
     return sorted(keys)
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_rest_catalog_purge is not True,
+    reason="rest-catalog-purge requires Iceberg 1.12 or newer",
+)
+def test_drop_table_purge_spark_rest_catalog_purge(
+    spark, hard_delete_warehouse: conftest.Warehouse, storage_config
+):
+    # Without `rest-catalog-purge`, Spark drops the table and then checks
+    # whether its metadata file exists. On a hard-delete warehouse with remote
+    # signing, the table is gone, so that check cannot be signed and fails.
+    if "aws-access-key-id" not in storage_config["storage-credential"]:
+        pytest.skip("Listing the table location requires S3 access keys.")
+    for key, value in conftest.spark_catalog_configuration(
+        hard_delete_warehouse, storage_config
+    ).items():
+        spark.conf.set(key, value)
+    catalog = hard_delete_warehouse.normalized_catalog_name
+    spark.conf.set(f"spark.sql.catalog.{catalog}.rest-catalog-purge", "true")
+    namespace = "test_drop_table_purge_spark_rest_catalog_purge"
+    spark.sql(f"CREATE NAMESPACE {catalog}.{namespace}")
+    spark.sql(f"CREATE TABLE {catalog}.{namespace}.my_table (id BIGINT) USING iceberg")
+    spark.sql(f"INSERT INTO {catalog}.{namespace}.my_table VALUES (1), (2)")
+    location = (
+        hard_delete_warehouse.pyiceberg_catalog.load_table((namespace, "my_table"))
+        .location()
+        .rstrip("/")
+        + "/"
+    )
+    assert s3_files(storage_config, location) != []
+
+    spark.sql(f"DROP TABLE {catalog}.{namespace}.my_table PURGE")
+
+    with pytest.raises(pyiceberg.exceptions.NoSuchTableError):
+        hard_delete_warehouse.pyiceberg_catalog.load_table((namespace, "my_table"))
+    # Lakekeeper deletes the files in a background task.
+    files = s3_files(storage_config, location)
+    for _ in range(30):
+        if files == []:
+            break
+        time.sleep(1)
+        files = s3_files(storage_config, location)
+    assert files == []
 
 
 def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_config):

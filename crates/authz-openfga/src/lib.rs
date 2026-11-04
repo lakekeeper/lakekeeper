@@ -79,7 +79,13 @@ static CONFIGURED_MODEL_VERSION: LazyLock<Option<AuthorizationModelVersion>> = L
 );
 
 #[derive(
-    Debug, Clone, PartialEq, strum_macros::Display, strum_macros::AsRefStr, strum_macros::EnumString,
+    Debug,
+    Clone,
+    PartialEq,
+    strum_macros::Display,
+    strum_macros::AsRefStr,
+    strum_macros::EnumString,
+    strum_macros::EnumIter,
 )]
 #[strum(serialize_all = "snake_case")]
 pub enum FgaType {

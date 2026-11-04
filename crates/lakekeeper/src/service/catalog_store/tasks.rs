@@ -156,7 +156,8 @@ where
     ///
     /// An attempt of the queue whose heartbeat timed out counts as failed, whatever its resource
     /// demand, and the retry policy decides whether and how it is retried. This includes an
-    /// attempt that was asked to stop.
+    /// attempt that was asked to stop. The backend counts each such attempt with
+    /// [`record_timed_out_attempt`](crate::service::tasks::record_timed_out_attempt).
     #[tracing::instrument(
         name = "catalog_pick_new_task",
         skip(request, state),
@@ -182,6 +183,20 @@ where
         state: Self::State,
     ) -> std::result::Result<TaskQueueDemand, CatalogBackendError> {
         Self::task_queue_demand_impl(request, state).await
+    }
+
+    /// [`TaskQueueDemand::oldest_due_since`] of the request's queue and range, without counting
+    /// the tasks. `None` if no task is due or heartbeat-expired.
+    #[tracing::instrument(
+        name = "catalog_task_queue_oldest_due",
+        skip(request, state),
+        fields(queue_name = %request.queue_name, resource_demand = ?request.resource_demand)
+    )]
+    async fn task_queue_oldest_due(
+        request: TaskQueueDemandRequest<'_>,
+        state: Self::State,
+    ) -> std::result::Result<Option<chrono::DateTime<chrono::Utc>>, CatalogBackendError> {
+        Self::task_queue_oldest_due_impl(request, state).await
     }
 
     async fn record_task_success(

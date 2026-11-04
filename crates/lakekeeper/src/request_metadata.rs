@@ -533,6 +533,28 @@ impl RequestMetadata {
             .build()
     }
 
+    /// Like [`Self::test_user`] but the token carries `claims`.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn test_user_with_claims(
+        user_id: crate::service::UserId,
+        claims: serde_json::Value,
+    ) -> Self {
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Principal(user_id.clone()))
+            .authentication(
+                Authentication::builder()
+                    .token_header(None)
+                    .claims(claims)
+                    .subject(user_id.into())
+                    .name(Some("Test User".to_string()))
+                    .email(None)
+                    .principal_type(None)
+                    .build(),
+            )
+            .build()
+    }
+
     /// Like [`Self::test_user`] but the token carries no `name` claim — exercises
     /// the nameless-token path (e.g. the role-provider stub backfill gate, which
     /// must NOT downgrade a row from a token that provides no name).
@@ -939,8 +961,10 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
 
         // Skip port if it's in the forwarded host header or it's the default port for the protocol
         if let Some(port) = x_forwarded_port
-            && !(host.contains(':')
-                || proto == "https" && port == "443"
+            && !(host.parse::<http::uri::Authority>().map_or_else(
+                |_| host.contains(':'),
+                |authority| authority.port().is_some(),
+            ) || proto == "https" && port == "443"
                 || proto == "http" && port == "80")
         {
             base_uri.push(':');
@@ -1250,6 +1274,45 @@ mod test {
 
         let result = determine_base_uri(&headers);
         assert_eq!(result, Some("https://example.com:8443".to_string()));
+    }
+
+    #[test]
+    fn test_determine_host_with_forwarded_ipv6() {
+        for (host, proto, port, expected) in [
+            (
+                "[2001:db8::1]",
+                "https",
+                "8443",
+                "https://[2001:db8::1]:8443",
+            ),
+            ("[::1]", "http", "8080", "http://[::1]:8080"),
+            ("[::1]", "https", "443", "https://[::1]"),
+            ("[::1]", "http", "80", "http://[::1]"),
+            ("[::1]:9443", "https", "8443", "https://[::1]:9443"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                X_FORWARDED_HOST_HEADER,
+                HeaderValue::from_str(host).unwrap(),
+            );
+            headers.insert(
+                X_FORWARDED_PROTO_HEADER,
+                HeaderValue::from_str(proto).unwrap(),
+            );
+            headers.insert(
+                X_FORWARDED_PORT_HEADER,
+                HeaderValue::from_str(port).unwrap(),
+            );
+            assert_eq!(determine_base_uri(&headers).as_deref(), Some(expected));
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::HOST, HeaderValue::from_static("[::1]"));
+        headers.insert(X_FORWARDED_PORT_HEADER, HeaderValue::from_static("8443"));
+        assert_eq!(
+            determine_base_uri(&headers).as_deref(),
+            Some("https://[::1]:8443")
+        );
     }
 
     #[test]

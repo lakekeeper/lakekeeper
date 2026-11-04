@@ -1920,6 +1920,109 @@ pub mod spec_integrity {
         }
     }
 
+    /// No union member may compose another union, directly or through `allOf`.
+    ///
+    /// A generator asked to compose a union into an object flattens it into one
+    /// struct carrying every branch's fields. `expand_unions_composing_unions`
+    /// multiplies the nesting it recognises out and warns where it cannot; this
+    /// catches nesting it does not look at, such as an `anyOf` inner union or a
+    /// union inside a property.
+    fn assert_no_union_composes_a_union(spec: &Value, label: &str) {
+        let schemas = schemas(spec);
+        let mut unions = Vec::new();
+        union_nodes(spec, "", &mut unions);
+        for (path, union) in unions {
+            for (index, member) in union_members(union).enumerate() {
+                let mut nested = Vec::new();
+                composed_unions(schemas, member, "member", &mut BTreeSet::new(), &mut nested);
+                assert!(
+                    nested.is_empty(),
+                    "{label}: `{path}` member {index} composes the union(s) {nested:?}, which a \
+                     generator flattens into one struct"
+                );
+            }
+        }
+    }
+
+    /// Every union in `node`, at any depth, except a nullable wrapper.
+    ///
+    /// utoipa publishes `Option<T>` as `oneOf: [{type: null}, T]`, which
+    /// generators read as an optional `T`, so a wrapper may hold a union.
+    /// Unions inside a wrapper are still collected.
+    fn union_nodes<'a>(node: &'a Value, path: &str, out: &mut Vec<(String, &'a Value)>) {
+        match node {
+            Value::Object(map) => {
+                if is_union(node) && !is_nullable_wrapper(node) {
+                    out.push((path.to_string(), node));
+                }
+                for (key, value) in map {
+                    union_nodes(value, &format!("{path}.{key}"), out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    union_nodes(item, &format!("{path}[{index}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn is_union(schema: &Value) -> bool {
+        schema.get("oneOf").is_some() || schema.get("anyOf").is_some()
+    }
+
+    fn union_members(schema: &Value) -> impl Iterator<Item = &Value> {
+        ["oneOf", "anyOf"]
+            .into_iter()
+            .filter_map(|key| schema.get(key).and_then(Value::as_array))
+            .flatten()
+    }
+
+    fn is_nullable_wrapper(schema: &Value) -> bool {
+        let members = union_members(schema).collect::<Vec<_>>();
+        members.len() == 2
+            && members
+                .iter()
+                .any(|member| member.get("type").and_then(Value::as_str) == Some("null"))
+    }
+
+    /// Collect the unions `node` composes: `node` itself, its `$ref` target and,
+    /// recursively, every `allOf` branch of `node` and of that target. A
+    /// component is reported by name, an inline schema by its `path`.
+    fn composed_unions<'a>(
+        schemas: &'a serde_json::Map<String, Value>,
+        node: &'a Value,
+        path: &str,
+        visited: &mut BTreeSet<&'a str>,
+        out: &mut Vec<String>,
+    ) {
+        if is_union(node) {
+            out.push(path.to_string());
+        }
+        if let Some((name, schema)) = node.get("$ref").and_then(Value::as_str).and_then(|target| {
+            schemas.get_key_value(target.trim_start_matches("#/components/schemas/"))
+        }) && visited.insert(name.as_str())
+        {
+            composed_unions(schemas, schema, name, visited, out);
+        }
+        for (index, branch) in node
+            .get("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            composed_unions(
+                schemas,
+                branch,
+                &format!("{path}.allOf[{index}]"),
+                visited,
+                out,
+            );
+        }
+    }
+
     /// Assert every invariant above on `spec`, naming it `label` in failures.
     ///
     /// # Panics
@@ -1929,6 +2032,7 @@ pub mod spec_integrity {
         assert_no_self_references(spec, label);
         assert_discriminators_are_consistent(spec, label);
         assert_union_members_are_named(spec, label);
+        assert_no_union_composes_a_union(spec, label);
     }
 
     /// The unions in `components/schemas` published without a discriminator.
@@ -1944,12 +2048,45 @@ pub mod spec_integrity {
     pub fn undiscriminated_unions(spec: &Value) -> BTreeSet<&str> {
         schemas(spec)
             .iter()
-            .filter(|(_, schema)| {
-                (schema.get("oneOf").is_some() || schema.get("anyOf").is_some())
-                    && schema.get("discriminator").is_none()
-            })
+            .filter(|(_, schema)| is_union(schema) && schema.get("discriminator").is_none())
             .map(|(name, _)| name.as_str())
             .collect()
+    }
+
+    /// Assert that each payload, as `T` serialises it after reading it, is
+    /// valid against the component schema `name` of `spec`.
+    ///
+    /// The passes rewrite unions after utoipa derives them, so the document can
+    /// stay internally consistent while it stops describing what the server
+    /// sends and accepts. `oneOf` requires exactly one member to match, so this
+    /// also catches two members that accept the same payload.
+    ///
+    /// # Panics
+    /// If a payload is not a `T`, or `T`'s form of it does not match `name`.
+    pub fn assert_matches_schema<T: serde::Serialize + serde::de::DeserializeOwned>(
+        spec: &Value,
+        name: &str,
+        payloads: &[Value],
+    ) {
+        let root = serde_json::json!({
+            "$ref": format!("#/components/schemas/{name}"),
+            "components": spec["components"],
+        });
+        let validator = jsonschema::validator_for(&root)
+            .unwrap_or_else(|e| panic!("`{name}` is not a valid JSON schema: {e}"));
+        for payload in payloads {
+            let value = serde_json::from_value::<T>(payload.clone())
+                .unwrap_or_else(|e| panic!("{payload} does not deserialise: {e}"));
+            let wire = serde_json::to_value(value).expect("the value must serialise");
+            let errors = validator
+                .iter_errors(&wire)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>();
+            assert!(
+                errors.is_empty(),
+                "{wire} does not match `{name}`: {errors:?}"
+            );
+        }
     }
 
     /// Run `f` and return the warnings and errors it logged on this thread, one
@@ -2020,6 +2157,43 @@ pub mod spec_integrity {
                 ])
             );
             assert_eq!(warnings, Vec::<String>::new());
+        }
+
+        /// The unions the passes flatten or rename still describe the wire
+        /// format, one payload per provider for the credentials.
+        #[test]
+        fn management_spec_matches_the_wire_format() {
+            use serde_json::json;
+
+            use crate::service::storage::{StorageCredential, storage_layout::StorageLayout};
+
+            let spec = management_spec::<AllowAllAuthorizer>();
+            assert_matches_schema::<StorageCredential>(
+                &spec,
+                "StorageCredential",
+                &[
+                    json!({"type": "s3", "credential-type": "access-key",
+                           "access-key-id": "id", "secret-access-key": "secret"}),
+                    json!({"type": "stackit", "credential-type": "stackit-access-key",
+                           "access-key-id": "id", "secret-access-key": "secret"}),
+                    // Read as `stackit-access-key`.
+                    json!({"type": "stackit", "credential-type": "access-key",
+                           "access-key-id": "id", "secret-access-key": "secret"}),
+                    json!({"type": "az", "credential-type": "client-credentials",
+                           "client-id": "id", "client-secret": "secret", "tenant-id": "tenant"}),
+                    json!({"type": "gcs", "credential-type": "gcp-system-identity"}),
+                ],
+            );
+            assert_matches_schema::<StorageLayout>(
+                &spec,
+                "StorageLayout",
+                &[
+                    json!({"type": "default"}),
+                    json!({"type": "tabular-only", "tabular": "{name}-{uuid}"}),
+                    json!({"type": "full-hierarchy",
+                           "namespace": "{name}-{uuid}", "tabular": "{name}-{uuid}"}),
+                ],
+            );
         }
 
         #[test]
