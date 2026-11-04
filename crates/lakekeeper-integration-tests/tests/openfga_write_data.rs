@@ -515,7 +515,7 @@ mod write_data {
 
         /// A check that names no update kinds asks about a commit of any kind, so it needs
         /// `modify`, and JSON cannot mark a check as a commit request. A commit check on a
-        /// staged table asks about a commit of any kind as well.
+        /// staged table is not a data commit, whatever kinds it names, as the server decides.
         #[sqlx::test]
         async fn a_commit_check_without_update_kinds_needs_modify(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
@@ -574,7 +574,7 @@ mod write_data {
                         on_t(serde_json::json!({"action": "commit", "update_kinds": []})),
                         on_t(serde_json::json!({
                             "action": "commit",
-                            "update_kinds_listing": {"every_update": true}
+                            "commit_facts": {"lists_every_update": true}
                         })),
                         on_t(append.clone()),
                         on_staged(serde_json::json!({"action": "get_metadata"})),

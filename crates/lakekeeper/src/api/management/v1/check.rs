@@ -29,8 +29,7 @@ use crate::{
             CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
             CatalogWarehouseAction, DeterminingFactor, EventAction, MustUse,
             RequireNamespaceActionError, RequireTableActionError, RequireWarehouseActionError,
-            RoleAssignee as AuthZRoleAssignee, UpdateKindsListing, UserOrRole as AuthzUserOrRole,
-            UserOrRoleId,
+            RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, Authorization,
@@ -1000,25 +999,8 @@ fn convert_tabular_action<'a, 'u>(
 > {
     match tabular_info {
         ViewOrTableInfo::Table(table_info) => table_action.map(|action| {
-            // A commit to a staged table also needs the permission to make a commit of any
-            // kind, so a commit check on a staged table names no update kinds. It keeps the
-            // properties and refs the check names.
-            let action = match action {
-                CatalogTableAction::Commit {
-                    updated_properties,
-                    removed_properties,
-                    target_refs,
-                    update_kinds: _,
-                    update_kinds_listing: _,
-                } if table_info.is_staged() => CatalogTableAction::Commit {
-                    updated_properties,
-                    removed_properties,
-                    target_refs,
-                    update_kinds: Arc::default(),
-                    update_kinds_listing: UpdateKindsListing::default(),
-                },
-                action => action,
-            };
+            // The same action the server asks for a commit to this table.
+            let action = action.on_table(table_info);
             ActionOnTableOrView::Table(ActionOnTable {
                 info: table_info,
                 action,

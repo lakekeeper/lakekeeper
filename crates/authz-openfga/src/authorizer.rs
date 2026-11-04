@@ -2640,9 +2640,7 @@ pub(crate) mod tests {
         /// structure, properties or history, nor drop, rename or protect it.
         #[tokio::test]
         async fn test_write_data_commits_data_but_not_structure() {
-            use lakekeeper::service::authz::{
-                CatalogTableAction, TableUpdateKind, UpdateKindsListing,
-            };
+            use lakekeeper::service::authz::{CatalogTableAction, CommitFacts, TableUpdateKind};
 
             let authorizer = new_authorizer_in_empty_store().await;
             let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"));
@@ -2691,7 +2689,7 @@ pub(crate) mod tests {
                 removed_properties: Arc::default(),
                 target_refs: Arc::default(),
                 update_kinds: Arc::new(kinds.iter().copied().collect()),
-                update_kinds_listing: UpdateKindsListing::default(),
+                commit_facts: CommitFacts::live_check_for_tests(),
             };
 
             for kinds in [
@@ -2726,7 +2724,7 @@ pub(crate) mod tests {
                     removed_properties: Arc::default(),
                     target_refs: Arc::default(),
                     update_kinds: Arc::default(),
-                    update_kinds_listing: UpdateKindsListing::default(),
+                    commit_facts: CommitFacts::live_check_for_tests(),
                 })
                 .await,
                 "changing properties needs modify"

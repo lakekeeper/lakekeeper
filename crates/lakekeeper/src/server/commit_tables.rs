@@ -18,7 +18,7 @@ use crate::{
     server::tables::{create_table::ensure_format_version_allowed, parse_table_property_updates},
     service::{
         AllowedFormatVersions, ErrorModel, IcebergErrorResponse, Result,
-        authz::{CatalogTableAction, UpdateKindsListing},
+        authz::{CatalogTableAction, CommitFacts},
     },
 };
 
@@ -161,6 +161,18 @@ pub(super) fn apply_commit(
                     )
                     .into());
                 }
+            }
+            // Iceberg clients append to `main` and refuse to append to a tag.
+            TableUpdate::SetSnapshotRef {
+                ref_name,
+                reference,
+            } if ref_name == MAIN_BRANCH && !reference.is_branch() => {
+                return Err(ErrorModel::bad_request(
+                    "Cannot set main to a tag, it must be a branch",
+                    "SetMainToTagNotAllowed",
+                    None,
+                )
+                .into());
             }
             TableUpdate::SetProperties { updates } => {
                 check_immutable_properties_not_modified(&previous_immutable_properties, updates)?;
@@ -339,7 +351,7 @@ fn ensure_refs_kept(refs_to_keep: Vec<String>, new_metadata: &TableMetadata) -> 
 /// The action to authorize for one table's commit request, built from its updates.
 ///
 /// The only place that marks an action's `update_kinds` as listing every update of a commit
-/// request; see [`UpdateKindsListing`].
+/// request; see [`CommitFacts`].
 pub(crate) fn commit_action(updates: &[TableUpdate]) -> CatalogTableAction {
     let (updated_properties, removed_properties) = parse_table_property_updates(updates);
     CatalogTableAction::Commit {
@@ -347,7 +359,7 @@ pub(crate) fn commit_action(updates: &[TableUpdate]) -> CatalogTableAction {
         removed_properties: Arc::new(removed_properties),
         target_refs: Arc::new(refs_from_updates(updates)),
         update_kinds: Arc::new(update_kinds(updates)),
-        update_kinds_listing: UpdateKindsListing::every_update(),
+        commit_facts: CommitFacts::of_request(),
     }
 }
 
@@ -438,7 +450,7 @@ mod tests {
         AllowedFormatVersions, apply_commit, commit_action, ensure_format_version_upgrades_allowed,
         ensure_schema_content_stable, refs_from_updates, update_kinds,
     };
-    use crate::service::authz::{CatalogTableAction, UpdateKindsListing};
+    use crate::service::authz::{CatalogTableAction, CommitFacts};
 
     fn test_metadata_with_properties(
         props: HashMap<String, String>,
@@ -585,7 +597,7 @@ mod tests {
                 removed_properties: Arc::default(),
                 target_refs: Arc::default(),
                 update_kinds: Arc::default(),
-                update_kinds_listing: UpdateKindsListing::every_update(),
+                commit_facts: CommitFacts::of_request(),
             }
         );
     }
@@ -615,7 +627,7 @@ mod tests {
                     TableUpdateKind::SetProperties,
                     TableUpdateKind::RemoveProperties,
                 ])),
-                update_kinds_listing: UpdateKindsListing::every_update(),
+                commit_facts: CommitFacts::of_request(),
             }
         );
     }
