@@ -2921,8 +2921,8 @@ pub(crate) mod test {
             }
             .to_openfga()
         };
-        let check = CommitFacts::default();
-        let request = CommitFacts::of_request_for_tests();
+        let check = CommitFacts::live_check_for_tests();
+        let request = CommitFacts::live_request_for_tests();
         let append = [
             TableUpdateKind::AddSnapshot,
             TableUpdateKind::SetSnapshotRef,
@@ -2932,6 +2932,15 @@ pub(crate) mod test {
         assert_eq!(commit(&append, request), TableRelation::CanCommitData);
         assert_eq!(commit(&[], request), TableRelation::CanCommitData);
         assert_eq!(commit(&[], check), TableRelation::CanCommit);
+        assert_eq!(
+            commit(&append, CommitFacts::default()),
+            TableRelation::CanCommit,
+            "a commit whose table was not resolved"
+        );
+        assert_eq!(
+            commit(&append, CommitFacts::staged_request_for_tests()),
+            TableRelation::CanCommit
+        );
         assert_eq!(
             commit(&[TableUpdateKind::AddSchema], request),
             TableRelation::CanCommit

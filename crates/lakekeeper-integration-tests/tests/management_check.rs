@@ -2,7 +2,7 @@
 // VAK-437 split.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     sync::Arc,
 };
 
@@ -1671,62 +1671,84 @@ async fn test_check_internal_by_name_ignores_staged_table(pool: sqlx::PgPool) {
     assert_eq!(setup.check(vec![by_id], true).await.unwrap(), vec![true]);
 }
 
-/// A commit check on a staged table asks the authorizer what the server asks for a commit
-/// request with the same content. This authorizer allows a commit only if it sets a property.
-#[sqlx::test]
-async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: sqlx::PgPool) {
-    let authz = HidingAuthorizer::new();
-    let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
-        pool,
-        lakekeeper_integration_tests::memory_io_profile(),
-        None,
-        authz.clone(),
-        TabularDeleteProfile::Hard {},
-        None,
-    )
-    .await;
-    let warehouse_id = test_warehouse.warehouse_id;
-    let prefix = Some(Prefix(warehouse_id.to_string()));
-    let namespace = lakekeeper_integration_tests::create_ns(
-        api_context.clone(),
-        warehouse_id.to_string(),
-        "test_namespace".to_string(),
-    )
-    .await
-    .namespace;
-    let mut request = create_table_request(Some("staged".to_string()), None);
-    request.stage_create = Some(true);
-    let staged_id = CatalogServer::create_table(
-        NamespaceParameters {
-            prefix: prefix.clone(),
-            namespace: namespace.clone(),
-        },
-        request,
-        DataAccess::not_specified(),
-        api_context.clone(),
-        RequestMetadata::new_unauthenticated(),
-    )
-    .await
-    .unwrap()
-    .metadata
-    .uuid();
-    authz.block_action("table:Commit { updated_properties: {}");
+/// A namespace with a live table `live` and a staged table `staged`, and an authorizer that
+/// allows everything until a test blocks something.
+struct StagedAndLive {
+    api_context: HidingContext,
+    authz: HidingAuthorizer,
+    warehouse_id: WarehouseId,
+    namespace: NamespaceIdent,
+    ids: HashMap<&'static str, uuid::Uuid>,
+}
 
-    let check = async |updated: &[(&str, &str)], removed: &[&str], kind: TableUpdateKind| {
+impl StagedAndLive {
+    async fn new(pool: sqlx::PgPool) -> Self {
+        let authz = HidingAuthorizer::new();
+        let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+            pool,
+            lakekeeper_integration_tests::memory_io_profile(),
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+        let warehouse_id = test_warehouse.warehouse_id;
+        let namespace = lakekeeper_integration_tests::create_ns(
+            api_context.clone(),
+            warehouse_id.to_string(),
+            "test_namespace".to_string(),
+        )
+        .await
+        .namespace;
+        let mut ids = HashMap::new();
+        for (name, stage_create) in [("live", false), ("staged", true)] {
+            let mut request = create_table_request(Some(name.to_string()), None);
+            request.stage_create = Some(stage_create);
+            let id = CatalogServer::create_table(
+                NamespaceParameters {
+                    prefix: Some(Prefix(warehouse_id.to_string())),
+                    namespace: namespace.clone(),
+                },
+                request,
+                DataAccess::not_specified(),
+                api_context.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap()
+            .metadata
+            .uuid();
+            ids.insert(name, id);
+        }
+        Self {
+            api_context,
+            authz,
+            warehouse_id,
+            namespace,
+            ids,
+        }
+    }
+
+    /// Batch-check of a commit check on `table`, addressed by id.
+    async fn check(&self, table: &str, updates: &[TableUpdate]) -> bool {
+        let updated_properties = updates
+            .iter()
+            .filter_map(|u| match u {
+                TableUpdate::SetProperties { updates } => Some(updates.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
         let action = CatalogTableAction::Commit {
-            updated_properties: Arc::new(
-                updated
-                    .iter()
-                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                    .collect(),
-            ),
-            removed_properties: Arc::new(removed.iter().map(|k| (*k).to_string()).collect()),
+            updated_properties: Arc::new(updated_properties),
+            removed_properties: Arc::default(),
             target_refs: Arc::default(),
-            update_kinds: Arc::new(BTreeSet::from([kind])),
+            update_kinds: Arc::new(updates.iter().map(TableUpdateKind::from).collect()),
             commit_facts: authz::CommitFacts::default(),
         };
-        check_internal(
-            api_context.clone(),
+        let results = check_internal(
+            self.api_context.clone(),
             RequestMetadata::new_unauthenticated(),
             CatalogActionsBatchCheckRequest {
                 checks: vec![CatalogActionCheckItem {
@@ -1735,8 +1757,8 @@ async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: 
                     operation: CatalogActionCheckOperation::Table {
                         action,
                         table: TabularIdentOrUuid::IdInWarehouse {
-                            warehouse_id,
-                            table_id: staged_id,
+                            warehouse_id: self.warehouse_id,
+                            table_id: self.ids[table],
                         },
                     },
                 }],
@@ -1745,52 +1767,75 @@ async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: 
         )
         .await
         .unwrap()
-        .results
-        .iter()
-        .map(|r| r.allowed)
-        .collect::<Vec<_>>()
-    };
-    let commit = async |update: TableUpdate| {
-        let table = iceberg::TableIdent::new(namespace.clone(), "staged".to_string());
+        .results;
+        assert_eq!(results.len(), 1);
+        results[0].allowed
+    }
+
+    /// The server's answer to a commit request with `updates` to `table`: allowed, or the
+    /// HTTP status of the refusal.
+    async fn commit(&self, table: &str, updates: Vec<TableUpdate>) -> Result<(), u16> {
+        let ident = iceberg::TableIdent::new(self.namespace.clone(), table.to_string());
         CatalogServer::commit_table(
             TableParameters {
-                prefix: prefix.clone(),
-                table: table.clone(),
+                prefix: Some(Prefix(self.warehouse_id.to_string())),
+                table: ident.clone(),
             },
             CommitTableRequest {
-                identifier: Some(table),
+                identifier: Some(ident),
                 requirements: vec![],
-                updates: vec![update],
+                updates,
             },
-            api_context.clone(),
+            self.api_context.clone(),
             RequestMetadata::new_unauthenticated(),
         )
         .await
         .map(|_| ())
         .map_err(|e| e.error.code)
+    }
+}
+
+fn set_owner() -> TableUpdate {
+    TableUpdate::SetProperties {
+        updates: HashMap::from([("owner".to_string(), "team".to_string())]),
+    }
+}
+
+/// A commit check on a staged table asks the authorizer what the server asks for a commit
+/// request with the same content. This authorizer allows a commit only if it sets a property.
+#[sqlx::test]
+async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: sqlx::PgPool) {
+    let setup = StagedAndLive::new(pool).await;
+    setup
+        .authz
+        .block_action("table:Commit { updated_properties: {}");
+    let remove = TableUpdate::RemoveProperties {
+        removals: vec!["owner".to_string()],
     };
 
-    assert_eq!(
-        check(&[], &["owner"], TableUpdateKind::RemoveProperties).await,
-        vec![false]
-    );
-    assert_eq!(
-        commit(TableUpdate::RemoveProperties {
-            removals: vec!["owner".to_string()],
-        })
-        .await,
-        Err(403)
-    );
+    assert!(!setup.check("staged", std::slice::from_ref(&remove)).await);
+    assert_eq!(setup.commit("staged", vec![remove]).await, Err(403));
 
-    assert_eq!(
-        check(&[("owner", "team")], &[], TableUpdateKind::SetProperties).await,
-        vec![true]
-    );
-    assert_eq!(
-        commit(TableUpdate::SetProperties {
-            updates: HashMap::from([("owner".to_string(), "team".to_string())]),
-        })
-        .await,
-        Ok(())
-    );
+    assert!(setup.check("staged", &[set_owner()]).await);
+    assert_eq!(setup.commit("staged", vec![set_owner()]).await, Ok(()));
+}
+
+/// With an authorizer that allows data commits only, as `write_data` does, batch-check and
+/// the server agree: a data commit to a live table is allowed, and the same commit to a
+/// staged table is refused, because it finishes the table's creation.
+#[sqlx::test]
+async fn test_check_internal_data_commit_decides_as_the_server(pool: sqlx::PgPool) {
+    let setup = StagedAndLive::new(pool).await;
+    setup.authz.block_structural_commits();
+    // A data commit that changes nothing on a live table.
+    let data_commit = [TableUpdate::RemoveStatistics { snapshot_id: 1 }];
+
+    assert!(setup.check("live", &data_commit).await);
+    assert_eq!(setup.commit("live", data_commit.to_vec()).await, Ok(()));
+
+    assert!(!setup.check("staged", &data_commit).await);
+    assert_eq!(setup.commit("staged", data_commit.to_vec()).await, Err(403));
+
+    assert!(!setup.check("live", &[set_owner()]).await);
+    assert_eq!(setup.commit("live", vec![set_owner()]).await, Err(403));
 }

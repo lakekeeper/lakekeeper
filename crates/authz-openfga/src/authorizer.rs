@@ -2689,7 +2689,7 @@ pub(crate) mod tests {
                 removed_properties: Arc::default(),
                 target_refs: Arc::default(),
                 update_kinds: Arc::new(kinds.iter().copied().collect()),
-                commit_facts: CommitFacts::default(),
+                commit_facts: CommitFacts::live_check_for_tests(),
             };
 
             for kinds in [
@@ -2724,7 +2724,7 @@ pub(crate) mod tests {
                     removed_properties: Arc::default(),
                     target_refs: Arc::default(),
                     update_kinds: Arc::default(),
-                    commit_facts: CommitFacts::default(),
+                    commit_facts: CommitFacts::live_check_for_tests(),
                 })
                 .await,
                 "changing properties needs modify"
