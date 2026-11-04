@@ -162,6 +162,18 @@ pub(super) fn apply_commit(
                     .into());
                 }
             }
+            // Iceberg clients append to `main` and refuse to append to a tag.
+            TableUpdate::SetSnapshotRef {
+                ref_name,
+                reference,
+            } if ref_name == MAIN_BRANCH && !reference.is_branch() => {
+                return Err(ErrorModel::bad_request(
+                    "Cannot set main to a tag, it must be a branch",
+                    "SetMainToTagNotAllowed",
+                    None,
+                )
+                .into());
+            }
             TableUpdate::SetProperties { updates } => {
                 check_immutable_properties_not_modified(&previous_immutable_properties, updates)?;
                 builder = TableUpdate::apply(update, builder).map_err(update_error)?;

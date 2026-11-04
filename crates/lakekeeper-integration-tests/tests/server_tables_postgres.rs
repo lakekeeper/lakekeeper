@@ -2014,6 +2014,61 @@ async fn test_fast_client_on_main_is_refused(pool: PgPool) {
     assert_eq!(after.metadata, before.metadata);
 }
 
+/// Setting `main` to a tag is refused with 400, as Iceberg Java refuses it, and the table does
+/// not change. Clients cannot append to a table whose `main` is a tag.
+#[sqlx::test]
+async fn test_main_as_tag_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+    let before = load_table(&ctx, &ns_params, "tab-1").await;
+    let tag = |ref_name: &str, snapshot_id: i64| TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: SnapshotReference {
+            snapshot_id,
+            retention: SnapshotRetention::Tag {
+                max_ref_age_ms: None,
+            },
+        },
+    };
+
+    let commits = [
+        vec![tag(MAIN_BRANCH, 1)],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, now_ms()),
+            },
+            tag(MAIN_BRANCH, 2),
+        ],
+    ];
+    for updates in commits {
+        assert_eq!(
+            try_commit_tab_1(&ctx, &ns_params, updates).await,
+            Err((400, "SetMainToTagNotAllowed".to_string()))
+        );
+    }
+    let after = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(after.metadata_location, before.metadata_location);
+    assert_eq!(after.metadata, before.metadata);
+
+    try_commit_tab_1(&ctx, &ns_params, vec![tag("t", 1)])
+        .await
+        .unwrap();
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert!(metadata.refs()[MAIN_BRANCH].is_branch());
+    assert!(!metadata.refs()["t"].is_branch());
+}
+
 /// Registered metadata whose `last-updated-ms` is two hours ahead of the server clock: a
 /// commit is refused with 400, and the stored metadata stays loadable.
 #[sqlx::test]
