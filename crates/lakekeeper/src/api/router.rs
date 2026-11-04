@@ -80,8 +80,8 @@ static VARY_ON_REQUEST_IDENTITY: HeaderValue =
 /// principal-specific.
 ///
 /// `Cache-Control` is set `if_not_present` so that a route that decides its
-/// own caching keeps its directive: the S3 signer sends `no-cache`, so that a
-/// client never reuses a signature for another principal.
+/// own caching keeps its directive: the S3 signer sends `no-cache`, so that
+/// clients do not cache its signatures.
 /// `Vary` is *appended*: it is a list-valued header, so a route that names a
 /// further request header must not lose the fields below. Caches combine the
 /// field lines, which is also how `CompressionLayer` adds `accept-encoding`.
