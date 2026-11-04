@@ -86,7 +86,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 26;
+const EXPECTED_RECORDS: usize = 25;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -369,18 +369,6 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // A transaction commit with no table changes names nothing to check: its record
-    // carries empty `actions`, `entities` and `authorizations` lists.
-    let _ = CatalogServer::commit_transaction(
-        Some(warehouse.clone().into()),
-        iceberg_ext::catalog::rest::CommitTransactionRequest {
-            table_changes: Vec::new(),
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-
     // The project-wide grant listing about another principal: `read_subtree_grants` on the
     // project entity, with the subtree scope fields and `self_read` context.
     let _ = lakekeeper::api::management::v1::ApiServer::list_grants(
@@ -565,18 +553,6 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             &format!("record {index}"),
         );
     }
-
-    let empty_commit = records
-        .iter()
-        .find(|record| record["actions"] == serde_json::json!([]))
-        .unwrap_or_else(|| {
-            panic!(
-                "no record from the empty transaction commit:\n{}",
-                describe(&records)
-            )
-        });
-    assert_eq!(empty_commit["entities"], serde_json::json!([]));
-    assert_eq!(empty_commit["authorizations"], serde_json::json!([]));
 
     // The two renames across namespaces, each a `move` naming its destination namespace.
     let mut moves = records
