@@ -1135,6 +1135,56 @@ mod tests {
         );
     }
 
+    /// Updates that leave the metadata as it is record no change, which is how a commit that
+    /// changes nothing is told apart. Setting a property to its current value records one.
+    #[test]
+    fn updates_that_change_nothing_record_no_change() {
+        let (base, now) = table_with_main_snapshot();
+        let metadata = commit_at(base, vec![set_property("v")], now + 10).unwrap();
+        let changes = |updates: Vec<TableUpdate>| {
+            apply_commit(
+                metadata.clone(),
+                Some(&previous_file()),
+                &[TableRequirement::UuidMatch {
+                    uuid: metadata.uuid(),
+                }],
+                updates,
+                now + 20,
+            )
+            .unwrap()
+            .changes
+        };
+
+        assert_eq!(changes(vec![]), vec![]);
+        assert_eq!(
+            changes(vec![
+                TableUpdate::AssignUuid {
+                    uuid: metadata.uuid(),
+                },
+                TableUpdate::UpgradeFormatVersion {
+                    format_version: metadata.format_version(),
+                },
+                TableUpdate::SetLocation {
+                    location: metadata.location().to_string(),
+                },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: MAIN_BRANCH.to_string(),
+                    reference: branch_ref(1),
+                },
+                TableUpdate::RemoveStatistics { snapshot_id: 1 },
+                TableUpdate::RemovePartitionStatistics { snapshot_id: 1 },
+                TableUpdate::RemoveSnapshots {
+                    snapshot_ids: vec![42],
+                },
+                TableUpdate::RemoveSnapshotRef {
+                    ref_name: "absent".to_string(),
+                },
+            ]),
+            vec![]
+        );
+        assert_eq!(changes(vec![set_property("v")]), vec![set_property("v")]);
+    }
+
     /// A client clock two hours ahead on a branch or a staged (WAP) snapshot moves no
     /// table time, so every following commit stores metadata that clients load.
     #[test]
