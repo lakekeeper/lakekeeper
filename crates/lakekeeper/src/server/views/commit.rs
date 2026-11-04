@@ -23,7 +23,7 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
-        io::{remove_all, write_file},
+        io::{delete_on_failure, remove_all, write_file},
         require_warehouse_id,
         tables::{
             MAX_RETRIES_ON_CONCURRENT_UPDATE, determine_table_ident,
@@ -277,67 +277,61 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     };
     let storage_secret_ref = storage_secret.as_deref();
 
-    // Write metadata file
+    // Write the metadata file and commit
     let file_io = ctx.storage_profile.file_io(storage_secret_ref).await?;
-    write_file(
-        &file_io,
-        &new_view.metadata_location,
-        &new_metadata,
-        CompressionCodec::try_from_metadata(&new_metadata)?,
-    )
-    .await?;
-
-    tracing::debug!(
-        "Wrote new view metadata file to: '{}'",
-        new_view.metadata_location
-    );
-
-    // Generate config for client
-    let config = ctx
-        .storage_profile
-        .generate_table_config(
-            ctx.data_access,
-            storage_secret_ref,
+    let config = delete_on_failure(&file_io, &[&new_view.metadata_location], async {
+        write_file(
+            &file_io,
             &new_view.metadata_location,
-            StoragePermissions::ReadWriteDelete,
-            request_metadata,
-            ctx.view_info,
+            &new_metadata,
+            CompressionCodec::try_from_metadata(&new_metadata)?,
         )
         .await?;
 
-    // Insert idempotency key in the same transaction.
-    if let Some(key) = idempotency_key
-        && !C::try_insert_idempotency_key(
-            warehouse_id,
-            &IdempotencyInfo::builder()
-                .key(*key)
-                .endpoint(EndpointFlat::CatalogV1ReplaceView)
-                .http_status(StatusCode::OK)
-                .build(),
-            t.transaction(),
-        )
-        .await?
-    {
-        t.rollback()
-            .await
-            .inspect_err(|e| {
-                tracing::warn!("Rollback failed after idempotency conflict: {e}");
-            })
-            .ok();
-        // Best-effort cleanup: delete the metadata file we wrote before rollback.
-        let _ = remove_all(&file_io, &new_view.metadata_location)
-            .await
-            .inspect_err(|e| {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to clean up metadata file after idempotency rollback"
-                );
-            });
-        return Err(ErrorModel::request_in_progress().into());
-    }
+        tracing::debug!(
+            "Wrote new view metadata file to: '{}'",
+            new_view.metadata_location
+        );
 
-    // Commit transaction
-    t.commit().await?;
+        // Generate config for client
+        let config = ctx
+            .storage_profile
+            .generate_table_config(
+                ctx.data_access,
+                storage_secret_ref,
+                &new_view.metadata_location,
+                StoragePermissions::ReadWriteDelete,
+                request_metadata,
+                ctx.view_info,
+            )
+            .await?;
+
+        // Insert idempotency key in the same transaction.
+        if let Some(key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1ReplaceView)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
+        t.commit().await?;
+        Ok(config)
+    })
+    .await?;
 
     // Handle file cleanup after transaction is committed
     if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {

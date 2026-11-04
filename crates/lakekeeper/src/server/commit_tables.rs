@@ -113,6 +113,7 @@ pub(super) fn apply_commit(
     // Snapshot the persisted schemas before the builder consumes `metadata`, to guard against a
     // commit that recycles a schema id onto different content (see `ensure_schema_content_stable`).
     let previous_schemas: Vec<SchemaRef> = metadata.schemas_iter().cloned().collect();
+    let refs_to_keep = refs_not_removed_by_name(&metadata, &updates);
 
     let mut builder = TableMetadataBuilder::new_from_metadata(
         metadata,
@@ -183,6 +184,7 @@ pub(super) fn apply_commit(
         previous_schemas.iter(),
         build_result.metadata.schemas_iter(),
     )?;
+    ensure_refs_kept(refs_to_keep, &build_result.metadata)?;
     tracing::debug!(
         "Table metadata updated, at: {}",
         build_result.metadata.last_updated_ms()
@@ -190,15 +192,53 @@ pub(super) fn apply_commit(
     Ok(build_result)
 }
 
+/// Names of the refs of `metadata` that no `RemoveSnapshotRef` in `updates` removes.
+fn refs_not_removed_by_name(metadata: &TableMetadata, updates: &[TableUpdate]) -> Vec<String> {
+    let removed_by_name: BTreeSet<&str> = updates
+        .iter()
+        .filter_map(|update| match update {
+            TableUpdate::RemoveSnapshotRef { ref_name } => Some(ref_name.as_str()),
+            _ => None,
+        })
+        .collect();
+    metadata
+        .refs()
+        .keys()
+        .filter(|name| !removed_by_name.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Refuse a commit that drops a ref without removing it by name.
+///
+/// `RemoveSnapshots` silently drops every ref that points to a removed snapshot. A ref created
+/// or moved after the client planned the removal would be lost, and the client's file cleanup
+/// would delete files only its snapshot uses, so the client must reload and plan again.
+fn ensure_refs_kept(refs_to_keep: Vec<String>, new_metadata: &TableMetadata) -> Result<()> {
+    let dropped: Vec<String> = refs_to_keep
+        .into_iter()
+        .filter(|name| !new_metadata.refs().contains_key(name))
+        .collect();
+    if dropped.is_empty() {
+        return Ok(());
+    }
+    Err(ErrorModel::conflict(
+        format!(
+            "Cannot remove snapshots that the refs [{}] point to unless the commit also removes these refs. Reload the table and retry.",
+            dropped.join(", ")
+        ),
+        "CommitFailedException",
+        None,
+    )
+    .into())
+}
+
 /// Collect the branch/tag ref names a commit explicitly writes, from its
 /// `SetSnapshotRef` / `RemoveSnapshotRef` updates.
 ///
-/// A `RemoveSnapshots` update can drop a ref by cascade without naming it here.
-/// That case is deliberately NOT resolved to a ref name (doing so precisely
-/// needs the pre-commit metadata, unavailable at authorization time). Instead it
-/// is covered by [`update_kinds`]: a commit whose kinds are not purely ref/data
-/// moves is escalated by policy to require table-wide authority, so an unnamed
-/// cascade cannot slip past a protected-ref rule.
+/// A `RemoveSnapshots` update names no ref. [`apply_commit`] refuses one that would
+/// drop a ref the commit does not remove by name, and [`update_kinds`] lets a policy
+/// require table-wide authority for it.
 pub(super) fn refs_from_updates(updates: &[TableUpdate]) -> BTreeSet<String> {
     updates
         .iter()
@@ -266,8 +306,9 @@ mod tests {
     use iceberg::{
         TableUpdate,
         spec::{
-            FormatVersion, NestedField, PrimitiveType, Schema, SnapshotReference,
-            SnapshotRetention, SortOrder, UnboundPartitionSpec,
+            FormatVersion, MAIN_BRANCH, NestedField, Operation, PrimitiveType, Schema, Snapshot,
+            SnapshotReference, SnapshotRetention, SortOrder, Summary, TableMetadata,
+            UnboundPartitionSpec,
         },
     };
     use iceberg_ext::{catalog::TableUpdateKind, spec::TableMetadataBuilder};
@@ -374,8 +415,7 @@ mod tests {
 
     #[test]
     fn refs_from_updates_ignores_removesnapshots_cascade() {
-        // `RemoveSnapshots` names no ref; the cascade is handled via
-        // `update_kinds` escalation, so no ref name is extracted here.
+        // `RemoveSnapshots` names no ref; `apply_commit` refuses one that drops a ref.
         let updates = vec![TableUpdate::RemoveSnapshots {
             snapshot_ids: vec![1],
         }];
@@ -673,6 +713,134 @@ mod tests {
             let (p, n) = (build(), build());
             ensure_schema_content_stable(std::iter::once(&p), std::iter::once(&n))
                 .expect("identical schemas with the same identifier set must not be flagged");
+        }
+    }
+
+    fn tag_ref(snapshot_id: i64) -> SnapshotReference {
+        SnapshotReference {
+            snapshot_id,
+            retention: SnapshotRetention::Tag {
+                max_ref_age_ms: None,
+            },
+        }
+    }
+
+    /// Snapshots 1 -> 2 -> 3 with `main` at 3 and the tag `keep` at 2.
+    fn metadata_with_tagged_snapshot() -> TableMetadata {
+        let mut metadata = test_metadata_with_properties(HashMap::new());
+        for snapshot_id in 1..=3 {
+            let snapshot = Snapshot::builder()
+                .with_snapshot_id(snapshot_id)
+                .with_parent_snapshot_id((snapshot_id > 1).then_some(snapshot_id - 1))
+                .with_timestamp_ms(metadata.last_updated_ms() + 1)
+                .with_sequence_number(snapshot_id)
+                .with_schema_id(0)
+                .with_manifest_list(format!(
+                    "s3://bucket/table/metadata/snap-{snapshot_id}.avro"
+                ))
+                .with_summary(Summary {
+                    operation: Operation::Append,
+                    additional_properties: HashMap::new(),
+                })
+                .build();
+            metadata = apply_commit(
+                metadata,
+                None,
+                &[],
+                vec![
+                    TableUpdate::AddSnapshot { snapshot },
+                    TableUpdate::SetSnapshotRef {
+                        ref_name: MAIN_BRANCH.to_string(),
+                        reference: branch_ref(snapshot_id),
+                    },
+                ],
+            )
+            .unwrap()
+            .metadata;
+        }
+        apply_commit(
+            metadata,
+            None,
+            &[],
+            vec![TableUpdate::SetSnapshotRef {
+                ref_name: "keep".to_string(),
+                reference: tag_ref(2),
+            }],
+        )
+        .unwrap()
+        .metadata
+    }
+
+    /// A commit may drop a ref only by removing it by name; a ref that `RemoveSnapshots` would
+    /// drop silently, for example one created after the client planned the removal, fails the
+    /// commit with a conflict so the client plans again.
+    #[test]
+    fn removing_snapshots_never_drops_a_ref_silently() {
+        // Refs (name, snapshot id) after the commit, or the error type.
+        type Expected = Result<Vec<(&'static str, i64)>, &'static str>;
+        let remove = |ids: &[i64]| TableUpdate::RemoveSnapshots {
+            snapshot_ids: ids.to_vec(),
+        };
+        let remove_keep = || TableUpdate::RemoveSnapshotRef {
+            ref_name: "keep".to_string(),
+        };
+        let cases: Vec<(&str, Vec<TableUpdate>, Expected)> = vec![
+            (
+                "unreferenced snapshot",
+                vec![remove(&[1])],
+                Ok(vec![("keep", 2), ("main", 3)]),
+            ),
+            (
+                "tagged snapshot",
+                vec![remove(&[1, 2])],
+                Err("CommitFailedException"),
+            ),
+            (
+                "tag removed by name before",
+                vec![remove_keep(), remove(&[1, 2])],
+                Ok(vec![("main", 3)]),
+            ),
+            (
+                "tag removed by name after",
+                vec![remove(&[1, 2]), remove_keep()],
+                Ok(vec![("main", 3)]),
+            ),
+            (
+                "tag moved away",
+                vec![
+                    TableUpdate::SetSnapshotRef {
+                        ref_name: "keep".to_string(),
+                        reference: tag_ref(3),
+                    },
+                    remove(&[1, 2]),
+                ],
+                Ok(vec![("keep", 3), ("main", 3)]),
+            ),
+        ];
+        for (case, updates, expected) in cases {
+            let result = apply_commit(metadata_with_tagged_snapshot(), None, &[], updates);
+            match (result, expected) {
+                (Ok(result), Ok(expected_refs)) => {
+                    let mut refs: Vec<(&str, i64)> = result
+                        .metadata
+                        .refs()
+                        .iter()
+                        .map(|(name, r)| (name.as_str(), r.snapshot_id))
+                        .collect();
+                    refs.sort_unstable();
+                    assert_eq!(refs, expected_refs, "{case}");
+                }
+                (Err(e), Err(expected_type)) => {
+                    assert_eq!(e.error.code, 409, "{case}");
+                    assert_eq!(e.error.r#type, expected_type, "{case}");
+                }
+                (result, expected) => {
+                    panic!(
+                        "{case}: expected {expected:?}, got {:?}",
+                        result.map(|_| ())
+                    );
+                }
+            }
         }
     }
 }

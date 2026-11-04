@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{
-        ApiContext, ErrorModel,
+        ApiContext, ErrorModel, IcebergErrorResponse,
         data::v1::generic_tables::{
             CreateGenericTableRequest, GenericTableData, GenericTableParameters,
             LoadGenericTableResponse,
@@ -17,9 +17,9 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tabular::determine_tabular_location},
     service::{
-        CachePolicy, CatalogGenericTableOps, CatalogIdempotencyOps, CatalogStore,
-        GenericTableCreation, GenericTableId, Result, SecretStore, State, TabularId, Transaction,
-        WarehouseId,
+        COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogGenericTableOps,
+        CatalogIdempotencyOps, CatalogStore, GenericTableCreation, GenericTableId, Result,
+        SecretStore, State, TabularId, Transaction, WarehouseId,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
             emit_bootstrap_grants_async, write_bootstrap_grants,
@@ -119,7 +119,17 @@ impl<A: Authorizer> GenericTableCreationGuard<A> {
         self.authorizer_created = false;
     }
 
-    async fn cleanup(&mut self) {
+    /// Remove what was prepared before `error`. Keeps it if the commit may have been applied.
+    async fn cleanup(&mut self, error: &IcebergErrorResponse) {
+        if error.error.r#type == COMMIT_STATE_UNKNOWN_ERROR_TYPE {
+            tracing::warn!(
+                "Creation of generic table {} in warehouse {} may have been committed, skipping cleanup",
+                self.generic_table_id,
+                self.warehouse_id
+            );
+            return;
+        }
+
         if self.authorizer_created
             && let Err(e) = self
                 .authorizer
@@ -191,7 +201,7 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
             Ok(result)
         }
         Err(e) => {
-            guard.cleanup().await;
+            guard.cleanup(&e).await;
             Err(e)
         }
     }
