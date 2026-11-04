@@ -235,6 +235,9 @@ pub trait StateOrTransaction<S, T>: Send {
     fn as_enum_mut(&mut self) -> StateOrTransactionEnum<'_, S, T>;
 }
 
+/// Error type of a [`Transaction::commit`] that may have been applied.
+pub const COMMIT_STATE_UNKNOWN_ERROR_TYPE: &str = "CommitStateUnknownException";
+
 #[async_trait::async_trait]
 pub trait Transaction<D>
 where
@@ -248,6 +251,9 @@ where
 
     async fn begin_read(db_state: D) -> Result<Self>;
 
+    /// # Errors
+    /// An error of type [`COMMIT_STATE_UNKNOWN_ERROR_TYPE`] if the backend cannot tell whether the
+    /// transaction was committed. Any other error means it was rolled back.
     async fn commit(self) -> Result<()>;
 
     async fn rollback(self) -> Result<()>;
