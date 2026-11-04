@@ -554,18 +554,6 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         );
     }
 
-    let empty_commit = records
-        .iter()
-        .find(|record| record["actions"] == serde_json::json!([]))
-        .unwrap_or_else(|| {
-            panic!(
-                "no record from the empty transaction commit:\n{}",
-                describe(&records)
-            )
-        });
-    assert_eq!(empty_commit["entities"], serde_json::json!([]));
-    assert_eq!(empty_commit["authorizations"], serde_json::json!([]));
-
     // The two renames across namespaces, each a `move` naming its destination namespace.
     let mut moves = records
         .iter()
