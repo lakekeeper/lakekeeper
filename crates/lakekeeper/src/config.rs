@@ -348,25 +348,6 @@ fn validate_required_claims(config: &DynAppConfig) {
                 "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': rule name \
                  must match `[a-z0-9-]+`; write `tenant-filter`, not `tenant_filter`"
             );
-            // For a deny, splitting on any whitespace finds everything a whitespace literal
-            // finds and the values it misses, so the literal form is dominated — and its one
-            // distinguishing behaviour is to admit a token it was written to reject.
-            assert!(
-                !(rule.none_of.is_some()
-                    && rule
-                        .separator
-                        .as_deref()
-                        .is_some_and(|s| { !s.is_empty() && s.chars().all(char::is_whitespace) })),
-                "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': a \
-                 whitespace `separator` on `none_of` reads only that exact character, so a \
-                 value delimited by any other whitespace is admitted. Write \
-                 `SEPARATOR=whitespace`."
-            );
-            assert!(
-                !(rule.exists.is_some() && rule.separator.is_some()),
-                "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': `separator` \
-                 has no effect on `exists`; remove one of them"
-            );
             if let Err(e) = rule.to_rule() {
                 panic!("Invalid required claim rule '{name}' for OIDC provider '{idp_id}': {e}");
             }
