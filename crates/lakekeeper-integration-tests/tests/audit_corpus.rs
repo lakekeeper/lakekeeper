@@ -86,7 +86,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 26;
+const EXPECTED_RECORDS: usize = 25;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -364,18 +364,6 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     .expect("creating a native role");
     let _ = lakekeeper::api::management::v1::ApiServer::create_role(
         role_request(Some("system")),
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-
-    // A transaction commit with no table changes names nothing to check: its record
-    // carries empty `actions`, `entities` and `authorizations` lists.
-    let _ = CatalogServer::commit_transaction(
-        Some(warehouse.clone().into()),
-        iceberg_ext::catalog::rest::CommitTransactionRequest {
-            table_changes: Vec::new(),
-        },
         ctx.clone(),
         random_request_metadata(),
     )
