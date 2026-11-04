@@ -11,7 +11,10 @@ use typed_builder::TypedBuilder;
 #[cfg(feature = "axum")]
 use super::impl_into_response;
 use crate::{
-    catalog::{TableIdent, TableRequirement, TableUpdate, rest::RemoteSigningConfig},
+    catalog::{
+        TableIdent, TableRequirement, TableUpdate,
+        rest::{Labels, RemoteSigningConfig},
+    },
     spec::{Schema, SortOrder, UnboundPartitionSpec},
 };
 
@@ -43,6 +46,10 @@ pub struct LoadTableResult {
     /// falls back to those keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_signing_config: Option<RemoteSigningConfig>,
+    /// Catalog-provided labels for the table and its fields. Omitted when the
+    /// table has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Labels>,
     /// Validator for this exact body, emitted as the `ETag` header.
     ///
     /// Not serialized, and deliberately not derivable from this struct: the tag
@@ -355,6 +362,7 @@ mod tests {
             config: None,
             storage_credentials: None,
             remote_signing_config: None,
+            labels: None,
             etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 
@@ -375,6 +383,7 @@ mod tests {
             config: None,
             storage_credentials: None,
             remote_signing_config: None,
+            labels: None,
             etag: Some(ETag::from("W/\"lk2.abc.199e1e0f9c3\"")),
         };
 
@@ -396,6 +405,7 @@ mod tests {
             config: None,
             storage_credentials: None,
             remote_signing_config: None,
+            labels: None,
             // Staged tables have no metadata location, so the caller mints no tag.
             etag: None,
         };
@@ -417,6 +427,7 @@ mod tests {
             config: None,
             storage_credentials: None,
             remote_signing_config: None,
+            labels: None,
             etag: Some(ETag::from("W/\"lk2.deadbeef\"")),
         };
 
@@ -435,6 +446,38 @@ mod tests {
             ..load_table_result
         };
         assert_eq!(deserialized, expected);
+    }
+
+    #[test]
+    fn test_load_table_result_labels_are_optional_on_the_wire() {
+        let without = LoadTableResult {
+            metadata_location: Some("s3://bucket/table/metadata.json".to_string()),
+            metadata: create_table_metadata_mock(),
+            config: None,
+            storage_credentials: None,
+            remote_signing_config: None,
+            labels: None,
+            etag: None,
+        };
+        let json = serde_json::to_value(&without).unwrap();
+        assert!(json.get("labels").is_none(), "absent labels are omitted");
+        let parsed: LoadTableResult = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.labels, None);
+
+        let labels = Labels::builder()
+            .object_labels([("domain".to_string(), "payments".to_string())].into())
+            .build();
+        let with = LoadTableResult {
+            labels: Some(labels.clone()),
+            ..without
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(
+            json["labels"],
+            serde_json::json!({"object-labels": {"domain": "payments"}})
+        );
+        let parsed: LoadTableResult = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.labels, Some(labels));
     }
 
     fn create_table_metadata_mock() -> Arc<TableMetadata> {

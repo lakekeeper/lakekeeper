@@ -403,6 +403,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         remote_signing_config: config.remote_signing.clone(),
         config: Some(load_response_config(Some(config.config))),
         storage_credentials,
+        labels: None,
         etag: metadata_location.as_ref().map(|loc| {
             TableETag::new(
                 warehouse_id,
