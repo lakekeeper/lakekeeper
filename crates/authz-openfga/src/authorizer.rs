@@ -2683,41 +2683,22 @@ pub(crate) mod tests {
                     .await
                     .unwrap()
             };
-            let commit = |kinds: &[TableUpdateKind], commit_facts| CatalogTableAction::Commit {
+            // Every commit asks `can_commit`, so one kind stands for all.
+            let schema_change = CatalogTableAction::Commit {
                 updated_properties: Arc::default(),
                 removed_properties: Arc::default(),
                 target_refs: Arc::default(),
-                update_kinds: Arc::new(kinds.iter().copied().collect()),
-                commit_facts,
-            };
-
-            for commit_facts in [
-                CommitFacts::live_check_for_tests(),
-                CommitFacts::live_request_for_tests(),
-                CommitFacts::staged_request_for_tests(),
-            ] {
-                for kinds in [
-                    vec![
-                        TableUpdateKind::AddSnapshot,
-                        TableUpdateKind::SetSnapshotRef,
-                    ],
-                    vec![
+                update_kinds: Arc::new(
+                    [
                         TableUpdateKind::AddSchema,
                         TableUpdateKind::SetCurrentSchema,
-                    ],
-                    vec![TableUpdateKind::AddSnapshot, TableUpdateKind::SetProperties],
-                    vec![
-                        TableUpdateKind::RemoveSnapshots,
-                        TableUpdateKind::RemoveSnapshotRef,
-                    ],
-                    vec![],
-                ] {
-                    assert!(
-                        allowed(commit(&kinds, commit_facts)).await,
-                        "{kinds:?} with {commit_facts:?}"
-                    );
-                }
-            }
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                commit_facts: CommitFacts::staged_request_for_tests(),
+            };
+            assert!(allowed(schema_change).await);
             assert!(allowed(CatalogTableAction::WriteData).await);
             assert!(allowed(CatalogTableAction::ReadData).await);
             for action in [

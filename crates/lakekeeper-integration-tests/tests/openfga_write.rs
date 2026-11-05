@@ -395,7 +395,7 @@ mod write {
             CatalogServer::commit_transaction(
                 Some(Prefix(warehouse_id.to_string())),
                 CommitTransactionRequest {
-                    table_changes: vec![change("t", append(1)), change("t2", property_change())],
+                    table_changes: vec![change("t", append(1)), change("t2", schema_change())],
                 },
                 ctx.clone(),
                 writer_md.clone(),
