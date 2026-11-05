@@ -211,7 +211,9 @@ pub enum ActionContextKey {
     Destination(Vec<String>),
     /// `true` when the call only reports what it would do and changes nothing.
     DryRun(bool),
-    /// `true` when the client asked to force the operation.
+    /// `true` when the client asked to force the operation. Also `true` on the drop of an active
+    /// table that a register with `overwrite` replaces with another table (a different table
+    /// UUID) in a warehouse with soft deletion.
     Force(bool),
     /// The table format the client requested.
     Format(String),
@@ -651,7 +653,8 @@ impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
                         .field(FIELD_NAME_NAMESPACE, namespace)
                         .field(FIELD_NAME_TABLE, table),
                 },
-                CatalogActionCheckOperation::View { view, .. } => match view {
+                CatalogActionCheckOperation::View { view, .. }
+                | CatalogActionCheckOperation::ViewInDefinerView { view } => match view {
                     TabularIdentOrUuid::IdInWarehouse {
                         warehouse_id,
                         table_id,
@@ -886,7 +889,8 @@ impl APIEventActions for TabularAction {
     }
 }
 
-impl APIEventActions for Vec<CatalogTableAction> {
+/// A request that asks several actions of one kind records each of them.
+impl<T: EventAction> APIEventActions for Vec<T> {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         self.iter()
             .flat_map(APIEventActions::event_actions)

@@ -20,7 +20,7 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
-use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
 use strum::IntoEnumIterator as _;
 use uuid::Uuid;
@@ -500,6 +500,10 @@ async fn test_validate_storage_credential_leaves_the_stored_credential_alone(poo
 
     assert!(response.valid, "{:?}", response.checks);
     assert_report_is_exhaustive(&response);
+    assert_eq!(
+        status_of(&response, ValidationCheckName::SpecMutable),
+        ValidationCheckStatus::Passed
+    );
 
     let after = PostgresBackend::get_warehouse_by_id(
         warehouse.warehouse_id,
@@ -514,11 +518,9 @@ async fn test_validate_storage_credential_leaves_the_stored_credential_alone(poo
 }
 
 #[sqlx::test]
-async fn test_validate_endpoints_deny_an_unauthorized_caller(pool: PgPool) {
-    // The entire security argument for these endpoints is "same permission as
-    // the mutation they stand in for" — pin that down rather than assuming it.
+async fn test_validate_warehouse_denies_a_caller_without_create_permission(pool: PgPool) {
     let authz = HidingAuthorizer::new();
-    let (ctx, warehouse) = SetupTestCatalog::builder()
+    let (ctx, _warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
         .storage_profile(memory_io_profile())
         .authorizer(authz.clone())
@@ -530,12 +532,8 @@ async fn test_validate_endpoints_deny_an_unauthorized_caller(pool: PgPool) {
     // Prefix match: the action debug-formats with its `name` field, so block the
     // bare variant name rather than a particular name.
     authz.block_action("project:CreateWarehouse");
-    authz.block_action(&format!(
-        "warehouse:{:?}",
-        CatalogWarehouseAction::UpdateStorage
-    ));
 
-    let create_denied = ApiServer::validate_warehouse(
+    let err = ApiServer::validate_warehouse(
         CreateWarehouseRequest::builder()
             .warehouse_name(format!("denied-{}", Uuid::now_v7()))
             .storage_profile(memory_io_profile())
@@ -543,42 +541,185 @@ async fn test_validate_endpoints_deny_an_unauthorized_caller(pool: PgPool) {
         ctx.clone(),
         random_request_metadata(),
     )
-    .await;
-    assert!(
-        create_denied.is_err(),
-        "validate must not probe storage without create permission"
+    .await
+    .expect_err("validate must not probe storage without create permission");
+    assert_eq!(err.error.code, 403);
+}
+
+/// Refused with the forbidden error that names `action`.
+#[track_caller]
+fn assert_refused<T: std::fmt::Debug>(
+    label: &str,
+    result: lakekeeper::api::Result<T>,
+    action: &str,
+    warehouse_id: WarehouseId,
+) {
+    let err = result.expect_err(label);
+    assert_eq!(err.error.code, 403, "{label}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden", "{label}");
+    assert_eq!(
+        err.error.message,
+        format!("Warehouse action `{action}` forbidden on warehouse `{warehouse_id}`"),
+        "{label}"
     );
+}
 
-    let storage_denied = ApiServer::validate_storage_profile(
-        warehouse.warehouse_id,
-        UpdateWarehouseStorageRequest {
-            storage_profile: memory_io_profile(),
-            storage_credential: None,
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-    assert!(storage_denied.is_err());
+/// Calls each storage endpoint and returns its result in a fixed order: the credential
+/// replacement and its dry run, the profile change and its dry run, then the check of the
+/// current storage.
+async fn call_storage_endpoints(
+    ctx: &lakekeeper::api::ApiContext<
+        lakekeeper::service::State<HidingAuthorizer, PostgresBackend, SecretsState>,
+    >,
+    warehouse_id: WarehouseId,
+) -> StorageEndpointResults {
+    StorageEndpointResults {
+        credential: ApiServer::update_storage_credential(
+            warehouse_id,
+            UpdateWarehouseCredentialRequest {
+                new_storage_credential: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .map(drop),
+        validate_credential: ApiServer::validate_storage_credential(
+            warehouse_id,
+            UpdateWarehouseCredentialRequest {
+                new_storage_credential: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .map(drop),
+        profile: ApiServer::update_storage(
+            warehouse_id,
+            UpdateWarehouseStorageRequest {
+                storage_profile: memory_io_profile(),
+                storage_credential: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .map(drop),
+        validate_profile: ApiServer::validate_storage_profile(
+            warehouse_id,
+            UpdateWarehouseStorageRequest {
+                storage_profile: memory_io_profile(),
+                storage_credential: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .map(drop),
+        validate_access: ApiServer::validate_storage_access(
+            warehouse_id,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .map(drop),
+    }
+}
 
-    let credential_denied = ApiServer::validate_storage_credential(
-        warehouse.warehouse_id,
-        UpdateWarehouseCredentialRequest {
-            new_storage_credential: None,
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-    assert!(credential_denied.is_err());
+struct StorageEndpointResults {
+    credential: lakekeeper::api::Result<()>,
+    validate_credential: lakekeeper::api::Result<()>,
+    profile: lakekeeper::api::Result<()>,
+    validate_profile: lakekeeper::api::Result<()>,
+    validate_access: lakekeeper::api::Result<()>,
+}
 
-    let stored_denied = ApiServer::validate_storage_access(
-        warehouse.warehouse_id,
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-    assert!(stored_denied.is_err());
+/// A catalog with one memory warehouse, authorized by a [`HidingAuthorizer`].
+async fn storage_catalog(
+    pool: PgPool,
+) -> (
+    lakekeeper::api::ApiContext<
+        lakekeeper::service::State<HidingAuthorizer, PostgresBackend, SecretsState>,
+    >,
+    HidingAuthorizer,
+    WarehouseId,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool)
+        .storage_profile(memory_io_profile())
+        .authorizer(authz.clone())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    (ctx, authz, warehouse.warehouse_id)
+}
+
+/// Replacing the credential asks `update_storage_credential`. Changing the profile also
+/// replaces the credential, so it asks it too. Each dry run asks what its mutation asks;
+/// checking the current storage does not ask it.
+#[sqlx::test]
+async fn test_storage_credential_action_is_asked_by_credential_and_profile_changes(pool: PgPool) {
+    let (ctx, authz, warehouse_id) = storage_catalog(pool).await;
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::UpdateStorageCredential
+    ));
+
+    let results = call_storage_endpoints(&ctx, warehouse_id).await;
+    let refused = "update_storage_credential";
+    assert_refused("credential", results.credential, refused, warehouse_id);
+    assert_refused(
+        "validate credential",
+        results.validate_credential,
+        refused,
+        warehouse_id,
+    );
+    assert_refused("profile", results.profile, refused, warehouse_id);
+    assert_refused(
+        "validate profile",
+        results.validate_profile,
+        refused,
+        warehouse_id,
+    );
+    results
+        .validate_access
+        .expect("validate access asks update_storage only");
+}
+
+/// Changing the profile and checking the current storage ask `update_storage`; replacing
+/// the credential does not.
+#[sqlx::test]
+async fn test_storage_action_is_not_asked_by_credential_changes(pool: PgPool) {
+    let (ctx, authz, warehouse_id) = storage_catalog(pool).await;
+    // A prefix block of `UpdateStorage` would also match `UpdateStorageCredential`.
+    authz.block_action_exact(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::UpdateStorage
+    ));
+
+    let results = call_storage_endpoints(&ctx, warehouse_id).await;
+    let refused = "update_storage";
+    results
+        .credential
+        .expect("replacing the credential asks update_storage_credential only");
+    results
+        .validate_credential
+        .expect("validate credential asks update_storage_credential only");
+    assert_refused("profile", results.profile, refused, warehouse_id);
+    assert_refused(
+        "validate profile",
+        results.validate_profile,
+        refused,
+        warehouse_id,
+    );
+    assert_refused(
+        "validate access",
+        results.validate_access,
+        refused,
+        warehouse_id,
+    );
 }
 
 /// The id-availability check reports what the dry run can actually determine:

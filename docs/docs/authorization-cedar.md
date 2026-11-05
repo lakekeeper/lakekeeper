@@ -288,6 +288,7 @@ Notes:
 - **`select` and `write` on a container** act on the tables, views and generic tables beneath it, not on the container. Grant `describe` on the container too, so the holder can reach and list what is in it.
 - **`manage` does not administer grants or policies.** Grant `read_grants`, `pass_grants`, `manage_grants`, `read_policies` or `manage_policies` for those.
 - **Moving** a namespace, table, view or generic table to another namespace needs `manage` and `manage_grants` on it, because a move changes which grants apply to it. The destination needs `create` or `manage`. Renaming a table, view or generic table within its namespace needs `manage` alone; renaming a namespace is a move.
+- **Skipping soft deletion**, such as a forced drop or a recursive namespace delete in a warehouse with soft deletion, needs `manage` on the warehouse. `manage` on a namespace, table, view or generic table is not enough. See [Skipping Soft Deletion](./concepts.md#skipping-soft-deletion).
 - **`manage_tags`** tags objects without access to their data. On a server or project it acts only on what is beneath; grant `describe` there too to list warehouses and tags. Attaching or removing a tag also needs `apply` or `manage` on the tag. Policies may read tags to decide access, so treat tagging as a governance right.
 - **`apply`** counts only on the tag it is granted on. Attaching the tag also needs `manage_tags` or `manage` on the object.
 - **`read_grants`** reads grants and nothing else: no check of what another user or role may do, no grant, no revoke. On a project the subtree listing is everything one user or role holds in it; on a warehouse or namespace it is every grant at and under it.
@@ -1293,6 +1294,8 @@ Grant administration and policy administration stand outside every `<Level>Actio
 
 The **Group** column below names the narrowest group an action is in. An action marked "none" is in no group: a policy reaches it by naming it, or by leaving `action` unconstrained.
 
+One action is also a group: `UpdateStorage` holds `UpdateStorageCredential`. Replacing the storage credential checks `UpdateStorageCredential`. Changing the storage profile checks both actions, because it replaces the credential too. A permit with `action in [Lakekeeper::Action::"UpdateStorage"]` allows both operations. A permit with `action == Lakekeeper::Action::"UpdateStorageCredential"` allows replacing the credential only. Write `in` for `UpdateStorage`, not `==`: `action == Lakekeeper::Action::"UpdateStorage"` does not match `UpdateStorageCredential`, so a permit written that way allows neither operation, and a forbid written that way does not stop credential replacement.
+
 ### Server Actions
 
 At server actions a user carries their groups; see [Role scope at server actions](#role-scope-at-server-actions).
@@ -1373,12 +1376,12 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `GetWarehouseEndpointStatistics` | `get_endpoint_statistics` | `WarehouseDescribeActions` | View API usage statistics for the warehouse |
 | `CreateNamespaceInWarehouse` | `create_namespace` | `WarehouseCreateActions` | Create a namespace directly in the warehouse |
 | `DeleteWarehouse` | `delete` | `WarehouseModifyActions` | Delete the warehouse |
-| `UpdateStorage` | `update_storage` | `WarehouseModifyActions` | Modify storage configuration |
-| `UpdateStorageCredential` | `update_storage_credential` | `WarehouseModifyActions` | Update storage credentials |
+| `UpdateStorage` | `update_storage` | `WarehouseModifyActions` | Change or validate the storage profile, or validate the storage the warehouse currently runs with. Changing or validating the profile also checks `UpdateStorageCredential` |
+| `UpdateStorageCredential` | `update_storage_credential` | `UpdateStorage` | Replace, clear or validate the storage credential, and leave the storage profile as it is |
 | `DeactivateWarehouse` | `deactivate` | `WarehouseModifyActions` | Deactivate the warehouse (suspend operations) |
 | `ActivateWarehouse` | `activate` | `WarehouseModifyActions` | Activate a deactivated warehouse |
 | `RenameWarehouse` | `rename` | `WarehouseModifyActions` | Change the warehouse's name |
-| `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseModifyActions` | Configure soft-deletion settings |
+| `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseModifyActions` | Configure soft-deletion settings, and [skip soft deletion](./concepts.md#skipping-soft-deletion) |
 | `ModifyTaskQueueConfig` | `modify_task_queue_config` | `WarehouseModifyActions` | Update task queue configuration |
 | `ControlAllTasks` | `control_all_tasks` | `WarehouseModifyActions` | Manage all background tasks |
 | `SetWarehouseProtection` | `set_protection` | `WarehouseModifyActions` | Enable or disable deletion protection |
@@ -1547,6 +1550,8 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | `Manage<Level>Grants`                     | `privilege: <Level>Privilege`, `grantee: Grantee`, `direction: GrantDirection` |
 | `Read…SubtreeGrants`, `Revoke…SubtreeGrants` | `subtree?: SubtreeGrantScope` |
 | `Toggle…PredefinedPolicy`                 | `policy_id: String`, `enabled: Bool` |
+
+A register with `overwrite` that replaces an active table with another table (a different table UUID) in a warehouse with soft deletion sends `DropTable` for the replaced table with `force: true`, because the table skips soft deletion. The protection of the replaced table still applies.
 
 **Example**: Prevent a table from being created with an `access-owners` property that doesn't include at least one owner from the `oidc~data-governance` role:
 

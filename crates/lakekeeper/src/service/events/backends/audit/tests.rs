@@ -563,11 +563,13 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_create_view_owner_property",
     "authz_failed_view_commit_owner_property",
     "authz_failed_view_version_change",
+    "authz_failed_soft_deletion_skip",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
     "authz_succeeded_project_subtree_grants",
     "authz_succeeded_apply_grants",
+    "authz_succeeded_update_storage",
     "authz_succeeded_empty_collections",
     "authz_succeeded_empty_batch_check",
     "grant_created",
@@ -898,6 +900,22 @@ fn fixture_authz_succeeded_apply_grants() {
     assert_matches_fixture("authz_succeeded_apply_grants", &contract_fields(record));
 }
 
+/// A storage profile change, which asks two warehouse actions because it also replaces the
+/// credential. Built from the handler's own action list.
+#[test]
+fn fixture_authz_succeeded_update_storage() {
+    let record = emit_and_capture_one(|| {
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_warehouse_entity()),
+            crate::api::management::v1::warehouse::update_storage_actions().event_actions(),
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_matches_fixture("authz_succeeded_update_storage", &contract_fields(record));
+}
+
 /// A request that asked for nothing: a commit that changed nothing, and a drop that forced
 /// nothing.
 ///
@@ -1142,9 +1160,9 @@ fn fixture_authz_failed_tabular_move() {
     assert_matches_fixture("authz_failed_tabular_move", &contract_fields(record));
 }
 
-/// A refusal by the view owner property rules, recorded as the view handlers record it:
-/// entities and actions from the handler's own types, error from the refusal's own type.
-fn owner_property_refusal_record(
+/// A refusal recorded as the handlers record it: entities and actions from the handler's own
+/// types, error from the refusal's own type.
+fn refusal_record(
     entities: EventEntities,
     actions: Vec<ActionDescriptor>,
     refusal: impl crate::service::events::AuthorizationFailureSource,
@@ -1213,7 +1231,7 @@ fn fixture_authz_failed_create_view_owner_property() {
         NamespaceIdent::new("sales".to_string()),
     )
     .event_entities();
-    let record = owner_property_refusal_record(
+    let record = refusal_record(
         entities,
         action.event_actions(),
         ProtectedPropertyModification {
@@ -1239,7 +1257,7 @@ fn fixture_authz_failed_view_commit_owner_property() {
         )])),
         removed_properties: Arc::new(Vec::new()),
     };
-    let record = owner_property_refusal_record(
+    let record = refusal_record(
         fixture_view().event_entities(),
         action.event_actions(),
         ProtectedPropertyModification {
@@ -1262,7 +1280,7 @@ fn fixture_authz_failed_view_version_change() {
         updated_properties: Arc::new(std::collections::BTreeMap::new()),
         removed_properties: Arc::new(Vec::new()),
     };
-    let record = owner_property_refusal_record(
+    let record = refusal_record(
         fixture_view().event_entities(),
         action.event_actions(),
         ProtectedViewVersionChange {
@@ -1271,6 +1289,38 @@ fn fixture_authz_failed_view_version_change() {
     );
 
     assert_matches_fixture("authz_failed_view_version_change", &contract_fields(record));
+}
+
+/// A forced table drop refused because it skips the warehouse's soft-deletion window and the
+/// caller may not change the soft-deletion settings: recorded as the drop, with the refusal
+/// of the warehouse action as the error.
+#[test]
+fn fixture_authz_failed_soft_deletion_skip() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let entities = UserProvidedTable {
+        warehouse_id,
+        table: TableIdent::new(
+            NamespaceIdent::new("sales".to_string()),
+            "orders".to_string(),
+        )
+        .into(),
+    }
+    .event_entities();
+    let action = CatalogTableAction::Drop {
+        force: true,
+        purge: false,
+    };
+    let record = refusal_record(
+        entities,
+        action.event_actions(),
+        crate::service::authz::soft_deletion_skip_forbidden(warehouse_id),
+    );
+
+    assert_matches_fixture("authz_failed_soft_deletion_skip", &contract_fields(record));
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`

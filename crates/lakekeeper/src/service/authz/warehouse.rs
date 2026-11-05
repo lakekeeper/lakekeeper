@@ -7,8 +7,8 @@ use crate::{
         ArcResolvedWarehouse, CatalogBackendError, CatalogGetWarehouseByIdError,
         DatabaseIntegrityError, ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
+            AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
             IsAllowedActionError, MustUse, UserOrRole,
         },
@@ -126,6 +126,7 @@ impl AuthorizationFailureSource for AuthZCannotUseWarehouseId {
 pub struct AuthZWarehouseActionForbidden {
     warehouse_id: WarehouseId,
     action: String,
+    reason: Option<&'static str>,
 }
 impl AuthZWarehouseActionForbidden {
     #[must_use]
@@ -133,7 +134,15 @@ impl AuthZWarehouseActionForbidden {
         Self {
             warehouse_id,
             action: action.to_string(),
+            reason: None,
         }
+    }
+
+    /// Says why the call needs the action, for a caller who did not ask for it directly.
+    #[must_use]
+    pub(crate) fn with_reason(mut self, reason: &'static str) -> Self {
+        self.reason = Some(reason);
+        self
     }
 }
 impl AuthorizationFailureSource for AuthZWarehouseActionForbidden {
@@ -141,12 +150,15 @@ impl AuthorizationFailureSource for AuthZWarehouseActionForbidden {
         let AuthZWarehouseActionForbidden {
             warehouse_id,
             action,
+            reason,
         } = self;
-        ErrorModel::forbidden(
-            format!("Warehouse action `{action}` forbidden on warehouse `{warehouse_id}`"),
-            "WarehouseActionForbidden",
-            None,
-        )
+        let mut message =
+            format!("Warehouse action `{action}` forbidden on warehouse `{warehouse_id}`");
+        if let Some(reason) = reason {
+            message.push_str(". ");
+            message.push_str(reason);
+        }
+        ErrorModel::forbidden(message, "WarehouseActionForbidden", None)
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
         AuthorizationFailureReason::ActionForbidden
@@ -253,45 +265,66 @@ pub trait AuthzWarehouseOps: Authorizer {
         warehouse: Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError>,
         action: impl Into<Self::WarehouseAction> + Send,
     ) -> Result<ArcResolvedWarehouse, RequireWarehouseActionError> {
-        let action = action.into();
+        let action: Self::WarehouseAction = action.into();
+        self.require_warehouse_actions(metadata, user_provided_warehouse, warehouse, &[action])
+            .await
+    }
+
+    /// Requires every one of `actions` on the warehouse, in one batch. A refusal names the
+    /// first refused action in the order given.
+    async fn require_warehouse_actions<A: Into<Self::WarehouseAction> + Clone + Send + Sync>(
+        &self,
+        metadata: &RequestMetadata,
+        user_provided_warehouse: WarehouseId,
+        warehouse: Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError>,
+        actions: &[A],
+    ) -> Result<ArcResolvedWarehouse, RequireWarehouseActionError> {
         let warehouse = warehouse?;
         let cant_see_err =
             AuthZCannotUseWarehouseId::new(user_provided_warehouse, warehouse.is_none()).into();
         let Some(warehouse) = warehouse else {
             return Err(cant_see_err);
         };
-        if action == CAN_SEE_PERMISSION.into() {
-            let is_allowed = self
-                .is_allowed_warehouse_action(metadata, None, &warehouse, action)
-                .await?
-                .into_inner();
-            is_allowed.then_some(warehouse).ok_or(cant_see_err)
-        } else {
-            let [can_see, is_allowed] = self
-                .are_allowed_warehouse_actions_arr(
-                    metadata,
-                    None,
-                    &[
-                        (&warehouse, CAN_SEE_PERMISSION.into()),
-                        (&warehouse, action.clone()),
-                    ],
-                )
-                .await?
-                .into_inner();
-            if can_see {
-                is_allowed.then_some(warehouse).ok_or_else(|| {
-                    AuthZWarehouseActionForbidden::new(user_provided_warehouse, &action).into()
-                })
-            } else if is_allowed && action.is_grant_read() {
-                // The grant-read actions double as visibility: reading who holds
-                // access discloses more than existence, so a caller granted one is not
-                // masked. Without this, a principal holding only grant administration
-                // could apply grants but never read them back, and the subtree revoke
-                // would succeed where its own listing is refused.
-                Ok(warehouse)
-            } else {
-                return Err(cant_see_err);
+        let can_see_action: Self::WarehouseAction = CAN_SEE_PERMISSION.into();
+        let actions: Vec<Self::WarehouseAction> = actions
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .filter(|action| *action != can_see_action)
+            .collect();
+        let checks: Vec<(&ResolvedWarehouse, Self::WarehouseAction)> =
+            std::iter::once(can_see_action)
+                .chain(actions.iter().cloned())
+                .map(|action| (warehouse.as_ref(), action))
+                .collect();
+        let decisions = self
+            .are_allowed_warehouse_actions_vec(metadata, None, &checks)
+            .await?
+            .into_allowed();
+        let can_see = decisions.first().copied().unwrap_or(false);
+        let refused = actions
+            .iter()
+            .zip(decisions.iter().skip(1))
+            .find_map(|(action, allowed)| (!allowed).then_some(action));
+        if can_see {
+            match refused {
+                None => Ok(warehouse),
+                Some(action) => {
+                    Err(AuthZWarehouseActionForbidden::new(user_provided_warehouse, action).into())
+                }
             }
+        } else if !actions.is_empty()
+            && refused.is_none()
+            && actions.iter().all(WarehouseAction::is_grant_read)
+        {
+            // The grant-read actions double as visibility: reading who holds
+            // access discloses more than existence, so a caller granted one is not
+            // masked. Without this, a principal holding only grant administration
+            // could apply grants but never read them back, and the subtree revoke
+            // would succeed where its own listing is refused.
+            Ok(warehouse)
+        } else {
+            Err(cant_see_err)
         }
     }
 
@@ -372,3 +405,51 @@ pub trait AuthzWarehouseOps: Authorizer {
 }
 
 impl<T> AuthzWarehouseOps for T where T: Authorizer {}
+
+/// Requires `ModifySoftDeletion` on `warehouse`, for a call that skips its soft-deletion
+/// window: only who may configure the window may skip it.
+pub(crate) async fn require_soft_deletion_skip<A: Authorizer>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    warehouse: &ResolvedWarehouse,
+) -> Result<(), RequireWarehouseActionError> {
+    let allowed = authorizer
+        .is_allowed_warehouse_action(
+            request_metadata,
+            None,
+            warehouse,
+            CatalogWarehouseAction::ModifySoftDeletion,
+        )
+        .await?
+        .into_inner();
+    if allowed {
+        Ok(())
+    } else {
+        Err(soft_deletion_skip_forbidden(warehouse.warehouse_id).into())
+    }
+}
+
+/// Refusal of [`require_soft_deletion_skip`].
+pub(crate) fn soft_deletion_skip_forbidden(
+    warehouse_id: WarehouseId,
+) -> AuthZWarehouseActionForbidden {
+    AuthZWarehouseActionForbidden::new(warehouse_id, &CatalogWarehouseAction::ModifySoftDeletion)
+        .with_reason(
+            "This call would delete tables, views or generic tables before their soft-deletion period ends, and that needs this action.",
+        )
+}
+
+/// [`require_soft_deletion_skip`] for an authorized drop of a table, view or generic table:
+/// `force` in a soft-deletion warehouse deletes at once.
+pub(crate) async fn require_soft_deletion_skip_for_drop<A: Authorizer, N, T>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    force: bool,
+    loaded: Result<(ArcResolvedWarehouse, N, T), AuthZError>,
+) -> Result<(ArcResolvedWarehouse, N, T), AuthZError> {
+    let (warehouse, namespace, tabular) = loaded?;
+    if force && warehouse.tabular_delete_profile.is_soft() {
+        require_soft_deletion_skip(authorizer, request_metadata, &warehouse).await?;
+    }
+    Ok((warehouse, namespace, tabular))
+}

@@ -20,9 +20,9 @@
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
 //! `entity` would misread; and the operational family, through the `grant_created` records
 //! of a grant change. Views are reached through the owner property rules, refused before
-//! and after authorization. Not yet reached, cheapest to add first: table commits; the
-//! plural `actions`/`entities` form, since every call here checks one action against one
-//! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
+//! and after authorization. A storage profile change records two actions on one warehouse.
+//! Not yet reached, cheapest to add first: table commits; several entities in one record;
+//! per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
 //! and a real authorizer with an authenticated actor (`AllowAllAuthorizer` and
 //! `random_request_metadata()` reach neither) — the OpenFGA authorizer is the cheap way in,
 //! because CI already provisions it.
@@ -64,6 +64,9 @@ use lakekeeper::{
             check::{RoleAssignee, UserOrRole},
             grant::{ApplyGrantsRequest, GrantEntry, ListGrantsQuery, Service as _},
             role::Service as _,
+            warehouse::{
+                Service as _, UpdateWarehouseCredentialRequest, UpdateWarehouseStorageRequest,
+            },
         },
     },
     server::CatalogServer,
@@ -86,7 +89,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 25;
+const EXPECTED_RECORDS: usize = 27;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -483,6 +486,28 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await
     .expect("granting to both roles");
+
+    // Replacing the storage credential records `update_storage_credential`. Changing the
+    // storage profile also replaces the credential, so its record carries both actions.
+    let _ = lakekeeper::api::management::v1::ApiServer::update_storage_credential(
+        warehouse_response.warehouse_id,
+        UpdateWarehouseCredentialRequest {
+            new_storage_credential: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    let _ = lakekeeper::api::management::v1::ApiServer::update_storage(
+        warehouse_response.warehouse_id,
+        UpdateWarehouseStorageRequest {
+            storage_profile: memory_io_profile(),
+            storage_credential: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
 
     // Finally a lookup of something absent, so a genuine denial is in the corpus too.
     let _ = CatalogServer::namespace_exists(
