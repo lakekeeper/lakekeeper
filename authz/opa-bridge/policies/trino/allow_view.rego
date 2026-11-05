@@ -39,10 +39,11 @@ allow_view_create if {
 	require_view_replace_access(catalog, schema, view)
 }
 
-# Trino stores a view comment as a view property. The bridge cannot see whether
-# Trino sets or removes it, so it asks about a commit of any kind.
+# Trino stores a view comment as a view property and a view column comment in a
+# new view version. The bridge cannot see what Trino changes, so it asks about a
+# commit of any kind. For a table, `SetColumnComment` is decided by the table rules.
 allow_view_modify if {
-	input.action.operation == "SetViewComment"
+	input.action.operation in ["SetViewComment", "SetColumnComment"]
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	view := input.action.resource.table.tableName

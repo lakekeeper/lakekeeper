@@ -1,7 +1,6 @@
 # Tests which permission reading a metadata table needs. Metadata tables that
 # show values of the data need `read_data` on the base table; the others need
-# `get_metadata`. `$snapshots` needs `read_data`, because its `summary` column
-# can show partition values and custom snapshot properties.
+# `get_metadata`.
 package trino_test
 
 import data.trino
