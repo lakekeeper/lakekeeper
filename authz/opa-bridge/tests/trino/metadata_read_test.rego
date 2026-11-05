@@ -1,6 +1,7 @@
 # Tests which permission reading a metadata table needs. Metadata tables that
 # show values of the data need `read_data` on the base table; the others need
-# `get_metadata`.
+# `get_metadata`. `$snapshots` needs `read_data`, because its `summary` column
+# can show partition values and custom snapshot properties.
 package trino_test
 
 import data.trino
@@ -65,9 +66,9 @@ _allowed_with_read_orders(request) if {
 		with http.send as mock_http_read_orders_only
 }
 
-_data_value_types := ["files", "entries", "all_entries", "manifests", "all_manifests", "partitions"]
+_data_value_types := ["files", "entries", "all_entries", "manifests", "all_manifests", "partitions", "snapshots"]
 
-_metadata_only_types := ["snapshots", "history", "refs", "properties", "metadata_log_entries"]
+_metadata_only_types := ["history", "refs", "properties", "metadata_log_entries"]
 
 test_metadata_table_read_actions_are_exact if {
 	trino.metadata_table_read_action == {
@@ -77,7 +78,7 @@ test_metadata_table_read_actions_are_exact if {
 		"manifests": "read_data",
 		"all_manifests": "read_data",
 		"partitions": "read_data",
-		"snapshots": "get_metadata",
+		"snapshots": "read_data",
 		"history": "get_metadata",
 		"refs": "get_metadata",
 		"properties": "get_metadata",
@@ -127,7 +128,9 @@ test_materialized_view_storage_is_denied if {
 test_metadata_table_type_in_upper_case_needs_the_same_action if {
 	not _allowed_with_get_metadata(_metadata_input("SelectFromColumns", "orders$FILES"))
 	_allowed_with_read_orders(_metadata_input("SelectFromColumns", "orders$FILES"))
-	_allowed_with_get_metadata(_metadata_input("SelectFromColumns", "orders$SNAPSHOTS"))
+	not _allowed_with_get_metadata(_metadata_input("SelectFromColumns", "orders$SNAPSHOTS"))
+	_allowed_with_read_orders(_metadata_input("SelectFromColumns", "orders$SNAPSHOTS"))
+	_allowed_with_get_metadata(_metadata_input("SelectFromColumns", "orders$HISTORY"))
 }
 
 test_batch_metadata_tables_follow_the_same_actions if {
@@ -140,7 +143,7 @@ test_batch_metadata_tables_follow_the_same_actions if {
 		with data.configuration.lakekeeper as mock_lakekeeper
 		with data.configuration.trino_catalog as mock_trino_catalog
 		with http.send as mock_http_get_metadata_only
-	describe_only == {1, 3}
+	describe_only == {3}
 
 	read_orders := trino.batch with input as {
 		"context": mock_context,
@@ -149,7 +152,7 @@ test_batch_metadata_tables_follow_the_same_actions if {
 		with data.configuration.lakekeeper as mock_lakekeeper
 		with data.configuration.trino_catalog as mock_trino_catalog
 		with http.send as mock_http_read_orders_only
-	read_orders == {0, 2, 4}
+	read_orders == {0, 1, 2, 4}
 }
 
 # A user who may only see a table can list it, list its columns and show
