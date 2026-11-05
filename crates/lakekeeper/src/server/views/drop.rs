@@ -9,13 +9,13 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
-        require_warehouse_id, tables::validate_table_or_view_ident,
+        authorize_soft_deletion_skip, require_warehouse_id, tables::validate_table_or_view_ident,
         tabular::claim_no_content_idempotency_key,
     },
     service::{
         AuthZViewInfo as _, CatalogIdempotencyOps, CatalogStore, CatalogTabularOps, NamedEntity,
         Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
-        authz::{AuthZViewOps, Authorizer, CatalogViewAction, require_soft_deletion_skip_for_drop},
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         events::{APIEventContext, context::ResolvedView},
         tasks::{
@@ -82,14 +82,16 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             state.v1_state.catalog.clone(),
         )
         .await;
-    let authz_context = require_soft_deletion_skip_for_drop(
-        &authorizer,
-        event_ctx.request_metadata(),
-        force,
-        authz_context,
-    )
-    .await;
     let (event_ctx, (warehouse, _namespace, view_info)) = event_ctx.emit_authz(authz_context)?;
+    if force && warehouse.tabular_delete_profile.is_soft() {
+        authorize_soft_deletion_skip(
+            &authorizer,
+            event_ctx.request_metadata_arc(),
+            event_ctx.dispatcher().clone(),
+            &warehouse,
+        )
+        .await?;
+    }
 
     let view_id = view_info.view_id();
     let event_ctx = event_ctx.resolve(ResolvedView {

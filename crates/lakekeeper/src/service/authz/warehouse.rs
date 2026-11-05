@@ -7,8 +7,8 @@ use crate::{
         ArcResolvedWarehouse, CatalogBackendError, CatalogGetWarehouseByIdError,
         DatabaseIntegrityError, ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
-            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
-            AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
+            AuthorizationInternalError, Authorizer, AuthzBadRequest,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
             IsAllowedActionError, MustUse, UserOrRole,
         },
@@ -470,17 +470,3 @@ pub(crate) fn file_takeover_forbidden(warehouse_id: WarehouseId) -> AuthZWarehou
         )
 }
 
-/// [`require_soft_deletion_skip`] for an authorized drop of a table, view or generic table:
-/// `force` in a soft-deletion warehouse deletes at once.
-pub(crate) async fn require_soft_deletion_skip_for_drop<A: Authorizer, N, T>(
-    authorizer: &A,
-    request_metadata: &RequestMetadata,
-    force: bool,
-    loaded: Result<(ArcResolvedWarehouse, N, T), AuthZError>,
-) -> Result<(ArcResolvedWarehouse, N, T), AuthZError> {
-    let (warehouse, namespace, tabular) = loaded?;
-    if force && warehouse.tabular_delete_profile.is_soft() {
-        require_soft_deletion_skip(authorizer, request_metadata, &warehouse).await?;
-    }
-    Ok((warehouse, namespace, tabular))
-}

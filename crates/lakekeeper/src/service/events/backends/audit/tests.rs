@@ -1295,9 +1295,9 @@ fn fixture_authz_failed_view_version_change() {
     assert_matches_fixture("authz_failed_view_version_change", &contract_fields(record));
 }
 
-/// A forced table drop refused because it skips the warehouse's soft-deletion window and the
-/// caller may not change the soft-deletion settings: recorded as the drop, with the refusal
-/// of the warehouse action as the error.
+/// The check of a call that skips the warehouse's soft-deletion window, such as a forced drop,
+/// refused because the caller may not change the soft-deletion settings: a record of its own
+/// on the warehouse, as the handlers build it.
 #[test]
 fn fixture_authz_failed_soft_deletion_skip() {
     let warehouse_id = crate::service::WarehouseId::new(
@@ -1305,22 +1305,9 @@ fn fixture_authz_failed_soft_deletion_skip() {
             .parse::<uuid::Uuid>()
             .expect("fixed test uuid"),
     );
-    let entities = UserProvidedTable {
-        warehouse_id,
-        table: TableIdent::new(
-            NamespaceIdent::new("sales".to_string()),
-            "orders".to_string(),
-        )
-        .into(),
-    }
-    .event_entities();
-    let action = CatalogTableAction::Drop {
-        force: true,
-        purge: false,
-    };
     let record = refusal_record(
-        entities,
-        action.event_actions(),
+        warehouse_id.event_entities(),
+        CatalogWarehouseAction::ModifySoftDeletion.event_actions(),
         crate::service::authz::soft_deletion_skip_forbidden(warehouse_id),
     );
 
