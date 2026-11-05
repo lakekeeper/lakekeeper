@@ -378,7 +378,7 @@ When a field appears:
 | `format`                | String | The requested table format                              |
 | `base_location`         | String | The requested storage location                          |
 | `project_id`            | String | The project id the client asked for                     |
-| `force`                 | Boolean | `true` when the client asked to force the operation     |
+| `force`                 | Boolean | `true` when the client asked to force the operation. Also `true` on the drop of an active table that a register with `overwrite` replaces with another table (a different table UUID) in a warehouse with soft deletion |
 | `purge`                 | Boolean | `true` when the client asked to purge the data          |
 | `recursive`             | Boolean | `true` when the client asked for a recursive delete     |
 | `target_refs`           | Array  | Commit only. The branch or tag references the commit targets; `[]` when it names none |

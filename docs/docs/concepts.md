@@ -114,7 +114,7 @@ Each Warehouse is associated with a unique location on object stores. Never shar
 
 Each Warehouse also has a UUID, unique across the whole instance, which appears as the `prefix` in `/catalog` URLs. Lakekeeper assigns it, which is what we recommend; provisioning tools that need the ID up front can pass `warehouse-id` to `POST /management/v1/warehouse` instead — prefer a UUIDv7, and expect a `409` if the ID is taken. Do not re-use the ID of a deleted Warehouse: caches and permission records key on the Warehouse ID alone, so an ID that changes hands can briefly resolve to the previous Warehouse.
 
-Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Please note that Warehouses and Namespaces cannot be deleted via the `/catalog` API if child objects are present. This includes soft-deleted Tables. A cascade-drop API is added in one of the next releases as part of the `/management` API.
+Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Warehouses can only be deleted when they are empty. By default, Namespaces can also only be deleted when they are empty. Soft-deleted tables, views and generic tables count for both. To delete a Namespace with everything in it, see [Recursive Deletion on Namespaces](#recursive-deletion-on-namespaces).
 
 ### Namespaces
 
@@ -168,6 +168,7 @@ Lakekeeper allows warehouses to enable soft deletion as a data protection mechan
 * The data remains recoverable until the configured expiration period elapses
 * Recovery is only possible for warehouses with soft deletion enabled
 * The expiration delay is fixed at the time of dropping - changing warehouse settings only affects newly dropped tables
+* A dropped table keeps its table UUID until it expires. Until then, its metadata file cannot be registered again; restore the table instead.
 
 Soft deletion works correctly only when clients follow these behaviors:
 
@@ -256,7 +257,7 @@ Protected entities within the hierarchy will prevent recursive deletion unless f
 Force deletion is an administrative override that allows deletion of protected entities and bypasses certain safety checks:
 
 * Bypasses protection settings
-* Overrides soft-deletion mechanisms for immediate hard deletion
+* Deletes tables, views and generic tables at once, also in warehouses with soft deletion
 
 Add the `force=true` query parameter to deletion requests:
 
@@ -265,6 +266,25 @@ DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 
 Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The `purgeRequested` flag for tables is still respected and determines if the physical data of the table should be removed. Purge defaults to true for tables managed by Lakekeeper.
+
+In a warehouse with soft deletion, a recursive namespace deletion needs `force`. Namespaces cannot be soft-deleted, so it deletes every table, view and generic table below the namespace at once, including those that were already dropped and wait for expiration.
+
+### Skipping Soft Deletion
+
+Soft deletion is a safety net for the whole warehouse: dropped tables, views and generic tables can be restored until they expire. Skipping it needs the permission that also changes the soft-deletion settings of the warehouse: `modify` on the warehouse in OpenFGA, the action `ModifySoftDeletion`<span class="lkp"></span> in Cedar.
+
+In a warehouse with soft deletion, these calls need this permission in addition to their own:
+
+* Dropping a table, view or generic table with `force=true`
+* Deleting a namespace with `recursive=true`
+* Registering a table with `overwrite` that replaces an active table with another table (a different table UUID). Registering another metadata file of the same table, also at another location, needs no extra permission.
+* Running a soft-deletion task now or at a set time through the task management API
+
+In warehouses with hard deletion, and when deleting a namespace without `recursive=true`, `force` only skips protection and needs no extra permission.
+
+In a warehouse with soft deletion, users without this permission can delete a namespace only when it is empty. Dropped tables, views and generic tables count until they expire.
+
+In a warehouse managed by the instance (`managed-by: instance-admin`), only instance admins can change the soft-deletion settings, but this permission still decides who may skip soft deletion.
 
 ## Upgrades & Migration
 

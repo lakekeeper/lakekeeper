@@ -11,7 +11,7 @@ use crate::{
         require_warehouse_id,
         tables::{validate_table_or_view_ident, validate_table_or_view_ident_creation},
         tabular::{
-            TabularRenameEnds, authorize_tabular_move, claim_rename_idempotency_key,
+            TabularRenameEnds, authorize_tabular_move, claim_no_content_idempotency_key,
             commit_rename_with_reparent, ensure_authorized_destination,
             ensure_rename_stays_in_namespace, rename_or_move, tabular_move_destination,
         },
@@ -137,7 +137,7 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
 
     // Claims the key in the same transaction as the rename, so a committed key
     // always implies a committed rename.
-    let t = claim_rename_idempotency_key::<C>(
+    let t = claim_no_content_idempotency_key::<C>(
         t,
         warehouse_id,
         idempotency_key,

@@ -210,6 +210,18 @@ impl TabularDeleteProfile {
             Self::Hard {} => None,
         }
     }
+
+    /// Whether dropped tabulars are kept for a window before they are deleted.
+    #[must_use]
+    pub(crate) fn is_soft(self) -> bool {
+        matches!(self, Self::Soft { .. })
+    }
+
+    /// The profile a drop applies: `force` deletes at once.
+    #[must_use]
+    pub(crate) fn for_drop(self, force: bool) -> Self {
+        if force { Self::Hard {} } else { self }
+    }
 }
 
 impl Default for TabularDeleteProfile {

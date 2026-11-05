@@ -7,8 +7,8 @@ use crate::{
         ArcResolvedWarehouse, CatalogBackendError, CatalogGetWarehouseByIdError,
         DatabaseIntegrityError, ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
+            AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
             IsAllowedActionError, MustUse, UserOrRole,
         },
@@ -126,6 +126,7 @@ impl AuthorizationFailureSource for AuthZCannotUseWarehouseId {
 pub struct AuthZWarehouseActionForbidden {
     warehouse_id: WarehouseId,
     action: String,
+    reason: Option<&'static str>,
 }
 impl AuthZWarehouseActionForbidden {
     #[must_use]
@@ -133,7 +134,15 @@ impl AuthZWarehouseActionForbidden {
         Self {
             warehouse_id,
             action: action.to_string(),
+            reason: None,
         }
+    }
+
+    /// Says why the call needs the action, for a caller who did not ask for it directly.
+    #[must_use]
+    pub(crate) fn with_reason(mut self, reason: &'static str) -> Self {
+        self.reason = Some(reason);
+        self
     }
 }
 impl AuthorizationFailureSource for AuthZWarehouseActionForbidden {
@@ -141,12 +150,15 @@ impl AuthorizationFailureSource for AuthZWarehouseActionForbidden {
         let AuthZWarehouseActionForbidden {
             warehouse_id,
             action,
+            reason,
         } = self;
-        ErrorModel::forbidden(
-            format!("Warehouse action `{action}` forbidden on warehouse `{warehouse_id}`"),
-            "WarehouseActionForbidden",
-            None,
-        )
+        let mut message =
+            format!("Warehouse action `{action}` forbidden on warehouse `{warehouse_id}`");
+        if let Some(reason) = reason {
+            message.push_str(". ");
+            message.push_str(reason);
+        }
+        ErrorModel::forbidden(message, "WarehouseActionForbidden", None)
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
         AuthorizationFailureReason::ActionForbidden
@@ -393,3 +405,51 @@ pub trait AuthzWarehouseOps: Authorizer {
 }
 
 impl<T> AuthzWarehouseOps for T where T: Authorizer {}
+
+/// Requires `ModifySoftDeletion` on `warehouse`, for a call that skips its soft-deletion
+/// window: only who may configure the window may skip it.
+pub(crate) async fn require_soft_deletion_skip<A: Authorizer>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    warehouse: &ResolvedWarehouse,
+) -> Result<(), RequireWarehouseActionError> {
+    let allowed = authorizer
+        .is_allowed_warehouse_action(
+            request_metadata,
+            None,
+            warehouse,
+            CatalogWarehouseAction::ModifySoftDeletion,
+        )
+        .await?
+        .into_inner();
+    if allowed {
+        Ok(())
+    } else {
+        Err(soft_deletion_skip_forbidden(warehouse.warehouse_id).into())
+    }
+}
+
+/// Refusal of [`require_soft_deletion_skip`].
+pub(crate) fn soft_deletion_skip_forbidden(
+    warehouse_id: WarehouseId,
+) -> AuthZWarehouseActionForbidden {
+    AuthZWarehouseActionForbidden::new(warehouse_id, &CatalogWarehouseAction::ModifySoftDeletion)
+        .with_reason(
+            "This call would delete tables, views or generic tables before their soft-deletion period ends, and that needs this action.",
+        )
+}
+
+/// [`require_soft_deletion_skip`] for an authorized drop of a table, view or generic table:
+/// `force` in a soft-deletion warehouse deletes at once.
+pub(crate) async fn require_soft_deletion_skip_for_drop<A: Authorizer, N, T>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    force: bool,
+    loaded: Result<(ArcResolvedWarehouse, N, T), AuthZError>,
+) -> Result<(ArcResolvedWarehouse, N, T), AuthZError> {
+    let (warehouse, namespace, tabular) = loaded?;
+    if force && warehouse.tabular_delete_profile.is_soft() {
+        require_soft_deletion_skip(authorizer, request_metadata, &warehouse).await?;
+    }
+    Ok((warehouse, namespace, tabular))
+}

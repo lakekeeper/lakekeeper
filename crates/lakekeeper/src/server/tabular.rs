@@ -48,10 +48,9 @@ pub(crate) async fn claim_idempotency_key<C: CatalogStore>(
     Err(ErrorModel::request_in_progress().into())
 }
 
-/// Claim the request's idempotency key inside the rename transaction, as
-/// [`claim_idempotency_key`] does. Every rename endpoint answers 204, which is the status
-/// recorded against the key.
-pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
+/// Claim the request's idempotency key, as [`claim_idempotency_key`] does, for an endpoint
+/// that answers 204, such as a rename or a drop. 204 is the status recorded against the key.
+pub(crate) async fn claim_no_content_idempotency_key<C: CatalogStore>(
     transaction: C::Transaction,
     warehouse_id: WarehouseId,
     key: Option<IdempotencyKey>,

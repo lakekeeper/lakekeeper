@@ -12,7 +12,7 @@ mod list;
 
 use super::{CatalogServer, UnfilteredPage, maybe_get_secret, require_warehouse_id};
 use crate::{
-    CONFIG,
+    CONFIG, WarehouseId,
     api::{
         endpoints::EndpointFlat,
         iceberg::v1::{
@@ -30,8 +30,9 @@ use crate::{
         NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
         Transaction, WriteTransaction,
         authz::{
-            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
-            GrantResource, NamespaceParent, emit_bootstrap_grants_async, write_bootstrap_grants,
+            AuthZError, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction,
+            CatalogWarehouseAction, GrantResource, NamespaceParent, emit_bootstrap_grants_async,
+            require_soft_deletion_skip, write_bootstrap_grants,
         },
         events::{
             APIEventContext, EventDispatcher, NamespaceOrWarehouseAPIContext,
@@ -560,18 +561,28 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let authz_result = authorizer
-            .load_and_authorize_namespace_action::<C>(
-                event_ctx.request_metadata(),
-                UserProvidedNamespace {
-                    warehouse_id,
-                    namespace: parameters.namespace.into(),
-                },
-                event_ctx.action().clone(),
-                CachePolicy::Skip,
-                state.v1_state.catalog.clone(),
-            )
-            .await;
+        let authz_result = async {
+            let (warehouse, namespace) = authorizer
+                .load_and_authorize_namespace_action::<C>(
+                    event_ctx.request_metadata(),
+                    UserProvidedNamespace {
+                        warehouse_id,
+                        namespace: parameters.namespace.into(),
+                    },
+                    event_ctx.action().clone(),
+                    CachePolicy::Skip,
+                    state.v1_state.catalog.clone(),
+                )
+                .await?;
+            // Namespaces have no soft-deleted state, so a recursive delete hard-deletes every
+            // tabular below, dropped ones included.
+            if flags.recursive && warehouse.tabular_delete_profile.is_soft() {
+                require_soft_deletion_skip(&authorizer, event_ctx.request_metadata(), &warehouse)
+                    .await?;
+            }
+            Ok::<_, AuthZError>((warehouse, namespace))
+        }
+        .await;
         let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
 
         let event_ctx = event_ctx.resolve(ResolvedNamespace {
@@ -581,7 +592,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
-        let mut t = WriteTransaction::<C>::begin(state.v1_state.catalog).await?;
+        let t = WriteTransaction::<C>::begin(state.v1_state.catalog).await?;
         let namespace_locations = if flags.recursive {
             // recursive drop commits its own transaction
             try_recursive_drop::<_, C>(
@@ -595,36 +606,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?
         } else {
-            let drop_info = C::drop_namespace(warehouse_id, namespace_id, flags, &mut t).await?;
-            if let Some(ref key) = idempotency_key
-                && !C::try_insert_idempotency_key(
-                    warehouse_id,
-                    &IdempotencyInfo::builder()
-                        .key(*key)
-                        .endpoint(EndpointFlat::CatalogV1DropNamespace)
-                        .http_status(StatusCode::NO_CONTENT)
-                        .build(),
-                    t.transaction(),
-                )
-                .await?
-            {
-                t.rollback()
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!("Rollback failed after idempotency conflict: {e}");
-                    })
-                    .ok();
-                return Err(ErrorModel::request_in_progress().into());
-            }
-            t.commit().await?;
-            authorizer
-                .delete_namespace(&request_metadata, namespace_id)
-                .await
-                .inspect_err(|e| {
-                    tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
-                })
-                .ok();
-            drop_info.namespace_locations
+            drop_empty_namespace::<_, C>(
+                flags,
+                &authorizer,
+                warehouse_id,
+                t,
+                namespace_id,
+                &request_metadata,
+                idempotency_key.as_ref(),
+            )
+            .await?
         };
 
         event_ctx.emit_namespace_dropped_async();
@@ -775,6 +766,47 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         Ok(r)
     }
+}
+
+async fn drop_empty_namespace<A: Authorizer, C: CatalogStore>(
+    flags: NamespaceDropFlags,
+    authorizer: &A,
+    warehouse_id: WarehouseId,
+    mut t: WriteTransaction<C>,
+    namespace_id: NamespaceId,
+    request_metadata: &RequestMetadata,
+    idempotency_key: Option<&IdempotencyKey>,
+) -> Result<Vec<(NamespaceId, Location)>> {
+    let drop_info = C::drop_namespace(warehouse_id, namespace_id, flags, &mut t).await?;
+    if let Some(key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1DropNamespace)
+                .http_status(StatusCode::NO_CONTENT)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
+    t.commit().await?;
+    authorizer
+        .delete_namespace(request_metadata, namespace_id)
+        .await
+        .inspect_err(|e| {
+            tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
+        })
+        .ok();
+    Ok(drop_info.namespace_locations)
 }
 
 #[allow(clippy::too_many_lines)]
