@@ -651,7 +651,8 @@ impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
                         .field(FIELD_NAME_NAMESPACE, namespace)
                         .field(FIELD_NAME_TABLE, table),
                 },
-                CatalogActionCheckOperation::View { view, .. } => match view {
+                CatalogActionCheckOperation::View { view, .. }
+                | CatalogActionCheckOperation::ViewInDefinerView { view } => match view {
                     TabularIdentOrUuid::IdInWarehouse {
                         warehouse_id,
                         table_id,

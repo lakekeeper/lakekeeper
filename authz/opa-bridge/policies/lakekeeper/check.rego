@@ -348,6 +348,21 @@ require_view_access(lakekeeper_id, warehouse_name, namespace_name, view_name, us
 	})
 }
 
+# Check that `user`, as the owner of a DEFINER view, may read the view called
+# `view_name` inside the DEFINER view's query. Lakekeeper allows it only if
+# `view_name` has an owner property of its own and `user` may select it. A server
+# that does not know this check answers with an error, and the check denies.
+require_view_in_definer_view_access(lakekeeper_id, warehouse_name, namespace_name, view_name, user) if {
+	_single_check_allowed(lakekeeper_id, {
+		"operation": {"view-in-definer-view": {
+			"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+			"namespace": namespace_name,
+			"table": view_name,
+		}},
+		"identity": {"user": user},
+	})
+}
+
 # Check a table or view move into another namespace: `move` on the tabular and
 # `accept_moved_tabular` on the destination namespace. `kind` is "table" or "view".
 require_tabular_move_access(

@@ -13,8 +13,12 @@ default allow_unmanaged := false
 # Blanket allow for unmanaged catalogs when enabled via env var or configuration.
 # This is useful when Trino has multiple authorizers and this OPA bridge
 # should not block access to catalogs managed by other authorizers.
+# It leaves out reads inside a DEFINER view (`CreateViewWithSelectFromColumns`):
+# the bridge cannot find out whether such an object is a view without an owner,
+# which Trino would run with the DEFINER view owner's rights.
 allow_unmanaged if {
 	configuration.trino_allow_unmanaged_catalogs == true
+	input.action.operation != "CreateViewWithSelectFromColumns"
 	_resource_catalog_name
 	not _resource_catalog_name in _managed_catalog_names
 }
