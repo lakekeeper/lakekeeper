@@ -2803,7 +2803,8 @@ pub mod v1 {
 
     /// Delete Warehouse
     ///
-    /// Deletes an empty warehouse that has no unfinished tasks.
+    /// Deletes an empty warehouse. Unfinished tasks block the delete, except tasks of queues that
+    /// are cancelled when their warehouse is deleted; those are cancelled, running ones included.
     /// Use the `force` parameter to delete a protected warehouse.
     #[cfg_attr(feature = "open-api", utoipa::path(
         delete,

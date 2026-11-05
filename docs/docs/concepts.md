@@ -114,7 +114,7 @@ Each Warehouse is associated with a unique location on object stores. Never shar
 
 Each Warehouse also has a UUID, unique across the whole instance, which appears as the `prefix` in `/catalog` URLs. Lakekeeper assigns it, which is what we recommend; provisioning tools that need the ID up front can pass `warehouse-id` to `POST /management/v1/warehouse` instead — prefer a UUIDv7, and expect a `409` if the ID is taken. Do not re-use the ID of a deleted Warehouse: caches and permission records key on the Warehouse ID alone, so an ID that changes hands can briefly resolve to the previous Warehouse.
 
-Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Warehouses and Namespaces can only be deleted when they are empty; soft-deleted tables and views count. To delete a Namespace with everything in it, see [Recursive Deletion on Namespaces](#recursive-deletion-on-namespaces).
+Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Warehouses can only be deleted when they are empty. By default, Namespaces can also only be deleted when they are empty. Soft-deleted tables and views count for both. To delete a Namespace with everything in it, see [Recursive Deletion on Namespaces](#recursive-deletion-on-namespaces).
 
 ### Namespaces
 

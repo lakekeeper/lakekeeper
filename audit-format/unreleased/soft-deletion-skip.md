@@ -17,4 +17,4 @@ The refusal is recorded on the call, with `decision: denied`, `failure_reason: a
 
 A register with `overwrite` that replaces an active table in a warehouse with soft deletion records the drop of the replaced table with `force: true`, also when the call is allowed. Before, it recorded `force: false`.
 
-**What to do:** Nothing.
+**What to do:** If you filter or alert on drops with `force: true`, these now also include the drop of a table that a register with `overwrite` replaces. You can tell these records apart by `invoked_by: register_table_overwrite`.
