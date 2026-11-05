@@ -440,7 +440,7 @@ pub(crate) fn soft_deletion_skip_forbidden(
 }
 
 /// Requires `RegisterTable` on `warehouse` for a new generic table at a location that already
-/// holds files: the generic table takes those files over, as registering a table does.
+/// holds files: the generic table brings those files into the catalog, as registering a table does.
 pub(crate) async fn require_file_takeover<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
@@ -466,7 +466,7 @@ pub(crate) async fn require_file_takeover<A: Authorizer>(
 pub(crate) fn file_takeover_forbidden(warehouse_id: WarehouseId) -> AuthZWarehouseActionForbidden {
     AuthZWarehouseActionForbidden::new(warehouse_id, &CatalogWarehouseAction::RegisterTable)
         .with_reason(
-            "The location already holds files. Creating a generic table there takes them over, and that needs this action.",
+            "The location already holds files. Creating a generic table there brings them into the catalog, and that needs this action.",
         )
 }
 
