@@ -436,6 +436,15 @@ where
         page_size: Option<usize>,
     ) -> Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>;
 
+    /// `true` if nothing is stored under this prefix. A trailing slash is added like in
+    /// [`Self::list`].
+    ///
+    /// Counts every listed entry, also names that are not a valid [`Location`] and that
+    /// [`Self::list`] therefore leaves out. Backends whose `list` leaves entries out override this.
+    async fn is_directory_empty(&self, path: &str) -> Result<bool, ReadError> {
+        Ok(pages_are_empty(self.list(path, Some(1)).await?).await?)
+    }
+
     /// Remove a directory and all of its contents under the given prefix.
     ///
     /// Default implementation collects all objcts under given prefix before deletion
@@ -619,6 +628,19 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
+    async fn is_directory_empty(&self, path: &str) -> Result<bool, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.is_directory_empty(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.is_directory_empty(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.is_directory_empty(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.is_directory_empty(path).await,
+        }
+    }
+
     async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
         match self {
             #[cfg(feature = "storage-s3")]
@@ -733,6 +755,10 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     InvalidLocationError,
                 > {
                     (**self).list(path, page_size).await
+                }
+
+                async fn is_directory_empty(&self, path: &str) -> Result<bool, ReadError> {
+                    (**self).is_directory_empty(path).await
                 }
 
                 async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
@@ -851,6 +877,19 @@ where
         });
     tokio::pin!(download_stream);
     assemble_chunks(download_stream, range_size, chunk_size).await
+}
+
+/// Pages of a listing, each with the entries of one response.
+pub(crate) type ListPages<'a, T> = BoxStream<'a, Result<Vec<T>, IOError>>;
+
+/// `true` if every page of a listing is empty. Stops at the first entry.
+pub(crate) async fn pages_are_empty<T>(mut pages: ListPages<'_, T>) -> Result<bool, IOError> {
+    while let Some(page) = pages.try_next().await? {
+        if !page.is_empty() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(any(feature = "storage-gcs", feature = "storage-adls"))]
