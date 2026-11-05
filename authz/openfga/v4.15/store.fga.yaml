@@ -2488,6 +2488,7 @@ tests:
         assertions:
           write_content: true
           visible_below: true
+          can_grant_write_content: false
       - user: user:warehouse_1_modify_only
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
@@ -2530,6 +2531,7 @@ tests:
           can_set_format_version_policy: false
           can_activate: false
           can_deactivate: false
+          can_grant_write_content: false
       - user: user:project_1_writer
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
@@ -2546,6 +2548,7 @@ tests:
           can_delete: false
           can_rename: false
           can_control_project_tasks: false
+          can_modify_task_queue_config: false
   - name: write through a role works like a direct grant
     check:
       - user: user:warehouse_1_role_writer
@@ -2703,3 +2706,4 @@ tests:
           can_write_data: true
           can_read_data: true
           can_drop: false
+          can_grant_write_content: false
