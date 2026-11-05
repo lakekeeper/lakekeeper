@@ -19,7 +19,7 @@ use crate::{
         CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity,
         NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId,
         TabularId, TabularListFlags, TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId,
-        ViewOrTableDeletionInfo, ViewOrTableInfo,
+        ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseStatus,
         authz::{
             AuthZCannotListAllTasks, AuthZCannotSeeGenericTable, AuthZCannotSeeTable,
             AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps as _,
@@ -1564,7 +1564,13 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     query: &ControlTasksRequest,
     warehouse_id: WarehouseId,
 ) -> Result<(ArcResolvedWarehouse, Vec<TabularId>), AuthZError> {
-    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
+    let warehouse = C::get_warehouse_by_id_cache_aware(
+        warehouse_id,
+        WarehouseStatus::active(),
+        CachePolicy::Skip,
+        catalog_state.clone(),
+    )
+    .await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let [authz_can_use, authz_control_all] = authorizer

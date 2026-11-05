@@ -435,7 +435,7 @@ pub(crate) fn soft_deletion_skip_forbidden(
 ) -> AuthZWarehouseActionForbidden {
     AuthZWarehouseActionForbidden::new(warehouse_id, &CatalogWarehouseAction::ModifySoftDeletion)
         .with_reason(
-            "This call would delete tables or views before their soft-deletion period ends, and that needs this action.",
+            "This call would delete tables, views or generic tables before their soft-deletion period ends, and that needs this action.",
         )
 }
 

@@ -51,7 +51,7 @@
   "error": {
     "type": "WarehouseActionForbidden",
     "code": 403,
-    "message": "Warehouse action `modify_soft_deletion` forbidden on warehouse `019684ff-0000-7000-8000-000000000001`. This call would delete tables or views before their soft-deletion period ends, and that needs this action.",
+    "message": "Warehouse action `modify_soft_deletion` forbidden on warehouse `019684ff-0000-7000-8000-000000000001`. This call would delete tables, views or generic tables before their soft-deletion period ends, and that needs this action.",
     "stack": [],
     "error_id": "019684ff-0000-7000-8000-000000000006"
   }
