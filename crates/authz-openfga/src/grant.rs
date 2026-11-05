@@ -196,7 +196,7 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         }),
         "write" => ("write", {
             "Change tables: commit data, schema, partitioning, sort order and properties, \
-             manage branches and tags, and expire snapshots. Gives write and delete access \
+             manage branches and snapshot tags, and expire snapshots. Gives write and delete access \
              to the files of tables and generic tables. Does not change views, and does not \
              drop, rename, move or protect anything."
         }),

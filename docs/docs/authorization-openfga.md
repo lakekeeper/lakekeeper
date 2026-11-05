@@ -77,7 +77,7 @@ The `create` grant allows a user to create new objects within an entity, such as
 
 ### Write
 
-The `write` grant allows a user to change everything a table holds: its data, schema, partitioning, sort order and properties, its branches and tags, and its history, for example by expiring snapshots. This includes replacing a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do, and adding existing files to it (`add_files`). It does not allow dropping, restoring, renaming, moving or protecting the table, or controlling its tasks. These need `modify`.
+The `write` grant allows a user to change everything a table holds: its data, schema, partitioning, sort order and properties, its branches and snapshot tags, and its history, for example by expiring snapshots. This includes replacing a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do, and adding existing files to it (`add_files`). It does not allow dropping, restoring, renaming, moving or protecting the table, or controlling its tasks. These need `modify`.
 
 On a generic table, `write` allows writing and deleting its files, which hold all of its contents and its structure.
 
