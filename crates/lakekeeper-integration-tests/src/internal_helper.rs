@@ -1,5 +1,6 @@
 use std::{collections::HashMap, future::Future, sync::LazyLock};
 
+use futures::TryStreamExt as _;
 use iceberg::{
     NamespaceIdent, TableIdent,
     spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec},
@@ -24,11 +25,12 @@ use lakekeeper::{
     server::CatalogServer,
     service::{CatalogStore, SecretStore, State, authz::Authorizer},
 };
+use lakekeeper_io::LakekeeperStorage as _;
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use serde_json::json;
 use tokio::runtime::Runtime;
 
-use crate::random_request_metadata;
+use crate::{memory_io_profile, random_request_metadata};
 
 static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -154,6 +156,31 @@ pub const REFUSED_NEW_TABULAR_NAMES: [&str; 4] = [
     "daily\tsales",
     "daily_sales\n",
 ];
+
+/// Writes a small file at `path` to the in-memory storage of the test's thread.
+pub async fn put_memory_file(path: &str) {
+    let io = memory_io_profile().file_io(None).await.unwrap();
+    io.write(path, "data".into()).await.unwrap();
+}
+
+/// The files under `location` in the in-memory storage of the test's thread, sorted.
+pub async fn memory_files_under(location: &str) -> Vec<String> {
+    let io = memory_io_profile().file_io(None).await.unwrap();
+    let pages: Vec<_> = io
+        .list(location, None)
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let mut files: Vec<String> = pages
+        .into_iter()
+        .flatten()
+        .map(|file| file.location().to_string())
+        .collect();
+    files.sort();
+    files
+}
 
 pub fn create_view_request(name: Option<&str>, location: Option<&str>) -> CreateViewRequest {
     serde_json::from_value(json!({
