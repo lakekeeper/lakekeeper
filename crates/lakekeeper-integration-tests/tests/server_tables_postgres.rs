@@ -3815,29 +3815,100 @@ async fn test_register_table_checks_create_table_before_validating_the_file(pool
 }
 
 /// Registering adopts existing files, so it needs the register right on the warehouse
-/// besides `create_table` on the namespace. It is checked before the metadata file is read.
+/// besides `create_table` on the namespace. A refused register right gets its own record, and
+/// the `create_table` record still names the table being registered.
 #[sqlx::test]
 async fn test_register_table_requires_the_register_right(pool: PgPool) {
-    let (ctx, authz, ns_params, _, missing_location) = register_table_setup(pool).await;
+    use lakekeeper::service::events::{EventListener, context::ActionContextKey};
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    let LoadTableResultOrNotModified::LoadTableResult(existing) = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(prefix.clone()),
+            table: TableIdent::new(ns_params.namespace.clone(), "existing".to_string()),
+        },
+        LoadTableRequest::default(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    let listener = Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as Arc<dyn EventListener>)
+        .await;
 
     authz.block_action(&format!(
         "warehouse:{:?}",
         CatalogWarehouseAction::RegisterTable
     ));
     let err = CatalogServer::register_table(
-        ns_params,
+        ns_params.clone(),
         iceberg_ext::catalog::rest::RegisterTableRequest::builder()
             .name("registered".to_string())
-            .metadata_location(missing_location)
+            .metadata_location(existing_location)
             .build(),
         DataAccess::not_specified(),
-        ctx,
+        ctx.clone(),
         RequestMetadata::new_unauthenticated(),
     )
     .await
     .unwrap_err();
     assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
     assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    // The two records are sent from separate tasks: allowed and refused are compared apart.
+    assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
+    let create_table = RecordedAction {
+        action_name: "create_table".to_string(),
+        context: vec![
+            ActionContextKey::Name("registered".to_string()),
+            ActionContextKey::TableId(TableId::from(existing.metadata.uuid()).to_string()),
+            ActionContextKey::Properties(
+                existing
+                    .metadata
+                    .properties()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
+        ],
+    };
+    let register_table = RecordedAction {
+        action_name: "register_table".to_string(),
+        context: vec![],
+    };
+    assert_eq!(
+        listener.recorded_actions(),
+        (vec![vec![create_table]], vec![vec![register_table]])
+    );
+
+    let exists = CatalogServer::table_exists(
+        TableParameters {
+            prefix: ns_params.prefix,
+            table: TableIdent::new(ns_params.namespace, "registered".to_string()),
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(exists.error.code, StatusCode::NOT_FOUND, "{exists:?}");
 }
 
 /// Drops `existing` without purging its files, registers its metadata file as `adopted`

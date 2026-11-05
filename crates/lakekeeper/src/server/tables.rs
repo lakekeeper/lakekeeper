@@ -380,23 +380,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
             C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
         );
-        // Registering adopts existing files, so it needs a right on the warehouse as well as
-        // `create_table` on the namespace.
-        let register_ctx = APIEventContext::for_warehouse(
-            event_ctx.request_metadata_arc(),
-            event_ctx.dispatcher().clone(),
-            warehouse_id,
-            CatalogWarehouseAction::RegisterTable,
-        );
-        let authz_result = authorizer
+        let warehouse = authorizer
             .require_warehouse_action(
-                register_ctx.request_metadata(),
+                event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::RegisterTable,
+                CatalogWarehouseAction::Use,
             )
-            .await;
-        let (_, warehouse) = register_ctx.emit_authz(authz_result)?;
+            .await
+            .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
         // Before any storage read. `CreateTable` is checked after the read: its properties
         // and table id are only known from the metadata file.
         let namespace = authorizer
@@ -449,6 +441,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await;
         let (event_ctx, namespace) = event_ctx.emit_authz(authz_result)?;
+        authorize_register_on_warehouse(
+            &authorizer,
+            (
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+            ),
+            &warehouse,
+        )
+        .await?;
 
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
         validate_table_properties(table_metadata.properties().keys())?;
@@ -1141,6 +1142,33 @@ async fn ensure_registered_uuid_is_free<C: CatalogStore>(
         None,
     )
     .into())
+}
+
+/// Registering adopts files that are already in storage, so it needs `RegisterTable` on the
+/// warehouse as well as `CreateTable` on the namespace. Recorded on its own, after the
+/// `CreateTable` record.
+async fn authorize_register_on_warehouse<A: Authorizer>(
+    authorizer: &A,
+    (request_metadata, dispatcher): (ArcRequestMetadata, EventDispatcher),
+    warehouse: &ArcResolvedWarehouse,
+) -> Result<()> {
+    let action = CatalogWarehouseAction::RegisterTable;
+    let event_ctx = APIEventContext::for_warehouse(
+        request_metadata,
+        dispatcher,
+        warehouse.warehouse_id,
+        action.clone(),
+    );
+    let authz_result = authorizer
+        .require_warehouse_action(
+            event_ctx.request_metadata(),
+            warehouse.warehouse_id,
+            Ok(Some(Arc::clone(warehouse))),
+            action,
+        )
+        .await;
+    let (_event_ctx, _) = event_ctx.emit_authz(authz_result)?;
+    Ok(())
 }
 
 /// Where a register with `overwrite` puts the table.
