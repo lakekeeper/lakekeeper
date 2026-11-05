@@ -1002,7 +1002,7 @@ async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPoo
     authz.block_action(&register_right);
     let err = create("adopted", &with_files)
         .await
-        .expect_err("files must not be taken over without the register right");
+        .expect_err("a location with files needs the register right");
     assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
     assert_eq!(err.error.r#type, "WarehouseActionForbidden", "{err:?}");
 

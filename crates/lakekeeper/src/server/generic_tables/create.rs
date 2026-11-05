@@ -206,8 +206,8 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
     }
 }
 
-/// A location that already holds files is taken over with them, as registering a table takes
-/// over its files, so it needs `RegisterTable` on the warehouse. Asked before the write
+/// Creating on a location that already holds files brings them into the catalog, as registering
+/// a table does, so it needs `RegisterTable` on the warehouse. Asked before the write
 /// transaction opens, because an authorizer may read the catalog.
 async fn authorize_location_with_files<A: Authorizer, S: SecretStore>(
     authorizer: &A,

@@ -1128,8 +1128,9 @@ pub enum CatalogWarehouseAction {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
-    /// Take over files that already exist in the warehouse's storage: register a table from
-    /// an existing metadata file, or create a generic table on a location that holds files.
+    /// Register files that are already in the warehouse's storage, for example orphaned files
+    /// of a dropped table: register a table from an existing metadata file, or create a
+    /// generic table on a location that holds files.
     /// Asked together with the create action on the namespace. The files may be anywhere in
     /// the warehouse's storage, so it is a right on the warehouse.
     RegisterTable,

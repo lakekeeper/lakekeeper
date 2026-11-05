@@ -2,7 +2,7 @@
 level: none
 ---
 
-**Taking over existing files is authorized on the warehouse, with the new action `register_table`.**
+**Registering files that are already in storage is authorized on the warehouse, with the new action `register_table`.**
 
 ```text
 POST /catalog/v1/{prefix}/namespaces/{namespace}/register
