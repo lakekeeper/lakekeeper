@@ -251,7 +251,7 @@ The bridge requires `iceberg.rest-catalog.case-insensitive-name-matching` to be 
 The bridge allows Trino's `add_files` table procedure for users who may commit any change to the table (`commit`; with OpenFGA, `write`). The procedure reads the files at the location given in the statement. It uses the storage access that Trino has for the table:
 
 - If Lakekeeper vends credentials to Trino, these credentials only reach the table's own location. `add_files` can then only add files from inside the table's location.
-- If Trino uses its own static storage credentials, `add_files` can read every location that these credentials can read. Use `add_files` in this setup only if everyone who may commit to a table (with OpenFGA, everyone who has `write` on it, directly or through a grant or role that includes it; see [Write](./authorization-openfga.md#write)) may read all data that Trino can read. Otherwise remove `ADD_FILES` from the allowed procedures in `policies/trino/allow_table.rego`.
+- If Trino uses its own static storage credentials, `add_files` can read every location that these credentials can read. Use `add_files` in this setup only if everyone who may commit to a table (with OpenFGA, everyone who has `write`, `modify` or ownership on the table or on a namespace, warehouse or project that contains it) may read all data that Trino can read. Otherwise remove `ADD_FILES` from the allowed procedures in `policies/trino/allow_table.rego`.
 
 ## Deployment
 
