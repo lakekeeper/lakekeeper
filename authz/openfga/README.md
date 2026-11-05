@@ -15,27 +15,27 @@ Splits the privileges of `modify` into two tiers: a write tier between `select` 
 
 ### Write tier
 
-The grants API and the assignments API call the tier `write`. The model stores it as `write_content`, a relation name no earlier model used. Unreleased models stored data-only tiers as `write` (`v4.14`) and `write_data` (earlier builds of `v4.15`). Reusing either name would turn their tuples into grants of every commit.
+The grants API, the assignments API and the model call the tier `write`.
 
-During a rolling upgrade from `v4.13`, pods of the previous release do not know `write_content`: a `write` grant allows nothing on them until the rollout finishes. When they delete an object or a principal, they still delete its `write_content` tuples.
+During a rolling upgrade from `v4.13`, pods of the previous release do not know `write`: a `write` grant allows nothing on them until the rollout finishes. When they delete an object or a principal, they still delete its `write` tuples.
 
 `project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_generic_table`:
 
-- Add `write_content` (`[user, role#assignee]`) and `write_content_effective`: `write_content or modify_effective` on the project, and `write_content or ownership or modify_effective` plus `write_content_effective` from the parent below it. `select_effective` reads `write_content_effective` where it read `modify_effective`, which still includes it.
-- Add `can_grant_write_content` and, below the project, `can_revoke_write_content`, following `select`; below the project, `can_read_assignments` includes `can_grant_write_content`. A `pass_grants` holder delegates the tier like the other privileges it holds.
-- Below the project, `write_content` is a visibility source in `visible_below`, like the other grantable privileges, so a principal granted `write` on one deep table reaches the warehouse and the listings above it.
+- Add `write` (`[user, role#assignee]`) and `write_effective`: `write or modify_effective` on the project, and `write or ownership or modify_effective` plus `write_effective` from the parent below it. `select_effective` reads `write_effective` where it read `modify_effective`, which still includes it.
+- Add `can_grant_write` and, below the project, `can_revoke_write`, following `select`; below the project, `can_read_assignments` includes `can_grant_write`. A `pass_grants` holder delegates the tier like the other privileges it holds.
+- Below the project, `write` is a visibility source in `visible_below`, like the other grantable privileges, so a principal granted `write` on one deep table reaches the warehouse and the listings above it.
 
 `lakekeeper_table`:
 
-- `can_commit` and `can_write_data` read `write_content_effective`. Every commit asks `can_commit`: data, schema, partitioning, sort order, properties, snapshot expiry, ref removal, and a commit that finishes a staged create.
+- `can_commit` and `can_write_data` read `write_effective`. Every commit asks `can_commit`: data, schema, partitioning, sort order, properties, snapshot expiry, ref removal, and a commit that finishes a staged create.
 
 `lakekeeper_generic_table`:
 
-- `can_write_data` reads `write_content_effective`. The files hold everything a generic table stores, so the tier changes all of it.
+- `can_write_data` reads `write_effective`. The files hold everything a generic table stores, so the tier changes all of it.
 
 Everything else stays on `modify`: drop, undrop, rename, protection, task control and, with `manage_grants`, moves; on a namespace also its deletion and its properties; on a warehouse and a project their deletion, rename and settings. `modify` does not include `create`.
 
-`lakekeeper_view` gets no `write_content`, and a view commit stays on `modify`. This is deliberate: a view commit replaces the definition, and whether the write tier may do that depends on how views that run with their owner's privileges (`DEFINER`) are protected. A `write` grant on a namespace or above still yields `select` on the views below it.
+`lakekeeper_view` gets no `write`, and a view commit stays on `modify`. This is deliberate: a view commit replaces the definition, and whether the write tier may do that depends on how views that run with their owner's privileges (`DEFINER`) are protected. A `write` grant on a namespace or above still yields `select` on the views below it.
 
 ### `create` no longer implies `describe` beneath
 
@@ -48,9 +48,9 @@ Grant `describe` next to `create` where principals must see the objects already 
 
 ### Stores provisioned from `main` builds
 
-Supersedes `v4.14` and the earlier builds of `v4.15`, neither of which reached a release. `v4.14` is not registered any more; stores on it migrate straight to `v4.15`. Grants of `write` (`v4.14`) and `write_data` (earlier `v4.15`) made on such a store do not carry over: they authorize nothing, and Lakekeeper's grant listings do not show them. List them before upgrading, or read them from OpenFGA directly afterwards, and grant `write` again.
+Supersedes `v4.14` and the earlier builds of `v4.15`, neither of which reached a release. `v4.14` is not registered any more; stores on it migrate straight to `v4.15`.
 
-A store that already runs an earlier build of `v4.15` keeps that model: `migrate` finds `v4.15` applied and changes nothing, and Lakekeeper refuses to start on the store because the model lacks the `write_content` relations. Provision such development stores again.
+Stores built from `main` before this change may hold `write` tuples from `v4.14`, where `write` allowed data writes only, and `write_data` tuples from the earlier builds of `v4.15`. With this model, the `v4.14` `write` tuples take the new, wider meaning. A store on an earlier build of `v4.15` keeps that model: `migrate` finds `v4.15` applied and changes nothing, and Lakekeeper refuses to start on it because that model lacks the `write` relations. Provision such development stores again.
 
 ## `v4.13`
 

@@ -2664,7 +2664,7 @@ pub(crate) mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: format!("user:{writer}"),
-                        relation: NamespaceRelation::WriteContent.to_string(),
+                        relation: NamespaceRelation::Write.to_string(),
                         object: format!("namespace:{namespace_id}"),
                         condition: None,
                     }]),

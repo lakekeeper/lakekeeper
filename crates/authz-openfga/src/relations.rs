@@ -654,8 +654,8 @@ pub enum ProjectRelation {
     Describe,
     Select,
     Create,
-    /// The write tier, granted and listed as `write`.
-    WriteContent,
+    /// The write tier.
+    Write,
     Modify,
     // -- Actions --
     CanCreateWarehouse,
@@ -674,7 +674,7 @@ pub enum ProjectRelation {
     CanGrantTagCreator,
     CanGrantCreate,
     CanGrantDescribe,
-    CanGrantWriteContent,
+    CanGrantWrite,
     CanGrantModify,
     CanGrantSelect,
     CanGrantProjectAdmin,
@@ -750,7 +750,7 @@ impl GrantableRelation for APIProjectRelation {
             APIProjectRelation::Describe => ProjectRelation::CanGrantDescribe,
             APIProjectRelation::Select => ProjectRelation::CanGrantSelect,
             APIProjectRelation::Create => ProjectRelation::CanGrantCreate,
-            APIProjectRelation::Write => ProjectRelation::CanGrantWriteContent,
+            APIProjectRelation::Write => ProjectRelation::CanGrantWrite,
             APIProjectRelation::Modify => ProjectRelation::CanGrantModify,
         }
     }
@@ -884,7 +884,7 @@ impl ReducedRelation for APIProjectRelation {
             APIProjectRelation::Describe => ProjectRelation::Describe,
             APIProjectRelation::Select => ProjectRelation::Select,
             APIProjectRelation::Create => ProjectRelation::Create,
-            APIProjectRelation::Write => ProjectRelation::WriteContent,
+            APIProjectRelation::Write => ProjectRelation::Write,
             APIProjectRelation::Modify => ProjectRelation::Modify,
         }
     }
@@ -907,7 +907,7 @@ impl ReducedRelation for APIProjectAction {
             APIProjectAction::GrantTagCreator => ProjectRelation::CanGrantTagCreator,
             APIProjectAction::GrantCreate => ProjectRelation::CanGrantCreate,
             APIProjectAction::GrantDescribe => ProjectRelation::CanGrantDescribe,
-            APIProjectAction::GrantWrite => ProjectRelation::CanGrantWriteContent,
+            APIProjectAction::GrantWrite => ProjectRelation::CanGrantWrite,
             APIProjectAction::GrantModify => ProjectRelation::CanGrantModify,
             APIProjectAction::GrantSelect => ProjectRelation::CanGrantSelect,
             APIProjectAction::GrantProjectAdmin => ProjectRelation::CanGrantProjectAdmin,
@@ -964,7 +964,7 @@ impl ReducedRelation for OpenFGAProjectAction {
             OpenFGAProjectAction::GrantTagCreator => ProjectRelation::CanGrantTagCreator,
             OpenFGAProjectAction::GrantCreate => ProjectRelation::CanGrantCreate,
             OpenFGAProjectAction::GrantDescribe => ProjectRelation::CanGrantDescribe,
-            OpenFGAProjectAction::GrantWrite => ProjectRelation::CanGrantWriteContent,
+            OpenFGAProjectAction::GrantWrite => ProjectRelation::CanGrantWrite,
             OpenFGAProjectAction::GrantModify => ProjectRelation::CanGrantModify,
             OpenFGAProjectAction::GrantSelect => ProjectRelation::CanGrantSelect,
             OpenFGAProjectAction::GrantProjectAdmin => ProjectRelation::CanGrantProjectAdmin,
@@ -1000,8 +1000,8 @@ pub enum WarehouseRelation {
     Describe,
     Select,
     Create,
-    /// The write tier, granted and listed as `write`.
-    WriteContent,
+    /// The write tier.
+    Write,
     Modify,
     ManageTags,
     // -- Actions --
@@ -1027,7 +1027,7 @@ pub enum WarehouseRelation {
     CanRevokeSubtreeAssignments,
     CanGrantCreate,
     CanGrantDescribe,
-    CanGrantWriteContent,
+    CanGrantWrite,
     CanGrantModify,
     CanGrantSelect,
     CanGrantPassGrants,
@@ -1045,7 +1045,7 @@ pub enum WarehouseRelation {
     // -- Revoke actions --
     CanRevokeCreate,
     CanRevokeDescribe,
-    CanRevokeWriteContent,
+    CanRevokeWrite,
     CanRevokeModify,
     CanRevokeSelect,
 }
@@ -1119,7 +1119,7 @@ impl GrantableRelation for APIWarehouseRelation {
             APIWarehouseRelation::Describe => WarehouseRelation::CanGrantDescribe,
             APIWarehouseRelation::Select => WarehouseRelation::CanGrantSelect,
             APIWarehouseRelation::Create => WarehouseRelation::CanGrantCreate,
-            APIWarehouseRelation::Write => WarehouseRelation::CanGrantWriteContent,
+            APIWarehouseRelation::Write => WarehouseRelation::CanGrantWrite,
             APIWarehouseRelation::Modify => WarehouseRelation::CanGrantModify,
             APIWarehouseRelation::ManageTags => WarehouseRelation::CanGrantManageTags,
         }
@@ -1256,7 +1256,7 @@ impl ReducedRelation for APIWarehouseRelation {
             APIWarehouseRelation::Describe => WarehouseRelation::Describe,
             APIWarehouseRelation::Select => WarehouseRelation::Select,
             APIWarehouseRelation::Create => WarehouseRelation::Create,
-            APIWarehouseRelation::Write => WarehouseRelation::WriteContent,
+            APIWarehouseRelation::Write => WarehouseRelation::Write,
             APIWarehouseRelation::Modify => WarehouseRelation::Modify,
             APIWarehouseRelation::ManageTags => WarehouseRelation::ManageTags,
         }
@@ -1286,7 +1286,7 @@ impl ReducedRelation for APIWarehouseAction {
             APIWarehouseAction::ReadAssignments => WarehouseRelation::CanReadAssignments,
             APIWarehouseAction::GrantCreate => WarehouseRelation::CanGrantCreate,
             APIWarehouseAction::GrantDescribe => WarehouseRelation::CanGrantDescribe,
-            APIWarehouseAction::GrantWrite => WarehouseRelation::CanGrantWriteContent,
+            APIWarehouseAction::GrantWrite => WarehouseRelation::CanGrantWrite,
             APIWarehouseAction::GrantModify => WarehouseRelation::CanGrantModify,
             APIWarehouseAction::GrantSelect => WarehouseRelation::CanGrantSelect,
             APIWarehouseAction::GrantPassGrants => WarehouseRelation::CanGrantPassGrants,
@@ -1365,7 +1365,7 @@ impl ReducedRelation for OpenFGAWarehouseAction {
             OpenFGAWarehouseAction::ReadAssignments => WarehouseRelation::CanReadAssignments,
             OpenFGAWarehouseAction::GrantCreate => WarehouseRelation::CanGrantCreate,
             OpenFGAWarehouseAction::GrantDescribe => WarehouseRelation::CanGrantDescribe,
-            OpenFGAWarehouseAction::GrantWrite => WarehouseRelation::CanGrantWriteContent,
+            OpenFGAWarehouseAction::GrantWrite => WarehouseRelation::CanGrantWrite,
             OpenFGAWarehouseAction::GrantModify => WarehouseRelation::CanGrantModify,
             OpenFGAWarehouseAction::GrantSelect => WarehouseRelation::CanGrantSelect,
             OpenFGAWarehouseAction::GrantPassGrants => WarehouseRelation::CanGrantPassGrants,
@@ -1403,8 +1403,8 @@ pub enum NamespaceRelation {
     Describe,
     Select,
     Create,
-    /// The write tier, granted and listed as `write`.
-    WriteContent,
+    /// The write tier.
+    Write,
     Modify,
     ManageTags,
     // -- Actions --
@@ -1427,7 +1427,7 @@ pub enum NamespaceRelation {
     CanRevokeSubtreeAssignments,
     CanGrantCreate,
     CanGrantDescribe,
-    CanGrantWriteContent,
+    CanGrantWrite,
     CanGrantModify,
     CanGrantSelect,
     CanGrantPassGrants,
@@ -1442,7 +1442,7 @@ pub enum NamespaceRelation {
     // -- Revoke actions --
     CanRevokeCreate,
     CanRevokeDescribe,
-    CanRevokeWriteContent,
+    CanRevokeWrite,
     CanRevokeModify,
     CanRevokeSelect,
 }
@@ -1522,7 +1522,7 @@ impl GrantableRelation for APINamespaceRelation {
             APINamespaceRelation::Describe => NamespaceRelation::CanGrantDescribe,
             APINamespaceRelation::Select => NamespaceRelation::CanGrantSelect,
             APINamespaceRelation::Create => NamespaceRelation::CanGrantCreate,
-            APINamespaceRelation::Write => NamespaceRelation::CanGrantWriteContent,
+            APINamespaceRelation::Write => NamespaceRelation::CanGrantWrite,
             APINamespaceRelation::Modify => NamespaceRelation::CanGrantModify,
             APINamespaceRelation::ManageTags => NamespaceRelation::CanGrantManageTags,
         }
@@ -1652,7 +1652,7 @@ impl ReducedRelation for APINamespaceRelation {
             APINamespaceRelation::Describe => NamespaceRelation::Describe,
             APINamespaceRelation::Select => NamespaceRelation::Select,
             APINamespaceRelation::Create => NamespaceRelation::Create,
-            APINamespaceRelation::Write => NamespaceRelation::WriteContent,
+            APINamespaceRelation::Write => NamespaceRelation::Write,
             APINamespaceRelation::Modify => NamespaceRelation::Modify,
             APINamespaceRelation::ManageTags => NamespaceRelation::ManageTags,
         }
@@ -1677,7 +1677,7 @@ impl ReducedRelation for APINamespaceAction {
             APINamespaceAction::ReadAssignments => NamespaceRelation::CanReadAssignments,
             APINamespaceAction::GrantCreate => NamespaceRelation::CanGrantCreate,
             APINamespaceAction::GrantDescribe => NamespaceRelation::CanGrantDescribe,
-            APINamespaceAction::GrantWrite => NamespaceRelation::CanGrantWriteContent,
+            APINamespaceAction::GrantWrite => NamespaceRelation::CanGrantWrite,
             APINamespaceAction::GrantModify => NamespaceRelation::CanGrantModify,
             APINamespaceAction::GrantSelect => NamespaceRelation::CanGrantSelect,
             APINamespaceAction::GrantPassGrants => NamespaceRelation::CanGrantPassGrants,
@@ -1740,7 +1740,7 @@ impl ReducedRelation for OpenFGANamespaceAction {
             OpenFGANamespaceAction::ReadAssignments => NamespaceRelation::CanReadAssignments,
             OpenFGANamespaceAction::GrantCreate => NamespaceRelation::CanGrantCreate,
             OpenFGANamespaceAction::GrantDescribe => NamespaceRelation::CanGrantDescribe,
-            OpenFGANamespaceAction::GrantWrite => NamespaceRelation::CanGrantWriteContent,
+            OpenFGANamespaceAction::GrantWrite => NamespaceRelation::CanGrantWrite,
             OpenFGANamespaceAction::GrantModify => NamespaceRelation::CanGrantModify,
             OpenFGANamespaceAction::GrantSelect => NamespaceRelation::CanGrantSelect,
             OpenFGANamespaceAction::GrantPassGrants => NamespaceRelation::CanGrantPassGrants,
@@ -1772,8 +1772,8 @@ pub enum TableRelation {
     ManageGrants,
     Describe,
     Select,
-    /// The write tier, granted and listed as `write`.
-    WriteContent,
+    /// The write tier.
+    Write,
     Modify,
     ManageTags,
     // -- Actions --
@@ -1791,7 +1791,7 @@ pub enum TableRelation {
     CanGrantManageGrants,
     CanGrantDescribe,
     CanGrantSelect,
-    CanGrantWriteContent,
+    CanGrantWrite,
     CanGrantModify,
     CanGrantManageTags,
     CanChangeOwnership,
@@ -1801,7 +1801,7 @@ pub enum TableRelation {
     CanSetProtection,
     // -- Revoke actions --
     CanRevokeDescribe,
-    CanRevokeWriteContent,
+    CanRevokeWrite,
     CanRevokeModify,
     CanRevokeSelect,
 }
@@ -1871,7 +1871,7 @@ impl GrantableRelation for APITableRelation {
             APITableRelation::ManageGrants => TableRelation::CanGrantManageGrants,
             APITableRelation::Describe => TableRelation::CanGrantDescribe,
             APITableRelation::Select => TableRelation::CanGrantSelect,
-            APITableRelation::Write => TableRelation::CanGrantWriteContent,
+            APITableRelation::Write => TableRelation::CanGrantWrite,
             APITableRelation::Modify => TableRelation::CanGrantModify,
             APITableRelation::ManageTags => TableRelation::CanGrantManageTags,
         }
@@ -1992,7 +1992,7 @@ impl ReducedRelation for APITableRelation {
             APITableRelation::ManageGrants => TableRelation::ManageGrants,
             APITableRelation::Describe => TableRelation::Describe,
             APITableRelation::Select => TableRelation::Select,
-            APITableRelation::Write => TableRelation::WriteContent,
+            APITableRelation::Write => TableRelation::Write,
             APITableRelation::Modify => TableRelation::Modify,
             APITableRelation::ManageTags => TableRelation::ManageTags,
         }
@@ -2017,7 +2017,7 @@ impl ReducedRelation for APITableAction {
             APITableAction::GrantManageTags => TableRelation::CanGrantManageTags,
             APITableAction::GrantDescribe => TableRelation::CanGrantDescribe,
             APITableAction::GrantSelect => TableRelation::CanGrantSelect,
-            APITableAction::GrantWrite => TableRelation::CanGrantWriteContent,
+            APITableAction::GrantWrite => TableRelation::CanGrantWrite,
             APITableAction::GrantModify => TableRelation::CanGrantModify,
             APITableAction::ChangeOwnership => TableRelation::CanChangeOwnership,
             APITableAction::GetTasks => TableRelation::CanGetTasks,
@@ -2064,7 +2064,7 @@ impl ReducedRelation for OpenFGATableAction {
             OpenFGATableAction::GrantManageTags => TableRelation::CanGrantManageTags,
             OpenFGATableAction::GrantDescribe => TableRelation::CanGrantDescribe,
             OpenFGATableAction::GrantSelect => TableRelation::CanGrantSelect,
-            OpenFGATableAction::GrantWrite => TableRelation::CanGrantWriteContent,
+            OpenFGATableAction::GrantWrite => TableRelation::CanGrantWrite,
             OpenFGATableAction::GrantModify => TableRelation::CanGrantModify,
             OpenFGATableAction::ChangeOwnership => TableRelation::CanChangeOwnership,
         }
@@ -2393,8 +2393,8 @@ pub enum GenericTableRelation {
     ManageGrants,
     Describe,
     Select,
-    /// The write tier, granted and listed as `write`.
-    WriteContent,
+    /// The write tier.
+    Write,
     Modify,
     ManageTags,
     // -- Actions --
@@ -2416,13 +2416,13 @@ pub enum GenericTableRelation {
     CanGrantManageGrants,
     CanGrantDescribe,
     CanGrantSelect,
-    CanGrantWriteContent,
+    CanGrantWrite,
     CanGrantModify,
     CanGrantManageTags,
     CanChangeOwnership,
     // -- Revoke actions --
     CanRevokeDescribe,
-    CanRevokeWriteContent,
+    CanRevokeWrite,
     CanRevokeModify,
     CanRevokeSelect,
 }
@@ -2528,7 +2528,7 @@ impl GrantableRelation for APIGenericTableRelation {
             APIGenericTableRelation::ManageGrants => GenericTableRelation::CanGrantManageGrants,
             APIGenericTableRelation::Describe => GenericTableRelation::CanGrantDescribe,
             APIGenericTableRelation::Select => GenericTableRelation::CanGrantSelect,
-            APIGenericTableRelation::Write => GenericTableRelation::CanGrantWriteContent,
+            APIGenericTableRelation::Write => GenericTableRelation::CanGrantWrite,
             APIGenericTableRelation::Modify => GenericTableRelation::CanGrantModify,
             APIGenericTableRelation::ManageTags => GenericTableRelation::CanGrantManageTags,
         }
@@ -2622,7 +2622,7 @@ impl ReducedRelation for APIGenericTableRelation {
             APIGenericTableRelation::ManageGrants => GenericTableRelation::ManageGrants,
             APIGenericTableRelation::Describe => GenericTableRelation::Describe,
             APIGenericTableRelation::Select => GenericTableRelation::Select,
-            APIGenericTableRelation::Write => GenericTableRelation::WriteContent,
+            APIGenericTableRelation::Write => GenericTableRelation::Write,
             APIGenericTableRelation::Modify => GenericTableRelation::Modify,
             APIGenericTableRelation::ManageTags => GenericTableRelation::ManageTags,
         }
@@ -2642,7 +2642,7 @@ impl ReducedRelation for OpenFGAGenericTableAction {
             OpenFGAGenericTableAction::GrantManageTags => GenericTableRelation::CanGrantManageTags,
             OpenFGAGenericTableAction::GrantDescribe => GenericTableRelation::CanGrantDescribe,
             OpenFGAGenericTableAction::GrantSelect => GenericTableRelation::CanGrantSelect,
-            OpenFGAGenericTableAction::GrantWrite => GenericTableRelation::CanGrantWriteContent,
+            OpenFGAGenericTableAction::GrantWrite => GenericTableRelation::CanGrantWrite,
             OpenFGAGenericTableAction::GrantModify => GenericTableRelation::CanGrantModify,
             OpenFGAGenericTableAction::ChangeOwnership => GenericTableRelation::CanChangeOwnership,
         }
@@ -2701,7 +2701,7 @@ impl ReducedRelation for APIGenericTableAction {
             APIGenericTableAction::GrantManageTags => GenericTableRelation::CanGrantManageTags,
             APIGenericTableAction::GrantDescribe => GenericTableRelation::CanGrantDescribe,
             APIGenericTableAction::GrantSelect => GenericTableRelation::CanGrantSelect,
-            APIGenericTableAction::GrantWrite => GenericTableRelation::CanGrantWriteContent,
+            APIGenericTableAction::GrantWrite => GenericTableRelation::CanGrantWrite,
             APIGenericTableAction::GrantModify => GenericTableRelation::CanGrantModify,
             APIGenericTableAction::ChangeOwnership => GenericTableRelation::CanChangeOwnership,
         }
@@ -2714,7 +2714,7 @@ impl RevocableRelation for APIWarehouseRelation {
             // Delegable, so taking them back is administration.
             APIWarehouseRelation::Create => WarehouseRelation::CanRevokeCreate,
             APIWarehouseRelation::Describe => WarehouseRelation::CanRevokeDescribe,
-            APIWarehouseRelation::Write => WarehouseRelation::CanRevokeWriteContent,
+            APIWarehouseRelation::Write => WarehouseRelation::CanRevokeWrite,
             APIWarehouseRelation::Modify => WarehouseRelation::CanRevokeModify,
             APIWarehouseRelation::Select => WarehouseRelation::CanRevokeSelect,
             // Never delegable, so one relation covers both directions.
@@ -2732,7 +2732,7 @@ impl RevocableRelation for APINamespaceRelation {
             // Delegable, so taking them back is administration.
             APINamespaceRelation::Create => NamespaceRelation::CanRevokeCreate,
             APINamespaceRelation::Describe => NamespaceRelation::CanRevokeDescribe,
-            APINamespaceRelation::Write => NamespaceRelation::CanRevokeWriteContent,
+            APINamespaceRelation::Write => NamespaceRelation::CanRevokeWrite,
             APINamespaceRelation::Modify => NamespaceRelation::CanRevokeModify,
             APINamespaceRelation::Select => NamespaceRelation::CanRevokeSelect,
             // Never delegable, so one relation covers both directions.
@@ -2749,7 +2749,7 @@ impl RevocableRelation for APITableRelation {
         match self {
             // Delegable, so taking them back is administration.
             APITableRelation::Describe => TableRelation::CanRevokeDescribe,
-            APITableRelation::Write => TableRelation::CanRevokeWriteContent,
+            APITableRelation::Write => TableRelation::CanRevokeWrite,
             APITableRelation::Modify => TableRelation::CanRevokeModify,
             APITableRelation::Select => TableRelation::CanRevokeSelect,
             // Never delegable, so one relation covers both directions.
@@ -2782,7 +2782,7 @@ impl RevocableRelation for APIGenericTableRelation {
         match self {
             // Delegable, so taking them back is administration.
             APIGenericTableRelation::Describe => GenericTableRelation::CanRevokeDescribe,
-            APIGenericTableRelation::Write => GenericTableRelation::CanRevokeWriteContent,
+            APIGenericTableRelation::Write => GenericTableRelation::CanRevokeWrite,
             APIGenericTableRelation::Modify => GenericTableRelation::CanRevokeModify,
             APIGenericTableRelation::Select => GenericTableRelation::CanRevokeSelect,
             // Never delegable, so one relation covers both directions.
@@ -3002,7 +3002,7 @@ pub(crate) mod test {
     }
 
     /// The assignments API names the write tier `write`, in the relation filter and in the
-    /// `type` of an assignment, and stores it as `write_content`.
+    /// `type` of an assignment, and stores it as `write`.
     #[test]
     fn the_assignments_api_names_the_write_tier_write() {
         let u = || UserOrRole::User(UserId::new_unchecked("oidc", "u"));
@@ -3032,34 +3032,34 @@ pub(crate) mod test {
             serde_json::from_value::<APIProjectRelation>(filter.clone())
                 .unwrap()
                 .to_openfga(),
-            ProjectRelation::WriteContent
+            ProjectRelation::Write
         );
         assert_eq!(
             serde_json::from_value::<APIWarehouseRelation>(filter.clone())
                 .unwrap()
                 .to_openfga(),
-            WarehouseRelation::WriteContent
+            WarehouseRelation::Write
         );
         assert_eq!(
             serde_json::from_value::<APINamespaceRelation>(filter.clone())
                 .unwrap()
                 .to_openfga(),
-            NamespaceRelation::WriteContent
+            NamespaceRelation::Write
         );
         assert_eq!(
             serde_json::from_value::<APITableRelation>(filter.clone())
                 .unwrap()
                 .to_openfga(),
-            TableRelation::WriteContent
+            TableRelation::Write
         );
         assert_eq!(
             serde_json::from_value::<APIGenericTableRelation>(filter.clone())
                 .unwrap()
                 .to_openfga(),
-            GenericTableRelation::WriteContent
+            GenericTableRelation::Write
         );
         assert!(serde_json::from_value::<APIViewRelation>(filter).is_err());
-        assert_eq!(TableRelation::WriteContent.to_string(), "write_content");
+        assert_eq!(TableRelation::Write.to_string(), "write");
         assert_eq!(
             serde_json::to_value(APITableAction::GrantWrite).unwrap(),
             "grant_write"

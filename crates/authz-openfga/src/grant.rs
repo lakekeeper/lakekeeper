@@ -256,8 +256,8 @@ fn authority_relation(resource_type: ResourceType, privilege: &str, op: GrantOp)
 /// this level — a structural relation (`parent`, `project`, `child`) or one this
 /// version does not know.
 ///
-/// Resolved by search: the API name and the stored relation can differ (`write` is stored
-/// as `write_content`).
+/// Resolved by search through `to_openfga`: the API name and the stored relation share a
+/// spelling at every level, but nothing enforces it.
 fn privilege_of_relation(resource_type: ResourceType, relation: &str) -> Option<String> {
     for_level!(resource_type, |R| R::iter()
         .find(|candidate| candidate.to_openfga().to_string() == relation)
@@ -840,10 +840,9 @@ mod tests {
         );
     }
 
-    /// The write tier is granted and listed as `write` and stored under a relation name of
-    /// its own at every level that has it.
+    /// The write tier is granted, listed and stored as `write` at every level that has it.
     #[test]
-    fn write_is_stored_as_write_content() {
+    fn write_is_stored_as_write() {
         for resource_type in [
             ResourceType::Project,
             ResourceType::Warehouse,
@@ -853,17 +852,17 @@ mod tests {
         ] {
             assert_eq!(
                 assignment_relation(resource_type, "write"),
-                Some("write_content".to_string()),
+                Some("write".to_string()),
                 "{resource_type:?}"
             );
             assert_eq!(
-                privilege_of_relation(resource_type, "write_content"),
+                privilege_of_relation(resource_type, "write"),
                 Some("write".to_string()),
                 "{resource_type:?}"
             );
             assert_eq!(
                 authority_relation(resource_type, "write", GrantOp::Grant),
-                Some("can_grant_write_content".to_string()),
+                Some("can_grant_write".to_string()),
                 "{resource_type:?}"
             );
             for unknown in ["write_data", "write_content"] {
@@ -875,7 +874,7 @@ mod tests {
         }
         assert_eq!(
             authority_relation(ResourceType::Table, "write", GrantOp::Revoke),
-            Some("can_revoke_write_content".to_string())
+            Some("can_revoke_write".to_string())
         );
         assert!(!is_known_privilege(ResourceType::View, "write"));
     }
