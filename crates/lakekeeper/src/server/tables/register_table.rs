@@ -34,7 +34,7 @@ use crate::{
 
 /// Registering adopts files that are already in storage, so it needs `RegisterTable` on the
 /// warehouse as well as `CreateTable` on the namespace. Asked before the metadata file is read,
-/// and recorded on its own. A refusal also refuses the call's `CreateTable`, recorded first.
+/// and recorded on its own. A refusal also refuses the call's `CreateTable`, recorded as well.
 pub(super) async fn authorize_register_on_warehouse<A, P, R, Act>(
     authorizer: &A,
     event_ctx: &APIEventContext<P, R, Act>,
