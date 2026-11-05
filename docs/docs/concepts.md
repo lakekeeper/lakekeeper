@@ -264,7 +264,7 @@ Add the `force=true` query parameter to deletion requests:
 DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 
-Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The `purgeRequested` flag for tables is still respected and determines if the physical data of the table should be removed. Purge defaults to true for tables managed by Lakekeeper.
+Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The files of the dropped tables, views and generic tables are removed only if `purge=true` is set.
 
 ## Upgrades & Migration
 
