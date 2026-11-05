@@ -711,7 +711,9 @@ async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_
     assert_eq!(failed, vec![skip_record()]);
     let drops_and_skips = succeeded
         .into_iter()
-        .filter(|actions| !["create_table", "register_table"].contains(&actions[0].action_name.as_str()))
+        .filter(|actions| {
+            !["create_table", "register_table"].contains(&actions[0].action_name.as_str())
+        })
         .collect();
     assert_eq!(
         sorted(drops_and_skips),

@@ -469,4 +469,3 @@ pub(crate) fn file_takeover_forbidden(warehouse_id: WarehouseId) -> AuthZWarehou
             "The location already holds files. Creating a generic table there brings them into the catalog, and that needs this action.",
         )
 }
-
