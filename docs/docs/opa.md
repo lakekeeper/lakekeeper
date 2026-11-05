@@ -54,7 +54,7 @@ All above mentioned configuration options refer to a specific Lakekeeper instanc
 
 | Variable                                       | Example | Description |
 |------------------------------------------------|---------|-----|
-| `TRINO_ALLOW_UNMANAGED_CATALOGS` | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
+| `TRINO_ALLOW_UNMANAGED_CATALOGS` | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. It does not allow reads inside a DEFINER view, see [Views inside DEFINER views](#views-inside-definer-views). Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
 
 ### Admin Users
 
@@ -85,6 +85,14 @@ Do **not** add the OPA bridge client to the trusted engine. The OPA bridge only 
 We recommend giving the OPA bridge its **own** Keycloak client, separate from the Trino catalog client. The OPA bridge only needs permission-check access on Lakekeeper, which is a narrower privilege scope than what the Trino catalog client needs — keeping them separate limits blast radius if either credential leaks.
 
 When you set up the trusted engine, [check the existing views](./view-security.md#check-existing-views) that have `trino.run-as-owner`.
+
+### Views inside DEFINER views
+
+When a user queries a DEFINER view of another user, Trino asks the bridge about each table and view the DEFINER view reads, as the view's owner. Trino also runs an INVOKER view inside a DEFINER view as that owner. Then whoever can change the INVOKER view could read data with the owner's permissions. So the bridge allows a view inside a DEFINER view of another user only if the view is a DEFINER view itself and the owner may `select` it. Lakekeeper decides this from the view's `trino.run-as-owner` property.
+
+Queries over a DEFINER view that reads an INVOKER view fail for every user except the owner. Trino shows `View owner does not have sufficient privileges`. To keep such a query working, create the inner view as `SECURITY DEFINER`, or reference the base tables directly in the outer view.
+
+The bridge cannot look up views of catalogs that are not listed in `trino_catalog`. `TRINO_ALLOW_UNMANAGED_CATALOGS` therefore does not allow reading their tables and views inside a DEFINER view. To allow this for a catalog that has no views, add an `allow_unmanaged` rule for the operation `CreateViewWithSelectFromColumns`.
 
 ### Trino Configuration
 
@@ -255,6 +263,6 @@ The bridge allows Trino's `add_files` table procedure for users who may commit a
 
 ## Deployment
 
-Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write_data`](./authorization-openfga.md#write-data) privilege existed let a holder of `write_data` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write_data`.
+Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older servers deny these requests, so with new policies on an older server, queries over DEFINER views of another user fail. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write_data`](./authorization-openfga.md#write-data) privilege existed let a holder of `write_data` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write_data`.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).

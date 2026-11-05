@@ -30,7 +30,7 @@ Alice must have permission to access both the view and the underlying table.
 
 ### DEFINER
 
-With the DEFINER security model, the **view owner's** permissions are used for resources downstream of the DEFINER view. This allows view owners to grant access to underlying data without granting direct table access.
+With the DEFINER security model, the **view owner's** permissions are used for the tables and views that the DEFINER view references. This allows view owners to grant access to underlying data without granting direct table access.
 
 **Example:** User Alice queries a DEFINER view owned by Bob that references a table.
 
@@ -44,20 +44,26 @@ Alice needs permission to access the view, but the **table** is checked against 
 
 ### Chained Views
 
-Views can reference other views, creating chains. The security model is evaluated at each step, and DEFINER views switch the "current user" for all subsequent checks.
+Views can reference other views. Each view in the chain is checked as the user who runs the view that references it. A DEFINER view runs as its owner. An INVOKER view runs as the calling user, also when a DEFINER view references it. So the owner's permissions end at an INVOKER view.
 
 **Example:** A chain with mixed security models.
 
 ```text
 Alice --> View1 (DEFINER, owner=Bob) --> View2 (INVOKER) --> View3 (DEFINER, owner=Carol) --> Table
               |                              |                            |                     |
-        Check: Alice                   Check: Bob                   Check: Bob            Check: Carol
+        Check: Alice                   Check: Bob                   Check: Alice          Check: Carol
 ```
 
-- **View1** is checked as Alice (the calling user).
-- **View2** is INVOKER, but we are already in Bob's delegated context (from View1 being DEFINER), so it is checked as Bob.
-- **View3** is DEFINER with owner Carol — from this point on, Carol's permissions are used.
-- The **Table** is checked as Carol.
+- **View1** is checked as Alice, the calling user.
+- **View2** is checked as Bob, because Bob's View1 references it.
+- **View3** is checked as Alice, because View2 is INVOKER and runs as Alice.
+- The **Table** is checked as Carol, because View3 is DEFINER and runs as Carol.
+
+This is the rule of PostgreSQL. Trino itself runs an INVOKER view inside a DEFINER view as the outer owner, so a query that Trino allows can fail in Lakekeeper if the calling user may not read what the INVOKER view reads. Whoever can change an INVOKER view could otherwise read data with the owner's permissions. To keep such a query working, do one of these:
+
+- Create the inner view as `SECURITY DEFINER`, so that its owner is responsible for what it reads.
+- Reference the base tables directly in the outer view.
+- Grant the calling users read access to what the inner view reads.
 
 ## How It Works
 
@@ -65,7 +71,7 @@ When a trusted engine sends a `loadTable` or `loadView` request with the `refere
 
 1. Resolves all views and tables in the chain.
 2. Determines the security model (DEFINER or INVOKER) for each view by checking the configured owner property (e.g. `trino.run-as-owner`).
-3. Walks the chain from entry point to target, switching the "current user" at each DEFINER boundary.
+3. Walks the chain from entry point to target. After a DEFINER view, checks use its owner. After an INVOKER view, checks use the calling user again.
 4. Checks permissions for the correct user at each step.
 5. Returns the result only if all checks pass.
 
@@ -175,7 +181,7 @@ To correct the owner of a view, run `CREATE OR REPLACE VIEW ... SECURITY DEFINER
 
 When a user accesses a table through a DEFINER view, the table load happens with the **owner's** permissions. This is flagged as "delegated execution" in authorization checks and audit logs. Authorization backends can use this flag to apply different policies — for example, skipping permission-inspection rights that would normally be required.
 
-A DEFINER view runs everything it references with the owner's rights. So whoever can change a table or view that a DEFINER view references also changes what runs with the owner's rights.
+A DEFINER view runs everything it references with the owner's rights. So whoever can change a table or view that a DEFINER view references also changes what runs with the owner's rights. An INVOKER view stops this: what it references is checked as the calling user.
 
 ### Metadata vs. execution: `get_metadata` and `select`
 
@@ -191,7 +197,7 @@ Views expose two authorization checkpoints:
 - **View with no downstream objects** (e.g. `SELECT 1`). No referenced-by chain is built, so `select` is never checked via the chain. `get_metadata` on the view is enough for `loadView` (reading the SQL). `select` is only required if the engine actually executes the view (which it does via the OPA bridge, see below).
 - **INVOKER view referencing other objects.** The referenced-by chain emits `select` on the view. Downstream objects are checked against the **caller**. The caller needs `select` on the view to traverse the chain plus `read_data` / `write_data` on downstream tables.
 - **DEFINER view.** Same `select`-on-view requirement for the caller, but downstream objects are checked against the **owner**. `select` on the view is what gates the caller from entering the owner's context without explicit permission. This is also the boundary where the instance-admin `get_metadata` bypass stops short — admins cannot traverse a DEFINER chain they weren't granted `select` on.
-- **OPA bridge.** When the engine is fronted by the [OPA bridge](./opa.md), the bridge issues a `select` check on the view for every query that returns data (via Trino's `SelectFromColumns`). Under the OPA bridge, `select` on the view is always required to read data.
+- **OPA bridge.** When the engine is fronted by the [OPA bridge](./opa.md), the bridge issues a `select` check on the view for every query that returns data (via Trino's `SelectFromColumns`). Under the OPA bridge, `select` on the view is always required to read data. Inside a DEFINER view of another user, the bridge allows a view only if it is a DEFINER view itself, see [Views inside DEFINER views](./opa.md#views-inside-definer-views).
 
 The data-plane / control-plane split lets policies differentiate the two dimensions — for example, the instance-admin bypass applies to `get_metadata` but not to `select`, matching the carve-out that already excludes `read_data` / `write_data` on tables. Operator-style identities can list and manage views they have no explicit access to, but cannot execute them through a referenced-by chain without `select` on that view.
 
