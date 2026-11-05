@@ -206,3 +206,57 @@ test_data_changes_do_not_ask_a_commit if {
 			with http.send as mock_http_any_commit
 	}
 }
+
+_view_comment_input := {
+	"context": mock_context,
+	"action": {
+		"operation": "SetViewComment",
+		"resource": {"table": {"catalogName": "managed", "schemaName": "schema_a", "tableName": "v"}},
+	},
+}
+
+# Allows only a commit of any kind on the view `v`.
+_view_commit_result(check) := {"allowed": true} if {
+	check.operation.view.action == {"action": "commit"}
+	check.operation.view.table == "v"
+} else := {"allowed": false}
+
+mock_http_view_commit_only(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
+	endswith(request.url, "/token")
+} else := {"status_code": 200, "body": {"defaults": {"prefix": "mock-wh-id"}}} if {
+	contains(request.url, "catalog/v1/config")
+} else := {"status_code": 200, "body": {"results": results}} if {
+	contains(request.url, "batch-check")
+	results := [_view_commit_result(check) | some check in request.body.checks]
+}
+
+# Allows every check except a commit.
+_all_but_commit_result(check) := {"allowed": false} if {
+	some kind
+	check.operation[kind].action.action == "commit"
+} else := {"allowed": true}
+
+mock_http_all_but_commit(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
+	endswith(request.url, "/token")
+} else := {"status_code": 200, "body": {"defaults": {"prefix": "mock-wh-id"}}} if {
+	contains(request.url, "catalog/v1/config")
+} else := {"status_code": 200, "body": {"results": results}} if {
+	contains(request.url, "batch-check")
+	results := [_all_but_commit_result(check) | some check in request.body.checks]
+}
+
+# Trino stores a view comment as a view property, so `COMMENT ON VIEW` asks about a
+# commit of any kind on the view.
+test_view_comment_asks_a_commit_of_any_kind_on_the_view if {
+	trino.allow with input as _view_comment_input
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_view_commit_only
+}
+
+test_view_comment_refused_without_commit if {
+	not trino.allow with input as _view_comment_input
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_all_but_commit
+}
