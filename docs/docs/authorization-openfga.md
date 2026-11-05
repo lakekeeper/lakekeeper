@@ -22,12 +22,12 @@ The default permission model is focused on collaborating on data. Permissions ar
 | Entity    | Grant                                                            |
 |-----------|------------------------------------------------------------------|
 | server    | admin, operator                                                  |
-| project   | project_admin, security_admin, data_admin, role_creator, tag_creator, describe, select, create, write_data, modify |
-| warehouse | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, write_data, modify |
-| namespace | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, write_data, modify |
-| table     | ownership, pass_grants, manage_grants, manage_tags, describe, select, write_data, modify  |
+| project   | project_admin, security_admin, data_admin, role_creator, tag_creator, describe, select, create, write, modify |
+| warehouse | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, write, modify |
+| namespace | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, write, modify |
+| table     | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify  |
 | view      | ownership, pass_grants, manage_grants, manage_tags, describe, select, modify  |
-| generic table | ownership, pass_grants, manage_grants, manage_tags, describe, select, write_data, modify |
+| generic table | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify |
 | role      | assignee, ownership                                              |
 | tag       | ownership, apply                                                 |
 
@@ -65,7 +65,7 @@ A `tag_creator` in a project can create new governance tag definitions within it
 
 ### Describe
 
-The `describe` grant allows a user to view metadata and details about an object without modifying it. This includes listing objects and viewing their properties. The `describe` grant is inherited down the object hierarchy, meaning if a user has the `describe` grant on a higher-level entity, they can also describe all child entities within it. The `describe` grant is implicitly included with the `select`, `create`, `write_data`, and `modify` grants.
+The `describe` grant allows a user to view metadata and details about an object without modifying it. This includes listing objects and viewing their properties. The `describe` grant is inherited down the object hierarchy, meaning if a user has the `describe` grant on a higher-level entity, they can also describe all child entities within it. The `describe` grant is implicitly included with the `select`, `write`, and `modify` grants.
 
 ### Select
 
@@ -73,28 +73,22 @@ The `select` grant allows a user to read data from an object, such as tables or 
 
 ### Create
 
-The `create` grant allows a user to create new objects within an entity, such as tables, views, or namespaces. The `create` grant is inherited down the object hierarchy, meaning if a user has the `create` grant on a higher-level entity, they can also create objects within all child entities. The `create` grant implicitly includes the `describe` grant.
+The `create` grant allows a user to create new objects within an entity, such as tables, views, or namespaces. The `create` grant is inherited down the object hierarchy, meaning if a user has the `create` grant on a higher-level entity, they can also create objects within all child entities. A user with `create` sees the entities where they may create, including all namespaces below, and the objects they create, because they own them. They do not see the tables, views and generic tables that others created there. Grant `describe` too if the user must see these.
 
-### Write Data
+### Write
 
-The `write_data` grant allows a user to change the data of a table without changing the table itself: inserting, updating, deleting and merging rows, compacting files and computing statistics. It does not allow changing a table's schema, partitioning, sort order or properties, expiring snapshots, or removing branches and tags, and it does not allow dropping, renaming or protecting the table — those need `modify`. Jobs that are allowed to change the schema while they write, such as Spark with `mergeSchema` or dbt with `on_schema_change`, work with `write_data` as long as they do not change the schema. A write that adds a column fails as a whole, because changing the schema needs `modify`. Replacing or recreating a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do, also needs `modify`. Adding existing files to a table (`add_files`) needs `modify` as well if the table has no column name mapping yet, and through Trino it always does.
+The `write` grant allows a user to change everything a table holds: its data, schema, partitioning, sort order and properties, its branches and tags, and its history, for example by expiring snapshots. This includes replacing a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do, and adding existing files to it (`add_files`). It does not allow dropping, restoring, renaming, moving or protecting the table, or controlling its tasks. These need `modify`.
 
-A user with `write_data` cannot finish a table create that another user started. Some engines create a table in two steps, for example for `CREATE TABLE AS SELECT`: they first reserve the table without data ("stage" it), then commit it with its data. Finishing the create needs `modify`. The user who started the create owns the table, so they hold `modify` on it.
+Generic tables keep their structure in their own files, so for them `write` allows every change to the table's contents and structure. Managing the table itself, such as dropping, restoring, renaming or protecting it, needs `modify`.
 
-Moving branches and tags is part of writing data, so a user with `write_data` can also roll a table back to an earlier snapshot, create branches and tags, point existing tags to other snapshots, turn a branch into a tag and back, and change the retention settings of branches and tags. If [snapshot expiry](./table-maintenance.md#expire-snapshots) is enabled, it follows these settings, so shortening them lets a user with `write_data` have old snapshots, branches and tags removed.
+The `write` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants. It exists on projects, warehouses, namespaces, tables and generic tables. Views have no `write` grant: changing a view needs `modify`. A `write` grant on a namespace or above lets a user read the views below it.
 
-Generic tables keep their structure in their own files, so for them `write_data` allows every change to the table's contents and structure. Managing the table itself, such as dropping, restoring, renaming or protecting it, needs `modify`.
-
-If Trino reaches Lakekeeper through the [OPA bridge](./opa.md), upgrade the bridge policies before granting `write_data`. Bridge policies from releases before `write_data` existed let a user with `write_data` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino.
-
-The `write_data` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants. It exists on projects, warehouses, namespaces, tables and generic tables. Views have no data of their own, so they have no `write_data` grant; a `write_data` grant on a namespace or above lets a user read the views below it.
-
-!!! warning "`write_data` protects the table, not its files"
-    A user with `write_data` can write to and delete from the table's storage location, so they can still corrupt or empty a table. See [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
+!!! warning "`write` protects the table, not its files"
+    A user with `write` can write to and delete from the table's storage location, so they can still corrupt or empty a table. See [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
 
 ### Modify
 
-The `modify` grant allows a user to change the content or properties of an object, such as updating data in tables, changing a table's schema or properties, or altering views, and to drop, rename and protect it. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `write_data`, `select` and `describe` grants. Like `write_data`, it gives access to the table's files in storage; see [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
+The `modify` grant allows a user to change views, to drop, restore, rename and protect objects, and to control their tasks. On a namespace it also allows deleting the namespace and changing its properties. On a warehouse or project it also allows deleting and renaming it and changing its settings. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `write`, `select` and `describe` grants, but not `create`. Like `write`, it gives access to the table's files in storage; see [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
 
 ### Pass Grants
 
@@ -108,7 +102,7 @@ The `manage_grants` grant allows a user to manage all grants on an object, inclu
 
 ### Manage Tags
 
-The `manage_tags` grant allows a user to attach and detach governance tags on an object (warehouse, namespace, table, view, or generic table) and its columns. It is **independent of `modify`** — a separation-of-duties choice, so a data steward can classify objects without holding data or schema-modification rights. `manage_tags` inherits down the object hierarchy. Attaching or detaching a *specific* tag additionally requires the `apply` grant on that tag definition (see [Tags](#tags)).
+The `manage_tags` grant allows a user to attach and detach governance tags on an object (warehouse, namespace, table, view, or generic table) and its columns. It is **independent of `write` and `modify`** — a separation-of-duties choice, so a data steward can classify objects without holding data or schema-modification rights. `manage_tags` inherits down the object hierarchy. Attaching or detaching a *specific* tag additionally requires the `apply` grant on that tag definition (see [Tags](#tags)).
 
 ## Managing grants through the grants API
 
@@ -157,7 +151,7 @@ Managed access can be enabled or disabled for warehouses and namespaces using th
 
 ### Moving namespaces under managed access
 
-Moving a namespace requires `manage_grants` and `modify` on the namespace being moved, and `create` on the destination parent (or on the warehouse, when moving to the root). If the destination is under managed access, it also requires `manage_grants` there. Re-parenting is a grant-shaped operation rather than an ordinary write — every principal holding `select`, `write_data`, `modify`, or `describe` at the destination immediately gains it on the moved namespace and everything inside it, through inheritance and without an assignment being recorded. Requiring grant authority at the source means the move confers nothing you could not already have granted directly; requiring it at a managed destination stops a namespace being populated and granted somewhere permissive and then moved in, issuing grants in a managed subtree that you could never have issued there.
+Moving a namespace requires `manage_grants` and `modify` on the namespace being moved, and `create` on the destination parent (or on the warehouse, when moving to the root). If the destination is under managed access, it also requires `manage_grants` there. Re-parenting is a grant-shaped operation rather than an ordinary write — every principal holding `select`, `write`, `modify`, or `describe` at the destination immediately gains it on the moved namespace and everything inside it, through inheritance and without an assignment being recorded. Requiring grant authority at the source means the move confers nothing you could not already have granted directly; requiring it at a managed destination stops a namespace being populated and granted somewhere permissive and then moved in, issuing grants in a managed subtree that you could never have issued there.
 
 Two consequences are worth knowing:
 
