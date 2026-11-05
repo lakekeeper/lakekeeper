@@ -126,6 +126,7 @@ impl AuthorizationFailureSource for AuthZCannotUseWarehouseId {
 pub struct AuthZWarehouseActionForbidden {
     warehouse_id: WarehouseId,
     action: String,
+    reason: Option<&'static str>,
 }
 impl AuthZWarehouseActionForbidden {
     #[must_use]
@@ -133,7 +134,15 @@ impl AuthZWarehouseActionForbidden {
         Self {
             warehouse_id,
             action: action.to_string(),
+            reason: None,
         }
+    }
+
+    /// Says why the call needs the action, for a caller who did not ask for it directly.
+    #[must_use]
+    pub(crate) fn with_reason(mut self, reason: &'static str) -> Self {
+        self.reason = Some(reason);
+        self
     }
 }
 impl AuthorizationFailureSource for AuthZWarehouseActionForbidden {
@@ -141,12 +150,15 @@ impl AuthorizationFailureSource for AuthZWarehouseActionForbidden {
         let AuthZWarehouseActionForbidden {
             warehouse_id,
             action,
+            reason,
         } = self;
-        ErrorModel::forbidden(
-            format!("Warehouse action `{action}` forbidden on warehouse `{warehouse_id}`"),
-            "WarehouseActionForbidden",
-            None,
-        )
+        let mut message =
+            format!("Warehouse action `{action}` forbidden on warehouse `{warehouse_id}`");
+        if let Some(reason) = reason {
+            message.push_str(". ");
+            message.push_str(reason);
+        }
+        ErrorModel::forbidden(message, "WarehouseActionForbidden", None)
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
         AuthorizationFailureReason::ActionForbidden
@@ -380,16 +392,30 @@ pub(crate) async fn require_soft_deletion_skip<A: Authorizer>(
     request_metadata: &RequestMetadata,
     warehouse: &ResolvedWarehouse,
 ) -> Result<(), RequireWarehouseActionError> {
-    let action = CatalogWarehouseAction::ModifySoftDeletion;
     let allowed = authorizer
-        .is_allowed_warehouse_action(request_metadata, None, warehouse, action.clone())
+        .is_allowed_warehouse_action(
+            request_metadata,
+            None,
+            warehouse,
+            CatalogWarehouseAction::ModifySoftDeletion,
+        )
         .await?
         .into_inner();
     if allowed {
         Ok(())
     } else {
-        Err(AuthZWarehouseActionForbidden::new(warehouse.warehouse_id, &action).into())
+        Err(soft_deletion_skip_forbidden(warehouse.warehouse_id).into())
     }
+}
+
+/// Refusal of [`require_soft_deletion_skip`].
+pub(crate) fn soft_deletion_skip_forbidden(
+    warehouse_id: WarehouseId,
+) -> AuthZWarehouseActionForbidden {
+    AuthZWarehouseActionForbidden::new(warehouse_id, &CatalogWarehouseAction::ModifySoftDeletion)
+        .with_reason(
+            "This call would delete tables or views before their soft-deletion period ends, and that needs this action.",
+        )
 }
 
 /// [`require_soft_deletion_skip`] for an authorized drop of a table, view or generic table:

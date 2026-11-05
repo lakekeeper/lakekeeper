@@ -114,7 +114,7 @@ Each Warehouse is associated with a unique location on object stores. Never shar
 
 Each Warehouse also has a UUID, unique across the whole instance, which appears as the `prefix` in `/catalog` URLs. Lakekeeper assigns it, which is what we recommend; provisioning tools that need the ID up front can pass `warehouse-id` to `POST /management/v1/warehouse` instead — prefer a UUIDv7, and expect a `409` if the ID is taken. Do not re-use the ID of a deleted Warehouse: caches and permission records key on the Warehouse ID alone, so an ID that changes hands can briefly resolve to the previous Warehouse.
 
-Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Please note that Warehouses and Namespaces cannot be deleted via the `/catalog` API if child objects are present. This includes soft-deleted Tables. A cascade-drop API is added in one of the next releases as part of the `/management` API.
+Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Warehouses and Namespaces can only be deleted when they are empty; soft-deleted tables and views count. To delete a Namespace with everything in it, see [Recursive Deletion on Namespaces](#recursive-deletion-on-namespaces).
 
 ### Namespaces
 
@@ -270,16 +270,19 @@ In a warehouse with soft deletion, a recursive namespace deletion needs `force`.
 
 ### Skipping Soft Deletion
 
-Soft deletion is a warehouse setting. In a warehouse with soft deletion, every call that removes tables or views before their expiration period ends needs the permission to change the soft-deletion settings of the warehouse, in addition to the permission that the call needs anyway. In OpenFGA this is `modify` on the warehouse, in Cedar the action `ModifySoftDeletion`<span class="lkp"></span>. These calls are:
+Soft deletion is a safety net for the whole warehouse: dropped tables and views can be restored until they expire. Only users who may change the soft-deletion settings of the warehouse can skip it. In OpenFGA this is `modify` on the warehouse, in Cedar the action `ModifySoftDeletion`<span class="lkp"></span>.
+
+In a warehouse with soft deletion, these calls need this permission in addition to their own:
 
 * Dropping a table, view or generic table with `force=true`
 * Deleting a namespace with `recursive=true`
-* Running a soft-deletion task now or at a set time, through the task management API
 * Registering a table with `overwrite` over an existing table that is not staged
 
-Force that only skips protection needs no extra permission. This applies to warehouses with hard deletion, and to deleting an empty namespace.
+Running a soft-deletion task now or at a set time, through the task management API, always needs this permission, also after the warehouse switched to hard deletion.
 
-A user who may delete a namespace, but may not change the soft-deletion settings, can delete it only when it contains no tables or views, dropped ones included. Dropped tables and views leave the namespace when they expire.
+In warehouses with hard deletion, and when deleting an empty namespace, `force` only skips protection and needs no extra permission.
+
+Users without this permission can delete a namespace only when it is empty. Dropped tables and views count until they expire.
 
 ## Upgrades & Migration
 

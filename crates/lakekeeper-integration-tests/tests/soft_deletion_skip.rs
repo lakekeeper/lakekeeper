@@ -560,6 +560,7 @@ async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_
     assert_needs_modify_soft_deletion(s.register_overwrite("t").await);
     assert_eq!(s.state(Kind::Table, "t").await, Found::Active);
     // The replaced table skips the window, so its drop is recorded as forced.
+    assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
     let (_, failed) = listener.recorded_actions();
     assert_eq!(failed, vec![vec![drop_action(true)]]);
 
@@ -607,6 +608,7 @@ async fn register_overwrite_of_a_staged_table_needs_no_extra_right(pool: PgPool)
         .await
         .unwrap();
     assert_eq!(s.state(Kind::Table, "staged").await, Found::Active);
+    assert_eq!(listener.settled_counts(2, 0).await, (2, 0));
     let (succeeded, failed) = listener.recorded_actions();
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(

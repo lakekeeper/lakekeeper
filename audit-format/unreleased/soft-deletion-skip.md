@@ -7,9 +7,11 @@ level: none
 ```text
 drop (table, view or generic table)                        force: true
 delete (namespace)                                         recursive: true
-control_tasks (warehouse)                                  run now or run at on a soft-deletion task
+control_tasks (warehouse)                                  run now or run at, when a soft-deletion task is among the tasks
 drop (table), invoked_by: register_table_overwrite         force: true
 ```
+
+The `control_tasks` record does not say which control or which tasks were asked for.
 
 The refusal is recorded on the call, with `decision: denied`, `failure_reason: action_forbidden` and error type `WarehouseActionForbidden`. The error message names the warehouse action `modify_soft_deletion`. The first, second and fourth case apply in warehouses with soft deletion, the third in every warehouse.
 

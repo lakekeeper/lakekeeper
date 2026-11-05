@@ -1300,10 +1300,7 @@ fn fixture_authz_failed_soft_deletion_skip() {
     let record = refusal_record(
         entities,
         action.event_actions(),
-        crate::service::authz::AuthZWarehouseActionForbidden::new(
-            warehouse_id,
-            &crate::service::authz::CatalogWarehouseAction::ModifySoftDeletion,
-        ),
+        crate::service::authz::soft_deletion_skip_forbidden(warehouse_id),
     );
 
     assert_matches_fixture("authz_failed_soft_deletion_skip", &contract_fields(record));

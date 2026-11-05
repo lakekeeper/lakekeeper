@@ -4198,8 +4198,8 @@ paths:
         - warehouse
       summary: Delete Warehouse
       description: |-
-        Permanently removes a warehouse and all its associated resources.
-        Use the `force` parameter to delete protected warehouses.
+        Deletes an empty warehouse that has no unfinished tasks.
+        Use the `force` parameter to delete a protected warehouse.
       operationId: delete_warehouse
       parameters:
         - name: warehouse_id
@@ -4208,6 +4208,12 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: force
+          in: query
+          description: Delete the warehouse also if it is protected.
+          required: false
+          schema:
+            type: boolean
       responses:
         '204':
           description: Warehouse deleted successfully

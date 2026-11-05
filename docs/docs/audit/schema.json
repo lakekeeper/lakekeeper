@@ -384,7 +384,7 @@
             "properties": {
               "force": {
                 "type": "boolean",
-                "description": "`true` when the client asked to force the operation."
+                "description": "`true` when the client asked to force the operation. Also `true` on the drop of an active\ntable that a register with `overwrite` replaces in a warehouse with soft deletion."
               },
               "purge": {
                 "type": "boolean",
@@ -412,7 +412,7 @@
             "properties": {
               "force": {
                 "type": "boolean",
-                "description": "`true` when the client asked to force the operation."
+                "description": "`true` when the client asked to force the operation. Also `true` on the drop of an active\ntable that a register with `overwrite` replaces in a warehouse with soft deletion."
               },
               "purge": {
                 "type": "boolean",
@@ -443,7 +443,7 @@
               },
               "force": {
                 "type": "boolean",
-                "description": "`true` when the client asked to force the operation."
+                "description": "`true` when the client asked to force the operation. Also `true` on the drop of an active\ntable that a register with `overwrite` replaces in a warehouse with soft deletion."
               }
             }
           }
