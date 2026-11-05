@@ -256,7 +256,7 @@ Protected entities within the hierarchy will prevent recursive deletion unless f
 Force deletion is an administrative override that allows deletion of protected entities and bypasses certain safety checks:
 
 * Bypasses protection settings
-* Overrides soft-deletion mechanisms for immediate hard deletion
+* Deletes tables and views at once, also in warehouses with soft deletion
 
 Add the `force=true` query parameter to deletion requests:
 
@@ -265,6 +265,21 @@ DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 
 Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The `purgeRequested` flag for tables is still respected and determines if the physical data of the table should be removed. Purge defaults to true for tables managed by Lakekeeper.
+
+In a warehouse with soft deletion, a recursive namespace deletion needs `force`. Namespaces cannot be soft-deleted, so it deletes every table and view below the namespace at once, including tables and views that were already dropped and wait for expiration.
+
+### Skipping Soft Deletion
+
+Soft deletion is a warehouse setting. In a warehouse with soft deletion, every call that removes tables or views before their expiration period ends needs the permission to change the soft-deletion settings of the warehouse, in addition to the permission that the call needs anyway. In OpenFGA this is `modify` on the warehouse, in Cedar the action `ModifySoftDeletion`<span class="lkp"></span>. These calls are:
+
+* Dropping a table, view or generic table with `force=true`
+* Deleting a namespace with `recursive=true`
+* Running a soft-deletion task now or at a set time, through the task management API
+* Registering a table with `overwrite` over an existing table that is not staged
+
+Force that only skips protection needs no extra permission. This applies to warehouses with hard deletion, and to deleting an empty namespace.
+
+A user who may delete a namespace, but may not change the soft-deletion settings, can delete it only when it contains no tables or views, dropped ones included. Dropped tables and views leave the namespace when they expire.
 
 ## Upgrades & Migration
 

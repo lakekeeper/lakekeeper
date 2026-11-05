@@ -94,7 +94,7 @@ The `write_data` grant is inherited down the object hierarchy and implicitly inc
 
 ### Modify
 
-The `modify` grant allows a user to change the content or properties of an object, such as updating data in tables, changing a table's schema or properties, or altering views, and to drop, rename and protect it. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `write_data`, `select` and `describe` grants. Like `write_data`, it gives access to the table's files in storage; see [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
+The `modify` grant allows a user to change the content or properties of an object, such as updating data in tables, changing a table's schema or properties, or altering views, and to drop, rename and protect it. A drop or delete that skips [soft deletion](./concepts.md#skipping-soft-deletion) also needs `modify` on the warehouse. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `write_data`, `select` and `describe` grants. Like `write_data`, it gives access to the table's files in storage; see [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
 
 ### Pass Grants
 

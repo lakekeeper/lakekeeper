@@ -27,7 +27,7 @@ use crate::{
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
             CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
             RequireGenericTableActionError, RequireNamespaceActionError, RequireTableActionError,
-            RequireViewActionError, RequireWarehouseActionError,
+            RequireViewActionError, RequireWarehouseActionError, require_soft_deletion_skip,
         },
         events::{
             APIEventContext,
@@ -1640,6 +1640,15 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
             request_metadata,
         )
         .await?;
+    }
+    // Running a soft-deletion task early hard-deletes its tabular before the window ends,
+    // whatever task permissions the caller holds and whatever the profile is today.
+    if matches!(
+        query.action,
+        ControlTaskAction::RunNow | ControlTaskAction::RunAt { .. }
+    ) && !tabular_expiration_entities.is_empty()
+    {
+        require_soft_deletion_skip(authorizer, request_metadata, &warehouse).await?;
     }
     Ok((warehouse, tabular_expiration_entities))
 }

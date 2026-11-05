@@ -1378,7 +1378,7 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `DeactivateWarehouse` | `deactivate` | `WarehouseModifyActions` | Deactivate the warehouse (suspend operations) |
 | `ActivateWarehouse` | `activate` | `WarehouseModifyActions` | Activate a deactivated warehouse |
 | `RenameWarehouse` | `rename` | `WarehouseModifyActions` | Change the warehouse's name |
-| `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseModifyActions` | Configure soft-deletion settings |
+| `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseModifyActions` | Configure soft-deletion settings, and [skip soft deletion](./concepts.md#skipping-soft-deletion) when dropping or deleting |
 | `ModifyTaskQueueConfig` | `modify_task_queue_config` | `WarehouseModifyActions` | Update task queue configuration |
 | `ControlAllTasks` | `control_all_tasks` | `WarehouseModifyActions` | Manage all background tasks |
 | `SetWarehouseProtection` | `set_protection` | `WarehouseModifyActions` | Enable or disable deletion protection |
@@ -1547,6 +1547,8 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | `Manage<Level>Grants`                     | `privilege: <Level>Privilege`, `grantee: Grantee`, `direction: GrantDirection` |
 | `Read…SubtreeGrants`, `Revoke…SubtreeGrants` | `subtree?: SubtreeGrantScope` |
 | `Toggle…PredefinedPolicy`                 | `policy_id: String`, `enabled: Bool` |
+
+A register with `overwrite` that replaces an active table in a warehouse with soft deletion sends `DropTable` for the replaced table with `force: true`, because the table skips soft deletion. The protection of the replaced table still applies.
 
 **Example**: Prevent a table from being created with an `access-owners` property that doesn't include at least one owner from the `oidc~data-governance` role:
 

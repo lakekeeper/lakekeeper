@@ -1,8 +1,5 @@
 use std::sync::Arc;
 
-use http::StatusCode;
-use iceberg_ext::catalog::rest::ErrorModel;
-
 use crate::{
     api::{
         ApiContext,
@@ -11,14 +8,16 @@ use crate::{
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tables::validate_table_or_view_ident},
+    server::{
+        require_warehouse_id, tables::validate_table_or_view_ident,
+        tabular::claim_no_content_idempotency_key,
+    },
     service::{
         AuthZViewInfo as _, CatalogIdempotencyOps, CatalogStore, CatalogTabularOps, NamedEntity,
         Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
-        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
+        authz::{AuthZViewOps, Authorizer, CatalogViewAction, require_soft_deletion_skip_for_drop},
         contract_verification::ContractVerification,
         events::{APIEventContext, context::ResolvedView},
-        idempotency::IdempotencyInfo,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -83,7 +82,13 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             state.v1_state.catalog.clone(),
         )
         .await;
-
+    let authz_context = require_soft_deletion_skip_for_drop(
+        &authorizer,
+        event_ctx.request_metadata(),
+        force,
+        authz_context,
+    )
+    .await;
     let (event_ctx, (warehouse, _namespace, view_info)) = event_ctx.emit_authz(authz_context)?;
 
     let view_id = view_info.view_id();
@@ -102,11 +107,7 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
-    let delete_profile = if force {
-        TabularDeleteProfile::Hard {}
-    } else {
-        warehouse.tabular_delete_profile
-    };
+    let delete_profile = warehouse.tabular_delete_profile.for_drop(force);
     let project_id = &warehouse.project_id;
 
     match delete_profile {
@@ -177,27 +178,14 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         }
     }
 
-    // Insert idempotency key and commit — shared across both delete profiles.
-    if let Some(ref key) = idempotency_key
-        && !C::try_insert_idempotency_key(
-            warehouse_id,
-            &IdempotencyInfo::builder()
-                .key(*key)
-                .endpoint(EndpointFlat::CatalogV1DropView)
-                .http_status(StatusCode::NO_CONTENT)
-                .build(),
-            t.transaction(),
-        )
-        .await?
-    {
-        t.rollback()
-            .await
-            .inspect_err(|e| {
-                tracing::warn!("Rollback failed after idempotency conflict: {e}");
-            })
-            .ok();
-        return Err(ErrorModel::request_in_progress().into());
-    }
+    // Claim the idempotency key and commit, for both delete profiles.
+    let t = claim_no_content_idempotency_key::<C>(
+        t,
+        warehouse_id,
+        idempotency_key,
+        EndpointFlat::CatalogV1DropView,
+    )
+    .await?;
     t.commit().await?;
 
     // Post-commit: best-effort authz cleanup for hard deletes

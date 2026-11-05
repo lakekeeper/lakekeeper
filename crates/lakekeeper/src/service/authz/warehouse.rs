@@ -7,8 +7,8 @@ use crate::{
         ArcResolvedWarehouse, CatalogBackendError, CatalogGetWarehouseByIdError,
         DatabaseIntegrityError, ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
-            AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
+            AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
             IsAllowedActionError, MustUse, UserOrRole,
         },
@@ -372,3 +372,37 @@ pub trait AuthzWarehouseOps: Authorizer {
 }
 
 impl<T> AuthzWarehouseOps for T where T: Authorizer {}
+
+/// Requires `ModifySoftDeletion` on `warehouse`, for a call that skips its soft-deletion
+/// window: only who may configure the window may skip it.
+pub(crate) async fn require_soft_deletion_skip<A: Authorizer>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    warehouse: &ResolvedWarehouse,
+) -> Result<(), RequireWarehouseActionError> {
+    let action = CatalogWarehouseAction::ModifySoftDeletion;
+    let allowed = authorizer
+        .is_allowed_warehouse_action(request_metadata, None, warehouse, action.clone())
+        .await?
+        .into_inner();
+    if allowed {
+        Ok(())
+    } else {
+        Err(AuthZWarehouseActionForbidden::new(warehouse.warehouse_id, &action).into())
+    }
+}
+
+/// [`require_soft_deletion_skip`] for an authorized drop of a table, view or generic table:
+/// `force` in a soft-deletion warehouse deletes at once.
+pub(crate) async fn require_soft_deletion_skip_for_drop<A: Authorizer, N, T>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    force: bool,
+    loaded: Result<(ArcResolvedWarehouse, N, T), AuthZError>,
+) -> Result<(ArcResolvedWarehouse, N, T), AuthZError> {
+    let (warehouse, namespace, tabular) = loaded?;
+    if force && warehouse.tabular_delete_profile.is_soft() {
+        require_soft_deletion_skip(authorizer, request_metadata, &warehouse).await?;
+    }
+    Ok((warehouse, namespace, tabular))
+}

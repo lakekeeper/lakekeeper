@@ -1098,8 +1098,8 @@ pub enum CatalogWarehouseAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     Delete {
-        /// Whether protection is bypassed, so a warehouse marked protected is deleted with
-        /// everything in it.
+        /// Whether protection is bypassed, so a warehouse marked protected can be deleted. The
+        /// warehouse must still be empty and have no unfinished tasks.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
     },
@@ -1358,8 +1358,10 @@ pub enum CatalogNamespaceAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     Delete {
-        /// Whether the warehouse-configured soft-deletion is bypassed: contained tabulars are
-        /// hard-deleted at once, not kept for the configured grace period.
+        /// Whether protection is skipped: of the namespace, and with `recursive` of everything
+        /// below it. A recursive delete in a warehouse with soft-deletion requires it: namespaces
+        /// have no soft-deleted state, so every table, view and generic table below is
+        /// hard-deleted at once, dropped ones included.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data/metadata files are physically purged.
@@ -1668,9 +1670,10 @@ impl EventAction for CatalogNamespaceAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed: the table is hard-deleted at
-        /// once, not kept for the configured grace period. Extra destructive — irreversible right
-        /// away.
+        /// Whether the drop skips the table's protection and, in a warehouse with soft-deletion,
+        /// the soft-deletion window: the table is hard-deleted at once. Also set for the drop of
+        /// the table that a register with `overwrite` replaces, when the replaced table is active
+        /// in a warehouse with soft-deletion. That drop skips only the window; protection holds.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data files are physically purged from storage.
@@ -1952,9 +1955,8 @@ impl EventAction for CatalogTableAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed: the view is hard-deleted at
-        /// once, not kept for the configured grace period. Extra destructive — irreversible right
-        /// away.
+        /// Whether the drop skips the view's protection and, in a warehouse with soft-deletion,
+        /// the soft-deletion window: the view is hard-deleted at once.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying metadata files are physically purged from storage.
@@ -2082,9 +2084,8 @@ impl EventAction for CatalogViewAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogGenericTableAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed: the generic table is
-        /// hard-deleted at once, not kept for the configured grace period. Extra destructive —
-        /// irreversible right away.
+        /// Whether the drop skips the generic table's protection and, in a warehouse with
+        /// soft-deletion, the soft-deletion window: the generic table is hard-deleted at once.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data files are physically purged from storage.
@@ -4858,6 +4859,14 @@ pub mod tests {
                 .write()
                 .unwrap()
                 .insert(object.to_string());
+        }
+
+        /// Lifts a block set with [`Self::block_action`].
+        ///
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
+        pub fn unblock_action(&self, object: &str) {
+            self.blocked_actions.write().unwrap().remove(object);
         }
 
         /// Blocks every table commit that is not a data commit, as `write_data` does; see
