@@ -3815,28 +3815,19 @@ async fn test_register_table_checks_create_table_before_validating_the_file(pool
 }
 
 /// Registering adopts existing files, so it needs the register right on the warehouse
-/// besides `create_table` on the namespace. A refused register right gets its own record, and
-/// the `create_table` record still names the table being registered.
+/// besides `create_table` on the namespace. It is checked before the metadata file is read. A
+/// refusal is recorded on the warehouse and, by the requested name, as a refused
+/// `create_table` on the namespace.
 #[sqlx::test]
 async fn test_register_table_requires_the_register_right(pool: PgPool) {
-    use lakekeeper::service::events::{EventListener, context::ActionContextKey};
+    use lakekeeper::service::events::{
+        AuthorizationFailureReason, EventListener, context::ActionContextKey,
+    };
     use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
 
-    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let (ctx, authz, ns_params, existing_location, missing_location) =
+        register_table_setup(pool).await;
     let prefix = ns_params.prefix.clone().unwrap();
-    let LoadTableResultOrNotModified::LoadTableResult(existing) = CatalogServer::load_table(
-        TableParameters {
-            prefix: Some(prefix.clone()),
-            table: TableIdent::new(ns_params.namespace.clone(), "existing".to_string()),
-        },
-        LoadTableRequest::default(),
-        ctx.clone(),
-        RequestMetadata::new_unauthenticated(),
-    )
-    .await
-    .unwrap() else {
-        panic!("an unconditional load must not return 304");
-    };
     drop_table_helper(
         ctx.clone(),
         prefix.as_str(),
@@ -3847,63 +3838,73 @@ async fn test_register_table_requires_the_register_right(pool: PgPool) {
     )
     .await
     .unwrap();
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterTable
+    ));
     let listener = Arc::new(CapturingAuthzListener::default());
     ctx.v1_state
         .events
         .append(listener.clone() as Arc<dyn EventListener>)
         .await;
+    let register = |metadata_location: String| {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("registered".to_string())
+                .metadata_location(metadata_location)
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
 
-    authz.block_action(&format!(
-        "warehouse:{:?}",
-        CatalogWarehouseAction::RegisterTable
-    ));
-    let err = CatalogServer::register_table(
-        ns_params.clone(),
-        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
-            .name("registered".to_string())
-            .metadata_location(existing_location)
-            .build(),
-        DataAccess::not_specified(),
-        ctx.clone(),
-        RequestMetadata::new_unauthenticated(),
-    )
-    .await
-    .unwrap_err();
+    // Reading a missing file would fail with a storage error, not with a refusal.
+    let err = register(missing_location).await.unwrap_err();
     assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
     assert_eq!(err.error.r#type, "WarehouseActionForbidden");
 
-    // The two records are sent from separate tasks: allowed and refused are compared apart.
-    assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
-    let create_table = RecordedAction {
+    let err = register(existing_location).await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    // Each refusal writes two records, from separate tasks, so they may arrive in any order.
+    assert_eq!(listener.settled_counts(0, 4).await, (0, 4));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::ActionForbidden; 4]
+    );
+    let (succeeded, mut failed) = listener.recorded_actions();
+    failed.sort_by(|a, b| a[0].action_name.cmp(&b[0].action_name));
+    assert_eq!(succeeded, Vec::<Vec<RecordedAction>>::new());
+    let create_table = vec![RecordedAction {
         action_name: "create_table".to_string(),
         context: vec![
             ActionContextKey::Name("registered".to_string()),
-            ActionContextKey::TableId(TableId::from(existing.metadata.uuid()).to_string()),
-            ActionContextKey::Properties(
-                existing
-                    .metadata
-                    .properties()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-            ),
+            ActionContextKey::Properties(std::collections::BTreeMap::new()),
         ],
-    };
-    let register_table = RecordedAction {
+    }];
+    let register_table = vec![RecordedAction {
         action_name: "register_table".to_string(),
         context: vec![],
-    };
+    }];
     assert_eq!(
-        listener.recorded_actions(),
-        (vec![vec![create_table]], vec![vec![register_table]])
+        failed,
+        vec![
+            create_table.clone(),
+            create_table,
+            register_table.clone(),
+            register_table
+        ]
     );
 
     let exists = CatalogServer::table_exists(
         TableParameters {
-            prefix: ns_params.prefix,
-            table: TableIdent::new(ns_params.namespace, "registered".to_string()),
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent::new(ns_params.namespace.clone(), "registered".to_string()),
         },
-        ctx,
+        ctx.clone(),
         RequestMetadata::new_unauthenticated(),
     )
     .await
