@@ -247,10 +247,6 @@ async fn create_definer_view(
         },
         rq,
         ctx.clone(),
-        DataAccess {
-            vended_credentials: true,
-            remote_signing: false,
-        },
         trino_engine_request(),
     ))
     .await
@@ -532,10 +528,6 @@ async fn create_view_keeping_two_versions(
         },
         rq,
         ctx.clone(),
-        DataAccess {
-            vended_credentials: true,
-            remote_signing: false,
-        },
         trino_engine_request(),
     ))
     .await

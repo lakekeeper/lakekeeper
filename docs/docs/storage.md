@@ -43,6 +43,8 @@ Lakekeeper gives query engines access to table data in one of two ways:
 - **Vended credentials**: Lakekeeper issues temporary credentials and returns them with the table. It downscopes them to the table's location and ensures that no two table locations in a Warehouse overlap.
 - **Remote signing** (S3 and STACKIT): the client sends the headers of each S3 request to Lakekeeper's sign endpoint. Lakekeeper checks that the request is allowed, signs it with its own credentials and returns the signature headers. The client then sends the request to the storage itself.
 
+Views get neither: Lakekeeper returns no storage credentials and no storage settings with a View. Query engines load each Table that a View uses and read it with the access that Lakekeeper gives for that Table.
+
 Clients choose with the `X-Iceberg-Access-Delegation` header, which takes the Iceberg REST values `vended-credentials` and `remote-signing`, plus Lakekeeper's `client-managed`:
 
 - `client-managed` returns neither credentials nor signing information, so the client uses its own credentials.

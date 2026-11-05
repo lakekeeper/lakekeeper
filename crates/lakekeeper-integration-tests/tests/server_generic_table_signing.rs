@@ -21,10 +21,11 @@ use lakekeeper::{
         iceberg::{
             types::Prefix,
             v1::{
-                DataAccess, LoadTableResultOrNotModified, TableParameters,
+                DataAccess, LoadTableResultOrNotModified, TableParameters, ViewParameters,
                 namespace::NamespaceParameters,
                 s3_signer::{Service as _, SignTarget},
                 tables::{LoadTableRequest, TablesService as _},
+                views::{LoadViewRequest, ViewService as _},
             },
         },
     },
@@ -44,7 +45,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    create_table_request, get_api_context, random_request_metadata,
+    assert_view_response_without_storage_access, create_table_request, get_api_context,
+    random_request_metadata,
 };
 use lakekeeper_io::Location;
 use lakekeeper_storage_postgres::{
@@ -1104,6 +1106,35 @@ async fn test_load_table_advertises_remote_signing_config(pool: PgPool) {
         config.contains_key("signer.endpoint"),
         "the deprecated signer keys must remain until clients read the config: {config:?}"
     );
+}
+
+/// A view response carries no signer keys and no storage config, even if the client asks
+/// for remote signing. The signer refuses views anyway.
+#[sqlx::test]
+async fn test_load_view_advertises_no_remote_signing(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    create_catalog_view(&ctx, &namespace_name, warehouse_id, "myview").await;
+
+    let response = CatalogServer::load_view(
+        ViewParameters {
+            prefix: Some(Prefix(warehouse_id.to_string())),
+            view: TableIdent::new(NamespaceIdent::new(namespace_name), "myview".to_string()),
+        },
+        LoadViewRequest {
+            data_access: DataAccess {
+                vended_credentials: false,
+                remote_signing: true,
+            }
+            .into(),
+            referenced_by: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("loading the view must succeed");
+
+    assert_view_response_without_storage_access(&response, "loadView");
 }
 
 /// The unit tests in the signer check which header names stay unsigned; these

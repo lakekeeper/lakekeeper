@@ -45,7 +45,7 @@ use crate::{
         },
         idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
-        storage::{StoragePermissions, StorageProfile},
+        storage::StorageProfile,
     },
 };
 
@@ -150,7 +150,6 @@ pub async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request: &request,
         property_writes,
         protected_properties,
-        data_access,
     };
     let (result, commit, committed_request) =
         commit_with_retries::<C, A, S>(&ctx, &state, idempotency_key.as_ref()).await?;
@@ -195,7 +194,6 @@ struct CommitViewContext<'a> {
     property_writes: PropertyWrites<'a>,
     /// `None` if the owner property rules are off.
     protected_properties: Option<&'static HashSet<String>>,
-    data_access: DataAccessMode,
 }
 
 // Core commit logic that may be retried. Also returns the request the commit applied, which
@@ -275,7 +273,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
     // Write the metadata file and commit
     let file_io = ctx.storage_profile.file_io(storage_secret_ref).await?;
-    let config = delete_on_failure(&file_io, &[&new_view.metadata_location], async {
+    delete_on_failure(&file_io, &[&new_view.metadata_location], async {
         write_file(
             &file_io,
             &new_view.metadata_location,
@@ -288,19 +286,6 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             "Wrote new view metadata file to: '{}'",
             new_view.metadata_location
         );
-
-        // Generate config for client
-        let config = ctx
-            .storage_profile
-            .generate_table_config(
-                ctx.data_access,
-                storage_secret_ref,
-                &new_view.metadata_location,
-                StoragePermissions::ReadWriteDelete,
-                request_metadata,
-                view_info,
-            )
-            .await?;
 
         // Insert idempotency key in the same transaction.
         if let Some(key) = idempotency_key
@@ -324,8 +309,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             return Err(ErrorModel::request_in_progress().into());
         }
 
-        t.commit().await?;
-        Ok(config)
+        t.commit().await
     })
     .await?;
 
@@ -347,7 +331,8 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         LoadViewResult {
             metadata_location: new_view.metadata_location.to_string(),
             metadata: new_metadata.clone(),
-            config: Some(config.config.into()),
+            // Views carry no storage access: engines load the tables behind a view with loadTable.
+            config: None,
         },
         ViewEventTransition {
             old_metadata: previous_view.metadata,
