@@ -2095,7 +2095,7 @@ pub(crate) async fn drop_tabular(
         && let TabularId::Table(table_id) = tabular_id
     {
         // table_snapshot has no FK to "table": snapshots with a NULL schema_id survive the cascade.
-        table::remove_all_snapshots(warehouse_id, table_id, transaction).await?;
+        table::remove_all_snapshots(warehouse_id, [table_id], transaction).await?;
     }
     let location = join_location(&location.fs_protocol, &location.fs_location)
         .map_err(InternalParseLocationError::from)?;

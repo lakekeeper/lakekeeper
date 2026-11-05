@@ -827,7 +827,7 @@ pub mod tests {
         api::{
             iceberg::{
                 types::PageToken,
-                v1::{PaginationQuery, tables::LoadTableFilters},
+                v1::{PaginationQuery, namespace::NamespaceDropFlags, tables::LoadTableFilters},
             },
             management::v1::{DeleteKind, warehouse::WarehouseStatus},
         },
@@ -847,7 +847,7 @@ pub mod tests {
     use super::*;
     use crate::{
         CatalogState, PostgresBackend,
-        namespace::tests::initialize_namespace,
+        namespace::{drop_namespace, tests::initialize_namespace},
         tabular::{
             drop_tabular, get_tabular_infos_by_idents, get_tabular_infos_by_ids,
             get_tabular_infos_by_s3_location, list_tabulars, mark_tabular_as_deleted,
@@ -3396,6 +3396,57 @@ pub mod tests {
         table.create_from(&metadata, "00001").await;
         assert_eq!(table.load().await, metadata);
         assert_eq!(table.snapshot_rows().await, (1, 0, 0, 1));
+    }
+
+    /// A recursive namespace drop deletes its tabulars in bulk. It removes the snapshots without
+    /// schema id, and their statistics, of active and soft-deleted tables.
+    async fn assert_recursive_namespace_drop_removes_snapshots(
+        pool: sqlx::PgPool,
+        soft_deleted: bool,
+    ) {
+        let table = SchemalessSnapshotTable::create(pool).await;
+        if soft_deleted {
+            let mut transaction = table.pool.begin().await.unwrap();
+            mark_tabular_as_deleted(
+                table.warehouse_id,
+                table.table_id.into(),
+                false,
+                None,
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+        }
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+
+        let mut transaction = table.pool.begin().await.unwrap();
+        drop_namespace(
+            table.warehouse_id,
+            table.namespace_id,
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+    }
+
+    #[sqlx::test]
+    async fn recursive_namespace_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
+        assert_recursive_namespace_drop_removes_snapshots(pool, false).await;
+    }
+
+    #[sqlx::test]
+    async fn recursive_namespace_drop_removes_snapshots_without_schema_id_of_soft_deleted_table(
+        pool: sqlx::PgPool,
+    ) {
+        assert_recursive_namespace_drop_removes_snapshots(pool, true).await;
     }
 
     /// Create-side invariant: the schema_field -> tabular_field FK rejects a field row with no

@@ -16,7 +16,7 @@ use lakekeeper::{
         NamespaceCannotMoveIntoSelf, NamespaceDropInfo, NamespaceHasChildren,
         NamespaceHasRunningTabularExpirations, NamespaceId, NamespaceIdent, NamespaceNotEmpty,
         NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected,
-        NamespaceWithParent, Result, SerializationError, TabularId, WarehouseIdNotFound,
+        NamespaceWithParent, Result, SerializationError, TableId, TabularId, WarehouseIdNotFound,
         storage::join_location, tasks::TaskId,
     },
 };
@@ -27,7 +27,7 @@ use uuid::Uuid;
 use super::dbutils::DBErrorHandler;
 use crate::{
     pagination::{PaginateToken, V1PaginateToken},
-    tabular::TabularType,
+    tabular::{TabularType, table::remove_all_snapshots},
 };
 
 #[derive(Debug)]
@@ -1103,6 +1103,7 @@ pub(crate) async fn drop_namespace(
             ARRAY(SELECT fs_location FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_location!",
             ARRAY(SELECT typ FROM tabulars where deleted_at is NULL) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
+            ARRAY(SELECT tabular_id FROM tabulars where typ = 'table') AS "child_table_ids!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>",
             ARRAY(SELECT namespace_id FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_ids!: Vec<Uuid>",
@@ -1213,6 +1214,14 @@ pub(crate) async fn drop_namespace(
     if record.rows_affected() == 0 {
         return Err(NamespaceNotFound::new(warehouse_id, namespace_ident.clone()).into());
     }
+
+    // table_snapshot has no FK to "table": snapshots with a NULL schema_id survive the cascade.
+    remove_all_snapshots(
+        warehouse_id,
+        info.child_table_ids.into_iter().map(TableId::from),
+        transaction,
+    )
+    .await?;
 
     Ok(NamespaceDropInfo {
         child_namespaces: info.child_namespaces.into_iter().map(Into::into).collect(),
