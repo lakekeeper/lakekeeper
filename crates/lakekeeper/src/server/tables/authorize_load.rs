@@ -311,25 +311,25 @@ pub(crate) fn add_namespace_to_tabulars_for_authorize_load_tabular(
         .collect()
 }
 
-/// Resolve DEFINER owners and assign the current user for each tabular in the chain.
-///
-/// For each view with a DEFINER security model, the owner is resolved to an `Actor`
-/// and becomes the `current_user` for subsequent tabulars. INVOKER views inherit the
-/// current user unchanged.
-///
-/// When no trusted engine is present, only the base tabular (last entry) is returned
-/// with the request actor.
 /// Result entry from [`resolve_users_for_authorize_load_tabular`].
 #[derive(Debug)]
 pub struct ResolvedTabular {
     pub tabular: ViewOrTableInfo,
     pub user: Option<UserOrRole>,
-    /// True if this tabular is accessed via delegated execution (downstream of a DEFINER view).
+    /// True if this tabular is checked as the owner of a DEFINER view.
     pub is_delegated_execution: bool,
     pub namespace: NamespaceHierarchy,
 }
 
-/// Resolve users for each tabular in the authorization chain.
+/// Resolve the user each tabular in the authorization chain is checked as.
+///
+/// Each entry is checked as the user that runs the view referencing it; the first
+/// entry as the request actor. A DEFINER view runs as its owner. An INVOKER view
+/// runs as the request actor, also below a DEFINER view, so the owner's rights end
+/// at it (`PostgreSQL`'s `security_invoker` rule).
+///
+/// When no trusted engine is present, only the base tabular (last entry) is returned
+/// with the request actor.
 ///
 /// `token_idp_id` is the `IdP` of the requesting token — used to construct
 /// owner `UserId`s for DEFINER views. This comes from the token, not from
@@ -394,7 +394,11 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
             .determine_security_model(tabular.properties())
             .map_err(|e| AuthZError::from(AuthzBadRequest::new(e.to_string())))?
         {
-            SecurityModel::Invoker => {}
+            SecurityModel::Invoker => {
+                // Whoever can change an INVOKER view gets no owner's rights through it.
+                current_user = actor.clone();
+                delegated = false;
+            }
             SecurityModel::Definer(owner) => {
                 current_user = if let Some(cached) = owners_cache.get(&owner) {
                     cached.clone()
@@ -1131,8 +1135,10 @@ mod tests {
         assert_eq!(tabulars[2].namespace, table_namespace);
     }
 
+    /// Chain: DEFINER(trino) → INVOKER → DEFINER(peter) → INVOKER → table. A DEFINER view
+    /// hands over to its owner; an INVOKER view hands back to the actor.
     #[test]
-    fn test_resolve_users_for_authorize_load_tabular_changes_to_view_owner_if_a_views_is_definer() {
+    fn test_resolve_users_for_authorize_load_tabular_definer_switches_to_owner_invoker_to_actor() {
         let warehouse_id = WarehouseId::new_random();
 
         let owner_property = "trino.run-as-owner".to_string();
@@ -1199,8 +1205,8 @@ mod tests {
         assert_eq!(tabulars[1].namespace, view_2_namespace);
 
         assert_eq!(tabulars[2].tabular, ViewOrTableInfo::from(view_3));
-        assert_eq!(tabulars[2].user, actor_trino.to_user_or_role());
-        assert!(tabulars[2].is_delegated_execution);
+        assert_eq!(tabulars[2].user, actor_test.to_user_or_role());
+        assert!(!tabulars[2].is_delegated_execution);
         assert_eq!(tabulars[2].namespace, view_3_namespace);
 
         assert_eq!(tabulars[3].tabular, ViewOrTableInfo::from(view_4));
@@ -1209,9 +1215,30 @@ mod tests {
         assert_eq!(tabulars[3].namespace, view_4_namespace);
 
         assert_eq!(tabulars[4].tabular, ViewOrTableInfo::from(table));
-        assert_eq!(tabulars[4].user, actor_peter.to_user_or_role());
-        assert!(tabulars[4].is_delegated_execution);
+        assert_eq!(tabulars[4].user, actor_test.to_user_or_role());
+        assert!(!tabulars[4].is_delegated_execution);
         assert_eq!(tabulars[4].namespace, table_namespace);
+    }
+
+    /// A DEFINER view the actor owns, then an INVOKER view: the table is checked as the
+    /// actor outside delegated execution.
+    #[test]
+    fn test_resolve_users_for_authorize_load_tabular_invoker_below_own_definer_is_not_delegated() {
+        let (chain, _) = chain(&[Some("caller"), None]);
+        let caller = Some(principal("caller"));
+        let users: Vec<_> = chain
+            .resolved
+            .iter()
+            .map(|r| (r.user.clone(), r.is_delegated_execution))
+            .collect();
+        assert_eq!(
+            users,
+            vec![
+                (caller.clone(), false),
+                (caller.clone(), true),
+                (caller, false)
+            ]
+        );
     }
 
     #[test]
@@ -1617,16 +1644,17 @@ mod tests {
         assert_eq!(lengths, vec![7]);
     }
 
-    /// view1 is decided as the caller, view2 and view3 as `owner_b`, the table as `owner_c`.
+    /// view1 is decided as the caller, view2 as `owner_b`, view3 as the caller again (view2
+    /// is INVOKER), the table as `owner_c`.
     #[test]
-    fn test_principal_segments_split_at_each_definer_switch() {
+    fn test_principal_segments_split_at_each_definer_and_invoker_switch() {
         let (chain, _) = chain(&[Some("owner_b"), None, Some("owner_c")]);
         let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
             &chain.resolved,
             &chain.target,
         );
         let lengths: Vec<usize> = principal_segments(&actions).map(<[_]>::len).collect();
-        assert_eq!(lengths, vec![2, 4, 3]);
+        assert_eq!(lengths, vec![2, 2, 2, 3]);
     }
 
     /// Two DEFINER views of the same owner hand over to one principal: no extra call.
@@ -1706,12 +1734,36 @@ mod tests {
             authz.tabular_checks(),
             vec![
                 view_checks(&chain.view_key(0), None),
-                [
-                    view_checks(&chain.view_key(1), Some("owner_b")),
-                    view_checks(&chain.view_key(2), Some("owner_b")),
-                ]
-                .concat(),
+                view_checks(&chain.view_key(1), Some("owner_b")),
+                view_checks(&chain.view_key(2), None),
                 table_checks(&chain.target_key(), Some("owner_c")),
+            ]
+        );
+    }
+
+    /// DEFINER(`owner_b`) → INVOKER → table: the table is checked as the caller, so a
+    /// caller refused on it is refused, whatever `owner_b` may read.
+    #[tokio::test]
+    async fn test_table_below_invoker_view_is_checked_as_the_caller() {
+        let (chain, table) = chain(&[Some("owner_b"), None]);
+        let authz = HidingAuthorizer::new();
+        authz.hide_for_user(&principal("caller"), &chain.target_key());
+
+        let err = chain.load_table(&authz).await.unwrap_err();
+        let AuthZError::AuthZCannotSeeTable(err) = err else {
+            panic!("expected AuthZCannotSeeTable, got {err:?}");
+        };
+        assert_eq!(
+            err,
+            AuthZCannotSeeTable::new_forbidden(chain.warehouse.warehouse_id, table.tabular_ident)
+                .with_delegated_execution(false)
+        );
+        assert_eq!(
+            authz.tabular_checks(),
+            vec![
+                view_checks(&chain.view_key(0), None),
+                view_checks(&chain.view_key(1), Some("owner_b")),
+                table_checks(&chain.target_key(), None),
             ]
         );
     }
