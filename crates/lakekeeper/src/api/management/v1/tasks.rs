@@ -14,6 +14,7 @@ use crate::{
         },
     },
     request_metadata::{ProjectIdMissing, RequestMetadata},
+    server::authorize_soft_deletion_skip,
     service::{
         ArcProjectId, ArcResolvedWarehouse, CachePolicy, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity,
@@ -27,7 +28,7 @@ use crate::{
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
             CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
             RequireGenericTableActionError, RequireNamespaceActionError, RequireTableActionError,
-            RequireViewActionError, RequireWarehouseActionError, require_soft_deletion_skip,
+            RequireViewActionError, RequireWarehouseActionError,
         },
         events::{
             APIEventContext,
@@ -844,6 +845,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let (event_ctx, (warehouse, tabular_expiration_entities)) =
             event_ctx.emit_authz(authz_result)?;
+        // Running a soft-deletion task early hard-deletes its tabular before the window ends,
+        // whatever task permissions the caller holds.
+        if matches!(
+            event_ctx.action().action,
+            ControlTaskAction::RunNow | ControlTaskAction::RunAt { .. }
+        ) && !tabular_expiration_entities.is_empty()
+            && warehouse.tabular_delete_profile.is_soft()
+        {
+            authorize_soft_deletion_skip(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                &warehouse,
+            )
+            .await?;
+        }
 
         let event_ctx = Arc::new(event_ctx.resolve(tabular_expiration_entities));
 
@@ -1646,16 +1663,6 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
             request_metadata,
         )
         .await?;
-    }
-    // Running a soft-deletion task early hard-deletes its tabular before the window ends,
-    // whatever task permissions the caller holds.
-    if matches!(
-        query.action,
-        ControlTaskAction::RunNow | ControlTaskAction::RunAt { .. }
-    ) && !tabular_expiration_entities.is_empty()
-        && warehouse.tabular_delete_profile.is_soft()
-    {
-        require_soft_deletion_skip(authorizer, request_metadata, &warehouse).await?;
     }
     Ok((warehouse, tabular_expiration_entities))
 }

@@ -24,15 +24,14 @@ use crate::{
         management::v1::warehouse::TabularDeleteProfile,
     },
     request_metadata::RequestMetadata,
-    server::{self, io::cleanup_deadline},
+    server::{self, authorize_soft_deletion_skip, io::cleanup_deadline},
     service::{
         CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTaskOps,
         NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
         Transaction, WriteTransaction,
         authz::{
-            AuthZError, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction,
-            CatalogWarehouseAction, GrantResource, NamespaceParent, emit_bootstrap_grants_async,
-            require_soft_deletion_skip, write_bootstrap_grants,
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
+            GrantResource, NamespaceParent, emit_bootstrap_grants_async, write_bootstrap_grants,
         },
         events::{
             APIEventContext, EventDispatcher, NamespaceOrWarehouseAPIContext,
@@ -561,29 +560,30 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let authz_result = async {
-            let (warehouse, namespace) = authorizer
-                .load_and_authorize_namespace_action::<C>(
-                    event_ctx.request_metadata(),
-                    UserProvidedNamespace {
-                        warehouse_id,
-                        namespace: parameters.namespace.into(),
-                    },
-                    event_ctx.action().clone(),
-                    CachePolicy::Skip,
-                    state.v1_state.catalog.clone(),
-                )
-                .await?;
-            // Namespaces have no soft-deleted state, so a recursive delete hard-deletes every
-            // tabular below, dropped ones included.
-            if flags.recursive && warehouse.tabular_delete_profile.is_soft() {
-                require_soft_deletion_skip(&authorizer, event_ctx.request_metadata(), &warehouse)
-                    .await?;
-            }
-            Ok::<_, AuthZError>((warehouse, namespace))
-        }
-        .await;
+        let authz_result = authorizer
+            .load_and_authorize_namespace_action::<C>(
+                event_ctx.request_metadata(),
+                UserProvidedNamespace {
+                    warehouse_id,
+                    namespace: parameters.namespace.into(),
+                },
+                event_ctx.action().clone(),
+                CachePolicy::Skip,
+                state.v1_state.catalog.clone(),
+            )
+            .await;
         let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+        // Namespaces have no soft-deleted state, so a recursive delete hard-deletes every
+        // tabular below, dropped ones included.
+        if flags.recursive && warehouse.tabular_delete_profile.is_soft() {
+            authorize_soft_deletion_skip(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                &warehouse,
+            )
+            .await?;
+        }
 
         let event_ctx = event_ctx.resolve(ResolvedNamespace {
             warehouse: warehouse.clone(),
