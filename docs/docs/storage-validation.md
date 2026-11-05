@@ -17,7 +17,7 @@ Lakekeeper validates the storage profile and credential when a Warehouse is crea
 
 Each returns `200 OK` regardless of the outcome — a failing check is a result, not a request error. Inspect `valid` and the per-check entries. A non-200 is returned only when the request itself cannot be processed: missing project (400), insufficient permission (403), unknown Warehouse (404), or an unreachable secret store (500). A caller who cannot see the Warehouse at all gets 404 rather than 403, so an unknown Warehouse and one the caller may not access are indistinguishable by design.
 
-Validation requires the same permission as the operation it stands in for: validating a new Warehouse requires `create_warehouse` on the project, the others require `update_storage` on the Warehouse.
+Validation requires the same permissions as the operation it stands in for. Validating a new Warehouse requires `create_warehouse` on the project. On the Warehouse, validating a storage profile update requires `update_storage` and `update_storage_credential`, validating a replacement credential requires `update_storage_credential`, and validating the storage the Warehouse currently runs with requires `update_storage`.
 
 Request bodies are exactly the bodies of the endpoints they stand in for — validating a new Warehouse takes the `Create Warehouse` body verbatim, so a dry-run cannot drift from what it predicts:
 

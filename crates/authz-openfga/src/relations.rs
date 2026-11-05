@@ -1317,6 +1317,9 @@ impl ReducedRelation for CatalogWarehouseAction {
             }
             CatalogWarehouseAction::Delete { .. } => WarehouseRelation::CanDelete,
             CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
+            CatalogWarehouseAction::UpdateStorageCredential => {
+                WarehouseRelation::CanUpdateStorageCredential
+            }
             CatalogWarehouseAction::ManageTags => WarehouseRelation::CanManageTags,
             CatalogWarehouseAction::GetMetadata => WarehouseRelation::CanGetMetadata,
             CatalogWarehouseAction::GetConfig => WarehouseRelation::CanGetConfig,
@@ -2977,6 +2980,19 @@ pub(crate) mod test {
             commit_facts: CommitFacts::live_request_for_tests(),
         };
         assert_eq!(with_properties.to_openfga(), TableRelation::CanCommit);
+    }
+
+    // Both relations resolve alike in the model, so a swap would pass every model test.
+    #[test]
+    fn storage_and_credential_updates_map_to_their_own_relations() {
+        assert_eq!(
+            CatalogWarehouseAction::UpdateStorage.to_openfga(),
+            WarehouseRelation::CanUpdateStorage
+        );
+        assert_eq!(
+            CatalogWarehouseAction::UpdateStorageCredential.to_openfga(),
+            WarehouseRelation::CanUpdateStorageCredential
+        );
     }
 
     #[test]

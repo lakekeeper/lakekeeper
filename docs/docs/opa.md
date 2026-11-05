@@ -145,8 +145,8 @@ Namespaces, tables and views with such names can exist in Lakekeeper, for exampl
 
 Trino reads a name such as `orders$files` as the `$files` metadata table of the table `orders`. Reading a metadata table needs a permission on its base table, here `orders`:
 
-- `$snapshots`, `$history`, `$refs`, `$properties` and `$metadata_log_entries` need `get_metadata`.
-- `$files`, `$entries`, `$all_entries`, `$manifests`, `$all_manifests` and `$partitions` need `read_data`, because they show values of the data, such as column bounds and partition values.
+- `$history`, `$refs`, `$properties` and `$metadata_log_entries` need `get_metadata`.
+- `$files`, `$entries`, `$all_entries`, `$manifests`, `$all_manifests`, `$partitions` and `$snapshots` need `read_data`, because they show values of the data, such as column bounds and partition values. In `$snapshots`, such values are in the snapshot summaries, together with other values that writers add.
 
 Users who can only see a table can list tables and columns, and run `SHOW COLUMNS`, `DESCRIBE` and `SHOW CREATE TABLE`. Tools such as Superset may read `$partitions` for such users and log the denied query. What these tools show does not change.
 
