@@ -14175,6 +14175,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write
         - grant_modify
         - change_ownership
     OpenFGAWarehouseAction:
@@ -17615,6 +17616,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write
         - grant_modify
         - change_ownership
         - get_tasks
@@ -17627,6 +17629,7 @@ components:
         - $ref: '#/components/schemas/ViewAssignmentManageGrants'
         - $ref: '#/components/schemas/ViewAssignmentDescribe'
         - $ref: '#/components/schemas/ViewAssignmentSelect'
+        - $ref: '#/components/schemas/ViewAssignmentWrite'
         - $ref: '#/components/schemas/ViewAssignmentModify'
         - $ref: '#/components/schemas/ViewAssignmentManageTags'
       discriminator:
@@ -17639,6 +17642,7 @@ components:
           ownership: '#/components/schemas/ViewAssignmentOwnership'
           pass_grants: '#/components/schemas/ViewAssignmentPassGrants'
           select: '#/components/schemas/ViewAssignmentSelect'
+          write: '#/components/schemas/ViewAssignmentWrite'
     ViewAssignmentDescribe:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -17716,6 +17720,17 @@ components:
               type: string
               enum:
                 - select
+    ViewAssignmentWrite:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write
     ViewRelation:
       type: string
       enum:
@@ -17724,6 +17739,7 @@ components:
         - manage_grants
         - describe
         - select
+        - write
         - modify
         - manage_tags
     WarehouseAction:

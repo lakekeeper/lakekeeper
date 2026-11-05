@@ -195,14 +195,15 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
              tables already inside; grant `describe` for that."
         }),
         "write" => ("write", {
-            "Change tables: commit data, schema, partitioning, sort order and properties, \
-             manage branches and snapshot tags, and expire snapshots. Gives write and delete access \
-             to the files of tables and generic tables. Does not change views, and does not \
-             drop, rename, move or protect anything."
+            "Change tables and views. On a table, commit data, schema, partitioning, sort \
+             order and properties, manage branches and snapshot tags, and expire snapshots. \
+             On a view, replace its definition and change its properties. Gives write and \
+             delete access to the files of tables and generic tables. Does not drop, rename, \
+             move or protect anything."
         }),
         "modify" => ("write", {
-            "Everything `write` allows, plus changing views, dropping, undropping, renaming \
-             and protecting objects, and controlling their tasks. On a namespace, warehouse \
+            "Everything `write` allows, plus dropping, undropping, renaming and protecting \
+             objects, and controlling their tasks. On a namespace, warehouse \
              or project, also deleting it and changing its properties and settings. Does \
              not include `create`."
         }),
@@ -848,6 +849,7 @@ mod tests {
             ResourceType::Warehouse,
             ResourceType::Namespace,
             ResourceType::Table,
+            ResourceType::View,
             ResourceType::GenericTable,
         ] {
             assert_eq!(
@@ -872,11 +874,13 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            authority_relation(ResourceType::Table, "write", GrantOp::Revoke),
-            Some("can_revoke_write".to_string())
-        );
-        assert!(!is_known_privilege(ResourceType::View, "write"));
+        for resource_type in [ResourceType::Table, ResourceType::View] {
+            assert_eq!(
+                authority_relation(resource_type, "write", GrantOp::Revoke),
+                Some("can_revoke_write".to_string()),
+                "{resource_type:?}"
+            );
+        }
     }
 
     /// Only the privileges `pass_grants` can delegate have an asymmetric rule. For the

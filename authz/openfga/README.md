@@ -11,7 +11,7 @@ MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Splits the privileges of `modify` into two tiers: a write tier between `select` and `modify`, for principals that change everything a table holds but cannot drop, rename or protect it, and `modify`, which keeps those lifecycle rights. Also stops `create` from implying `describe` on the objects beneath. No tuple is written, rewritten or backfilled: `modify` implies the write tier, so every `modify` grant from `v4.13` authorizes exactly what it did before.
+Splits the privileges of `modify` into two tiers: a write tier between `select` and `modify`, for principals that change everything a table or view holds but cannot drop, rename or protect it, and `modify`, which keeps those lifecycle rights. Also stops `create` from implying `describe` on the objects beneath. No tuple is written, rewritten or backfilled: `modify` implies the write tier, so every `modify` grant from `v4.13` authorizes exactly what it did before.
 
 ### Write tier
 
@@ -19,7 +19,7 @@ The grants API, the assignments API and the model call the tier `write`.
 
 During a rolling upgrade from `v4.13`, pods of the previous release do not know `write`: a `write` grant allows nothing on them until the rollout finishes. When they delete an object or a principal, they still delete its `write` tuples.
 
-`project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_generic_table`:
+`project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
 
 - Add `write` (`[user, role#assignee]`) and `write_effective`: `write or modify_effective` on the project, and `write or ownership or modify_effective` plus `write_effective` from the parent below it. `select_effective` reads `write_effective` where it read `modify_effective`, which still includes it.
 - Add `can_grant_write` and, below the project, `can_revoke_write`, following `select`; below the project, `can_read_assignments` includes `can_grant_write`. A `pass_grants` holder delegates the tier like the other privileges it holds.
@@ -29,13 +29,15 @@ During a rolling upgrade from `v4.13`, pods of the previous release do not know 
 
 - `can_commit` and `can_write_data` read `write_effective`. Every commit asks `can_commit`: data, schema, partitioning, sort order, properties, snapshot expiry, ref removal, and a commit that finishes a staged create.
 
+`lakekeeper_view`:
+
+- `can_commit` reads `write_effective`, where it read `modify_effective`. A view commit replaces the definition or changes the properties.
+
 `lakekeeper_generic_table`:
 
 - `can_write_data` reads `write_effective`. The files hold everything a generic table stores, so the tier changes all of it.
 
 Everything else stays on `modify`: drop, undrop, rename, protection, task control and, with `manage_grants`, moves; on a namespace also its deletion and its properties; on a warehouse and a project their deletion, rename and settings. `modify` does not include `create`.
-
-`lakekeeper_view` gets no `write`, and a view commit stays on `modify`. This is deliberate: a view commit replaces the definition, and whether the write tier may do that depends on how views that run with their owner's privileges (`DEFINER`) are protected. A `write` grant on a namespace or above still yields `select` on the views below it.
 
 ### `create` no longer implies `describe` beneath
 

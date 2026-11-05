@@ -397,6 +397,15 @@ tuples:
   - user: user:generic_table_1_writer
     relation: write
     object: lakekeeper_generic_table:warehouse_1/generic_table_1
+  - user: user:view_1_writer
+    relation: write
+    object: lakekeeper_view:warehouse_1/view_1
+  - user: user:view_1_write_delegator
+    relation: write
+    object: lakekeeper_view:warehouse_1/view_1
+  - user: user:view_1_write_delegator
+    relation: pass_grants
+    object: lakekeeper_view:warehouse_1/view_1
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
     check:
@@ -2468,13 +2477,20 @@ tests:
       - user: user:namespace_1_1_writer
         object: lakekeeper_view:warehouse_1/view_1
         assertions:
-          # A view commit replaces the definition and stays with modify; a namespace
-          # `write` still reads the view.
+          write: false
+          write_effective: true
           can_select: true
           can_get_metadata: true
-          can_commit: false
+          can_commit: true             # replaces the definition, changes properties
           can_drop: false
+          can_undrop: false
           can_rename: false
+          can_move: false
+          can_set_protection: false
+          can_control_tasks: false
+          can_manage_tags: false
+          modify_effective: false
+          can_grant_write: false
       - user: user:namespace_1_1_writer
         object: namespace:namespace_1_2
         assertions:
@@ -2513,7 +2529,8 @@ tests:
         object: lakekeeper_view:warehouse_1/view_1
         assertions:
           can_select: true
-          can_commit: false
+          can_commit: true
+          can_drop: false
       - user: user:warehouse_1_writer
         object: warehouse:warehouse_1
         assertions:
@@ -2594,6 +2611,29 @@ tests:
         assertions:
           can_write_data: false        # a sibling is not covered
           can_commit: false
+      - user: user:view_1_writer
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          write: true
+          select_effective: true       # write implies select
+          describe_effective: true
+          visible_below: true
+          can_commit: true
+          can_drop: false
+          can_rename: false
+          can_set_protection: false
+          can_grant_write: false
+      - user: user:view_1_writer
+        object: namespace:namespace_1_2
+        assertions:
+          describe_effective: false
+          visible_below: true
+          can_get_metadata: true
+      - user: user:view_1_writer
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          can_commit: false            # a sibling is not covered
+          can_get_metadata: false
   - name: write is granted and revoked like the other privileges
     check:
       - user: user:warehouse_1_grant_admin
@@ -2617,6 +2657,11 @@ tests:
         assertions:
           can_grant_write: true
           can_revoke_write: true
+      - user: user:warehouse_1_grant_admin
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_grant_write: true
+          can_revoke_write: true
       - user: user:project_1_security_admin
         object: project:project_1
         assertions:
@@ -2635,6 +2680,15 @@ tests:
           can_grant_describe: true
           can_grant_modify: false
           can_revoke_write: false # taking back needs manage_grants
+          can_read_assignments: true
+      - user: user:view_1_write_delegator
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_grant_write: true
+          can_grant_select: true
+          can_grant_describe: true
+          can_grant_modify: false
+          can_revoke_write: false
           can_read_assignments: true
       - user: user:namespace_1_modify_delegator
         object: namespace:namespace_1

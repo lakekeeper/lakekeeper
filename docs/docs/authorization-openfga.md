@@ -26,7 +26,7 @@ The default permission model is focused on collaborating on data. Permissions ar
 | warehouse | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, write, modify |
 | namespace | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, write, modify |
 | table     | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify  |
-| view      | ownership, pass_grants, manage_grants, manage_tags, describe, select, modify  |
+| view      | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify  |
 | generic table | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify |
 | role      | assignee, ownership                                              |
 | tag       | ownership, apply                                                 |
@@ -79,16 +79,18 @@ The `create` grant allows a user to create new objects within an entity, such as
 
 The `write` grant allows a user to change everything a table holds: its data, schema, partitioning, sort order and properties, its branches and snapshot tags, and its history, for example by expiring snapshots. This includes replacing a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do, and adding existing files to it (`add_files`). It does not allow dropping, restoring, renaming, moving or protecting the table, or controlling its tasks. These need `modify`.
 
+On a view, `write` allows replacing its definition and changing its properties, as `CREATE OR REPLACE VIEW` and dbt `view` models do. It does not allow dropping, restoring, renaming, moving or protecting the view.
+
 On a generic table, `write` allows writing and deleting its files, which hold all of its contents and its structure.
 
-The `write` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants. It exists on projects, warehouses, namespaces, tables and generic tables. Views have no `write` grant: changing a view needs `modify`. A `write` grant on a namespace or above lets a user read the views below it.
+The `write` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants. It exists on projects, warehouses, namespaces, tables, views and generic tables.
 
 !!! warning "`write` protects the table, not its files"
     A user with `write` can write to and delete from the table's storage location, so they can still corrupt or empty a table. See [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
 
 ### Modify
 
-The `modify` grant allows a user to change views, to drop, restore, rename and protect objects, and to control their tasks. On a namespace it also allows deleting the namespace and changing its properties. On a warehouse or project it also allows deleting and renaming it and changing its settings. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `write`, `select` and `describe` grants, but not `create`. Like `write`, it gives access to the table's files in storage; see [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
+The `modify` grant allows a user to drop, restore, rename and protect objects, and to control their tasks. On a namespace it also allows deleting the namespace and changing its properties. On a warehouse or project it also allows deleting and renaming it and changing its settings. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `write`, `select` and `describe` grants, but not `create`. Like `write`, it gives access to the table's files in storage; see [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
 
 ### Pass Grants
 

@@ -2093,6 +2093,8 @@ pub enum ViewRelation {
     ManageGrants,
     Describe,
     Select,
+    /// The write tier.
+    Write,
     Modify,
     ManageTags,
     // -- Actions --
@@ -2109,6 +2111,7 @@ pub enum ViewRelation {
     CanGrantManageGrants,
     CanGrantDescribe,
     CanGrantSelect,
+    CanGrantWrite,
     CanGrantModify,
     CanGrantManageTags,
     CanChangeOwnership,
@@ -2118,6 +2121,7 @@ pub enum ViewRelation {
     CanSetProtection,
     // -- Revoke actions --
     CanRevokeDescribe,
+    CanRevokeWrite,
     CanRevokeModify,
     CanRevokeSelect,
 }
@@ -2152,6 +2156,7 @@ pub(super) enum APIViewRelation {
     ManageGrants,
     Describe,
     Select,
+    Write,
     Modify,
     ManageTags,
 }
@@ -2170,6 +2175,8 @@ pub(super) enum ViewAssignment {
     Describe(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentSelect"))]
     Select(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentWrite"))]
+    Write(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentModify"))]
     Modify(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentManageTags"))]
@@ -2184,6 +2191,7 @@ impl GrantableRelation for APIViewRelation {
             APIViewRelation::ManageGrants => ViewRelation::CanGrantManageGrants,
             APIViewRelation::Describe => ViewRelation::CanGrantDescribe,
             APIViewRelation::Select => ViewRelation::CanGrantSelect,
+            APIViewRelation::Write => ViewRelation::CanGrantWrite,
             APIViewRelation::Modify => ViewRelation::CanGrantModify,
             APIViewRelation::ManageTags => ViewRelation::CanGrantManageTags,
         }
@@ -2213,6 +2221,9 @@ impl Assignment for ViewAssignment {
             APIViewRelation::Select => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Select)
             }
+            APIViewRelation::Write => {
+                UserOrRole::parse_from_openfga(user).map(ViewAssignment::Write)
+            }
             APIViewRelation::Modify => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Modify)
             }
@@ -2229,6 +2240,7 @@ impl Assignment for ViewAssignment {
             | ViewAssignment::ManageGrants(user)
             | ViewAssignment::Describe(user)
             | ViewAssignment::Select(user)
+            | ViewAssignment::Write(user)
             | ViewAssignment::Modify(user)
             | ViewAssignment::ManageTags(user) => user.to_openfga(),
         }
@@ -2241,6 +2253,7 @@ impl Assignment for ViewAssignment {
             ViewAssignment::ManageGrants { .. } => APIViewRelation::ManageGrants,
             ViewAssignment::Describe { .. } => APIViewRelation::Describe,
             ViewAssignment::Select { .. } => APIViewRelation::Select,
+            ViewAssignment::Write { .. } => APIViewRelation::Write,
             ViewAssignment::Modify { .. } => APIViewRelation::Modify,
             ViewAssignment::ManageTags { .. } => APIViewRelation::ManageTags,
         }
@@ -2265,6 +2278,7 @@ pub(super) enum APIViewAction {
     GrantManageTags,
     GrantDescribe,
     GrantSelect,
+    GrantWrite,
     GrantModify,
     ChangeOwnership,
     GetTasks,
@@ -2282,6 +2296,7 @@ pub(super) enum OpenFGAViewAction {
     GrantManageTags,
     GrantDescribe,
     GrantSelect,
+    GrantWrite,
     GrantModify,
     ChangeOwnership,
 }
@@ -2296,6 +2311,7 @@ impl ReducedRelation for APIViewRelation {
             APIViewRelation::ManageGrants => ViewRelation::ManageGrants,
             APIViewRelation::Describe => ViewRelation::Describe,
             APIViewRelation::Select => ViewRelation::Select,
+            APIViewRelation::Write => ViewRelation::Write,
             APIViewRelation::Modify => ViewRelation::Modify,
             APIViewRelation::ManageTags => ViewRelation::ManageTags,
         }
@@ -2319,6 +2335,7 @@ impl ReducedRelation for APIViewAction {
             APIViewAction::GrantManageTags => ViewRelation::CanGrantManageTags,
             APIViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
             APIViewAction::GrantSelect => ViewRelation::CanGrantSelect,
+            APIViewAction::GrantWrite => ViewRelation::CanGrantWrite,
             APIViewAction::GrantModify => ViewRelation::CanGrantModify,
             APIViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
             APIViewAction::GetTasks => ViewRelation::CanGetTasks,
@@ -2363,6 +2380,7 @@ impl ReducedRelation for OpenFGAViewAction {
             OpenFGAViewAction::GrantManageTags => ViewRelation::CanGrantManageTags,
             OpenFGAViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
             OpenFGAViewAction::GrantSelect => ViewRelation::CanGrantSelect,
+            OpenFGAViewAction::GrantWrite => ViewRelation::CanGrantWrite,
             OpenFGAViewAction::GrantModify => ViewRelation::CanGrantModify,
             OpenFGAViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
         }
@@ -2766,6 +2784,7 @@ impl RevocableRelation for APIViewRelation {
         match self {
             // Delegable, so taking them back is administration.
             APIViewRelation::Describe => ViewRelation::CanRevokeDescribe,
+            APIViewRelation::Write => ViewRelation::CanRevokeWrite,
             APIViewRelation::Modify => ViewRelation::CanRevokeModify,
             APIViewRelation::Select => ViewRelation::CanRevokeSelect,
             // Never delegable, so one relation covers both directions.
@@ -3024,6 +3043,10 @@ pub(crate) mod test {
             "write"
         );
         assert_eq!(
+            type_of(serde_json::to_value(ViewAssignment::Write(u())).unwrap()),
+            "write"
+        );
+        assert_eq!(
             type_of(serde_json::to_value(GenericTableAssignment::Write(u())).unwrap()),
             "write"
         );
@@ -3058,7 +3081,12 @@ pub(crate) mod test {
                 .to_openfga(),
             GenericTableRelation::Write
         );
-        assert!(serde_json::from_value::<APIViewRelation>(filter).is_err());
+        assert_eq!(
+            serde_json::from_value::<APIViewRelation>(filter)
+                .unwrap()
+                .to_openfga(),
+            ViewRelation::Write
+        );
         assert_eq!(TableRelation::Write.to_string(), "write");
         assert_eq!(
             serde_json::to_value(APITableAction::GrantWrite).unwrap(),
