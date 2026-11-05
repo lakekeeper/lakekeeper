@@ -92,7 +92,7 @@ Trino runs an INVOKER view inside a DEFINER view as the DEFINER view's owner. Th
 
 A query over a DEFINER view that reads an INVOKER view therefore fails for every user except the owner, with `View owner does not have sufficient privileges`. [Chained Views](./view-security.md#chained-views) lists how to keep such a query working.
 
-The bridge cannot tell views from tables in catalogs that are not listed in `trino_catalog`. `TRINO_ALLOW_UNMANAGED_CATALOGS` therefore does not allow reading tables and views of these catalogs inside a DEFINER view. For a catalog without views, such as a PostgreSQL catalog, add an [`allow_unmanaged`](#allow_unmanaged-unmanaged-catalog-extensions) rule:
+The bridge cannot tell views from tables in catalogs that are not listed in `trino_catalog`. `TRINO_ALLOW_UNMANAGED_CATALOGS` therefore does not allow reading tables and views of these catalogs inside a DEFINER view. For a catalog that cannot hold Trino views, such as a PostgreSQL or Exasol catalog, add an [`allow_unmanaged`](#allow_unmanaged-unmanaged-catalog-extensions) rule:
 
 ```rego
 package trino
