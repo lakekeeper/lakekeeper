@@ -116,10 +116,11 @@ allow_table_read if {
 	require_table_access_simple(catalog, schema, table, "read_data")
 }
 
-# Metadata tables that list data files, manifests or partitions show values of
-# the data, such as column bounds and partition values, so reading them needs
-# `read_data` on the base table. The others show snapshots, refs and properties
-# and need `get_metadata`. A type without an entry here cannot be read.
+# Metadata tables that list data files, manifests, partitions or snapshot
+# summaries show values of the data, such as column bounds, partition values and
+# custom snapshot properties, so reading them needs `read_data` on the base table.
+# The others show history, refs and properties and need `get_metadata`. A type
+# without an entry here cannot be read.
 metadata_table_read_action := {
 	"files": "read_data",
 	"entries": "read_data",
@@ -127,7 +128,7 @@ metadata_table_read_action := {
 	"manifests": "read_data",
 	"all_manifests": "read_data",
 	"partitions": "read_data",
-	"snapshots": "get_metadata",
+	"snapshots": "read_data",
 	"history": "get_metadata",
 	"refs": "get_metadata",
 	"properties": "get_metadata",
