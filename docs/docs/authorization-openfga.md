@@ -79,7 +79,7 @@ The `create` grant allows a user to create new objects within an entity, such as
 
 The `write` grant allows a user to change everything a table holds: its data, schema, partitioning, sort order and properties, its branches and tags, and its history, for example by expiring snapshots. This includes replacing a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do, and adding existing files to it (`add_files`). It does not allow dropping, restoring, renaming, moving or protecting the table, or controlling its tasks. These need `modify`.
 
-Generic tables keep their structure in their own files, so for them `write` allows every change to the table's contents and structure. Managing the table itself, such as dropping, restoring, renaming or protecting it, needs `modify`.
+On a generic table, `write` allows writing and deleting its files, which hold all of its contents and its structure.
 
 The `write` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants. It exists on projects, warehouses, namespaces, tables and generic tables. Views have no `write` grant: changing a view needs `modify`. A `write` grant on a namespace or above lets a user read the views below it.
 
@@ -156,7 +156,7 @@ Moving a namespace requires `manage_grants` and `modify` on the namespace being 
 Two consequences are worth knowing:
 
 - Managed access removes `manage_grants` from *owners*, so ownership alone does not let someone move a namespace out of a managed subtree — which is the point, since moving it out would restore their ability to grant on it. A principal **directly assigned** `manage_grants` on that namespace still holds it — the direct assignment is unaffected by managed access — and can move the namespace provided it also holds `modify` there; ownership supplies that, so an owner who was additionally granted `manage_grants` directly can still move out.
-- `can_move` is the conjunction of `manage_grants` and `modify`, so it is strictly stronger than `can_delete`: anyone who may move a namespace may also delete it, but not the reverse. A `security_admin` with no write access cannot restructure the hierarchy, and a principal granted only `modify` cannot either — moving needs both.
+- `can_move` is the conjunction of `manage_grants` and `modify`, so it is strictly stronger than `can_delete`: anyone who may move a namespace may also delete it, but not the reverse. A `security_admin` without `modify` cannot restructure the hierarchy, and a principal granted only `modify` cannot either — moving needs both.
 
 ### Moving tables and views to another namespace
 

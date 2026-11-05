@@ -17,7 +17,7 @@ Splits the privileges of `modify` into two tiers: a write tier between `select` 
 
 The grants API and the assignments API call the tier `write`. The model stores it as `write_content`, a relation name no earlier model used. Unreleased models stored data-only tiers as `write` (`v4.14`) and `write_data` (earlier builds of `v4.15`). Reusing either name would turn their tuples into grants of every commit.
 
-During a rolling upgrade from `v4.13`, pods of the previous release do not know `write_content`: a `write` grant allows nothing on them until the rollout finishes, and they still delete its tuples.
+During a rolling upgrade from `v4.13`, pods of the previous release do not know `write_content`: a `write` grant allows nothing on them until the rollout finishes. When they delete an object or a principal, they still delete its `write_content` tuples.
 
 `project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_generic_table`:
 
