@@ -330,6 +330,43 @@ impl CapturingAuthzListener {
             events.failed.iter().map(|e| recorded(&e.actions)).collect(),
         )
     }
+
+    /// The entities and per-decision entries each succeeded and each failed record names, in
+    /// order — so a test can pin which action a record pairs with which entity.
+    ///
+    /// Does not settle on its own; call it after [`Self::settled_counts`].
+    #[must_use]
+    pub fn recorded_checks(&self) -> (Vec<RecordedChecks>, Vec<RecordedChecks>) {
+        fn recorded(
+            entities: &lakekeeper::service::events::context::EventEntities,
+            authorizations: &[lakekeeper::service::events::Authorization],
+        ) -> RecordedChecks {
+            RecordedChecks {
+                entity_types: entities.entities.iter().map(|e| e.entity_type).collect(),
+                decisions: authorizations
+                    .iter()
+                    .map(|a| RecordedDecision {
+                        entity_type: a.entity.entity_type,
+                        action_name: a.action.action_name.to_string(),
+                        allowed: a.allowed,
+                    })
+                    .collect(),
+            }
+        }
+        let events = self.events.lock().unwrap();
+        (
+            events
+                .succeeded
+                .iter()
+                .map(|e| recorded(&e.entities, &e.authorizations))
+                .collect(),
+            events
+                .failed
+                .iter()
+                .map(|e| recorded(&e.entities, &e.authorizations))
+                .collect(),
+        )
+    }
 }
 
 /// One action of a captured authorization record: its name and its context keys.
@@ -337,6 +374,22 @@ impl CapturingAuthzListener {
 pub struct RecordedAction {
     pub action_name: String,
     pub context: Vec<lakekeeper::service::events::context::ActionContextKey>,
+}
+
+/// The entities of a captured authorization record by type, and its per-decision entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedChecks {
+    pub entity_types: Vec<lakekeeper::service::events::context::EntityType>,
+    pub decisions: Vec<RecordedDecision>,
+}
+
+/// One entry of a captured record's `authorizations`: the entity's type, the action's name
+/// and the decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedDecision {
+    pub entity_type: lakekeeper::service::events::context::EntityType,
+    pub action_name: String,
+    pub allowed: Option<bool>,
 }
 
 /// Test-only public reach into [`lakekeeper::service::post_migration_hooks`]'s

@@ -531,7 +531,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUDIT CONTEXT -------------------
         // Built before the idempotency check so a served replay can be audited.
         let idempotency_key = request_metadata.idempotency_key().copied();
-        let event_ctx = APIEventContext::for_namespace(
+        let mut event_ctx = APIEventContext::for_namespace(
             Arc::new(request_metadata.clone()),
             state.v1_state.events,
             warehouse_id,
@@ -577,8 +577,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             // Namespaces have no soft-deleted state, so a recursive delete hard-deletes every
             // tabular below, dropped ones included.
             if flags.recursive && warehouse.tabular_delete_profile.is_soft() {
-                require_soft_deletion_skip(&authorizer, event_ctx.request_metadata(), &warehouse)
-                    .await?;
+                require_soft_deletion_skip(&authorizer, &mut event_ctx, &warehouse).await?;
             }
             Ok::<_, AuthZError>((warehouse, namespace))
         }

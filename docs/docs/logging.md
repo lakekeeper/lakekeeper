@@ -453,6 +453,7 @@ Six fields describe the **scope**, plus `principal` when the scope names one pri
 Every authorization record has an `authorizations` array:
 
 - A normal single-check API call: one entry, built from the record's top-level fields.
+- A call that also asks an action of its warehouse, such as `modify_soft_deletion` when it [skips the soft-deletion window](./concepts.md#skipping-soft-deletion): one more entry, which pairs the warehouse with that action. The warehouse is in `entities` and the action in `actions`, next to the call's own.
 - `/management/v1/action/batch-check`: one entry per check, in request order.
 - A request with nothing to check, such as a batch check with `checks: []` or a transaction commit with no table changes: an empty array. `decision` still holds the result.
 - The `get_*_actions` endpoints: one entry for the `introspect_permissions` action. The actions the principal holds are in the response body, not in this array.

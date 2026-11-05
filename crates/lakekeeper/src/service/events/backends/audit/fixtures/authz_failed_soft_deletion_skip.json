@@ -13,6 +13,9 @@
       "action_name": "drop",
       "force": true,
       "purge": false
+    },
+    {
+      "action_name": "modify_soft_deletion"
     }
   ],
   "entities": [
@@ -21,6 +24,10 @@
       "warehouse_id": "019684ff-0000-7000-8000-000000000001",
       "namespace": "sales",
       "table": "orders"
+    },
+    {
+      "entity_type": "warehouse",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001"
     }
   ],
   "actor": {
@@ -41,6 +48,17 @@
         "warehouse_id": "019684ff-0000-7000-8000-000000000001",
         "namespace": "sales",
         "table": "orders"
+      },
+      "allowed": false,
+      "determined_by": []
+    },
+    {
+      "action": {
+        "action_name": "modify_soft_deletion"
+      },
+      "entity": {
+        "entity_type": "warehouse",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001"
       },
       "allowed": false,
       "determined_by": []

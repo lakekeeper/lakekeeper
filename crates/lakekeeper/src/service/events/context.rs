@@ -27,8 +27,8 @@ use crate::{
         authn::ArcUserId,
         authz::{
             ActionDescriptor, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
-            EventAction, PrincipalScope, PrivilegeScope, ResourceType, RootLevelGrants,
-            UserOrRoleId,
+            CatalogWarehouseAction, EventAction, PrincipalScope, PrivilegeScope, ResourceType,
+            RootLevelGrants, UserOrRoleId,
         },
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
@@ -272,7 +272,7 @@ pub enum ActionContextKey {
 pub trait ResolutionState: Clone + Send + Sync {}
 
 /// A single key-value descriptor for an entity: `warehouse_id` = `abc-123`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityDescriptorField {
     pub key: EntityField,
     pub value: String,
@@ -289,7 +289,7 @@ impl EntityDescriptorField {
 
 /// All fields describing one logical entity — for a table, `warehouse_id`, `namespace`
 /// and `name`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityDescriptor {
     pub fields: Vec<EntityDescriptorField>,
     pub entity_type: EntityType,
@@ -931,6 +931,9 @@ where
     /// audit-relevant principal without overriding the whole entry list.
     /// Ignored when `authorizations_override` is set.
     pub(super) for_principal_override: Option<UserOrRoleId>,
+    /// Checks the call asks besides its own action on its own entity, each paired with the
+    /// entity it is asked of. See [`APIEventContext::also_asks_warehouse_action`].
+    pub(super) also_asked: Vec<(EntityDescriptor, ActionDescriptor)>,
 }
 
 // ── Core impl (Unresolved) ──────────────────────────────────────────────────
@@ -954,6 +957,7 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             extra_context: BTreeMap::new(),
             authorizations_override: None,
             for_principal_override: None,
+            also_asked: Vec::new(),
         }
     }
 
@@ -974,6 +978,7 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             extra_context: BTreeMap::new(),
             authorizations_override: None,
             for_principal_override: None,
+            also_asked: Vec::new(),
         }
     }
 }
@@ -998,6 +1003,7 @@ impl<P: UserProvidedEntity, A: APIEventActions, Z: AuthzState>
             extra_context: self.extra_context,
             authorizations_override: self.authorizations_override,
             for_principal_override: self.for_principal_override,
+            also_asked: self.also_asked,
         }
     }
 }
@@ -1338,7 +1344,8 @@ where
     /// Call this from batch-style endpoints (e.g. `introspect_permissions`)
     /// where the audit-relevant unit of work is each inner check, not the
     /// wrapping API call. When unset, the emit path synthesises one entry
-    /// per (entity, action) pair from the context's existing fields.
+    /// per (entity, action) pair from the context's existing fields, and one
+    /// per check recorded with [`Self::also_asks_warehouse_action`].
     pub fn set_authorizations(&mut self, authorizations: Vec<Authorization>) {
         self.authorizations_override = Some(authorizations);
     }
@@ -1354,6 +1361,49 @@ where
     /// Has no effect when `set_authorizations` has been called.
     pub fn set_for_principal(&mut self, principal: UserOrRoleId) {
         self.for_principal_override = Some(principal);
+    }
+
+    /// Record that the call also asks `action` of the warehouse `warehouse_id`, which the
+    /// check of its own entity does not cover. The warehouse joins `entities` unless it is
+    /// already there, the action joins `actions`, and the pair gets its own entry in
+    /// `authorizations`. Has no effect when `set_authorizations` has been called.
+    pub fn also_asks_warehouse_action(
+        &mut self,
+        warehouse_id: WarehouseId,
+        action: &CatalogWarehouseAction,
+    ) {
+        // Named as a call on the warehouse names it, so such a call lists the warehouse once.
+        for entity in warehouse_id.event_entities().entities {
+            self.also_asked.push((entity, action.action_descriptor()));
+        }
+    }
+
+    /// The `entities`, `actions` and `authorizations` of this context's record. A
+    /// synthesised entry carries `allowed`.
+    pub(crate) fn record_checks(&self, allowed: Option<bool>) -> RecordChecks {
+        let mut entities = self.user_provided_entity.event_entities();
+        let mut actions = self.action.event_actions();
+        if let Some(authorizations) = &self.authorizations_override {
+            return RecordChecks::new(entities, actions, authorizations.clone());
+        }
+        let for_principal = self.for_principal_override.as_ref();
+        let mut authorizations =
+            synthesise_authorizations(&entities, &actions, for_principal, allowed);
+        for (entity, action) in &self.also_asked {
+            if !entities.entities.contains(entity) {
+                entities.entities.push(entity.clone());
+            }
+            actions.push(action.clone());
+            authorizations.push(Authorization {
+                id: None,
+                for_principal: for_principal.cloned(),
+                action: action.clone(),
+                entity: entity.clone(),
+                allowed,
+                determined_by: Vec::new(),
+            });
+        }
+        RecordChecks::new(entities, actions, authorizations)
     }
 
     #[must_use]
@@ -1384,6 +1434,28 @@ where
 
 // ── Event emission ──────────────────────────────────────────────────────────
 
+/// What an authorization record names: its entities, its actions and one decision per
+/// checked pair.
+pub(crate) struct RecordChecks {
+    pub(crate) entities: Arc<EventEntities>,
+    pub(crate) actions: Arc<Vec<ActionDescriptor>>,
+    pub(crate) authorizations: Arc<Vec<Authorization>>,
+}
+
+impl RecordChecks {
+    fn new(
+        entities: EventEntities,
+        actions: Vec<ActionDescriptor>,
+        authorizations: Vec<Authorization>,
+    ) -> Self {
+        Self {
+            entities: Arc::new(entities),
+            actions: Arc::new(actions),
+            authorizations: Arc::new(authorizations),
+        }
+    }
+}
+
 pub type CheckedAPIEventContext<P, R, A, T> = (APIEventContext<P, R, A, AuthzChecked>, T);
 
 impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
@@ -1402,17 +1474,11 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     {
         match result {
             Ok(value) => {
-                let entities = Arc::new(self.user_provided_entity.event_entities());
-                let actions = Arc::new(self.action.event_actions());
-                let authorizations =
-                    Arc::new(self.authorizations_override.clone().unwrap_or_else(|| {
-                        synthesise_authorizations(
-                            &entities,
-                            &actions,
-                            self.for_principal_override.as_ref(),
-                            Some(true),
-                        )
-                    }));
+                let RecordChecks {
+                    entities,
+                    actions,
+                    authorizations,
+                } = self.record_checks(Some(true));
                 let event = AuthorizationSucceededEvent {
                     request_metadata: self.request_metadata.clone(),
                     occurred_at: chrono::Utc::now(),
@@ -1504,17 +1570,11 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
             error.skip_log = true;
         }
 
-        let entities = Arc::new(self.user_provided_entity.event_entities());
-        let actions = Arc::new(self.action.event_actions());
-        let synthesised_allowed = synthesised_allowed_for_failure(&failure_reason);
-        let authorizations = Arc::new(self.authorizations_override.clone().unwrap_or_else(|| {
-            synthesise_authorizations(
-                &entities,
-                &actions,
-                self.for_principal_override.as_ref(),
-                synthesised_allowed,
-            )
-        }));
+        let RecordChecks {
+            entities,
+            actions,
+            authorizations,
+        } = self.record_checks(synthesised_allowed_for_failure(&failure_reason));
         let event = AuthorizationFailedEvent {
             request_metadata: self.request_metadata.clone(),
             occurred_at: chrono::Utc::now(),
@@ -1571,6 +1631,7 @@ where
             extra_context: context.extra_context,
             authorizations_override: context.authorizations_override,
             for_principal_override: context.for_principal_override,
+            also_asked: context.also_asked,
         }
     }
 }

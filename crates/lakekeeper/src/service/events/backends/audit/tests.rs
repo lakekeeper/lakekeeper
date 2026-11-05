@@ -20,17 +20,18 @@ use crate::{
         authn::{Actor, UserId},
         authz::{
             ActionDescriptor, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
-            CatalogViewAction, DeterminingFactor, EventAction as _, GrantResource, PolicyEffect,
-            ResourceType, RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal,
-            SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
+            CatalogViewAction, CatalogWarehouseAction, DeterminingFactor, EventAction as _,
+            GrantResource, PolicyEffect, ResourceType, RoleSourceSystem, RootLevelGrants,
+            SubtreeGrantPrincipal, SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes,
+            UserOrRoleId,
         },
         events::{
-            Authorization, EventDispatcher,
+            APIEventContext, Authorization, EventDispatcher,
             context::{
                 APIEventActions as _, EntityDescriptor, EntityType, EventEntities,
                 FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
                 FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID, HandlerContextKey,
-                UserProvidedEntity as _, UserProvidedNamespace, UserProvidedTable,
+                RecordChecks, UserProvidedEntity as _, UserProvidedNamespace, UserProvidedTable,
                 UserProvidedView, synthesise_authorizations,
             },
         },
@@ -564,6 +565,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_view_commit_owner_property",
     "authz_failed_view_version_change",
     "authz_failed_soft_deletion_skip",
+    "authz_succeeded_soft_deletion_skip",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
@@ -1175,6 +1177,25 @@ fn refusal_record(
         None,
         Some(false),
     ));
+    refusal_record_of(
+        RecordChecks {
+            entities,
+            actions,
+            authorizations,
+        },
+        refusal,
+    )
+}
+
+/// [`refusal_record`] for a record whose entries a handler's event context assembled.
+fn refusal_record_of(
+    RecordChecks {
+        entities,
+        actions,
+        authorizations,
+    }: RecordChecks,
+    refusal: impl crate::service::events::AuthorizationFailureSource,
+) -> serde_json::Value {
     let failure_reason = refusal.to_failure_reason();
     let error = crate::service::events::AuthorizationError {
         error_id: FIXTURE_ERROR_ID.to_string(),
@@ -1291,33 +1312,71 @@ fn fixture_authz_failed_view_version_change() {
     assert_matches_fixture("authz_failed_view_version_change", &contract_fields(record));
 }
 
-/// A forced table drop refused because it skips the warehouse's soft-deletion window and the
-/// caller may not change the soft-deletion settings: recorded as the drop, with the refusal
-/// of the warehouse action as the error.
-#[test]
-fn fixture_authz_failed_soft_deletion_skip() {
-    let warehouse_id = crate::service::WarehouseId::new(
+fn fixture_warehouse_id() -> crate::service::WarehouseId {
+    crate::service::WarehouseId::new(
         FIXTURE_WAREHOUSE_ID
             .parse::<uuid::Uuid>()
             .expect("fixed test uuid"),
-    );
-    let entities = UserProvidedTable {
-        warehouse_id,
-        table: TableIdent::new(
+    )
+}
+
+/// A forced table drop in a warehouse with soft deletion, as the handler's event context
+/// records it: the drop on the table, and `modify_soft_deletion` on the warehouse.
+fn soft_deletion_skip_checks(allowed: bool) -> RecordChecks {
+    let mut event_ctx = APIEventContext::for_table(
+        Arc::new(fixture_metadata()),
+        EventDispatcher::new(Vec::new()),
+        fixture_warehouse_id(),
+        TableIdent::new(
             NamespaceIdent::new("sales".to_string()),
             "orders".to_string(),
-        )
-        .into(),
-    }
-    .event_entities();
-    let action = CatalogTableAction::Drop {
-        force: true,
-        purge: false,
-    };
-    let record = refusal_record(
+        ),
+        CatalogTableAction::Drop {
+            force: true,
+            purge: false,
+        },
+    );
+    event_ctx.also_asks_warehouse_action(
+        fixture_warehouse_id(),
+        &CatalogWarehouseAction::ModifySoftDeletion,
+    );
+    event_ctx.record_checks(Some(allowed))
+}
+
+/// A forced table drop that skips the warehouse's soft-deletion window, allowed: the
+/// warehouse action has its own entry, paired with the warehouse only.
+#[test]
+fn fixture_authz_succeeded_soft_deletion_skip() {
+    let RecordChecks {
         entities,
-        action.event_actions(),
-        crate::service::authz::soft_deletion_skip_forbidden(warehouse_id),
+        actions,
+        authorizations,
+    } = soft_deletion_skip_checks(true);
+    let record = emit_and_capture_one(|| {
+        LISTENER.authorization_succeeded(AuthorizationSucceededEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
+            entities,
+            actions,
+            extra_context: fixture_context(&[]),
+            authorizations,
+        })
+    });
+
+    assert_matches_fixture(
+        "authz_succeeded_soft_deletion_skip",
+        &contract_fields(record),
+    );
+}
+
+/// A forced table drop refused because it skips the warehouse's soft-deletion window and the
+/// caller may not change the soft-deletion settings: both entries are refused, and the error
+/// names the warehouse action.
+#[test]
+fn fixture_authz_failed_soft_deletion_skip() {
+    let record = refusal_record_of(
+        soft_deletion_skip_checks(false),
+        crate::service::authz::soft_deletion_skip_forbidden(fixture_warehouse_id()),
     );
 
     assert_matches_fixture("authz_failed_soft_deletion_skip", &contract_fields(record));

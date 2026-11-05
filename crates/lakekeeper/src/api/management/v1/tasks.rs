@@ -826,7 +826,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
 
-        let event_ctx = APIEventContext::for_warehouse(
+        let mut event_ctx = APIEventContext::for_warehouse(
             request_metadata.clone().into(),
             context.v1_state.events,
             warehouse_id,
@@ -836,9 +836,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = check_control_tasks_authorization::<A, C>(
             &authorizer,
             catalog_state.clone(),
-            event_ctx.request_metadata(),
-            event_ctx.action(),
-            *event_ctx.user_provided_entity(),
+            &mut event_ctx,
         )
         .await;
 
@@ -1560,10 +1558,11 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
 async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
-    request_metadata: &RequestMetadata,
-    query: &ControlTasksRequest,
-    warehouse_id: WarehouseId,
+    event_ctx: &mut APIEventContext<WarehouseId, Unresolved, ControlTasksRequest>,
 ) -> Result<(ArcResolvedWarehouse, Vec<TabularId>), AuthZError> {
+    let warehouse_id = *event_ctx.user_provided_entity();
+    let request_metadata = event_ctx.request_metadata();
+    let query = event_ctx.action();
     let warehouse = C::get_warehouse_by_id_cache_aware(
         warehouse_id,
         WarehouseStatus::active(),
@@ -1655,7 +1654,7 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     ) && !tabular_expiration_entities.is_empty()
         && warehouse.tabular_delete_profile.is_soft()
     {
-        require_soft_deletion_skip(authorizer, request_metadata, &warehouse).await?;
+        require_soft_deletion_skip(authorizer, event_ctx, &warehouse).await?;
     }
     Ok((warehouse, tabular_expiration_entities))
 }

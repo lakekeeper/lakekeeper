@@ -286,6 +286,8 @@ In a warehouse with soft deletion, users without this permission can delete a na
 
 In a warehouse managed by the instance (`managed-by: instance-admin`), only instance admins can change the soft-deletion settings, but this permission still decides who may skip soft deletion.
 
+The audit record of a call that skips soft deletion names `modify_soft_deletion` on the warehouse next to the call's own action. See [Logging](./logging.md#per-decision-breakdown-authorizations).
+
 ## Upgrades & Migration
 
 Lakekeeper relies on a persistent backend (Postgres) and an optional authorization system (OpenFGA). As Lakekeeper evolves, these systems may need schema or configuration updates to support new features and improvements. The `lakekeeper migrate` command initializes and updates both Postgres schemas (creating necessary tables and structures) and authorization models to ensure compatibility with your current Lakekeeper version.

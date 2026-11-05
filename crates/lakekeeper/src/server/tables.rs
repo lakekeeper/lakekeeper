@@ -859,7 +859,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUDIT CONTEXT -------------------
         // Built before the idempotency check so a served replay can be audited.
         let idempotency_key = request_metadata.idempotency_key().copied();
-        let event_ctx = APIEventContext::for_table(
+        let mut event_ctx = APIEventContext::for_table(
             Arc::new(request_metadata),
             state.v1_state.events,
             warehouse_id,
@@ -897,13 +897,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 state.v1_state.catalog.clone(),
             )
             .await;
-        let authz_result = require_soft_deletion_skip_for_drop(
-            &authorizer,
-            event_ctx.request_metadata(),
-            force,
-            authz_result,
-        )
-        .await;
+        let authz_result =
+            require_soft_deletion_skip_for_drop(&authorizer, &mut event_ctx, force, authz_result)
+                .await;
         let (event_ctx, (warehouse, _ns, table_info)) = event_ctx.emit_authz(authz_result)?;
 
         let table_id = table_info.table_id();
@@ -1233,7 +1229,7 @@ async fn authorize_register_overwrite<C: CatalogStore, A: Authorizer>(
             )
             .await?;
         if skips_window {
-            require_soft_deletion_skip(authorizer, event_ctx.request_metadata(), warehouse).await?;
+            require_soft_deletion_skip(authorizer, &mut event_ctx, warehouse).await?;
         }
         Ok::<_, AuthZError>(previous_table)
     }

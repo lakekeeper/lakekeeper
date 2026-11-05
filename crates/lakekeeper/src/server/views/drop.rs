@@ -44,7 +44,7 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     // ------------------- AUDIT CONTEXT -------------------
     // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
-    let event_ctx = APIEventContext::for_view(
+    let mut event_ctx = APIEventContext::for_view(
         Arc::new(request_metadata),
         state.v1_state.events,
         warehouse_id,
@@ -82,13 +82,9 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             state.v1_state.catalog.clone(),
         )
         .await;
-    let authz_context = require_soft_deletion_skip_for_drop(
-        &authorizer,
-        event_ctx.request_metadata(),
-        force,
-        authz_context,
-    )
-    .await;
+    let authz_context =
+        require_soft_deletion_skip_for_drop(&authorizer, &mut event_ctx, force, authz_context)
+            .await;
     let (event_ctx, (warehouse, _namespace, view_info)) = event_ctx.emit_authz(authz_context)?;
 
     let view_id = view_info.view_id();

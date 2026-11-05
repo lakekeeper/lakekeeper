@@ -45,7 +45,7 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
     // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
     let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.clone());
-    let event_ctx = APIEventContext::for_generic_table(
+    let mut event_ctx = APIEventContext::for_generic_table(
         Arc::new(request_metadata.clone()),
         state.v1_state.events.clone(),
         warehouse_id,
@@ -83,8 +83,7 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
     )
     .await;
     let authz_result =
-        require_soft_deletion_skip_for_drop(authorizer, &request_metadata, force, authz_result)
-            .await;
+        require_soft_deletion_skip_for_drop(authorizer, &mut event_ctx, force, authz_result).await;
     let (event_ctx, (warehouse, _ns_hierarchy, info)) = event_ctx.emit_authz(authz_result)?;
     let generic_table_id = info.generic_table_id;
 
