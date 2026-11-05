@@ -6,7 +6,7 @@ pub(crate) mod normalized_schema;
 use std::{collections::HashMap, default::Default, ops::Deref, str::FromStr, sync::Arc};
 
 pub(crate) use commit::commit_table_transaction;
-pub(crate) use common::SchemaFieldBatch;
+pub(crate) use common::{SchemaFieldBatch, remove_all_snapshots};
 pub(crate) use create::create_table;
 use iceberg::{
     TableUpdate,
@@ -818,8 +818,8 @@ pub mod tests {
     use iceberg::{
         NamespaceIdent, TableIdent,
         spec::{
-            NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-            UnboundPartitionSpec,
+            NestedField, Operation, PartitionStatisticsFile, PrimitiveType, Schema, Snapshot,
+            SnapshotReference, StatisticsFile, UnboundPartitionSpec,
         },
     };
     use iceberg_ext::catalog::rest::CreateTableRequest;
@@ -3176,6 +3176,226 @@ pub mod tests {
 
         assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 0);
         assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 0);
+    }
+
+    /// A table whose snapshot 1 has no schema id, as Iceberg Java wrote before 0.13, snapshot 2
+    /// with schema id 0 on `main`, and both statistics files for snapshot 1.
+    struct SchemalessSnapshotTable {
+        pool: sqlx::PgPool,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_ident: TableIdent,
+        table_id: TableId,
+        metadata: TableMetadata,
+    }
+
+    impl SchemalessSnapshotTable {
+        async fn create(pool: sqlx::PgPool) -> Self {
+            let state = CatalogState::from_pools(pool.clone(), pool.clone());
+            let (_, warehouse_id) =
+                initialize_warehouse(state.clone(), None, None, None, true).await;
+            let namespace =
+                NamespaceIdent::from_vec(vec![format!("ns_{}", Uuid::now_v7())]).unwrap();
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+            let namespace_id = get_namespace_id(state, warehouse_id, &namespace).await;
+            let table_id: TableId = Uuid::now_v7().into();
+            let location = format!("s3://my_bucket/{}", Uuid::now_v7());
+            let base = create_table_request_into_table_metadata(
+                table_id,
+                CreateTableRequest {
+                    name: "t".to_string(),
+                    location: Some(location.clone()),
+                    schema: two_col(),
+                    partition_spec: Some(UnboundPartitionSpec::builder().build()),
+                    write_order: None,
+                    stage_create: Some(false),
+                    properties: None,
+                },
+                &AllowedFormatVersions::default(),
+                None,
+            )
+            .unwrap();
+            let summary = Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            };
+            let without_schema_id = Snapshot::builder()
+                .with_snapshot_id(1)
+                .with_parent_snapshot_id(None)
+                .with_sequence_number(1)
+                .with_manifest_list(format!("{location}/metadata/snap-1.avro"))
+                .with_summary(summary.clone())
+                .with_timestamp_ms(base.last_updated_ms() + 1)
+                .build();
+            let with_schema_id = Snapshot::builder()
+                .with_snapshot_id(2)
+                .with_parent_snapshot_id(Some(1))
+                .with_sequence_number(2)
+                .with_schema_id(0)
+                .with_manifest_list(format!("{location}/metadata/snap-2.avro"))
+                .with_summary(summary)
+                .with_timestamp_ms(base.last_updated_ms() + 2)
+                .build();
+            let metadata = base
+                .into_builder(None)
+                .set_branch_snapshot(without_schema_id, MAIN_BRANCH)
+                .unwrap()
+                .set_branch_snapshot(with_schema_id, MAIN_BRANCH)
+                .unwrap()
+                .set_statistics(StatisticsFile {
+                    snapshot_id: 1,
+                    statistics_path: format!("{location}/metadata/stats-1.puffin"),
+                    file_size_in_bytes: 100,
+                    file_footer_size_in_bytes: 10,
+                    key_metadata: None,
+                    blob_metadata: vec![BlobMetadata {
+                        r#type: "apache-datasketches-theta-v1".to_string(),
+                        snapshot_id: 1,
+                        sequence_number: 1,
+                        fields: vec![1],
+                        properties: HashMap::new(),
+                    }],
+                })
+                .set_partition_statistics(PartitionStatisticsFile {
+                    snapshot_id: 1,
+                    statistics_path: format!("{location}/metadata/partition-stats-1.parquet"),
+                    file_size_in_bytes: 100,
+                })
+                .build()
+                .unwrap()
+                .metadata;
+            assert_eq!(metadata.snapshot_by_id(1).unwrap().schema_id(), None);
+
+            let table = Self {
+                pool,
+                warehouse_id,
+                namespace_id,
+                table_ident: TableIdent::new(namespace, "t".to_string()),
+                table_id,
+                metadata,
+            };
+            table.create_from(&table.metadata, "00000").await;
+            assert_eq!(table.load().await, table.metadata);
+            table
+        }
+
+        /// Creates the table from `metadata` under the same ident and table id.
+        async fn create_from(&self, metadata: &TableMetadata, metadata_file: &str) {
+            let metadata_location: Location = format!(
+                "{}/metadata/{metadata_file}.metadata.json",
+                metadata.location()
+            )
+            .parse()
+            .unwrap();
+            let mut transaction = self.pool.begin().await.unwrap();
+            create_table(
+                TableCreation {
+                    warehouse_id: self.warehouse_id,
+                    namespace_id: self.namespace_id,
+                    table_ident: &self.table_ident,
+                    table_metadata: metadata,
+                    metadata_location: Some(&metadata_location),
+                },
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+        }
+
+        async fn load(&self) -> TableMetadata {
+            let mut loaded = load_tables(
+                self.warehouse_id,
+                [self.table_id],
+                false,
+                &LoadTableFilters::default(),
+                &mut self.pool.begin().await.unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(loaded.len(), 1);
+            loaded.remove(0).table_metadata
+        }
+
+        /// Rows of this table in `table_snapshot`, `table_statistics`, `partition_statistics`
+        /// and `table_refs`.
+        async fn snapshot_rows(&self) -> (i64, i64, i64, i64) {
+            sqlx::query_as(
+                r#"SELECT
+                    (SELECT count(*) FROM table_snapshot WHERE warehouse_id = $1 AND table_id = $2),
+                    (SELECT count(*) FROM table_statistics WHERE warehouse_id = $1 AND table_id = $2),
+                    (SELECT count(*) FROM partition_statistics WHERE warehouse_id = $1 AND table_id = $2),
+                    (SELECT count(*) FROM table_refs WHERE warehouse_id = $1 AND table_id = $2)"#,
+            )
+            .bind(*self.warehouse_id)
+            .bind(*self.table_id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+        }
+    }
+
+    /// `table_snapshot` has no FK to `"table"`, so the cascade of a hard drop reaches a snapshot
+    /// only through its schema. A snapshot without a schema id and its statistics go with the
+    /// table, and the same file registers again under the same table id.
+    #[sqlx::test]
+    async fn hard_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
+        let table = SchemalessSnapshotTable::create(pool).await;
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+
+        let mut transaction = table.pool.begin().await.unwrap();
+        drop_tabular(
+            table.warehouse_id,
+            table.table_id.into(),
+            false,
+            None,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+
+        table.create_from(&table.metadata, "00001").await;
+        assert_eq!(table.load().await, table.metadata);
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+    }
+
+    /// A drop that only deleted the `tabular` row leaves a snapshot without a schema id and its
+    /// statistics behind. A create with the same table id removes them, so a load shows exactly
+    /// the new file, which expired that snapshot.
+    #[sqlx::test]
+    async fn create_removes_snapshots_a_drop_left_behind(pool: sqlx::PgPool) {
+        let table = SchemalessSnapshotTable::create(pool).await;
+        sqlx::query("DELETE FROM tabular WHERE warehouse_id = $1 AND tabular_id = $2")
+            .bind(*table.warehouse_id)
+            .bind(*table.table_id)
+            .execute(&table.pool)
+            .await
+            .unwrap();
+        assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
+
+        let metadata = table
+            .metadata
+            .clone()
+            .into_builder(None)
+            .remove_snapshots(&[1])
+            .remove_statistics(1)
+            .remove_partition_statistics(1)
+            .build()
+            .unwrap()
+            .metadata;
+        assert_eq!(
+            metadata
+                .snapshots()
+                .map(|s| s.snapshot_id())
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        table.create_from(&metadata, "00001").await;
+        assert_eq!(table.load().await, metadata);
+        assert_eq!(table.snapshot_rows().await, (1, 0, 0, 1));
     }
 
     /// Create-side invariant: the schema_field -> tabular_field FK rejects a field row with no
