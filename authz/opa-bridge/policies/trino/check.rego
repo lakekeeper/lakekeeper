@@ -274,7 +274,9 @@ require_table_replace_access(catalog_name, schema_name, table_name, updated_prop
 }
 
 # The same holds for `CreateView` and `CREATE OR REPLACE VIEW`: creating a view
-# also needs `commit` on a live view with that name.
+# also needs Lakekeeper to allow replacing a live view with that name. That is
+# `commit`, and for a view that runs as another user also
+# `change_security_mode`.
 require_view_replace_access(catalog_name, schema_name, view_name) if {
 	is_canonical_tabular_name(view_name)
 	trino_catalog := catalog_config_by_name[catalog_name]

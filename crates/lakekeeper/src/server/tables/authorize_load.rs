@@ -403,17 +403,7 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
                 current_user = if let Some(cached) = owners_cache.get(&owner) {
                     cached.clone()
                 } else {
-                    let idp_id = token_idp_id.ok_or_else(|| {
-                        AuthZError::from(AuthzBadRequest::new(
-                            "DEFINER view requires token with IdP ID".to_string(),
-                        ))
-                    })?;
-                    let subject = limes::Subject::new(Some(idp_id.to_string()), owner.clone());
-                    let user_id = UserId::try_new(subject).map_err(|e| {
-                        AuthZError::from(AuthzBadRequest::new(format!(
-                            "Invalid owner '{owner}' in DEFINER view property: {e}"
-                        )))
-                    })?;
+                    let user_id = definer_owner_user_id(token_idp_id, &owner)?;
                     let owner_actor = Actor::Principal(user_id);
                     owners_cache.insert(owner, owner_actor.clone());
                     owner_actor
@@ -424,6 +414,23 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
     }
 
     Ok(result)
+}
+
+/// The user that the owner property of a DEFINER view names: `owner` in the `IdP` of the
+/// request's token, which is the `IdP` that issued the engine's identity.
+pub(crate) fn definer_owner_user_id(
+    token_idp_id: Option<&str>,
+    owner: &str,
+) -> Result<UserId, AuthzBadRequest> {
+    let idp_id = token_idp_id.ok_or_else(|| {
+        AuthzBadRequest::new("DEFINER view requires token with IdP ID".to_string())
+    })?;
+    let subject = limes::Subject::new(Some(idp_id.to_string()), owner.to_string());
+    UserId::try_new(subject).map_err(|e| {
+        AuthzBadRequest::new(format!(
+            "Invalid owner '{owner}' in DEFINER view property: {e}"
+        ))
+    })
 }
 
 /// Emits every authz action that *might* matter for an entry in the resolved

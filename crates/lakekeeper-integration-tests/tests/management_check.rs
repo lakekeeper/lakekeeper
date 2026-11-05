@@ -1947,3 +1947,138 @@ async fn test_check_internal_view_in_definer_view_needs_an_owner(pool: sqlx::PgP
     let response = decide(vec![check("definer")]).await.unwrap();
     assert!(!response.results[0].allowed);
 }
+
+/// `view-replace` asks `commit`, and `change_security_mode` too for a view that runs as a user
+/// other than the identity. A free name is reported as not found.
+#[sqlx::test]
+async fn test_check_internal_view_replace_of_another_users_definer_view(pool: sqlx::PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool,
+        lakekeeper_integration_tests::memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+    let namespace = lakekeeper_integration_tests::create_ns(
+        api_context.clone(),
+        warehouse_id.to_string(),
+        "ns".to_string(),
+    )
+    .await
+    .namespace;
+    let mut view_ids = HashMap::new();
+    for (name, owner) in [
+        ("bobs", Some("bob")),
+        ("alices", Some("alice")),
+        ("invoker", None),
+    ] {
+        let mut request = create_view_request(Some(name), None);
+        if let Some(owner) = owner {
+            request
+                .properties
+                .insert("trino.run-as-owner".to_string(), owner.to_string());
+        }
+        let view_id = CatalogServer::create_view(
+            NamespaceParameters {
+                prefix: Some(Prefix(warehouse_id.to_string())),
+                namespace: namespace.clone(),
+            },
+            request,
+            api_context.clone(),
+            DataAccess::not_specified(),
+            lakekeeper_integration_tests::trino_engine_request(),
+        )
+        .await
+        .unwrap()
+        .metadata
+        .uuid();
+        view_ids.insert(name, view_id);
+    }
+    let alice = UserId::new_unchecked("oidc", "alice");
+    let check = |name: &str| CatalogActionCheckItem {
+        id: None,
+        identity: Some(UserOrRole::User(alice.clone())),
+        operation: CatalogActionCheckOperation::ViewReplace {
+            view: TabularIdentOrUuid::Name {
+                namespace: namespace.clone(),
+                table: name.to_string(),
+                warehouse_id,
+            },
+        },
+    };
+    let decide = |checks: Vec<CatalogActionCheckItem>, error_on_not_found: bool| {
+        check_internal(
+            api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+            CatalogActionsBatchCheckRequest {
+                checks,
+                error_on_not_found,
+            },
+        )
+    };
+    let allowed =
+        |response: lakekeeper::api::management::v1::check::CatalogActionsBatchCheckResponse| {
+            response
+                .results
+                .iter()
+                .map(|r| r.allowed)
+                .collect::<Vec<_>>()
+        };
+    let recorded = |name: &str, action: &str| authz::tests::RecordedTabularCheck {
+        object: format!("view:{warehouse_id}/{}", view_ids[name]),
+        action: action.to_string(),
+        user: Some(authz::UserOrRole::User(alice.clone())),
+        is_delegated_execution: false,
+    };
+    let commit = "Commit { updated_properties: {}, removed_properties: [] }";
+    let all = || vec![check("bobs"), check("alices"), check("invoker")];
+
+    let since = authz.tabular_checks().len();
+    assert_eq!(allowed(decide(all(), false).await.unwrap()), vec![true; 3]);
+    let mut asked: Vec<_> = authz.tabular_checks()[since..]
+        .iter()
+        .flatten()
+        .cloned()
+        .collect();
+    asked.sort_by(|a, b| (&a.object, &a.action).cmp(&(&b.object, &b.action)));
+    let mut expected = vec![
+        recorded("bobs", "ChangeSecurityMode"),
+        recorded("bobs", commit),
+        recorded("alices", commit),
+        recorded("invoker", commit),
+    ];
+    expected.sort_by(|a, b| (&a.object, &a.action).cmp(&(&b.object, &b.action)));
+    assert_eq!(asked, expected);
+
+    // Both actions must be allowed: a denied `commit` denies, whatever the other decides.
+    authz.block_action("view:Commit");
+    assert_eq!(
+        allowed(decide(vec![check("bobs")], false).await.unwrap()),
+        vec![false]
+    );
+    authz.unblock_action("view:Commit");
+
+    authz.block_action("view:ChangeSecurityMode");
+    assert_eq!(
+        allowed(decide(all(), false).await.unwrap()),
+        vec![false, true, true]
+    );
+
+    // `commit` decides as well.
+    authz.hide(&format!("view:{warehouse_id}/{}", view_ids["alices"]));
+    assert_eq!(
+        allowed(decide(vec![check("alices")], false).await.unwrap()),
+        vec![false]
+    );
+
+    // A free name: the bridge treats it as a create.
+    let error = decide(vec![check("free")], true)
+        .await
+        .expect_err("a free name is not found");
+    assert_eq!(error.code, 404);
+    assert_eq!(error.r#type, "NoSuchViewException");
+}

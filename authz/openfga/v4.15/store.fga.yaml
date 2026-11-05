@@ -2113,6 +2113,40 @@ tests:
           visible_below: false
           can_get_metadata: false
 
+  - name: switching a view's security mode needs modify on the view or above
+    check:
+      - user: user:view_1_modify_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_change_security_mode: true
+      - user: user:namespace_1_1_owner
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_change_security_mode: true
+      - user: user:warehouse_1_modify_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_change_security_mode: true
+      - user: user:warehouse_1_select_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_select: true
+          can_change_security_mode: false
+      - user: user:namespace_1_1_writer
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_commit: true
+          can_change_security_mode: false
+      - user: user:view_1_writer
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_commit: true
+          can_change_security_mode: false
+      - user: user:namespace_1_2_create_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_change_security_mode: false
+
   - name: create alone below the warehouse is a visibility source
     # A direct `create` on a namespace exercises `create_effective`, the container
     # metadata it shows, and visibility at every ancestor.

@@ -30,6 +30,7 @@ During a rolling upgrade from `v4.13`, pods of the previous release do not know 
 `lakekeeper_view`:
 
 - `can_commit` reads `write_effective`, where it read `modify_effective`. A view commit replaces the definition or changes the properties.
+- Add `can_change_security_mode` (from `modify_effective`), asked for a view commit that adds or removes an engine owner property such as `trino.run-as-owner`, which switches the view between running as its owner and running as the caller. A commit that adds one also asks it for the user the property names.
 
 `lakekeeper_generic_table`:
 
@@ -50,7 +51,7 @@ Grant `describe` next to `create` where principals must see the objects already 
 
 Supersedes `v4.14` and the earlier builds of `v4.15`, neither of which reached a release. `v4.14` is not registered any more; stores on it migrate straight to `v4.15`.
 
-Stores built from `main` before this change may hold `write` tuples from `v4.14`, where `write` allowed data writes only, and `write_data` tuples from the earlier builds of `v4.15`. With this model, the `v4.14` `write` tuples take the new, wider meaning. A store on an earlier build of `v4.15` keeps that model: `migrate` finds `v4.15` applied and changes nothing, and Lakekeeper refuses to start on it because that model lacks the `write` relations. Provision both kinds of development store again.
+Stores built from `main` before this change may hold `write` tuples from `v4.14`, where `write` allowed data writes only, and `write_data` tuples from the earlier builds of `v4.15`. With this model, the `v4.14` `write` tuples take the new, wider meaning. A store on an earlier build of `v4.15` keeps that model: `migrate` finds `v4.15` applied and changes nothing, and Lakekeeper refuses to start on it because that model lacks relations this version checks, such as `write` or `can_change_security_mode`. Provision both kinds of development store again.
 
 ## `v4.13`
 

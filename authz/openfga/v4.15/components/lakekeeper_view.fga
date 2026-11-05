@@ -40,6 +40,8 @@ type lakekeeper_view
     define can_include_in_list: can_get_metadata
     define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_write or can_grant_modify or can_grant_manage_tags or can_change_ownership
     define can_set_protection: modify_effective
+    # Adding or removing an engine owner property switches whom engines run the view as.
+    define can_change_security_mode: modify_effective
     define can_manage_tags: manage_tags
     # Task permissions
     define can_get_tasks: describe_effective

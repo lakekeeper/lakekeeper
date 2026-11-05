@@ -11,7 +11,10 @@ use crate::{
     },
     audit::validate::contract_fields,
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
-    server::views::owner_property::{ProtectedPropertyModification, ProtectedViewVersionChange},
+    server::views::{
+        owner_property::{ProtectedPropertyModification, ProtectedViewVersionChange},
+        security_mode::{RefusedIdentity, SecurityModeChangeForbidden, SecurityModeSwitch},
+    },
     service::{
         admission::{
             AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, AdmissionTrigger,
@@ -564,6 +567,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_view_commit_owner_property",
     "authz_failed_view_version_change",
     "authz_failed_soft_deletion_skip",
+    "authz_failed_view_security_mode_change",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
@@ -1167,12 +1171,22 @@ fn refusal_record(
     actions: Vec<ActionDescriptor>,
     refusal: impl crate::service::events::AuthorizationFailureSource,
 ) -> serde_json::Value {
+    refusal_record_for(entities, actions, None, refusal)
+}
+
+/// [`refusal_record`] of a check made for `for_principal`.
+fn refusal_record_for(
+    entities: EventEntities,
+    actions: Vec<ActionDescriptor>,
+    for_principal: Option<&UserOrRoleId>,
+    refusal: impl crate::service::events::AuthorizationFailureSource,
+) -> serde_json::Value {
     let entities = Arc::new(entities);
     let actions = Arc::new(actions);
     let authorizations = Arc::new(synthesise_authorizations(
         &entities,
         &actions,
-        None,
+        for_principal,
         Some(false),
     ));
     let failure_reason = refusal.to_failure_reason();
@@ -1321,6 +1335,30 @@ fn fixture_authz_failed_soft_deletion_skip() {
     );
 
     assert_matches_fixture("authz_failed_soft_deletion_skip", &contract_fields(record));
+}
+
+/// A view commit that makes the view run as its new owner, who may not switch the security
+/// mode of the view: the owner's own `change_security_mode` record, which names the owner.
+#[test]
+fn fixture_authz_failed_view_security_mode_change() {
+    let bob = crate::service::authn::UserId::try_from("oidc~bob").expect("valid test user id");
+    let record = refusal_record_for(
+        fixture_view().event_entities(),
+        CatalogViewAction::ChangeSecurityMode.event_actions(),
+        Some(&UserOrRoleId::User(bob.clone())),
+        SecurityModeChangeForbidden {
+            owner_property: "trino.run-as-owner".to_string(),
+            switch: SecurityModeSwitch::ToOwner {
+                owner: "bob".to_string(),
+            },
+            refused: RefusedIdentity::NewOwner(bob),
+        },
+    );
+
+    assert_matches_fixture(
+        "authz_failed_view_security_mode_change",
+        &contract_fields(record),
+    );
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`

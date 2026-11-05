@@ -2122,6 +2122,7 @@ pub enum ViewRelation {
     CanGetTasks,
     CanControlTasks,
     CanSetProtection,
+    CanChangeSecurityMode,
     // -- Revoke actions --
     CanRevokeDescribe,
     CanRevokeWrite,
@@ -2368,6 +2369,7 @@ impl ReducedRelation for CatalogViewAction {
             // Same permission as `APIViewAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogViewAction::ReadGrants => ViewRelation::CanReadAssignments,
+            CatalogViewAction::ChangeSecurityMode => ViewRelation::CanChangeSecurityMode,
         }
     }
 }
@@ -2992,6 +2994,16 @@ pub(crate) mod test {
         assert_eq!(
             CatalogWarehouseAction::UpdateStorageCredential.to_openfga(),
             WarehouseRelation::CanUpdateStorageCredential
+        );
+    }
+
+    // A view's commit and security mode switch can resolve alike in the model, so a swap would
+    // pass every model test.
+    #[test]
+    fn view_security_mode_change_maps_to_its_own_relation() {
+        assert_eq!(
+            CatalogViewAction::ChangeSecurityMode.to_openfga(),
+            ViewRelation::CanChangeSecurityMode
         );
     }
 
