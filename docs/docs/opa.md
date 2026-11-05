@@ -88,7 +88,7 @@ When you set up the trusted engine, [check the existing views](./view-security.m
 
 ### Views inside DEFINER views
 
-Trino runs an INVOKER view inside a DEFINER view as the DEFINER view's owner. Then whoever can change the INVOKER view could read data with the owner's permissions. So inside a DEFINER view of another user, the bridge allows a view only if it has `trino.run-as-owner` and the owner may `select` it. For a table, the owner needs `read_data`.
+Trino runs an INVOKER view inside a DEFINER view as the DEFINER view's owner. Then whoever can change the INVOKER view could read data with the owner's permissions. So inside a DEFINER view of another user, the bridge allows a view only if it has `trino.run-as-owner` and the owner may `select` it. For a table, the owner needs `read_data`. The bridge decides this for each Trino user, also if Trino authenticates to Lakekeeper with a service account.
 
 A query over a DEFINER view that reads an INVOKER view therefore fails for every user except the owner, with `View owner does not have sufficient privileges`. [Chained Views](./view-security.md#chained-views) lists how to keep such a query working.
 

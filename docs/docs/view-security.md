@@ -59,11 +59,15 @@ Alice --> View1 (DEFINER, owner=Bob) --> View2 (INVOKER) --> View3 (DEFINER, own
 - **View3** is checked as Alice, because View2 is INVOKER and runs as Alice.
 - The **Table** is checked as Carol, because View3 is DEFINER and runs as Carol.
 
-This rule keeps whoever can change an INVOKER view from reading data with the owner's permissions. PostgreSQL uses the same rule. Trino runs an INVOKER view inside a DEFINER view as the outer owner, so a query that Trino allows can fail. To keep such a query working, do one of these:
+This rule keeps whoever can change an INVOKER view from reading data with the owner's permissions. PostgreSQL uses the same rule.
+
+The calling user is the identity of the request that Lakekeeper receives. If Trino sends a token for each user, this is the Trino user. If Trino authenticates with its own service account, Lakekeeper checks that account below an INVOKER view, and the [OPA bridge](./opa.md#views-inside-definer-views) decides for each Trino user.
+
+Trino runs an INVOKER view inside a DEFINER view as the outer owner, so a query that Trino allows can fail. To keep such a query working, do one of these:
 
 - Create the inner view as `SECURITY DEFINER`, so that its owner is responsible for what it reads.
 - Reference the base tables directly in the outer view.
-- Grant the calling users read access to what the inner view reads. This does not help with the [OPA bridge](./opa.md#views-inside-definer-views): it refuses an INVOKER view inside a DEFINER view of another user, whatever the grants are.
+- If Trino sends a token for each user and you do not use the OPA bridge, grant these users read access to what the inner view reads.
 
 ## How It Works
 
@@ -181,7 +185,7 @@ To correct the owner of a view, run `CREATE OR REPLACE VIEW ... SECURITY DEFINER
 
 When a DEFINER view references a table, the table load happens with the **owner's** permissions. This is flagged as "delegated execution" in authorization checks. Authorization backends can use this flag to apply different policies — for example, skipping permission-inspection rights that would normally be required.
 
-A DEFINER view runs its own SQL with the owner's rights. A view that it references runs as that view's owner if it is DEFINER, and as the calling user if it is INVOKER, see [Chained Views](#chained-views). So whoever can change a referenced view cannot read data with the outer owner's rights, and checks below an INVOKER view are not delegated. The calling user is the identity of the request. If Trino authenticates with its own service account, Lakekeeper checks that account, and only the [OPA bridge](./opa.md#views-inside-definer-views) protects the owner's rights for each Trino user.
+A DEFINER view runs its own SQL with the owner's rights. A view that it references runs as that view's owner if it is DEFINER, and as the calling user if it is INVOKER, see [Chained Views](#chained-views). So whoever can change a referenced view cannot read data with the outer owner's rights, and checks below an INVOKER view are not delegated.
 
 ### Metadata vs. execution: `get_metadata` and `select`
 

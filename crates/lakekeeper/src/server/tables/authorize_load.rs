@@ -443,10 +443,13 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
 /// - **Target view** → `GetMetadata` only. `loadView` consults `GetMetadata`
 ///   and discards everything else, so emitting `Select` here would make the
 ///   authorizer evaluate (and log) a decision that never gates anything.
-/// - **Intermediate view** (a DEFINER referenced-by view) → `GetMetadata` +
-///   `Select`. `Select` is the data-plane check that gates DEFINER chain
-///   traversal past the control-plane bypass; intermediate consumers enforce
-///   denial on it.
+/// - **Intermediate view** (a referenced-by view) → `GetMetadata` + `Select`.
+///   `Select` is the data-plane check that gates chain traversal past the
+///   control-plane bypass; intermediate consumers enforce denial on it.
+///
+/// Each action carries the entry's resolved user: the owner after a DEFINER
+/// view, the request actor again after an INVOKER view (see
+/// [`resolve_users_for_authorize_load_tabular`]).
 #[must_use]
 pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular<'a>(
     tabulars: &'a [ResolvedTabular],
