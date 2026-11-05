@@ -195,11 +195,12 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
              tables already inside; grant `describe` for that."
         }),
         "write" => ("write", {
-            "Change tables and views. On a table, commit data, schema, partitioning, sort \
-             order and properties, manage branches and snapshot tags, and expire snapshots. \
-             On a view, replace its definition and change its properties. Gives write and \
-             delete access to the files of tables and generic tables. Does not drop, rename, \
-             move or protect anything."
+            "Change the contents of tables, views and generic tables. On a table, commit \
+             data, schema, partitioning, sort order and properties, manage branches and \
+             snapshot tags, and expire snapshots. On a view, replace its definition and \
+             change its properties. Gives write and delete access to the files of tables and \
+             generic tables. Includes `select`. Does not drop, rename, move or protect \
+             anything."
         }),
         "modify" => ("write", {
             "Everything `write` allows, plus dropping, undropping, renaming and protecting \

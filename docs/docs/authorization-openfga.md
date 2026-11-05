@@ -22,14 +22,16 @@ The default permission model is focused on collaborating on data. Permissions ar
 | Entity    | Grant                                                            |
 |-----------|------------------------------------------------------------------|
 | server    | admin, operator                                                  |
-| project   | project_admin, security_admin, data_admin, role_creator, tag_creator, describe, select, create, write, modify |
-| warehouse | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, write, modify |
-| namespace | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, write, modify |
+| project   | project_admin, security_admin, data_admin, role_creator, tag_creator, describe, select, write, modify, create |
+| warehouse | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify, create |
+| namespace | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify, create |
 | table     | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify  |
 | view      | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify  |
 | generic table | ownership, pass_grants, manage_grants, manage_tags, describe, select, write, modify |
 | role      | assignee, ownership                                              |
 | tag       | ownership, apply                                                 |
+
+`describe`, `select`, `write` and `modify` build on each other: each includes the ones before it. `create` is separate and includes none of them.
 
 ### Ownership
 
@@ -77,13 +79,15 @@ The `create` grant allows a user to create new objects within an entity, such as
 
 ### Write
 
-The `write` grant allows a user to change everything a table holds: its data, schema, partitioning, sort order and properties, its branches and snapshot tags, and its history, for example by expiring snapshots. This includes replacing a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do, and adding existing files to it (`add_files`). It does not allow dropping, restoring, renaming, moving or protecting the table, or controlling its tasks. These need `modify`.
+The `write` grant allows a user to change what tables, views and generic tables contain. It does not allow dropping, restoring, renaming, moving or protecting them, or controlling their tasks. These need `modify`.
 
-On a view, `write` allows replacing its definition and changing its properties, as `CREATE OR REPLACE VIEW` and dbt `view` models do. It does not allow dropping, restoring, renaming, moving or protecting the view.
+On a table, `write` allows changing its data, schema, partitioning, sort order and properties, its branches and snapshot tags, and its history, for example by expiring snapshots. This includes replacing a table, as `CREATE OR REPLACE TABLE` and dbt `table` models do, and adding existing files to it (`add_files`).
+
+On a view, `write` allows replacing its definition and changing its properties, as `CREATE OR REPLACE VIEW` and dbt `view` models do.
 
 On a generic table, `write` allows writing and deleting its files, which hold all of its contents and its structure.
 
-The `write` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants. It exists on projects, warehouses, namespaces, tables, views and generic tables.
+The `write` grant is inherited down the object hierarchy and implicitly includes the `select` and `describe` grants.
 
 !!! warning "`write` protects the table, not its files"
     A user with `write` can write to and delete from the table's storage location, so they can still corrupt or empty a table. See [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).

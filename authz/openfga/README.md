@@ -15,8 +15,6 @@ Splits the privileges of `modify` into two tiers: a write tier between `select` 
 
 ### Write tier
 
-The grants API, the assignments API and the model call the tier `write`.
-
 During a rolling upgrade from `v4.13`, pods of the previous release do not know `write`: a `write` grant allows nothing on them until the rollout finishes. When they delete an object or a principal, they still delete its `write` tuples.
 
 `project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
@@ -52,7 +50,7 @@ Grant `describe` next to `create` where principals must see the objects already 
 
 Supersedes `v4.14` and the earlier builds of `v4.15`, neither of which reached a release. `v4.14` is not registered any more; stores on it migrate straight to `v4.15`.
 
-Stores built from `main` before this change may hold `write` tuples from `v4.14`, where `write` allowed data writes only, and `write_data` tuples from the earlier builds of `v4.15`. With this model, the `v4.14` `write` tuples take the new, wider meaning. A store on an earlier build of `v4.15` keeps that model: `migrate` finds `v4.15` applied and changes nothing, and Lakekeeper refuses to start on it because that model lacks the `write` relations. Provision such development stores again.
+Stores built from `main` before this change may hold `write` tuples from `v4.14`, where `write` allowed data writes only, and `write_data` tuples from the earlier builds of `v4.15`. With this model, the `v4.14` `write` tuples take the new, wider meaning. A store on an earlier build of `v4.15` keeps that model: `migrate` finds `v4.15` applied and changes nothing, and Lakekeeper refuses to start on it because that model lacks the `write` relations. Provision both kinds of development store again.
 
 ## `v4.13`
 

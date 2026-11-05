@@ -2585,7 +2585,7 @@ tests:
           can_create_namespace: false
           can_delete: false
           manage_grants: false
-  - name: write on a deep table bubbles up for navigation
+  - name: write on a single table or view bubbles up for navigation
     check:
       - user: user:table_3_writer
         object: lakekeeper_table:warehouse_1/table_3
@@ -2741,6 +2741,11 @@ tests:
         assertions:
           can_grant_select: true
           can_grant_write: false
+      - user: user:warehouse_1_select_delegator
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_select: true
+          can_commit: false            # select never commits a view
   - name: modify and write granted on a single tabular
     check:
       - user: user:table_3_modify_only
