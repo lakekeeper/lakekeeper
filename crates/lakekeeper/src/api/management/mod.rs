@@ -2792,6 +2792,7 @@ pub mod v1 {
     #[derive(Debug, Deserialize, TypedBuilder)]
     #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
     pub struct DeleteWarehouseQuery {
+        /// Delete the warehouse also if it is protected.
         #[serde(
             deserialize_with = "crate::api::iceberg::types::deserialize_bool",
             default
@@ -2802,13 +2803,14 @@ pub mod v1 {
 
     /// Delete Warehouse
     ///
-    /// Permanently removes a warehouse and all its associated resources.
-    /// Use the `force` parameter to delete protected warehouses.
+    /// Deletes an empty warehouse. Unfinished tasks block the delete, except tasks of queues that
+    /// are cancelled when their warehouse is deleted; those are cancelled, running ones included.
+    /// Use the `force` parameter to delete a protected warehouse.
     #[cfg_attr(feature = "open-api", utoipa::path(
         delete,
         tag = "warehouse",
         path = ManagementV1Endpoint::DeleteWarehouse.path(),
-        params(("warehouse_id" = Uuid,)),
+        params(("warehouse_id" = Uuid,), DeleteWarehouseQuery),
         responses(
             (status = 204, description = "Warehouse deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),

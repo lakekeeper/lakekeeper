@@ -94,7 +94,7 @@ The `write` grant is inherited down the object hierarchy and implicitly includes
 
 ### Modify
 
-The `modify` grant allows a user to drop, restore, rename and protect objects, and to control their tasks. On a namespace it also allows deleting the namespace and changing its properties. On a warehouse or project it also allows deleting and renaming it and changing its settings. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `write`, `select` and `describe` grants, but not `create`. Like `write`, it gives access to the table's files in storage; see [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
+The `modify` grant allows a user to drop, restore, rename and protect objects, and to control their tasks. On a namespace it also allows deleting the namespace and changing its properties. On a warehouse or project it also allows deleting and renaming it and changing its settings. A call that skips [soft deletion](./concepts.md#skipping-soft-deletion) also needs `modify` on the warehouse. The `modify` grant is inherited down the object hierarchy, meaning if a user has the `modify` grant on a higher-level entity, they can also modify all child entities within it. The `modify` grant implicitly includes the `write`, `select` and `describe` grants, but not `create`. Like `write`, it gives access to the table's files in storage; see [What Lakekeeper Enforces](./concepts.md#what-lakekeeper-enforces).
 
 ### Pass Grants
 
