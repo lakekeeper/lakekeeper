@@ -368,6 +368,35 @@ tuples:
   - user: user:project_1_create_only
     relation: create
     object: project:project_1
+  # `select` with `pass_grants` on the other levels: passes `select`, never `write`.
+  - user: user:warehouse_1_select_delegator
+    relation: select
+    object: warehouse:warehouse_1
+  - user: user:warehouse_1_select_delegator
+    relation: pass_grants
+    object: warehouse:warehouse_1
+  - user: user:table_3_select_delegator
+    relation: select
+    object: lakekeeper_table:warehouse_1/table_3
+  - user: user:table_3_select_delegator
+    relation: pass_grants
+    object: lakekeeper_table:warehouse_1/table_3
+  - user: user:generic_table_1_select_delegator
+    relation: select
+    object: lakekeeper_generic_table:warehouse_1/generic_table_1
+  - user: user:generic_table_1_select_delegator
+    relation: pass_grants
+    object: lakekeeper_generic_table:warehouse_1/generic_table_1
+  # Direct grants on a single tabular.
+  - user: user:table_3_modify_only
+    relation: modify
+    object: lakekeeper_table:warehouse_1/table_3
+  - user: user:generic_table_1_modify_only
+    relation: modify
+    object: lakekeeper_generic_table:warehouse_1/generic_table_1
+  - user: user:generic_table_1_writer
+    relation: write_content
+    object: lakekeeper_generic_table:warehouse_1/generic_table_1
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
     check:
@@ -1715,6 +1744,7 @@ tests:
           can_revoke_describe: false
           can_grant_modify: false      # not held, so not passable in either direction
           can_revoke_modify: false
+          can_grant_write_content: false
       - user: user:namespace_2_1_grant_admin
         object: namespace:namespace_2_1
         assertions:
@@ -1934,6 +1964,10 @@ tests:
         object: warehouse:warehouse_1
         assertions:
           visible_below: true
+      - user: user:warehouse_1_writer
+        object: warehouse:warehouse_1
+        assertions:
+          visible_below: true
       - user: user:warehouse_1_modify_only
         object: warehouse:warehouse_1
         assertions:
@@ -1950,6 +1984,10 @@ tests:
           can_get_metadata: true
           can_list_warehouses: true
       - user: user:warehouse_1_create_only
+        object: project:project_1
+        assertions:
+          can_get_metadata: true
+      - user: user:warehouse_1_writer
         object: project:project_1
         assertions:
           can_get_metadata: true
@@ -2014,6 +2052,10 @@ tests:
         assertions:
           visible_below: true
       - user: user:select_generic_table_1
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          visible_below: true
+      - user: user:generic_table_1_writer
         object: lakekeeper_generic_table:warehouse_1/generic_table_1
         assertions:
           visible_below: true
@@ -2101,7 +2143,7 @@ tests:
           visible_below: false
           can_get_metadata: false
 
-  - name: create shows the containers it may create in, never the objects inside
+  - name: create shows the containers it may create in, never the tables, views and generic tables inside
     # `create` on a container gives no `describe` on the tables, views and generic
     # tables already inside it, at any level.
     check:
@@ -2484,6 +2526,10 @@ tests:
           can_modify_soft_deletion: false
           can_control_all_tasks: false
           can_modify_task_queue_config: false
+          can_set_protection: false
+          can_set_format_version_policy: false
+          can_activate: false
+          can_deactivate: false
       - user: user:project_1_writer
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
@@ -2621,3 +2667,39 @@ tests:
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
           can_grant_write_content: true   # outside managed access, the owner grants it
+  - name: select with pass_grants passes select, never write
+    check:
+      - user: user:warehouse_1_select_delegator
+        object: warehouse:warehouse_1
+        assertions:
+          can_grant_select: true
+          can_grant_write_content: false
+      - user: user:table_3_select_delegator
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          can_grant_select: true
+          can_grant_write_content: false
+      - user: user:generic_table_1_select_delegator
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_grant_select: true
+          can_grant_write_content: false
+  - name: modify and write granted on a single tabular
+    check:
+      - user: user:table_3_modify_only
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          can_commit: true
+          can_write_data: true
+          can_read_data: true
+      - user: user:generic_table_1_modify_only
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_write_data: true
+          can_read_data: true
+      - user: user:generic_table_1_writer
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_write_data: true
+          can_read_data: true
+          can_drop: false
