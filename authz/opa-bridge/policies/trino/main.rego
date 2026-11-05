@@ -18,9 +18,18 @@ default allow_unmanaged := false
 # which Trino would run with the DEFINER view owner's rights.
 allow_unmanaged if {
 	configuration.trino_allow_unmanaged_catalogs == true
-	input.action.operation != "CreateViewWithSelectFromColumns"
+	_blanket_allowed_operation
 	_resource_catalog_name
 	not _resource_catalog_name in _managed_catalog_names
+}
+
+_blanket_allowed_operation if {
+	input.action.operation != "CreateViewWithSelectFromColumns"
+}
+
+# Trino's built-in `system` catalog cannot hold views.
+_blanket_allowed_operation if {
+	input.action.resource.table.catalogName == "system"
 }
 
 # Extract catalog name from the current resource (works for all resource types)

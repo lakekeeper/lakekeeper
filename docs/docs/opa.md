@@ -54,7 +54,7 @@ All above mentioned configuration options refer to a specific Lakekeeper instanc
 
 | Variable                                       | Example | Description |
 |------------------------------------------------|---------|-----|
-| `TRINO_ALLOW_UNMANAGED_CATALOGS` | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. It does not allow reading tables and views of these catalogs inside a DEFINER view, see [Views inside DEFINER views](#views-inside-definer-views). Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
+| `TRINO_ALLOW_UNMANAGED_CATALOGS` | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. It does not allow reading tables and views of these catalogs, other than Trino's `system` catalog, inside a DEFINER view, see [Views inside DEFINER views](#views-inside-definer-views). Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
 
 ### Admin Users
 
@@ -92,7 +92,7 @@ Trino runs an INVOKER view inside a DEFINER view as the DEFINER view's owner. Th
 
 A query over a DEFINER view that reads an INVOKER view therefore fails for every user except the owner, with `View owner does not have sufficient privileges`. [Chained Views](./view-security.md#chained-views) lists how to keep such a query working.
 
-The bridge cannot tell views from tables in catalogs that are not listed in `trino_catalog`. `TRINO_ALLOW_UNMANAGED_CATALOGS` therefore does not allow reading tables and views of these catalogs inside a DEFINER view. For a catalog that cannot hold Trino views, such as a PostgreSQL or Exasol catalog, add an [`allow_unmanaged`](#allow_unmanaged-unmanaged-catalog-extensions) rule:
+The bridge cannot tell views from tables in catalogs that are not listed in `trino_catalog`. `TRINO_ALLOW_UNMANAGED_CATALOGS` therefore does not allow reading tables and views of these catalogs inside a DEFINER view. This does not apply to Trino's `system` catalog, which cannot hold views. For a catalog that cannot hold Trino views, such as a PostgreSQL or Exasol catalog, add an [`allow_unmanaged`](#allow_unmanaged-unmanaged-catalog-extensions) rule:
 
 ```rego
 package trino

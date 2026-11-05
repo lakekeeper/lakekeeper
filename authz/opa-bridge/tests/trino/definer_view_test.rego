@@ -135,8 +135,8 @@ test_table_inside_definer_view_is_allowed_by_a_server_without_the_check if {
 		with http.send as mock_http_server_without_check_table_readable
 }
 
-_read_allowed_in_unmanaged_catalog(operation) if {
-	trino.allow with input as _read_input(operation, "external", "v")
+_read_allowed_in_unmanaged_catalog(operation, catalog) if {
+	trino.allow with input as _read_input(operation, catalog, "v")
 		with data.configuration.lakekeeper as mock_lakekeeper
 		with data.configuration.trino_catalog as mock_trino_catalog
 		with data.configuration.trino_allow_unmanaged_catalogs as true
@@ -146,6 +146,12 @@ _read_allowed_in_unmanaged_catalog(operation) if {
 # The bridge cannot look up whether an object of an unmanaged catalog is a view
 # without an owner, so the blanket allow leaves out reads inside a DEFINER view.
 test_blanket_unmanaged_allow_denies_reads_inside_definer_views if {
-	not _read_allowed_in_unmanaged_catalog("CreateViewWithSelectFromColumns")
-	_read_allowed_in_unmanaged_catalog("SelectFromColumns")
+	not _read_allowed_in_unmanaged_catalog("CreateViewWithSelectFromColumns", "external")
+	_read_allowed_in_unmanaged_catalog("SelectFromColumns", "external")
+}
+
+# Trino's `system` catalog cannot hold views, so the blanket allow keeps reads of
+# it inside a DEFINER view.
+test_blanket_unmanaged_allow_keeps_system_reads_inside_definer_views if {
+	_read_allowed_in_unmanaged_catalog("CreateViewWithSelectFromColumns", "system")
 }
