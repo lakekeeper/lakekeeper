@@ -11,9 +11,10 @@ use sqlx::{AssertSqlSafe, PgPool, Postgres, SqlSafeStr};
 const LOCK_WAIT: &str = if cfg!(test) { "2s" } else { "60s" };
 
 /// Adds the key unless the migration already did. Waiting for `SHARE UPDATE EXCLUSIVE` blocks no
-/// writer and lets Postgres cancel a blocking autovacuum. Writers queue behind each attempt: it
-/// waits 100 ms for `table_snapshot` (`NOWAIT` would starve), 20 ms for `"table"`, whose creates
-/// and drops then wait for `table_snapshot`, and pauses between attempts.
+/// writer and lets Postgres cancel a blocking autovacuum. Each attempt queues writers: it waits
+/// 100 ms for `table_snapshot` (`NOWAIT` would starve) and 20 ms for `"table"`, because a drop or
+/// register in flight then waits for the step. Together they stay below `deadlock_timeout`, so no
+/// writer is aborted.
 fn add_key() -> AssertSqlSafe<String> {
     AssertSqlSafe(format!(
         r#"
@@ -75,10 +76,9 @@ pub(super) async fn complete(pool: &PgPool, lock_id: i64) -> anyhow::Result<()> 
     if validated == Some(true) {
         return Ok(());
     }
-    run(pool, lock_id, add_key()).await.context(
-        "Could not add the foreign key from `table_snapshot` to `\"table\"`, because other \
-         sessions kept both tables busy",
-    )?;
+    run(pool, lock_id, add_key())
+        .await
+        .context("Could not add the foreign key from `table_snapshot` to `\"table\"`")?;
     run(pool, lock_id, DELETE_ORPHANS)
         .await
         .context("Could not delete the snapshots of dropped tables")?;

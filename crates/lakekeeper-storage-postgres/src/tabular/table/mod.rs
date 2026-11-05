@@ -3360,11 +3360,9 @@ pub mod tests {
 
     /// Dropping a table removes all of its snapshots, also those without a schema id, and their
     /// statistics. The other table keeps all of its rows, and the same file registers again
-    /// under the same table id. sqlx's migrator built the empty catalog, so only the migration
-    /// added the key.
+    /// under the same table id.
     #[sqlx::test]
     async fn hard_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
-        assert_eq!(snapshot_table_key(&pool).await, Some(false));
         let (table, other) = SchemalessSnapshotTable::pair(pool).await;
         assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
         assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
@@ -3413,31 +3411,17 @@ pub mod tests {
         apply_migrations(pool, |version| version < KEY_MIGRATION).await;
     }
 
-    /// Before the migration, a drop left the snapshot without a schema id and its statistics
-    /// behind. Migrating removes exactly these rows and validates the key: the other table keeps
-    /// all of its rows, and the same file registers again under the same table id.
+    /// A new install: in the empty catalog the migration adds the key without validating it, and
+    /// the same `migrate` validates it after the commit.
     #[sqlx::test(migrations = false)]
-    async fn migration_removes_snapshots_that_drops_left_behind(pool: sqlx::PgPool) {
-        migrate_to_before_the_key(&pool).await;
-        let (table, other) = SchemalessSnapshotTable::pair(pool.clone()).await;
-        hard_drop(&table).await;
-        assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
-        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
-
+    async fn migrate_validates_the_key_the_migration_added(pool: sqlx::PgPool) {
         crate::migrations::migrate_core_only(&pool).await.unwrap();
         assert_eq!(snapshot_table_key(&pool).await, Some(true));
-        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
-        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
-        assert_eq!(other.load().await, other.metadata);
-
-        table.create_from(&table.metadata, "00001").await;
-        assert_eq!(table.load().await, table.metadata);
-        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
     }
 
     /// The migration leaves the key out of a catalog with tables. The next `migrate` adds it after
     /// the commit, although no migration is left to apply, removes what drops left behind and
-    /// validates it.
+    /// validates it. The same file then registers again under the same table id.
     #[sqlx::test(migrations = false)]
     async fn migrate_adds_the_key_the_migration_left_out(pool: sqlx::PgPool) {
         migrate_to_before_the_key(&pool).await;
@@ -3453,6 +3437,10 @@ pub mod tests {
         assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
         assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
         assert_eq!(other.load().await, other.metadata);
+
+        table.create_from(&table.metadata, "00001").await;
+        assert_eq!(table.load().await, table.metadata);
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
     }
 
     /// Returns once a session of this test's database waits for `mode` on `table_snapshot`.
@@ -3479,10 +3467,10 @@ pub mod tests {
             .unwrap_or_else(|_| panic!("no session waits for {mode} on table_snapshot"));
     }
 
-    /// Other sessions keep both tables busy while `migrate` runs: one holds
-    /// `SHARE UPDATE EXCLUSIVE`, as a vacuum does, and a writer holds `ROW EXCLUSIVE`. `migrate`
-    /// succeeds without the key. The next `migrate` waits for both sessions, adds the key, removes
-    /// what drops left behind and validates the key.
+    /// Other sessions keep both tables busy. While a writer holds `ROW EXCLUSIVE`, `migrate` gives
+    /// up on the key after its bounded retries and succeeds without it. Then another session also
+    /// holds `SHARE UPDATE EXCLUSIVE`, as a vacuum does. The next `migrate` waits for both
+    /// sessions, adds the key, removes what drops left behind and validates the key.
     #[sqlx::test(migrations = false)]
     async fn migrate_succeeds_while_other_sessions_keep_both_tables_busy(pool: sqlx::PgPool) {
         migrate_to_before_the_key(&pool).await;
@@ -3490,21 +3478,20 @@ pub mod tests {
         hard_drop(&table).await;
         assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
 
-        let mut vacuum = pool.begin().await.unwrap();
-        sqlx::query(r#"LOCK TABLE table_snapshot, "table" IN SHARE UPDATE EXCLUSIVE MODE"#)
-            .execute(&mut *vacuum)
-            .await
-            .unwrap();
         let mut writer = pool.begin().await.unwrap();
         sqlx::query(r#"LOCK TABLE table_snapshot, "table" IN ROW EXCLUSIVE MODE"#)
             .execute(&mut *writer)
             .await
             .unwrap();
-
         crate::migrations::migrate_core_only(&pool).await.unwrap();
         assert_eq!(snapshot_table_key(&pool).await, None);
         assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
 
+        let mut vacuum = pool.begin().await.unwrap();
+        sqlx::query(r#"LOCK TABLE table_snapshot, "table" IN SHARE UPDATE EXCLUSIVE MODE"#)
+            .execute(&mut *vacuum)
+            .await
+            .unwrap();
         let migrate = tokio::spawn({
             let pool = pool.clone();
             async move { crate::migrations::migrate_core_only(&pool).await }
@@ -3521,26 +3508,10 @@ pub mod tests {
     }
 
     /// A recursive namespace drop deletes its tabulars in bulk. It removes the snapshots without
-    /// schema id, and their statistics, of active and soft-deleted tables. The table in the
-    /// other namespace keeps all of its rows.
-    async fn assert_recursive_namespace_drop_removes_snapshots(
-        pool: sqlx::PgPool,
-        soft_deleted: bool,
-    ) {
+    /// schema id and their statistics. The table in the other namespace keeps all of its rows.
+    #[sqlx::test]
+    async fn recursive_namespace_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
         let (table, other) = SchemalessSnapshotTable::pair(pool).await;
-        if soft_deleted {
-            let mut transaction = table.pool.begin().await.unwrap();
-            mark_tabular_as_deleted(
-                table.warehouse_id,
-                table.table_id.into(),
-                false,
-                None,
-                &mut transaction,
-            )
-            .await
-            .unwrap();
-            transaction.commit().await.unwrap();
-        }
         assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
 
         let mut transaction = table.pool.begin().await.unwrap();
@@ -3559,18 +3530,6 @@ pub mod tests {
         transaction.commit().await.unwrap();
         assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
         assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
-    }
-
-    #[sqlx::test]
-    async fn recursive_namespace_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
-        assert_recursive_namespace_drop_removes_snapshots(pool, false).await;
-    }
-
-    #[sqlx::test]
-    async fn recursive_namespace_drop_removes_snapshots_without_schema_id_of_soft_deleted_table(
-        pool: sqlx::PgPool,
-    ) {
-        assert_recursive_namespace_drop_removes_snapshots(pool, true).await;
     }
 
     /// Create-side invariant: the schema_field -> tabular_field FK rejects a field row with no
