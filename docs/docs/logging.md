@@ -261,7 +261,7 @@ The header is recorded as sent, not parsed into a client name. Values are free-f
 
 **What counts as a denial.** A request can be refused by the authorizer, or by a rule outside the authorizer. Both are recorded the same way when the refusal is a *decision about this action on this resource*:
 
-- **Refusals by rule are denials.** For example: a catalog-managed (`system`) or provider-managed role that cannot be changed, a reserved tag definition, or a warehouse whose spec is locked. These are recorded as `decision: "denied"` with `failure_reason: action_forbidden`, like a missing permission. Some of these can never be allowed for anyone; `action_forbidden` still applies, because it means "not permitted", not "missing grant". The role and tag-definition rules are checked together with the authorizer, so the request gets one record. The warehouse spec lock can only be checked later, so the request gets an `"allowed"` record followed by a `"denied"` one. The same holds for a view commit that changes the version of a view with a protected owner property, such as `trino.run-as-owner`, and does not come from the owning trusted engine: an `"allowed"` `commit` record, then a `"denied"` one with error type `ProtectedViewVersionChange` (see [Property Protection](./view-security.md#property-protection)).
+- **Refusals by rule are denials.** For example: a catalog-managed (`system`) or provider-managed role that cannot be changed, a reserved tag definition, or a warehouse whose spec is locked. These are recorded as `decision: "denied"` with `failure_reason: action_forbidden`, like a missing permission. Some of these can never be allowed for anyone; `action_forbidden` still applies, because it means "not permitted", not "missing grant". The role and tag-definition rules are checked together with the authorizer, so the request gets one record. The warehouse spec lock can only be checked later, so the request gets an `"allowed"` record followed by a `"denied"` one. The same holds for a view commit that changes the version of a view with a protected owner property, such as `trino.run-as-owner`, and does not come from the owning trusted engine: an `"allowed"` `commit` record, then a `"denied"` one with error type `ProtectedViewVersionChange` (see [Property Protection](./view-security.md#property-protection)). A call that [skips the soft-deletion window](./concepts.md#skipping-soft-deletion) of a warehouse, such as a drop with `force`, gets an `"allowed"` record for its own action, then a record of its own for `modify_soft_deletion` on the warehouse. That record is `"denied"` if the caller may not change the soft-deletion settings of the warehouse. Both records have the same `request_id`.
 - **Write failures are not denials.** A duplicate name, a tag definition still in use, a backend error: these happen *after* authorization succeeded. The `"allowed"` record stays, and no second authorization record is written. The missing operation record for the change shows that it did not happen.
 
 `decision` alone does not separate refusals from outages. Every failed authorization is marked `"denied"`, including when no verdict was reached; for example, an outage of the catalog or authorizer during the check gives `decision: "denied"` with a `5xx` code. To select real refusals, also filter on the reason:
@@ -271,7 +271,7 @@ select(.decision == "denied" and .failure_reason as $r
        | $r == "action_forbidden" or $r == "resource_not_found" or $r == "cannot_see_resource")
 ```
 
-The same set is selected by `authorizations[].allowed == false`. Because one request can produce both an `"allowed"` and a `"denied"` record (see the warehouse spec lock and the view version change above), count denials per request, not per record.
+The same set is selected by `authorizations[].allowed == false`. Because one request can produce both an `"allowed"` and a `"denied"` record (see the warehouse spec lock, the view version change and the soft-deletion window above), count denials per request, not per record.
 
 **Actor Types** {#actor-types}
 
@@ -453,7 +453,6 @@ Six fields describe the **scope**, plus `principal` when the scope names one pri
 Every authorization record has an `authorizations` array:
 
 - A normal single-check API call: one entry, built from the record's top-level fields.
-- A call that also asks an action of its warehouse, such as `modify_soft_deletion` when it [skips the soft-deletion window](./concepts.md#skipping-soft-deletion): one more entry, which pairs the warehouse with that action. The warehouse is in `entities` and the action in `actions`, next to the call's own.
 - `/management/v1/action/batch-check`: one entry per check, in request order.
 - A request with nothing to check, such as a batch check with `checks: []` or a transaction commit with no table changes: an empty array. `decision` still holds the result.
 - The `get_*_actions` endpoints: one entry for the `introspect_permissions` action. The actions the principal holds are in the response body, not in this array.

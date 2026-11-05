@@ -9,11 +9,14 @@ use crate::{
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tabular::claim_no_content_idempotency_key},
+    server::{
+        authorize_soft_deletion_skip, require_warehouse_id,
+        tabular::claim_no_content_idempotency_key,
+    },
     service::{
         CatalogIdempotencyOps, CatalogStore, CatalogTabularOps, NamedEntity, Result, SecretStore,
         State, TabularId, Transaction,
-        authz::{Authorizer, CatalogGenericTableAction, require_soft_deletion_skip_for_drop},
+        authz::{Authorizer, CatalogGenericTableAction},
         events::{APIEventContext, context::ResolvedGenericTable},
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
@@ -45,7 +48,7 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
     // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
     let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.clone());
-    let mut event_ctx = APIEventContext::for_generic_table(
+    let event_ctx = APIEventContext::for_generic_table(
         Arc::new(request_metadata.clone()),
         state.v1_state.events.clone(),
         warehouse_id,
@@ -82,9 +85,16 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         state.v1_state.catalog.clone(),
     )
     .await;
-    let authz_result =
-        require_soft_deletion_skip_for_drop(authorizer, &mut event_ctx, force, authz_result).await;
     let (event_ctx, (warehouse, _ns_hierarchy, info)) = event_ctx.emit_authz(authz_result)?;
+    if force && warehouse.tabular_delete_profile.is_soft() {
+        authorize_soft_deletion_skip(
+            authorizer,
+            event_ctx.request_metadata_arc(),
+            event_ctx.dispatcher().clone(),
+            &warehouse,
+        )
+        .await?;
+    }
     let generic_table_id = info.generic_table_id;
 
     let event_ctx = event_ctx.resolve(ResolvedGenericTable {

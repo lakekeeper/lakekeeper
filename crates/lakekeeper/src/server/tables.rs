@@ -70,7 +70,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
-        self,
+        self, authorize_soft_deletion_skip,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
         tabular::{
             authorize_entities, claim_idempotency_key, claim_no_content_idempotency_key,
@@ -90,7 +90,6 @@ use crate::{
             AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
             CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction, GrantResource,
             RequireNamespaceActionError, RequireTableActionError, emit_bootstrap_grants_async,
-            require_soft_deletion_skip, require_soft_deletion_skip_for_drop,
             write_bootstrap_grants,
         },
         build_namespace_hierarchy,
@@ -859,7 +858,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUDIT CONTEXT -------------------
         // Built before the idempotency check so a served replay can be audited.
         let idempotency_key = request_metadata.idempotency_key().copied();
-        let mut event_ctx = APIEventContext::for_table(
+        let event_ctx = APIEventContext::for_table(
             Arc::new(request_metadata),
             state.v1_state.events,
             warehouse_id,
@@ -897,10 +896,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 state.v1_state.catalog.clone(),
             )
             .await;
-        let authz_result =
-            require_soft_deletion_skip_for_drop(&authorizer, &mut event_ctx, force, authz_result)
-                .await;
         let (event_ctx, (warehouse, _ns, table_info)) = event_ctx.emit_authz(authz_result)?;
+        if force && warehouse.tabular_delete_profile.is_soft() {
+            authorize_soft_deletion_skip(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                &warehouse,
+            )
+            .await?;
+        }
 
         let table_id = table_info.table_id();
         let event_ctx = event_ctx.resolve(ResolvedTable {
@@ -1217,24 +1222,26 @@ async fn authorize_register_overwrite<C: CatalogStore, A: Authorizer>(
     event_ctx.push_extra_context(HandlerContextKey::InvokedBy(
         InvokingOperation::RegisterTableOverwrite.as_wire(),
     ));
-    let authz_result = async {
-        let previous_table = authorizer
-            .require_table_action(
-                event_ctx.request_metadata(),
-                warehouse,
-                namespace,
-                event_ctx.user_provided_entity().table.clone(),
-                previous_table_info,
-                event_ctx.action().clone(),
-            )
-            .await?;
-        if skips_window {
-            require_soft_deletion_skip(authorizer, &mut event_ctx, warehouse).await?;
-        }
-        Ok::<_, AuthZError>(previous_table)
+    let authz_result = authorizer
+        .require_table_action(
+            event_ctx.request_metadata(),
+            warehouse,
+            namespace,
+            event_ctx.user_provided_entity().table.clone(),
+            previous_table_info,
+            event_ctx.action().clone(),
+        )
+        .await;
+    let (event_ctx, previous_table) = event_ctx.emit_authz(authz_result)?;
+    if skips_window {
+        authorize_soft_deletion_skip(
+            authorizer,
+            event_ctx.request_metadata_arc(),
+            event_ctx.dispatcher().clone(),
+            warehouse,
+        )
+        .await?;
     }
-    .await;
-    let (_, previous_table) = event_ctx.emit_authz(authz_result)?;
 
     tracing::debug!(
         "Register Table: Dropping existing table '{table_ident}' of warehouse '{}' for overwrite operation",

@@ -20,9 +20,8 @@
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
 //! `entity` would misread; and the operational family, through the `grant_created` records
 //! of a grant change. Views are reached through the owner property rules, refused before
-//! and after authorization. A storage profile change records two actions on one warehouse. A
-//! recursive namespace delete with soft deletion on records two entities, each paired with its
-//! own action. Not yet reached, cheapest to add first: table commits;
+//! and after authorization. A storage profile change records two actions on one warehouse.
+//! Not yet reached, cheapest to add first: table commits; several entities in one record;
 //! per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
 //! and a real authorizer with an authenticated actor (`AllowAllAuthorizer` and
 //! `random_request_metadata()` reach neither) — the OpenFGA authorizer is the cheap way in,
@@ -59,17 +58,14 @@ use lakekeeper::{
         RequestMetadata, RequestMetadataTestBuilder,
         iceberg::v1::{
             CommitViewRequest, DataAccess, NamespaceParameters, ViewParameters,
-            namespace::{NamespaceDropFlags, NamespaceService as _},
-            tables::TablesService as _,
-            views::ViewService as _,
+            namespace::NamespaceService as _, tables::TablesService as _, views::ViewService as _,
         },
         management::v1::{
             check::{RoleAssignee, UserOrRole},
             grant::{ApplyGrantsRequest, GrantEntry, ListGrantsQuery, Service as _},
             role::Service as _,
             warehouse::{
-                Service as _, TabularDeleteProfile, UpdateWarehouseCredentialRequest,
-                UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
+                Service as _, UpdateWarehouseCredentialRequest, UpdateWarehouseStorageRequest,
             },
         },
     },
@@ -93,7 +89,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 29;
+const EXPECTED_RECORDS: usize = 27;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -513,34 +509,6 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
-    // With soft deletion on, a recursive namespace delete skips the window: its record names
-    // the namespace and the warehouse, each paired with its own action.
-    let _ = lakekeeper::api::management::v1::ApiServer::update_warehouse_delete_profile(
-        warehouse_response.warehouse_id,
-        UpdateWarehouseDeleteProfileRequest {
-            delete_profile: TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(3600),
-            },
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-    let _ = CatalogServer::drop_namespace(
-        NamespaceParameters {
-            prefix: Some(warehouse.clone().into()),
-            namespace: moves_namespace.clone(),
-        },
-        NamespaceDropFlags {
-            force: false,
-            purge: false,
-            recursive: true,
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-
     // Finally a lookup of something absent, so a genuine denial is in the corpus too.
     let _ = CatalogServer::namespace_exists(
         NamespaceParameters {
@@ -695,34 +663,6 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         3,
         "records of the grant change, which the `event_id` rule above needs:\n{}",
         describe(&records)
-    );
-
-    // The recursive namespace delete pairs each action with its own entity only.
-    let namespace_delete = records
-        .iter()
-        .find(|record| record["actions"][0]["action_name"] == "delete")
-        .unwrap_or_else(|| panic!("no namespace `delete` record:\n{}", describe(&records)));
-    let pairs = namespace_delete["authorizations"]
-        .as_array()
-        .map(|entries| {
-            entries
-                .iter()
-                .map(|entry| {
-                    (
-                        entry["entity"]["entity_type"].clone(),
-                        entry["action"]["action_name"].clone(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    assert_eq!(
-        pairs,
-        vec![
-            ("namespace".into(), "delete".into()),
-            ("warehouse".into(), "modify_soft_deletion".into()),
-        ],
-        "namespace delete record:\n{namespace_delete:#}"
     );
 
     eprintln!("audit corpus: {} record(s) checked", records.len());

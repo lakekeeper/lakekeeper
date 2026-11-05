@@ -41,16 +41,13 @@ use lakekeeper::{
         CatalogNamespaceOps as _, CatalogTabularOps as _, ManagedBy, State, TableId,
         TabularIdentBorrowed, TabularListFlags, UserId,
         authz::tests::HidingAuthorizer,
-        events::{
-            AuthorizationFailureReason, EventListener,
-            context::{ActionContextKey, EntityType},
-        },
+        events::{AuthorizationFailureReason, EventListener, context::ActionContextKey},
         tasks::{TaskId, tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME},
     },
 };
 use lakekeeper_integration_tests::{
-    CapturingAuthzListener, RecordedAction, RecordedChecks, RecordedDecision, create_generic_table,
-    create_ns, create_table, create_view, memory_io_profile, random_request_metadata, setup,
+    CapturingAuthzListener, RecordedAction, create_generic_table, create_ns, create_table,
+    create_view, memory_io_profile, random_request_metadata, setup,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
@@ -130,16 +127,6 @@ impl Setup {
         create_generic_table(self.ctx.clone(), self.warehouse_id.to_string(), NS, name)
             .await
             .unwrap();
-    }
-
-    async fn create(&self, kind: Kind, name: &str) {
-        match kind {
-            Kind::Table => {
-                self.table(name).await;
-            }
-            Kind::View => self.view(name).await,
-            Kind::GenericTable => self.generic_table(name).await,
-        }
     }
 
     async fn protect_table(&self, table_id: TableId) {
@@ -423,31 +410,19 @@ fn drop_action(force: bool) -> RecordedAction {
     }
 }
 
-fn modify_soft_deletion_action() -> RecordedAction {
-    RecordedAction {
+/// The record of the `ModifySoftDeletion` check of a call that skips the window.
+fn skip_record() -> Vec<RecordedAction> {
+    vec![RecordedAction {
         action_name: "modify_soft_deletion".to_string(),
         context: vec![],
-    }
+    }]
 }
 
-fn decision(entity_type: EntityType, action_name: &str, allowed: bool) -> RecordedDecision {
-    RecordedDecision {
-        entity_type,
-        action_name: action_name.to_string(),
-        allowed: Some(allowed),
-    }
-}
-
-/// A record of a call that skips the soft-deletion window: the call's own action on its
-/// entity, then `modify_soft_deletion` on the warehouse, each with its own entry.
-fn skip_checks(entity_type: EntityType, action_name: &str, allowed: bool) -> RecordedChecks {
-    RecordedChecks {
-        entity_types: vec![entity_type, EntityType::Warehouse],
-        decisions: vec![
-            decision(entity_type, action_name, allowed),
-            decision(EntityType::Warehouse, "modify_soft_deletion", allowed),
-        ],
-    }
+/// Records in a fixed order: a call sends its own record and its skip record from separate
+/// tasks.
+fn sorted(mut records: Vec<Vec<RecordedAction>>) -> Vec<Vec<RecordedAction>> {
+    records.sort_by_key(|actions| format!("{actions:?}"));
+    records
 }
 
 #[sqlx::test]
@@ -457,10 +432,17 @@ async fn forced_drop_in_soft_deletion_warehouse_needs_modify_soft_deletion(pool:
     let name = |kind: Kind, what: &str| format!("{kind:?}_{what}").to_lowercase();
     for kind in all {
         for what in ["kept", "forced"] {
-            s.create(kind, &name(kind, what)).await;
+            match kind {
+                Kind::Table => {
+                    s.table(&name(kind, what)).await;
+                }
+                Kind::View => s.view(&name(kind, what)).await,
+                Kind::GenericTable => s.generic_table(&name(kind, what)).await,
+            }
         }
     }
     s.authz.block_action(MODIFY_SOFT_DELETION);
+    let listener = s.listen().await;
 
     for kind in all {
         let (kept, forced) = (name(kind, "kept"), name(kind, "forced"));
@@ -477,6 +459,21 @@ async fn forced_drop_in_soft_deletion_warehouse_needs_modify_soft_deletion(pool:
         s.drop(kind, &forced, true).await.unwrap();
         assert_eq!(s.state(kind, &forced).await, Found::Gone, "{kind:?}");
     }
+
+    // Each forced drop is allowed as a drop, and its skip check has a record of its own.
+    assert_eq!(listener.settled_counts(12, 3).await, (12, 3));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record(); 3]);
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::ActionForbidden; 3]
+    );
+    let forced_drops = vec![vec![drop_action(true)]; 6];
+    let kept_drops = vec![vec![drop_action(false)]; 3];
+    assert_eq!(
+        sorted(succeeded),
+        sorted([forced_drops, kept_drops, vec![skip_record(); 3]].concat())
+    );
 }
 
 #[sqlx::test]
@@ -500,118 +497,6 @@ async fn skipping_soft_deletion_in_a_managed_warehouse_is_decided_by_the_authori
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
     s.drop(Kind::Table, "t", true).await.unwrap();
     assert_eq!(s.state(Kind::Table, "t").await, Found::Gone);
-}
-
-#[sqlx::test]
-async fn forced_drop_records_modify_soft_deletion_on_the_warehouse(pool: PgPool) {
-    let s = Setup::new(pool, soft()).await;
-    let all = [
-        (Kind::Table, "t", EntityType::Table),
-        (Kind::View, "v", EntityType::View),
-        (Kind::GenericTable, "g", EntityType::GenericTable),
-    ];
-    for (kind, name, _) in all {
-        s.create(kind, name).await;
-    }
-    s.authz.block_action(MODIFY_SOFT_DELETION);
-    let listener = s.listen().await;
-
-    for (kind, name, _) in all {
-        assert_needs_modify_soft_deletion(s.drop(kind, name, true).await);
-    }
-    s.authz.unblock_action(MODIFY_SOFT_DELETION);
-    for (kind, name, _) in all {
-        s.drop(kind, name, true).await.unwrap();
-    }
-
-    assert_eq!(listener.settled_counts(3, 3).await, (3, 3));
-    assert_eq!(
-        listener.failure_reasons(),
-        vec![AuthorizationFailureReason::ActionForbidden; 3]
-    );
-    let actions = vec![vec![drop_action(true), modify_soft_deletion_action()]; 3];
-    assert_eq!(listener.recorded_actions(), (actions.clone(), actions));
-    let checks = |allowed| {
-        all.iter()
-            .map(|(_, _, entity_type)| skip_checks(*entity_type, "drop", allowed))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(listener.recorded_checks(), (checks(true), checks(false)));
-}
-
-#[sqlx::test]
-async fn forced_drop_refused_by_the_object_check_records_only_the_drop(pool: PgPool) {
-    let s = Setup::new(pool, soft()).await;
-    s.table("t").await;
-    s.authz.block_action("table:Drop");
-    let listener = s.listen().await;
-
-    let err = s.drop(Kind::Table, "t", true).await.unwrap_err();
-    assert_eq!(err.code, StatusCode::FORBIDDEN.as_u16(), "{err:?}");
-
-    assert_eq!(listener.settled_counts(0, 1).await, (0, 1));
-    assert_eq!(
-        listener.recorded_actions(),
-        (vec![], vec![vec![drop_action(true)]])
-    );
-}
-
-#[sqlx::test]
-async fn recursive_namespace_delete_records_modify_soft_deletion_on_the_warehouse(pool: PgPool) {
-    let s = Setup::new(pool, soft()).await;
-    s.authz.block_action(MODIFY_SOFT_DELETION);
-    let listener = s.listen().await;
-
-    assert_needs_modify_soft_deletion(s.delete_namespace(true, true).await);
-    s.authz.unblock_action(MODIFY_SOFT_DELETION);
-    s.delete_namespace(true, true).await.unwrap();
-
-    assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
-    let namespace_delete = RecordedAction {
-        action_name: "delete".to_string(),
-        context: vec![
-            ActionContextKey::Force(true),
-            ActionContextKey::Purge(false),
-            ActionContextKey::Recursive(true),
-        ],
-    };
-    let actions = vec![vec![namespace_delete, modify_soft_deletion_action()]];
-    assert_eq!(listener.recorded_actions(), (actions.clone(), actions));
-    assert_eq!(
-        listener.recorded_checks(),
-        (
-            vec![skip_checks(EntityType::Namespace, "delete", true)],
-            vec![skip_checks(EntityType::Namespace, "delete", false)]
-        )
-    );
-}
-
-#[sqlx::test]
-async fn running_a_soft_deletion_task_early_records_modify_soft_deletion(pool: PgPool) {
-    let s = Setup::new(pool, soft()).await;
-    s.table("t").await;
-    s.drop(Kind::Table, "t", false).await.unwrap();
-    let tasks = s.soft_deletion_tasks().await;
-    s.authz.block_action(MODIFY_SOFT_DELETION);
-    let listener = s.listen().await;
-
-    assert_needs_modify_soft_deletion(s.control(ControlTaskAction::RunNow, tasks.clone()).await);
-    s.authz.unblock_action(MODIFY_SOFT_DELETION);
-    s.control(ControlTaskAction::RunNow, tasks).await.unwrap();
-
-    assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
-    // The call's own entity is the warehouse, so the record names it once.
-    let checks = |allowed| RecordedChecks {
-        entity_types: vec![EntityType::Warehouse],
-        decisions: vec![
-            decision(EntityType::Warehouse, "control_tasks", allowed),
-            decision(EntityType::Warehouse, "modify_soft_deletion", allowed),
-        ],
-    };
-    assert_eq!(
-        listener.recorded_checks(),
-        (vec![checks(true)], vec![checks(false)])
-    );
 }
 
 #[sqlx::test]
@@ -641,6 +526,7 @@ async fn recursive_namespace_delete_in_soft_deletion_warehouse_needs_modify_soft
     s.table("dropped").await;
     s.drop(Kind::Table, "dropped", false).await.unwrap();
     s.authz.block_action(MODIFY_SOFT_DELETION);
+    let listener = s.listen().await;
 
     assert_needs_modify_soft_deletion(s.delete_namespace(true, true).await);
     // Without force the delete is refused anyway; the missing right is reported first.
@@ -654,6 +540,29 @@ async fn recursive_namespace_delete_in_soft_deletion_warehouse_needs_modify_soft
     assert!(!s.namespace_exists().await);
     assert_eq!(s.state(Kind::Table, "active").await, Found::Gone);
     assert_eq!(s.state(Kind::Table, "dropped").await, Found::Gone);
+
+    assert_eq!(listener.settled_counts(4, 2).await, (4, 2));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record(); 2]);
+    let delete = |force| {
+        vec![RecordedAction {
+            action_name: "delete".to_string(),
+            context: vec![
+                ActionContextKey::Force(force),
+                ActionContextKey::Purge(false),
+                ActionContextKey::Recursive(true),
+            ],
+        }]
+    };
+    assert_eq!(
+        sorted(succeeded),
+        sorted(vec![
+            delete(true),
+            delete(false),
+            delete(true),
+            skip_record()
+        ])
+    );
 }
 
 #[sqlx::test]
@@ -703,6 +612,7 @@ async fn running_a_soft_deletion_task_early_needs_modify_soft_deletion(pool: PgP
     let tasks = s.soft_deletion_tasks().await;
     assert_eq!(tasks.len(), 1);
     s.authz.block_action(MODIFY_SOFT_DELETION);
+    let listener = s.listen().await;
 
     // `ControlAllTasks` on the warehouse is allowed, and does not suffice.
     assert_needs_modify_soft_deletion(s.control(ControlTaskAction::RunNow, tasks.clone()).await);
@@ -720,6 +630,18 @@ async fn running_a_soft_deletion_task_early_needs_modify_soft_deletion(pool: PgP
 
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
     s.control(ControlTaskAction::RunNow, tasks).await.unwrap();
+
+    assert_eq!(listener.settled_counts(4, 2).await, (4, 2));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record(); 2]);
+    let control_tasks = vec![RecordedAction {
+        action_name: "control_tasks".to_string(),
+        context: vec![],
+    }];
+    assert_eq!(
+        sorted(succeeded),
+        sorted([vec![control_tasks; 3], vec![skip_record()]].concat())
+    );
 }
 
 #[sqlx::test]
@@ -773,30 +695,24 @@ async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_
             .await,
     );
     assert_eq!(s.table_id("t").await, table_id);
-    // The replaced table skips the window, so its drop is recorded as forced, next to
-    // `modify_soft_deletion` on the warehouse.
-    assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
-    let (_, failed) = listener.recorded_actions();
-    assert_eq!(
-        failed,
-        vec![vec![drop_action(true), modify_soft_deletion_action()]]
-    );
-    let (_, failed) = listener.recorded_checks();
-    assert_eq!(failed, vec![skip_checks(EntityType::Table, "drop", false)]);
+    // The replaced table skips the window, so its drop is recorded as forced.
+    assert_eq!(listener.settled_counts(2, 1).await, (2, 1));
 
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
     s.register_overwrite_from("t", source_location)
         .await
         .unwrap();
     assert_eq!(s.table_id("t").await, source_id);
-    assert_eq!(listener.settled_counts(3, 1).await, (3, 1));
-    let (succeeded, _) = listener.recorded_checks();
+    assert_eq!(listener.settled_counts(5, 1).await, (5, 1));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record()]);
+    let drops_and_skips = succeeded
+        .into_iter()
+        .filter(|actions| actions[0].action_name != "create_table")
+        .collect();
     assert_eq!(
-        succeeded
-            .into_iter()
-            .filter(|checks| checks.decisions.iter().any(|d| d.action_name == "drop"))
-            .collect::<Vec<_>>(),
-        vec![skip_checks(EntityType::Table, "drop", true)]
+        sorted(drops_and_skips),
+        sorted([vec![vec![drop_action(true)]; 2], vec![skip_record()]].concat())
     );
 }
 

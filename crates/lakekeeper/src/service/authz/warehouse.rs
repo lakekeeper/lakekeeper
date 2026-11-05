@@ -7,14 +7,13 @@ use crate::{
         ArcResolvedWarehouse, CatalogBackendError, CatalogGetWarehouseByIdError,
         DatabaseIntegrityError, ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
-            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
-            AuthorizationDecision, AuthorizationInternalError, Authorizer, AuthzBadRequest,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
+            AuthorizationInternalError, Authorizer, AuthzBadRequest,
             BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogWarehouseAction,
             IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
-            APIEventContext, AuthorizationFailureReason, AuthorizationFailureSource,
-            context::{APIEventActions, ResolutionState, UserProvidedEntity},
+            AuthorizationFailureReason, AuthorizationFailureSource,
             delegate_authorization_failure_source,
         },
     },
@@ -408,23 +407,19 @@ pub trait AuthzWarehouseOps: Authorizer {
 impl<T> AuthzWarehouseOps for T where T: Authorizer {}
 
 /// Requires `ModifySoftDeletion` on `warehouse`, for a call that skips its soft-deletion
-/// window: only who may configure the window may skip it. The call's audit record names the
-/// warehouse action next to the call's own.
-pub(crate) async fn require_soft_deletion_skip<A, P, R, Act>(
+/// window: only who may configure the window may skip it.
+pub(crate) async fn require_soft_deletion_skip<A: Authorizer>(
     authorizer: &A,
-    event_ctx: &mut APIEventContext<P, R, Act>,
+    request_metadata: &RequestMetadata,
     warehouse: &ResolvedWarehouse,
-) -> Result<(), RequireWarehouseActionError>
-where
-    A: Authorizer,
-    P: UserProvidedEntity,
-    R: ResolutionState,
-    Act: APIEventActions,
-{
-    let action = CatalogWarehouseAction::ModifySoftDeletion;
-    event_ctx.also_asks_warehouse_action(warehouse.warehouse_id, &action);
+) -> Result<(), RequireWarehouseActionError> {
     let allowed = authorizer
-        .is_allowed_warehouse_action(event_ctx.request_metadata(), None, warehouse, action)
+        .is_allowed_warehouse_action(
+            request_metadata,
+            None,
+            warehouse,
+            CatalogWarehouseAction::ModifySoftDeletion,
+        )
         .await?
         .into_inner();
     if allowed {
@@ -442,25 +437,4 @@ pub(crate) fn soft_deletion_skip_forbidden(
         .with_reason(
             "This call would delete tables, views or generic tables before their soft-deletion period ends, and that needs this action.",
         )
-}
-
-/// [`require_soft_deletion_skip`] for an authorized drop of a table, view or generic table:
-/// `force` in a soft-deletion warehouse deletes at once.
-pub(crate) async fn require_soft_deletion_skip_for_drop<A, P, R, Act, N, T>(
-    authorizer: &A,
-    event_ctx: &mut APIEventContext<P, R, Act>,
-    force: bool,
-    loaded: Result<(ArcResolvedWarehouse, N, T), AuthZError>,
-) -> Result<(ArcResolvedWarehouse, N, T), AuthZError>
-where
-    A: Authorizer,
-    P: UserProvidedEntity,
-    R: ResolutionState,
-    Act: APIEventActions,
-{
-    let (warehouse, namespace, tabular) = loaded?;
-    if force && warehouse.tabular_delete_profile.is_soft() {
-        require_soft_deletion_skip(authorizer, event_ctx, &warehouse).await?;
-    }
-    Ok((warehouse, namespace, tabular))
 }

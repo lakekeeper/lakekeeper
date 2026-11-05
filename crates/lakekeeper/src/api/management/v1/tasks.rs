@@ -14,6 +14,7 @@ use crate::{
         },
     },
     request_metadata::{ProjectIdMissing, RequestMetadata},
+    server::authorize_soft_deletion_skip,
     service::{
         ArcProjectId, ArcResolvedWarehouse, CachePolicy, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity,
@@ -27,7 +28,7 @@ use crate::{
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
             CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
             RequireGenericTableActionError, RequireNamespaceActionError, RequireTableActionError,
-            RequireViewActionError, RequireWarehouseActionError, require_soft_deletion_skip,
+            RequireViewActionError, RequireWarehouseActionError,
         },
         events::{
             APIEventContext,
@@ -826,7 +827,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
 
-        let mut event_ctx = APIEventContext::for_warehouse(
+        let event_ctx = APIEventContext::for_warehouse(
             request_metadata.clone().into(),
             context.v1_state.events,
             warehouse_id,
@@ -836,12 +837,30 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = check_control_tasks_authorization::<A, C>(
             &authorizer,
             catalog_state.clone(),
-            &mut event_ctx,
+            event_ctx.request_metadata(),
+            event_ctx.action(),
+            *event_ctx.user_provided_entity(),
         )
         .await;
 
         let (event_ctx, (warehouse, tabular_expiration_entities)) =
             event_ctx.emit_authz(authz_result)?;
+        // Running a soft-deletion task early hard-deletes its tabular before the window ends,
+        // whatever task permissions the caller holds.
+        if matches!(
+            event_ctx.action().action,
+            ControlTaskAction::RunNow | ControlTaskAction::RunAt { .. }
+        ) && !tabular_expiration_entities.is_empty()
+            && warehouse.tabular_delete_profile.is_soft()
+        {
+            authorize_soft_deletion_skip(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                &warehouse,
+            )
+            .await?;
+        }
 
         let event_ctx = Arc::new(event_ctx.resolve(tabular_expiration_entities));
 
@@ -1558,11 +1577,10 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
 async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
-    event_ctx: &mut APIEventContext<WarehouseId, Unresolved, ControlTasksRequest>,
+    request_metadata: &RequestMetadata,
+    query: &ControlTasksRequest,
+    warehouse_id: WarehouseId,
 ) -> Result<(ArcResolvedWarehouse, Vec<TabularId>), AuthZError> {
-    let warehouse_id = *event_ctx.user_provided_entity();
-    let request_metadata = event_ctx.request_metadata();
-    let query = event_ctx.action();
     let warehouse = C::get_warehouse_by_id_cache_aware(
         warehouse_id,
         WarehouseStatus::active(),
@@ -1645,16 +1663,6 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
             request_metadata,
         )
         .await?;
-    }
-    // Running a soft-deletion task early hard-deletes its tabular before the window ends,
-    // whatever task permissions the caller holds.
-    if matches!(
-        query.action,
-        ControlTaskAction::RunNow | ControlTaskAction::RunAt { .. }
-    ) && !tabular_expiration_entities.is_empty()
-        && warehouse.tabular_delete_profile.is_soft()
-    {
-        require_soft_deletion_skip(authorizer, event_ctx, &warehouse).await?;
     }
     Ok((warehouse, tabular_expiration_entities))
 }

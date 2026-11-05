@@ -10,21 +10,10 @@
   "time": "2026-01-01T00:00:00.000000Z",
   "actions": [
     {
-      "action_name": "drop",
-      "force": true,
-      "purge": false
-    },
-    {
       "action_name": "modify_soft_deletion"
     }
   ],
   "entities": [
-    {
-      "entity_type": "table",
-      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
-      "namespace": "sales",
-      "table": "orders"
-    },
     {
       "entity_type": "warehouse",
       "warehouse_id": "019684ff-0000-7000-8000-000000000001"
@@ -37,21 +26,6 @@
   "privilege_source": "authorizer",
   "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
   "authorizations": [
-    {
-      "action": {
-        "action_name": "drop",
-        "force": true,
-        "purge": false
-      },
-      "entity": {
-        "entity_type": "table",
-        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
-        "namespace": "sales",
-        "table": "orders"
-      },
-      "allowed": false,
-      "determined_by": []
-    },
     {
       "action": {
         "action_name": "modify_soft_deletion"
