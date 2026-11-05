@@ -13373,8 +13373,9 @@ components:
     LakekeeperWarehouseActionUpdateStorage:
       type: object
       description: |-
-        Change the warehouse's storage profile. The same request also replaces or clears the
-        storage credential, so it asks `update_storage_credential` as well.
+        Change the warehouse's storage profile, or check the storage it currently runs with. A
+        profile change also replaces or clears the credential, so it asks
+        `update_storage_credential` too.
       required:
         - action
       properties:

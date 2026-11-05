@@ -500,6 +500,10 @@ async fn test_validate_storage_credential_leaves_the_stored_credential_alone(poo
 
     assert!(response.valid, "{:?}", response.checks);
     assert_report_is_exhaustive(&response);
+    assert_eq!(
+        status_of(&response, ValidationCheckName::SpecMutable),
+        ValidationCheckStatus::Passed
+    );
 
     let after = PostgresBackend::get_warehouse_by_id(
         warehouse.warehouse_id,
@@ -514,11 +518,9 @@ async fn test_validate_storage_credential_leaves_the_stored_credential_alone(poo
 }
 
 #[sqlx::test]
-async fn test_validate_endpoints_deny_an_unauthorized_caller(pool: PgPool) {
-    // The entire security argument for these endpoints is "same permission as
-    // the mutation they stand in for" — pin that down rather than assuming it.
+async fn test_validate_warehouse_denies_a_caller_without_create_permission(pool: PgPool) {
     let authz = HidingAuthorizer::new();
-    let (ctx, warehouse) = SetupTestCatalog::builder()
+    let (ctx, _warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
         .storage_profile(memory_io_profile())
         .authorizer(authz.clone())
@@ -530,12 +532,8 @@ async fn test_validate_endpoints_deny_an_unauthorized_caller(pool: PgPool) {
     // Prefix match: the action debug-formats with its `name` field, so block the
     // bare variant name rather than a particular name.
     authz.block_action("project:CreateWarehouse");
-    authz.block_action(&format!(
-        "warehouse:{:?}",
-        CatalogWarehouseAction::UpdateStorage
-    ));
 
-    let create_denied = ApiServer::validate_warehouse(
+    let err = ApiServer::validate_warehouse(
         CreateWarehouseRequest::builder()
             .warehouse_name(format!("denied-{}", Uuid::now_v7()))
             .storage_profile(memory_io_profile())
@@ -543,42 +541,9 @@ async fn test_validate_endpoints_deny_an_unauthorized_caller(pool: PgPool) {
         ctx.clone(),
         random_request_metadata(),
     )
-    .await;
-    assert!(
-        create_denied.is_err(),
-        "validate must not probe storage without create permission"
-    );
-
-    let storage_denied = ApiServer::validate_storage_profile(
-        warehouse.warehouse_id,
-        UpdateWarehouseStorageRequest {
-            storage_profile: memory_io_profile(),
-            storage_credential: None,
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-    assert!(storage_denied.is_err());
-
-    let credential_denied = ApiServer::validate_storage_credential(
-        warehouse.warehouse_id,
-        UpdateWarehouseCredentialRequest {
-            new_storage_credential: None,
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-    assert!(credential_denied.is_err());
-
-    let stored_denied = ApiServer::validate_storage_access(
-        warehouse.warehouse_id,
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-    assert!(stored_denied.is_err());
+    .await
+    .expect_err("validate must not probe storage without create permission");
+    assert_eq!(err.error.code, 403);
 }
 
 /// Refused with the forbidden error that names `action`.

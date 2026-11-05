@@ -868,7 +868,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &context,
             request_metadata,
             update_storage_actions(),
-            true,
+            Some(CatalogWarehouseAction::UpdateStorage),
         )
         .await?;
 
@@ -945,7 +945,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &context,
             request_metadata,
             vec![CatalogWarehouseAction::UpdateStorageCredential],
-            true,
+            Some(CatalogWarehouseAction::UpdateStorageCredential),
         )
         .await?;
 
@@ -974,7 +974,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &context,
             request_metadata,
             vec![CatalogWarehouseAction::UpdateStorage],
-            false,
+            None,
         )
         .await?;
 
@@ -997,9 +997,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ///
     /// Asks the same actions as the mutation each endpoint stands in for, so
     /// validation never widens who can reach the storage backend.
-    /// `check_spec_mutable` should be false for read-only validation: an
-    /// externally managed warehouse is locked against *changes*, which says
-    /// nothing about whether its current configuration works.
+    /// `lock_action` is the action the mutation passes to the spec lock, and
+    /// `None` for read-only validation: an externally managed warehouse is
+    /// locked against *changes*, which says nothing about whether its current
+    /// configuration works.
     ///
     /// Read-only validation also accepts a deactivated warehouse — "does this
     /// warehouse's storage still work" is most often asked precisely because
@@ -1010,7 +1011,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: &ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
         actions: Vec<CatalogWarehouseAction>,
-        check_spec_mutable: bool,
+        lock_action: Option<CatalogWarehouseAction>,
     ) -> Result<(ArcRequestMetadata, ArcResolvedWarehouse, ValidationCheck)> {
         let event_ctx = APIEventContext::for_warehouse(
             Arc::new(request_metadata),
@@ -1018,7 +1019,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             warehouse_id,
             actions,
         );
-        let status_filter = if check_spec_mutable {
+        let status_filter = if lock_action.is_some() {
             WarehouseStatus::active()
         } else {
             WarehouseStatus::active_and_inactive()
@@ -1046,11 +1047,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // anything; report that as a check rather than a rejection, so a locked
         // warehouse produces `valid: false` instead of a misleading green.
         // Reported, not emitted as an authz failure — a dry run is not a denial.
-        let lock_action = event_ctx
-            .action()
-            .iter()
-            .find(|action| action.is_spec_mutation())
-            .filter(|_| check_spec_mutable);
         let Some(lock_action) = lock_action else {
             return Ok((
                 event_ctx.request_metadata_arc(),
@@ -1069,7 +1065,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog.clone()).await?;
         let mutable = C::ensure_warehouse_spec_mutable(
             warehouse_id,
-            lock_action,
+            &lock_action,
             event_ctx
                 .request_metadata()
                 .bypasses_control_plane_authz(None),

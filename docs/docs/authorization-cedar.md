@@ -1293,7 +1293,7 @@ Grant administration and policy administration stand outside every `<Level>Actio
 
 The **Group** column below names the narrowest group an action is in. An action marked "none" is in no group: a policy reaches it by naming it, or by leaving `action` unconstrained.
 
-One action is also a group: `UpdateStorage` holds `UpdateStorageCredential`. So `action in [Lakekeeper::Action::"UpdateStorage"]` allows changing the storage profile and replacing the credential, and `action == Lakekeeper::Action::"UpdateStorageCredential"` allows replacing the credential only. `action == Lakekeeper::Action::"UpdateStorage"` matches that one action and not the action it holds, so write `in` when you mean both.
+One action is also a group: `UpdateStorage` holds `UpdateStorageCredential`. Replacing the storage credential asks `UpdateStorageCredential`. Changing the storage profile asks both actions, because it replaces the credential too. A permit with `action in [Lakekeeper::Action::"UpdateStorage"]` allows both operations. A permit with `action == Lakekeeper::Action::"UpdateStorageCredential"` allows replacing the credential only. Write `in` for `UpdateStorage`, not `==`: `action == Lakekeeper::Action::"UpdateStorage"` does not match `UpdateStorageCredential`, so a permit written that way allows neither operation, and a forbid written that way does not stop credential replacement.
 
 ### Server Actions
 
@@ -1375,7 +1375,7 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `GetWarehouseEndpointStatistics` | `get_endpoint_statistics` | `WarehouseDescribeActions` | View API usage statistics for the warehouse |
 | `CreateNamespaceInWarehouse` | `create_namespace` | `WarehouseCreateActions` | Create a namespace directly in the warehouse |
 | `DeleteWarehouse` | `delete` | `WarehouseModifyActions` | Delete the warehouse |
-| `UpdateStorage` | `update_storage` | `WarehouseModifyActions` | Change the storage profile. This also replaces or clears the storage credential, so the request also asks `UpdateStorageCredential`. `UpdateStorage` is also a group that holds `UpdateStorageCredential` |
+| `UpdateStorage` | `update_storage` | `WarehouseModifyActions` | Change the storage profile. The request also replaces or clears the storage credential, so it asks `UpdateStorageCredential` too |
 | `UpdateStorageCredential` | `update_storage_credential` | `UpdateStorage` | Replace or clear the storage credential, and leave the storage profile as it is |
 | `DeactivateWarehouse` | `deactivate` | `WarehouseModifyActions` | Deactivate the warehouse (suspend operations) |
 | `ActivateWarehouse` | `activate` | `WarehouseModifyActions` | Activate a deactivated warehouse |

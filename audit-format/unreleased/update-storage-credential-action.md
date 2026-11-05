@@ -13,6 +13,6 @@ POST …/warehouse/{id}/storage/validate-profile    update_storage    update_sto
 POST …/warehouse/{id}/storage/validate-access     update_storage    update_storage
 ```
 
-A record with both actions has two entries in `actions` and one entry per action in `authorizations`. If the request is denied, both entries have `allowed: false`; the `error` message names the action that was refused.
+A record with both actions has two entries in `actions` and one entry per action in `authorizations`. If the request is denied, both entries have `allowed: false`, and the `error` message names the action that was refused. If an error stopped the evaluation, neither entry has `allowed`.
 
 **What to do:** If a rule finds credential replacements by `update_storage`, match `update_storage_credential` as well. If a rule reads only the first entry of `actions`, read all entries.
