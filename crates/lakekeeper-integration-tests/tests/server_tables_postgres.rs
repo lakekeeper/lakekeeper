@@ -4077,6 +4077,81 @@ async fn test_register_table_returns_not_found_to_a_caller_who_cannot_see_the_ta
     assert_eq!(load_err.error.message, err.error.message);
 }
 
+/// A register that fails after its commit leaves the table registered. A replay with the same
+/// idempotency key returns what `loadTable` returns, and a retry without a key is a conflict.
+#[sqlx::test]
+async fn test_register_table_replay_after_a_failure_after_the_commit(pool: PgPool) {
+    use lakekeeper::service::idempotency::IdempotencyKey;
+
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    let get_metadata = format!("table:{:?}", CatalogTableAction::GetMetadata);
+    authz.block_action(&get_metadata);
+
+    let mut with_key = RequestMetadata::new_unauthenticated();
+    with_key.with_idempotency_key(IdempotencyKey::parse(&Uuid::now_v7().to_string()).unwrap());
+    let register = |request_metadata: RequestMetadata| {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("adopted".to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            request_metadata,
+        )
+    };
+    let load = || {
+        CatalogServer::load_table(
+            TableParameters {
+                prefix: Some(prefix.clone()),
+                table: TableIdent::new(ns_params.namespace.clone(), "adopted".to_string()),
+            },
+            LoadTableRequest::default(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let failed = register(with_key.clone()).await.unwrap_err();
+    assert_eq!(failed.error.code, StatusCode::NOT_FOUND, "{failed:?}");
+    assert_eq!(failed.error.r#type, "NoSuchTableException");
+
+    let replayed = register(with_key.clone()).await.unwrap_err();
+    let refused_load = load().await.unwrap_err();
+    assert_eq!(replayed.error.code, StatusCode::NOT_FOUND, "{replayed:?}");
+    assert_eq!(replayed.error.r#type, "NoSuchTableException");
+    assert_eq!(replayed.error.message, refused_load.error.message);
+
+    let retried = register(RequestMetadata::new_unauthenticated())
+        .await
+        .unwrap_err();
+    assert_eq!(retried.error.code, StatusCode::CONFLICT, "{retried:?}");
+    assert_eq!(retried.error.r#type, "AlreadyExistsException");
+
+    authz.unblock_action(&get_metadata);
+    let replayed = register(with_key)
+        .await
+        .expect("the replay loads the table once the caller may see it");
+    let LoadTableResultOrNotModified::LoadTableResult(loaded) = load().await.unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    assert_eq!(replayed.metadata_location, loaded.metadata_location);
+    assert!(replayed.etag.is_some());
+    assert_eq!(replayed.etag, loaded.etag);
+}
+
 #[sqlx::test]
 async fn test_register_table_vends_read_write_to_a_reader_and_writer(pool: PgPool) {
     assert_register_vends_as_load(pool, &[]).await;
