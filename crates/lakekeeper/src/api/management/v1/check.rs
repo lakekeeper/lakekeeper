@@ -600,7 +600,6 @@ impl GroupedChecks {
 }
 
 /// Group checks by resource type and prepare result slots
-#[allow(clippy::too_many_lines)]
 fn group_checks(
     checks: Vec<CatalogActionCheckItem>,
     metadata: &RequestMetadata,
@@ -616,13 +615,14 @@ fn group_checks(
         });
         let for_user = check.identity;
 
-        match check.operation {
+        let (tabular, tabular_check) = match check.operation {
             CatalogActionCheckOperation::Server { action } => {
                 grouped
                     .server_checks
                     .entry(for_user)
                     .or_default()
                     .push((i, action));
+                continue;
             }
             CatalogActionCheckOperation::Project { action, project_id } => {
                 let project_id = metadata.require_project_id(project_id)?;
@@ -633,6 +633,7 @@ fn group_checks(
                     .entry(for_user)
                     .or_default()
                     .push((i, action));
+                continue;
             }
             CatalogActionCheckOperation::Warehouse {
                 action,
@@ -644,6 +645,7 @@ fn group_checks(
                     .entry((warehouse_id, for_user))
                     .or_default()
                     .push((i, action));
+                continue;
             }
             CatalogActionCheckOperation::Namespace { action, namespace } => {
                 grouped.seen_warehouse_ids.insert(namespace.warehouse_id());
@@ -673,129 +675,94 @@ fn group_checks(
                             .push((i, action));
                     }
                 }
+                continue;
             }
             CatalogActionCheckOperation::Table { action, table } => {
-                grouped.seen_warehouse_ids.insert(table.warehouse_id());
-                match table {
-                    TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id,
-                        table_id,
-                    } => {
-                        let tabular_id = TabularId::Table(table_id.into());
-                        grouped
-                            .tabular_checks_by_id
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_id)
-                            .or_default()
-                            .push((i, (Some(action), None, None)));
-                    }
-                    TabularIdentOrUuid::Name {
-                        namespace,
-                        table: table_name,
-                        warehouse_id,
-                    } => {
-                        let tabular_ident =
-                            TabularIdentOwned::Table(TableIdent::new(namespace, table_name));
-                        grouped
-                            .tabular_checks_by_ident
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_ident)
-                            .or_default()
-                            .push((i, (Some(action), None, None)));
-                    }
-                }
+                (table, TabularCheck::Table(action))
             }
             CatalogActionCheckOperation::View { action, view } => {
-                group_view_check(&mut grouped, i, for_user, view, ViewCheck::Action(action));
+                (view, TabularCheck::View(ViewCheck::Action(action)))
             }
             CatalogActionCheckOperation::ViewInDefinerView { view } => {
-                group_view_check(&mut grouped, i, for_user, view, ViewCheck::InDefinerView);
+                (view, TabularCheck::View(ViewCheck::InDefinerView))
             }
             CatalogActionCheckOperation::ViewReplace { view } => {
-                group_view_check(&mut grouped, i, for_user, view, ViewCheck::Replace);
+                (view, TabularCheck::View(ViewCheck::Replace))
             }
             CatalogActionCheckOperation::GenericTable {
                 action,
                 generic_table,
-            } => {
-                grouped
-                    .seen_warehouse_ids
-                    .insert(generic_table.warehouse_id());
-                match generic_table {
-                    TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id,
-                        table_id,
-                    } => {
-                        let tabular_id = TabularId::GenericTable(table_id.into());
-                        grouped
-                            .tabular_checks_by_id
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_id)
-                            .or_default()
-                            .push((i, (None, None, Some(action))));
-                    }
-                    TabularIdentOrUuid::Name {
-                        namespace,
-                        table: gt_name,
-                        warehouse_id,
-                    } => {
-                        let tabular_ident =
-                            TabularIdentOwned::GenericTable(TableIdent::new(namespace, gt_name));
-                        grouped
-                            .tabular_checks_by_ident
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_ident)
-                            .or_default()
-                            .push((i, (None, None, Some(action))));
-                    }
-                }
-            }
-        }
+            } => (generic_table, TabularCheck::GenericTable(action)),
+        };
+        group_tabular_check(&mut grouped, i, for_user, tabular, tabular_check);
     }
 
     Ok((grouped, results))
 }
 
-fn group_view_check(
+/// A requested check on a table, view or generic table.
+enum TabularCheck {
+    Table(CatalogTableAction),
+    View(ViewCheck),
+    GenericTable(CatalogGenericTableAction),
+}
+
+impl TabularCheck {
+    fn tabular_id(&self, id: uuid::Uuid) -> TabularId {
+        match self {
+            Self::Table(_) => TabularId::Table(id.into()),
+            Self::View(_) => TabularId::View(id.into()),
+            Self::GenericTable(_) => TabularId::GenericTable(id.into()),
+        }
+    }
+
+    fn tabular_ident(&self, ident: TableIdent) -> TabularIdentOwned {
+        match self {
+            Self::Table(_) => TabularIdentOwned::Table(ident),
+            Self::View(_) => TabularIdentOwned::View(ident),
+            Self::GenericTable(_) => TabularIdentOwned::GenericTable(ident),
+        }
+    }
+
+    fn into_pair(self) -> TabularActionPair {
+        match self {
+            Self::Table(action) => (Some(action), None, None),
+            Self::View(view_check) => (None, Some(view_check), None),
+            Self::GenericTable(action) => (None, None, Some(action)),
+        }
+    }
+}
+
+fn group_tabular_check(
     grouped: &mut GroupedChecks,
     i: usize,
     for_user: Option<UserOrRole>,
-    view: TabularIdentOrUuid,
-    view_check: ViewCheck,
+    tabular: TabularIdentOrUuid,
+    check: TabularCheck,
 ) {
-    grouped.seen_warehouse_ids.insert(view.warehouse_id());
-    match view {
+    grouped.seen_warehouse_ids.insert(tabular.warehouse_id());
+    match tabular {
         TabularIdentOrUuid::IdInWarehouse {
             warehouse_id,
             table_id,
-        } => {
-            let tabular_id = TabularId::View(table_id.into());
-            grouped
-                .tabular_checks_by_id
-                .entry((warehouse_id, for_user))
-                .or_default()
-                .entry(tabular_id)
-                .or_default()
-                .push((i, (None, Some(view_check), None)));
-        }
+        } => grouped
+            .tabular_checks_by_id
+            .entry((warehouse_id, for_user))
+            .or_default()
+            .entry(check.tabular_id(table_id))
+            .or_default()
+            .push((i, check.into_pair())),
         TabularIdentOrUuid::Name {
             namespace,
-            table: view_name,
+            table,
             warehouse_id,
-        } => {
-            let tabular_ident = TabularIdentOwned::View(TableIdent::new(namespace, view_name));
-            grouped
-                .tabular_checks_by_ident
-                .entry((warehouse_id, for_user))
-                .or_default()
-                .entry(tabular_ident)
-                .or_default()
-                .push((i, (None, Some(view_check), None)));
-        }
+        } => grouped
+            .tabular_checks_by_ident
+            .entry((warehouse_id, for_user))
+            .or_default()
+            .entry(check.tabular_ident(TableIdent::new(namespace, table)))
+            .or_default()
+            .push((i, check.into_pair())),
     }
 }
 
