@@ -183,6 +183,18 @@ paths:
           required: true
           schema:
             type: string
+        - name: purgeRequested
+          in: query
+          description: If true, delete all files under the location of the generic table. In a warehouse with soft deletion, they are deleted when the soft deletion expires. Defaults to `true`.
+          required: false
+          schema:
+            type: boolean
+        - name: force
+          in: query
+          description: If true, drop the generic table even if it is protected. In a warehouse with soft deletion, the generic table is also deleted at once, which needs permission to change the soft-deletion settings of the warehouse. Defaults to `false`.
+          required: false
+          schema:
+            type: boolean
       responses:
         '204':
           description: Generic table dropped successfully
