@@ -1820,9 +1820,9 @@ async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: 
     assert_eq!(setup.commit("staged", vec![set_owner()]).await, Ok(()));
 }
 
-/// With an authorizer that allows data commits only, as `write_data` does, batch-check and
-/// the server agree: a data commit to a live table is allowed, and the same commit to a
-/// staged table is refused, because it finishes the table's creation.
+/// With an authorizer that allows data commits only, as a policy on the data-commit context
+/// can, batch-check and the server agree: a data commit to a live table is allowed, and the
+/// same commit to a staged table is refused, because it finishes the table's creation.
 #[sqlx::test]
 async fn test_check_internal_data_commit_decides_as_the_server(pool: sqlx::PgPool) {
     let setup = StagedAndLive::new(pool).await;

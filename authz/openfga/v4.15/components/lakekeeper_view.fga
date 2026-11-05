@@ -28,6 +28,8 @@ type lakekeeper_view
     # ------------------ Actions ------------------
     define can_drop: modify_effective
     define can_undrop: modify_effective
+    # A view commit replaces the definition, which changes what every reader of the view
+    # gets. It stays with `modify`; the write tier does not reach it.
     define can_commit: modify_effective
     define can_get_metadata: describe_effective
     define can_select: select_effective

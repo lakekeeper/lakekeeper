@@ -316,45 +316,53 @@ tuples:
     relation: create
     object: namespace:namespace_1_3
 
-  # `write_data` grants: on a namespace (reaching table_3, view_1 and generic_table_1 below
-  # namespace_1_2), on a single deep table, on a warehouse and on a project.
+  # `write` grants, stored as `write_content`: on a namespace (reaching table_3, view_1 and
+  # generic_table_1 below namespace_1_2), on a single deep table, on a warehouse and on a
+  # project.
   - user: user:namespace_1_1_writer
-    relation: write_data
+    relation: write_content
     object: namespace:namespace_1_1
   - user: user:table_3_writer
-    relation: write_data
+    relation: write_content
     object: lakekeeper_table:warehouse_1/table_3
   - user: user:warehouse_1_writer
-    relation: write_data
+    relation: write_content
     object: warehouse:warehouse_1
   - user: user:project_1_writer
-    relation: write_data
+    relation: write_content
     object: project:project_1
   - user: user:warehouse_1_grant_admin
     relation: manage_grants
     object: warehouse:warehouse_1
   - user: user:table_3_write_delegator
-    relation: write_data
+    relation: write_content
     object: lakekeeper_table:warehouse_1/table_3
   - user: user:table_3_write_delegator
     relation: pass_grants
     object: lakekeeper_table:warehouse_1/table_3
   - user: user:namespace_2_1_writer
-    relation: write_data
+    relation: write_content
     object: namespace:namespace_2_1
-  # `write_data` through a role: the member writes, the role grants nothing more.
+  # `write` through a role: the member writes, the role grants nothing more.
   - user: user:warehouse_1_role_writer
     relation: assignee
     object: role:warehouse_1_writers
   - user: role:warehouse_1_writers#assignee
-    relation: write_data
+    relation: write_content
     object: warehouse:warehouse_1
   - user: user:table_2_2_write_delegator
-    relation: write_data
+    relation: write_content
     object: lakekeeper_table:warehouse_2/table_2_2
   - user: user:table_2_2_write_delegator
     relation: pass_grants
     object: lakekeeper_table:warehouse_2/table_2_2
+  # `modify` with `pass_grants`: delegates every weaker tier.
+  - user: user:namespace_1_modify_delegator
+    relation: modify
+    object: namespace:namespace_1
+  - user: user:namespace_1_modify_delegator
+    relation: pass_grants
+    object: namespace:namespace_1
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
     check:
@@ -2294,115 +2302,140 @@ tests:
         assertions:
           manage_grants: false
           can_move: false
-  - name: write_data changes data but not structure, and never drops, renames or protects
+  - name: write (stored as write_content) commits everything, and never drops, renames or protects
     check:
       - user: user:namespace_1_1_writer
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
-          write_data: false            # granted on the namespace, not here
-          write_data_effective: true
+          write_content: false         # granted on the namespace, not here
+          write_content_effective: true
           can_write_data: true
-          can_commit_data: true
-          can_read_data: true          # write_data implies select
+          can_read_data: true          # write implies select
           can_get_metadata: true
-          can_commit: false            # schema, properties, expiry need modify
+          can_commit: true             # every commit: data, schema, properties, expiry
           can_drop: false
           can_undrop: false
           can_rename: false
           can_move: false
           can_set_protection: false
           can_control_tasks: false
-          can_grant_write_data: false  # holding write_data is not delegating it
+          can_manage_tags: false
+          modify_effective: false
+          can_grant_write_content: false  # holding write is not delegating it
       - user: user:namespace_1_1_writer
         object: lakekeeper_generic_table:warehouse_1/generic_table_1
         assertions:
           can_write_data: true
           can_read_data: true
           can_drop: false
+          can_undrop: false
           can_rename: false
+          can_set_protection: false
+          can_control_tasks: false
       - user: user:namespace_1_1_writer
         object: lakekeeper_view:warehouse_1/view_1
         assertions:
-          # A view has no data to write; a namespace `write_data` still reads it.
+          # A view commit replaces the definition and stays with modify; a namespace
+          # `write` still reads the view.
           can_select: true
+          can_get_metadata: true
           can_commit: false
           can_drop: false
+          can_rename: false
       - user: user:namespace_1_1_writer
         object: namespace:namespace_1_2
         assertions:
-          write_data_effective: true
-          can_create_table: false      # write_data is not create
+          write_content_effective: true
+          can_create_table: false      # write is not create
           can_delete: false
-          can_update_properties: false
+          can_update_properties: false # namespace properties stay with modify
+          can_set_protection: false
       - user: user:namespace_1_1_writer
         object: namespace:namespace_1_1
         assertions:
-          write_data: true
+          write_content: true
           visible_below: true
       - user: user:warehouse_1_modify_only
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
-          # modify implies write_data.
-          write_data_effective: true
-          can_commit_data: true
+          # modify implies write.
+          write_content: false
+          write_content_effective: true
           can_commit: true
-  - name: write_data flows down from the warehouse and the project
+          can_drop: true
+      - user: user:view_1_modify_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_commit: true
+  - name: write flows down from the warehouse and the project
     check:
       - user: user:warehouse_1_writer
         object: lakekeeper_table:warehouse_1/table_1
         assertions:
           can_write_data: true
-          can_commit_data: true
-          can_commit: false
+          can_commit: true
           can_drop: false
+      - user: user:warehouse_1_writer
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          can_select: true
+          can_commit: false
       - user: user:warehouse_1_writer
         object: warehouse:warehouse_1
         assertions:
-          write_data: true
+          write_content: true
           can_use: true
           can_create_namespace: false
           can_delete: false
+          can_rename: false
           can_update_storage: false
+          can_update_storage_credential: false
+          can_modify_soft_deletion: false
+          can_control_all_tasks: false
+          can_modify_task_queue_config: false
       - user: user:project_1_writer
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
-          write_data_effective: true
+          write_content_effective: true
           can_write_data: true
-          can_commit: false
+          can_commit: true
+          can_drop: false
       - user: user:project_1_writer
         object: project:project_1
         assertions:
-          write_data: true
+          write_content: true
           select_effective: true
           can_create_warehouse: false
           can_delete: false
-  - name: write_data through a role works like a direct grant
+          can_rename: false
+          can_control_project_tasks: false
+  - name: write through a role works like a direct grant
     check:
       - user: user:warehouse_1_role_writer
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
-          write_data_effective: true
+          write_content_effective: true
           can_write_data: true
-          can_commit_data: true
           can_read_data: true
-          can_commit: false
+          can_commit: true
           can_drop: false
           can_rename: false
           can_set_protection: false
-          can_grant_write_data: false
+          can_grant_write_content: false
       - user: user:warehouse_1_role_writer
         object: warehouse:warehouse_1
         assertions:
           can_create_namespace: false
           can_delete: false
           manage_grants: false
-  - name: write_data on a deep table bubbles up for navigation
+  - name: write on a deep table bubbles up for navigation
     check:
       - user: user:table_3_writer
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
           visible_below: true
           can_write_data: true
+          can_commit: true
           can_drop: false
       - user: user:table_3_writer
         object: namespace:namespace_1_1
@@ -2420,47 +2453,80 @@ tests:
         object: lakekeeper_table:warehouse_1/table_1
         assertions:
           can_write_data: false        # a sibling is not covered
-  - name: write_data is granted and revoked like the other privileges
+          can_commit: false
+  - name: write is granted and revoked like the other privileges
     check:
       - user: user:warehouse_1_grant_admin
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
-          can_grant_write_data: true
-          can_revoke_write_data: true
-  - name: write_data is delegated with pass_grants like select, never as modify
+          can_grant_write_content: true
+          can_revoke_write_content: true
+          can_read_assignments: true
+      - user: user:warehouse_1_grant_admin
+        object: namespace:namespace_1_1
+        assertions:
+          can_grant_write_content: true
+          can_revoke_write_content: true
+      - user: user:warehouse_1_grant_admin
+        object: warehouse:warehouse_1
+        assertions:
+          can_grant_write_content: true
+          can_revoke_write_content: true
+      - user: user:warehouse_1_grant_admin
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_grant_write_content: true
+          can_revoke_write_content: true
+      - user: user:project_1_security_admin
+        object: project:project_1
+        assertions:
+          can_grant_write_content: true
+      - user: user:project_1_writer
+        object: project:project_1
+        assertions:
+          can_grant_write_content: false
+  - name: write is delegated with pass_grants like select, never as modify
     check:
       - user: user:table_3_write_delegator
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
-          can_grant_write_data: true
+          can_grant_write_content: true
           can_grant_select: true
           can_grant_describe: true
           can_grant_modify: false
-          can_revoke_write_data: false # taking back needs manage_grants
-  - name: write_data under managed access is delegated like select, and an owner grants nothing
+          can_revoke_write_content: false # taking back needs manage_grants
+          can_read_assignments: true
+      - user: user:namespace_1_modify_delegator
+        object: namespace:namespace_1
+        assertions:
+          # modify with pass_grants passes the weaker write tier too.
+          can_grant_modify: true
+          can_grant_write_content: true
+          can_grant_select: true
+          can_revoke_write_content: false
+  - name: write under managed access is delegated like select, and an owner grants nothing
     check:
       - user: user:namespace_2_1_writer
         object: lakekeeper_table:warehouse_2/table_2_2
         assertions:
           can_write_data: true
-          can_commit_data: true
-          can_commit: false
+          can_commit: true
           can_drop: false
-          can_grant_write_data: false
+          can_grant_write_content: false
           can_move: false
       - user: user:table_2_2_write_delegator
         object: lakekeeper_table:warehouse_2/table_2_2
         assertions:
-          can_grant_write_data: true   # managed access keeps pass_grants delegation
+          can_grant_write_content: true   # managed access keeps pass_grants delegation
           can_grant_select: true
           can_grant_modify: false
       - user: user:namespace_2_1_owner
         object: lakekeeper_table:warehouse_2/table_2_2
         assertions:
-          write_data_effective: true   # ownership implies write_data
-          manage_grants: false         # managed access strips the owner's grant authority
-          can_grant_write_data: false
+          write_content_effective: true   # ownership implies write
+          manage_grants: false            # managed access strips the owner's grant authority
+          can_grant_write_content: false
       - user: user:namespace_1_1_owner
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
-          can_grant_write_data: true   # outside managed access, the owner grants it
+          can_grant_write_content: true   # outside managed access, the owner grants it

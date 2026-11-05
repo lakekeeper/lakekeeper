@@ -184,25 +184,24 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         }),
         "manage_tags" => ("metadata", {
             "Attach and detach governance tags on this object, its columns, and everything \
-             beneath it. Independent of `modify`, so a steward can classify objects without \
-             the right to change them. Attaching a specific tag additionally requires the \
-             right to apply that tag."
+             beneath it. Independent of `write` and `modify`, so a steward can classify \
+             objects without the right to change them. Attaching a specific tag \
+             additionally requires the right to apply that tag."
         }),
         "describe" => ("metadata", "Read the object's metadata."),
         "select" => ("read", "Read the object's data."),
         "create" => ("create", "Create new objects inside this one."),
-        "write_data" => ("write", {
-            "Write the data of tables: add snapshots, create and move branches and tags, \
-             set their retention, and record statistics. Snapshot expiry follows that \
-             retention. Does not change a table's schema, partitioning, sort order or \
-             properties, expire its snapshots or remove its branches and tags, and does \
-             not drop, rename or protect anything. Gives write and delete access to the \
-             files of tables and generic tables, so for a generic table it changes everything \
-             stored in its files."
+        "write" => ("write", {
+            "Change tables: commit data, schema, partitioning, sort order and properties, \
+             manage branches and tags, and expire snapshots. Gives write and delete access \
+             to the files of tables and generic tables. Does not change views, and does not \
+             drop, rename, move or protect anything."
         }),
         "modify" => ("write", {
-            "Change the object and its contents, including schema changes, properties and \
-             snapshot expiry, and drop, rename or protect it."
+            "Everything `write` allows, plus changing views, dropping, undropping, renaming \
+             and protecting objects, and controlling their tasks. On a namespace, warehouse \
+             or project, also deleting it and changing its properties and settings. Does \
+             not include `create`."
         }),
         // Tag definitions.
         "apply" => ("metadata", {
@@ -814,7 +813,7 @@ mod tests {
                 "describe",
                 "select",
                 "create",
-                "write_data",
+                "write",
                 "modify",
                 "manage_tags"
             ]
@@ -838,6 +837,46 @@ mod tests {
         );
     }
 
+    /// The write tier is granted and listed as `write` and stored under a relation name of
+    /// its own at every level that has it.
+    #[test]
+    fn write_is_stored_as_write_content() {
+        for resource_type in [
+            ResourceType::Project,
+            ResourceType::Warehouse,
+            ResourceType::Namespace,
+            ResourceType::Table,
+            ResourceType::GenericTable,
+        ] {
+            assert_eq!(
+                assignment_relation(resource_type, "write"),
+                Some("write_content".to_string()),
+                "{resource_type:?}"
+            );
+            assert_eq!(
+                privilege_of_relation(resource_type, "write_content"),
+                Some("write".to_string()),
+                "{resource_type:?}"
+            );
+            assert_eq!(
+                authority_relation(resource_type, "write", GrantOp::Grant),
+                Some("can_grant_write_content".to_string()),
+                "{resource_type:?}"
+            );
+            for unknown in ["write_data", "write_content"] {
+                assert!(
+                    !is_known_privilege(resource_type, unknown),
+                    "{unknown} on {resource_type:?}"
+                );
+            }
+        }
+        assert_eq!(
+            authority_relation(ResourceType::Table, "write", GrantOp::Revoke),
+            Some("can_revoke_write_content".to_string())
+        );
+        assert!(!is_known_privilege(ResourceType::View, "write"));
+    }
+
     /// Only the privileges `pass_grants` can delegate have an asymmetric rule. For the
     /// rest, granting is already `manage_grants`-only, so both directions name one
     /// relation and the model needs no second action.
@@ -850,7 +889,7 @@ mod tests {
                 "{privilege} is not delegable, so its two directions share a relation"
             );
         }
-        for privilege in ["describe", "select", "create", "write_data", "modify"] {
+        for privilege in ["describe", "select", "create", "write", "modify"] {
             assert_ne!(
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Grant),
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Revoke),

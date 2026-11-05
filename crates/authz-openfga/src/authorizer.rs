@@ -2635,11 +2635,10 @@ pub(crate) mod tests {
             )));
         }
 
-        /// A `write_data` grant on a namespace lets a principal write data to a table below it
-        /// and commit snapshots, refs and statistics, but not change the table's
-        /// structure, properties or history, nor drop, rename or protect it.
+        /// A `write` grant on a namespace lets a principal make every commit to a table below
+        /// it and write its files, but not drop, rename, protect it or control its tasks.
         #[tokio::test]
-        async fn test_write_data_commits_data_but_not_structure() {
+        async fn test_write_commits_everything_but_never_drops() {
             use lakekeeper::service::authz::{CatalogTableAction, CommitFacts, TableUpdateKind};
 
             let authorizer = new_authorizer_in_empty_store().await;
@@ -2665,7 +2664,7 @@ pub(crate) mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: format!("user:{writer}"),
-                        relation: NamespaceRelation::WriteData.to_string(),
+                        relation: NamespaceRelation::WriteContent.to_string(),
                         object: format!("namespace:{namespace_id}"),
                         condition: None,
                     }]),
@@ -2684,51 +2683,41 @@ pub(crate) mod tests {
                     .await
                     .unwrap()
             };
-            let commit = |kinds: &[TableUpdateKind]| CatalogTableAction::Commit {
+            let commit = |kinds: &[TableUpdateKind], commit_facts| CatalogTableAction::Commit {
                 updated_properties: Arc::default(),
                 removed_properties: Arc::default(),
                 target_refs: Arc::default(),
                 update_kinds: Arc::new(kinds.iter().copied().collect()),
-                commit_facts: CommitFacts::live_check_for_tests(),
+                commit_facts,
             };
 
-            for kinds in [
-                vec![
-                    TableUpdateKind::AddSnapshot,
-                    TableUpdateKind::SetSnapshotRef,
-                ],
-                vec![TableUpdateKind::SetStatistics],
+            for commit_facts in [
+                CommitFacts::live_check_for_tests(),
+                CommitFacts::live_request_for_tests(),
+                CommitFacts::staged_request_for_tests(),
             ] {
-                assert!(allowed(commit(&kinds)).await, "{kinds:?} is a data commit");
+                for kinds in [
+                    vec![
+                        TableUpdateKind::AddSnapshot,
+                        TableUpdateKind::SetSnapshotRef,
+                    ],
+                    vec![
+                        TableUpdateKind::AddSchema,
+                        TableUpdateKind::SetCurrentSchema,
+                    ],
+                    vec![TableUpdateKind::AddSnapshot, TableUpdateKind::SetProperties],
+                    vec![
+                        TableUpdateKind::RemoveSnapshots,
+                        TableUpdateKind::RemoveSnapshotRef,
+                    ],
+                    vec![],
+                ] {
+                    assert!(
+                        allowed(commit(&kinds, commit_facts)).await,
+                        "{kinds:?} with {commit_facts:?}"
+                    );
+                }
             }
-            for kinds in [
-                vec![
-                    TableUpdateKind::AddSchema,
-                    TableUpdateKind::SetCurrentSchema,
-                ],
-                vec![TableUpdateKind::AddSnapshot, TableUpdateKind::SetProperties],
-                vec![TableUpdateKind::RemoveSnapshots],
-                // Names no update, so it asks about commits in general.
-                vec![],
-            ] {
-                assert!(!allowed(commit(&kinds)).await, "{kinds:?} needs modify");
-            }
-            // A check that changes properties without naming kinds, as an engine's
-            // access-control bridge may send it.
-            assert!(
-                !allowed(CatalogTableAction::Commit {
-                    updated_properties: Arc::new(std::collections::BTreeMap::from([(
-                        "write.format.default".to_string(),
-                        "orc".to_string()
-                    )])),
-                    removed_properties: Arc::default(),
-                    target_refs: Arc::default(),
-                    update_kinds: Arc::default(),
-                    commit_facts: CommitFacts::live_check_for_tests(),
-                })
-                .await,
-                "changing properties needs modify"
-            );
             assert!(allowed(CatalogTableAction::WriteData).await);
             assert!(allowed(CatalogTableAction::ReadData).await);
             for action in [
@@ -2739,6 +2728,7 @@ pub(crate) mod tests {
                 CatalogTableAction::Rename,
                 CatalogTableAction::SetProtection,
                 CatalogTableAction::Undrop,
+                CatalogTableAction::ControlTasks,
             ] {
                 assert!(!allowed(action.clone()).await, "{action:?} needs modify");
             }
