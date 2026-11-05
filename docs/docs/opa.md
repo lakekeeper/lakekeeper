@@ -240,7 +240,7 @@ The OPA bridge forwards resource names, paths and other context to Lakekeeper's 
 | `CreateView` / `CreateMaterializedView` | `create_view` (namespace) | View name |
 | `RenameTable` / `RenameView` into another schema | `move` (table or view) and `accept_moved_tabular` (destination namespace) | `move` carries the destination namespace path, `accept_moved_tabular` the source namespace path |
 | `CreateTable`, if a table with the name exists | `commit` (that table) | Table name and target ref `main` |
-| `CreateView`, if a view with the name exists | `commit` (that view) | View name |
+| `CreateView`, if a view with the name exists | `commit` (that view), and `change_security_mode` if the view runs as another user | View name |
 | `DropTable` | `drop` (table) | `purge: true` |
 | `DropView` | `drop` (view) | `purge: true` |
 | `DropSchema` | `delete` (namespace) | `recursive: true` and `purge: true` |
@@ -258,7 +258,7 @@ The table procedures `expire_snapshots` and `remove_orphan_files` also delete fi
 Trino asks for the same permission to create a table as to replace it with `CREATE OR REPLACE TABLE`. The same is true for views and `CREATE OR REPLACE VIEW`. So when a user creates a table or view, the bridge also checks if one with this name already exists in the schema:
 
 - For `CREATE TABLE` and `CREATE TABLE AS`, the bridge looks for a table with this name. If there is none, the user needs only `create_table` on the namespace. If there is one, the user also needs `commit` on that table, because replacing gives the table a new schema, new partitioning, new properties and new data.
-- For `CREATE VIEW`, the bridge looks for a view with this name. If there is none, the user needs only `create_view` on the namespace. If there is one, the user also needs `commit` on that view, because replacing gives the view a new definition.
+- For `CREATE VIEW`, the bridge looks for a view with this name. If there is none, the user needs only `create_view` on the namespace. If there is one, the user also needs `commit` on that view, because replacing gives the view a new definition. If that view runs as another user, because its `trino.run-as-owner` names someone else, the user also needs `change_security_mode` on it: Trino does not tell the bridge whether the new view runs as its owner or as the caller. Lakekeeper itself checks a commit that makes a view run as its owner, see [Property Protection](./view-security.md#property-protection).
 
 A table or view that was dropped and can still be restored does not count.
 
@@ -281,6 +281,6 @@ The bridge allows Trino's `add_files` table procedure for users who may commit a
 
 ## Deployment
 
-Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older servers deny these requests: with new policies on an older server, a DEFINER view of another user fails if it reads another view.
+Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older servers deny these requests: with new policies on an older server, a DEFINER view of another user fails if it reads another view, and every `CREATE VIEW` fails. Policies of earlier releases ask only `commit` to replace a view, so upgrade the policies before you grant `write` on views.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).

@@ -493,7 +493,7 @@ Each `determined_by` element is a flat object. Its `type` names the kind:
 
 A field with no value is left out, never written as `null`. This holds everywhere in a record.
 
-**Caller and checked principal.** The top-level `actor` is always the *caller* (the bearer token holder). `authorizations[].for_principal` is *whose permissions were checked*. Usually they are the same and `for_principal` is left out. For a call like `GET /lakekeeper/v1/permissions/...?for-user=X`, the actor is the caller and every entry's `for_principal` is `X`.
+**Caller and checked principal.** The top-level `actor` is always the *caller* (the bearer token holder). `authorizations[].for_principal` is *whose permissions were checked*. Usually they are the same and `for_principal` is left out. For a call like `GET /lakekeeper/v1/permissions/...?for-user=X`, the actor is the caller and every entry's `for_principal` is `X`. A view commit that switches the view between DEFINER and INVOKER writes, after its `commit` record, a `change_security_mode` record for the caller and, when the view starts to run as its owner, one whose `for_principal` is that owner (see [Property Protection](./view-security.md#property-protection)).
 
 **Examples:**
 
