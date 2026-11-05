@@ -3388,11 +3388,8 @@ pub mod tests {
         .unwrap()
     }
 
-    /// Before the migration, a drop left the snapshot without a schema id and its statistics
-    /// behind. Migrating removes exactly these rows and validates the key: the other table keeps
-    /// all of its rows, and the same file registers again under the same table id.
-    #[sqlx::test(migrations = false)]
-    async fn migration_removes_snapshots_that_drops_left_behind(pool: sqlx::PgPool) {
+    /// Applies every migration before the one that adds the key from `table_snapshot` to `"table"`.
+    async fn migrate_to_before_the_key(pool: &sqlx::PgPool) {
         use sqlx::migrate::Migrate as _;
 
         const VERSION: i64 = 20_261_105_120_000;
@@ -3405,8 +3402,14 @@ pub mod tests {
         for migration in migrator.iter().filter(|m| m.version < VERSION) {
             conn.apply("_sqlx_migrations", migration).await.unwrap();
         }
-        drop(conn);
+    }
 
+    /// Before the migration, a drop left the snapshot without a schema id and its statistics
+    /// behind. Migrating removes exactly these rows and validates the key: the other table keeps
+    /// all of its rows, and the same file registers again under the same table id.
+    #[sqlx::test(migrations = false)]
+    async fn migration_removes_snapshots_that_drops_left_behind(pool: sqlx::PgPool) {
+        migrate_to_before_the_key(&pool).await;
         let (table, other) = SchemalessSnapshotTable::pair(pool.clone()).await;
         hard_drop(&table).await;
         assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
@@ -3438,6 +3441,71 @@ pub mod tests {
         assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
 
         crate::migrations::migrate_core_only(&pool).await.unwrap();
+        assert_eq!(snapshot_table_key(&pool).await, Some(true));
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.load().await, other.metadata);
+    }
+
+    /// Returns once a session of this test's database waits for `mode` on `table_snapshot`.
+    async fn wait_for_snapshot_lock_request(pool: &sqlx::PgPool, mode: &str) {
+        let waiting = async {
+            loop {
+                let waiting: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_locks \
+                     WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+                     AND relation = 'table_snapshot'::regclass AND mode = $1 AND NOT granted)",
+                )
+                .bind(mode)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                if waiting {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .unwrap_or_else(|_| panic!("no session waits for {mode} on table_snapshot"));
+    }
+
+    /// Other sessions keep both tables busy while `migrate` runs: one holds
+    /// `SHARE UPDATE EXCLUSIVE`, as a vacuum does, and a writer holds `ROW EXCLUSIVE`. `migrate`
+    /// succeeds without the key. The next `migrate` waits for both sessions, adds the key, removes
+    /// what drops left behind and validates the key.
+    #[sqlx::test(migrations = false)]
+    async fn migrate_succeeds_while_other_sessions_keep_both_tables_busy(pool: sqlx::PgPool) {
+        migrate_to_before_the_key(&pool).await;
+        let (table, other) = SchemalessSnapshotTable::pair(pool.clone()).await;
+        hard_drop(&table).await;
+        assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
+
+        let mut vacuum = pool.begin().await.unwrap();
+        sqlx::query(r#"LOCK TABLE table_snapshot, "table" IN SHARE UPDATE EXCLUSIVE MODE"#)
+            .execute(&mut *vacuum)
+            .await
+            .unwrap();
+        let mut writer = pool.begin().await.unwrap();
+        sqlx::query(r#"LOCK TABLE table_snapshot, "table" IN ROW EXCLUSIVE MODE"#)
+            .execute(&mut *writer)
+            .await
+            .unwrap();
+
+        crate::migrations::migrate_core_only(&pool).await.unwrap();
+        assert_eq!(snapshot_table_key(&pool).await, None);
+        assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
+
+        let migrate = tokio::spawn({
+            let pool = pool.clone();
+            async move { crate::migrations::migrate_core_only(&pool).await }
+        });
+        wait_for_snapshot_lock_request(&pool, "ShareUpdateExclusiveLock").await;
+        vacuum.commit().await.unwrap();
+        wait_for_snapshot_lock_request(&pool, "ShareRowExclusiveLock").await;
+        writer.commit().await.unwrap();
+        migrate.await.unwrap().unwrap();
         assert_eq!(snapshot_table_key(&pool).await, Some(true));
         assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
         assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));

@@ -3,16 +3,24 @@
 //! never block writes.
 
 use anyhow::Context;
-use sqlx::{PgPool, Postgres};
+use sqlx::{AssertSqlSafe, PgPool, Postgres, SqlSafeStr};
 
-/// Adds the key unless the migration already did. Writers lock the two tables in either order, so
-/// each attempt waits at most 100 ms, less than `deadlock_timeout`; `NOWAIT` starves under steady
-/// writes. Retries for up to 60 s.
-const ADD_KEY: &str = r#"
-SET LOCAL lock_timeout = '100ms';
+/// How long adding and validating the key wait for locks that other sessions hold. Short in unit
+/// tests, which keep both tables busy for longer.
+const LOCK_WAIT: &str = if cfg!(test) { "2s" } else { "60s" };
+
+/// Adds the key unless the migration already did. Waiting for `SHARE UPDATE EXCLUSIVE` blocks no
+/// writer and lets Postgres cancel a blocking autovacuum. Writers lock both tables in either order,
+/// so each attempt at the key's lock waits 100 ms, below `deadlock_timeout`; `NOWAIT` would starve.
+fn add_key() -> AssertSqlSafe<String> {
+    AssertSqlSafe(format!(
+        r#"
+SET LOCAL lock_timeout = '{LOCK_WAIT}';
+LOCK TABLE table_snapshot, "table" IN SHARE UPDATE EXCLUSIVE MODE;
+SELECT set_config('lock_timeout', '100ms', true);
 DO $$
 DECLARE
-    give_up CONSTANT timestamptz := clock_timestamp() + interval '60 seconds';
+    give_up CONSTANT timestamptz := clock_timestamp() + interval '{LOCK_WAIT}';
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_constraint
                WHERE conrelid = 'table_snapshot'::regclass AND conname = 'table_snapshot_table_id_fkey') THEN
@@ -32,16 +40,23 @@ BEGIN
     ALTER TABLE table_snapshot ADD CONSTRAINT table_snapshot_table_id_fkey
         FOREIGN KEY (warehouse_id, table_id) REFERENCES "table" (warehouse_id, table_id) ON DELETE CASCADE NOT VALID;
 END
-$$"#;
+$$"#
+    ))
+}
 
 /// Snapshots without a schema id that outlived the drop of their table, with their statistics.
 const DELETE_ORPHANS: &str = r#"
 DELETE FROM table_snapshot s
 WHERE NOT EXISTS (SELECT 1 FROM "table" t WHERE t.warehouse_id = s.warehouse_id AND t.table_id = s.table_id)"#;
 
-/// Takes a lock that does not conflict with writes to either table.
-const VALIDATE_KEY: &str =
-    "ALTER TABLE table_snapshot VALIDATE CONSTRAINT table_snapshot_table_id_fkey";
+/// Takes a lock that does not conflict with writes to either table. The bounded wait keeps a
+/// vacuum that Postgres does not cancel from holding up `migrate`.
+fn validate_key() -> AssertSqlSafe<String> {
+    AssertSqlSafe(format!(
+        "SET LOCAL lock_timeout = '{LOCK_WAIT}';
+ALTER TABLE table_snapshot VALIDATE CONSTRAINT table_snapshot_table_id_fkey"
+    ))
+}
 
 /// Adds the key if the migration found the tables busy, deletes orphaned snapshots and validates
 /// the key, each in its own transaction. Once the key exists, no drop leaves a snapshot behind,
@@ -56,14 +71,14 @@ pub(super) async fn complete(pool: &PgPool, lock_id: i64) -> anyhow::Result<()> 
     if validated == Some(true) {
         return Ok(());
     }
-    run(pool, lock_id, ADD_KEY).await.context(
-        "Could not add the foreign key from `table_snapshot` to `\"table\"` within 60 s, because \
-         writes kept both tables busy. The next `migrate` tries again.",
+    run(pool, lock_id, add_key()).await.context(
+        "Could not add the foreign key from `table_snapshot` to `\"table\"`, because other \
+         sessions kept both tables busy",
     )?;
     run(pool, lock_id, DELETE_ORPHANS)
         .await
         .context("Could not delete the snapshots of dropped tables")?;
-    run(pool, lock_id, VALIDATE_KEY)
+    run(pool, lock_id, validate_key())
         .await
         .context("Could not validate the foreign key from `table_snapshot` to `\"table\"`")?;
     tracing::info!("Validated the foreign key from `table_snapshot` to `\"table\"`");
@@ -71,7 +86,7 @@ pub(super) async fn complete(pool: &PgPool, lock_id: i64) -> anyhow::Result<()> 
 }
 
 /// Runs `statement` in its own transaction, serialized with other migration runs.
-async fn run(pool: &PgPool, lock_id: i64, statement: &'static str) -> anyhow::Result<()> {
+async fn run(pool: &PgPool, lock_id: i64, statement: impl SqlSafeStr) -> anyhow::Result<()> {
     let mut transaction: sqlx::Transaction<'_, Postgres> = pool.begin().await?;
     sqlx::query("SET LOCAL statement_timeout = '60min'")
         .execute(&mut *transaction)

@@ -493,8 +493,14 @@ async fn migrate_in_schema(
     // lock automatically.
     trx.commit().await.map_err(|e| anyhow::anyhow!(e.error))?;
 
-    // Scans that would block writes if they ran while the run holds its locks.
-    table_snapshot_key::complete(pool, migration_lock_id(&db_name)).await?;
+    // Scans that would block writes if they ran while the run holds its locks. A failure must not
+    // stop the caller's next steps, such as the authorizer migration.
+    if let Err(error) = table_snapshot_key::complete(pool, migration_lock_id(&db_name)).await {
+        tracing::warn!(
+            "The migrations committed, but the step after them for `table_snapshot` did not \
+             finish. The next `migrate` repeats it: {error:#}"
+        );
+    }
     Ok(server_id)
 }
 
