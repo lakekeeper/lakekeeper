@@ -6,14 +6,14 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError, RetryableError,
-    WriteError,
+    LakekeeperFileWrite, LakekeeperStorage, ListPages, Location, ObjectRead, ReadError,
+    RetryableError, WriteError,
     delete_limit::{DeleteEndpoint, DeleteLimit, S3_DELETE_REQUESTS},
-    execute_with_parallelism,
+    execute_with_parallelism, pages_are_empty,
     s3::{
         S3Location,
         s3_error::{
@@ -369,15 +369,41 @@ impl LakekeeperStorage for S3Storage {
         page_size: Option<usize>,
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
+        let (s3_location, pages) = self.list_objects(path, page_size)?;
+        let base_location = s3_location.location().clone();
+        let s3_bucket = s3_location.bucket_name().to_string();
+        Ok(pages
+            .map_ok(move |objects| {
+                objects
+                    .iter()
+                    .filter_map(try_parse_file_info(&base_location, &s3_bucket))
+                    .collect::<Vec<_>>()
+            })
+            .boxed())
+    }
+
+    async fn is_directory_empty(&self, path: &str) -> Result<bool, ReadError> {
+        let (_, pages) = self.list_objects(path, Some(1))?;
+        Ok(pages_are_empty(pages).await?)
+    }
+}
+
+impl S3Storage {
+    /// Pages of every object under the prefix `path`, also of keys that are not a valid
+    /// [`Location`].
+    fn list_objects(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<(S3Location, ListPages<'_, Object>), InvalidLocationError> {
         let path = format!("{}/", path.trim_end_matches('/'));
         let s3_location = S3Location::try_from_str(&path, true)?;
         let base_location = s3_location.location().clone();
-        let s3_bucket = s3_location.bucket_name().to_string(); // Store the bucket name
 
         let list_request_template = self
             .client
             .list_objects_v2()
-            .bucket(s3_bucket.clone())
+            .bucket(s3_location.bucket_name())
             .prefix(s3_key_to_str(&s3_location.key()));
 
         let stream = stream::unfold(
@@ -385,7 +411,6 @@ impl LakekeeperStorage for S3Storage {
             move |(continuation_token, is_done)| {
                 let base_location = base_location.clone();
                 let list_request = list_request_template.clone();
-                let s3_bucket = s3_bucket.clone(); // Clone the bucket name for use in the closure
 
                 async move {
                     if is_done {
@@ -423,19 +448,13 @@ impl LakekeeperStorage for S3Storage {
 
                     match result {
                         Ok(Ok(response)) => {
-                            let file_infos = response
-                                .contents()
-                                .iter()
-                                .filter_map(try_parse_file_info(&base_location, &s3_bucket))
-                                .collect::<Vec<_>>();
-
                             let next_continuation_token = response
                                 .next_continuation_token()
                                 .map(std::string::ToString::to_string);
                             let is_truncated = response.is_truncated().unwrap_or(false);
                             let next_state = (next_continuation_token, !is_truncated);
 
-                            Some((Ok(file_infos), next_state))
+                            Some((Ok(response.contents.unwrap_or_default()), next_state))
                         }
                         // First case: Retryable error occurred but retries didn't resolve it
                         // Second case: Non-retryable error occurred
@@ -445,7 +464,7 @@ impl LakekeeperStorage for S3Storage {
             },
         );
 
-        Ok(stream.boxed())
+        Ok((s3_location, stream.boxed()))
     }
 }
 

@@ -20,15 +20,16 @@ use azure_storage_datalake::{
 };
 use bytes::{Bytes, BytesMut};
 use chrono::DateTime;
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError,
+    LakekeeperFileWrite, LakekeeperStorage, ListPages, Location, ObjectRead, ReadError,
     RemoveEmptyDirectoryOutcome, WriteError,
     adls::{AdlsLocation, adls_error::parse_error},
     delete_limit::{DeleteEndpoint, DeleteLimit},
-    delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
+    delete_not_found_is_ok, execute_with_parallelism, pages_are_empty, safe_usize_to_i64,
+    validate_file_size,
 };
 
 #[derive(Debug, Clone)]
@@ -110,6 +111,48 @@ impl AdlsStorage {
     #[must_use]
     pub fn client(&self) -> &DataLakeClient {
         &self.data_lake_client
+    }
+
+    /// Pages of every path under `path`, recursively, also of names that are not a valid
+    /// [`Location`]. Returns the listed directory as well.
+    fn list_paths(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<(Location, ListPages<'_, Path>), InvalidLocationError> {
+        let path = format!("{}/", path.trim_end_matches('/'));
+        let adls_location = AdlsLocation::try_from_str(&path, true)
+            .map_err(|e| e.with_context("List Operation failed"))?;
+        let base_location = adls_location.location().clone();
+
+        let client = self.get_filesystem_client(&adls_location)?;
+
+        let mut list_op = client.list_paths().directory(adls_location.blob_name());
+
+        // Set maximum results per page if requested.
+        // By default, ADLS returns 5000 items per page.
+        if let Some(size) = page_size {
+            // Convert to NonZeroU32, ensuring it's at least 1
+            if let Some(max_results) = NonZeroU32::new(u32::try_from(size).unwrap_or(u32::MAX)) {
+                list_op = list_op.max_results(max_results);
+            }
+        }
+
+        let list_stream = list_op.into_stream();
+
+        let stream = list_stream.map(move |result| {
+            let result = result.map_err(|e| {
+                parse_error(e, path.as_str()).with_context("Failed to list ADLS path")
+            });
+            if let Err(err) = &result
+                && err.kind() == ErrorKind::NotFound
+            {
+                return Ok(vec![]); // Return empty list if path does not exist
+            }
+            result.map(|page| page.paths)
+        });
+
+        Ok((base_location, stream.boxed()))
     }
 }
 
@@ -480,45 +523,20 @@ impl LakekeeperStorage for AdlsStorage {
         page_size: Option<usize>,
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
-        let path = format!("{}/", path.trim_end_matches('/'));
-        let adls_location = AdlsLocation::try_from_str(&path, true)
-            .map_err(|e| e.with_context("List Operation failed"))?;
-        let base_location = adls_location.location().clone();
-
-        let client = self.get_filesystem_client(&adls_location)?;
-
-        let mut list_op = client.list_paths().directory(adls_location.blob_name());
-
-        // Set maximum results per page if requested.
-        // By default, ADLS returns 5000 items per page.
-        if let Some(size) = page_size {
-            // Convert to NonZeroU32, ensuring it's at least 1
-            if let Some(max_results) = NonZeroU32::new(u32::try_from(size).unwrap_or(u32::MAX)) {
-                list_op = list_op.max_results(max_results);
-            }
-        }
-
-        let list_stream = list_op.into_stream();
-
-        let stream = list_stream.map(move |result| {
-            let base_location = base_location.clone();
-            let result = result.map_err(|e| {
-                parse_error(e, path.as_str()).with_context("Failed to list ADLS path")
-            });
-            if let Err(err) = &result
-                && err.kind() == ErrorKind::NotFound
-            {
-                return Ok(vec![]); // Return empty list if path does not exist
-            }
-            result.map(|page| {
-                page.paths
+        let (base_location, pages) = self.list_paths(path, page_size)?;
+        Ok(pages
+            .map_ok(move |paths| {
+                paths
                     .iter()
                     .filter_map(try_parse_file_info(&base_location))
                     .collect::<Vec<_>>()
             })
-        });
+            .boxed())
+    }
 
-        Ok(stream.boxed())
+    async fn is_directory_empty(&self, path: &str) -> Result<bool, ReadError> {
+        let (_, pages) = self.list_paths(path, Some(1))?;
+        Ok(pages_are_empty(pages).await?)
     }
 
     /// Native ADLS Gen2 recursive delete via `DELETE` + `recursive=true`.
@@ -1116,6 +1134,54 @@ mod tests {
             .await
             .unwrap();
         (storage, format!("{endpoint}/"), requests)
+    }
+
+    /// Storage whose endpoint answers every listing with one file named `name`.
+    async fn storage_listing(name: &str) -> AdlsStorage {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let body = serde_json::json!({"paths": [{
+            "contentLength": "1",
+            "etag": "0x1",
+            "group": "group",
+            "isDirectory": "false",
+            "lastModified": "Thu, 05 Nov 2026 10:00:00 GMT",
+            "name": name,
+            "owner": "owner",
+            "permissions": "rw-r-----",
+        }]})
+        .to_string();
+        let app = axum::Router::new().fallback(move || {
+            std::future::ready(([("content-type", "application/json")], body.clone()))
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        AzureSettings::builder()
+            .cloud_location(CloudLocation::Custom {
+                account: "account".to_string(),
+                uri: endpoint,
+            })
+            .build()
+            .get_storage_client(&AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth {
+                key: "dGVzdC1zaGFyZWQta2V5".to_string(),
+            }))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_name_that_is_not_a_location_makes_the_directory_non_empty() {
+        let storage = storage_listing("p/a#b").await;
+        let path = "abfss://filesystem@account.dfs.core.windows.net/p";
+
+        let listed = storage
+            .list(path, None)
+            .await
+            .unwrap()
+            .try_concat()
+            .await
+            .unwrap();
+        assert!(listed.is_empty(), "{listed:?}");
+        assert!(!storage.is_directory_empty(path).await.unwrap());
     }
 
     #[tokio::test]

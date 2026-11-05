@@ -291,6 +291,7 @@ test_all_storages!(
     test_list_prefix_boundaries,
     test_list_prefix_boundaries_impl
 );
+test_all_storages!(test_is_directory_empty, test_is_directory_empty_impl);
 test_all_storages!(test_remove_all, test_remove_all_impl);
 test_all_storages!(
     test_remove_all_treats_input_as_dir,
@@ -1365,6 +1366,77 @@ async fn test_list_non_existent_directory_impl(
     );
 
     Ok(())
+}
+
+async fn test_is_directory_empty_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let dir = config.test_dir_path("is-empty");
+    let dir = dir.trim_end_matches('/');
+    assert!(storage.is_directory_empty(dir).await?);
+
+    // A sibling whose name starts with the directory name is not inside it.
+    storage
+        .write(&format!("{dir}-sibling/file"), Bytes::from_static(b"x"))
+        .await?;
+    assert!(storage.is_directory_empty(dir).await?);
+
+    storage
+        .write(&format!("{dir}/nested/file"), Bytes::from_static(b"x"))
+        .await?;
+    assert!(!storage.is_directory_empty(dir).await?);
+    assert!(!storage.is_directory_empty(&format!("{dir}/")).await?);
+
+    storage.remove_all(dir).await?;
+    assert!(storage.is_directory_empty(dir).await?);
+    storage.remove_all(&format!("{dir}-sibling")).await?;
+    Ok(())
+}
+
+/// An object whose key is not a valid `Location` makes its directory non-empty, although `list`
+/// leaves it out.
+#[cfg(feature = "storage-s3")]
+#[test]
+fn test_is_directory_empty_counts_keys_that_are_not_locations_s3() -> anyhow::Result<()> {
+    execute_in_common_runtime(async {
+        let (storage, config) = create_s3_storage().await?;
+        let StorageBackend::S3(s3) = &storage else {
+            unreachable!("create_s3_storage returns S3 storage");
+        };
+        let dir = config.test_dir_path("not-a-location");
+        let dir = dir.trim_end_matches('/');
+        let (bucket, prefix) = dir
+            .strip_prefix("s3://")
+            .and_then(|rest| rest.split_once('/'))
+            .expect("S3 test paths are s3://bucket/key");
+        let key = format!("{prefix}/a#b");
+        s3.client()
+            .put_object()
+            .bucket(bucket)
+            .key(&key)
+            .body(Bytes::from_static(b"x").into())
+            .send()
+            .await?;
+
+        let mut listed = Vec::new();
+        let mut pages = storage.list(dir, None).await?;
+        while let Some(page) = pages.next().await {
+            listed.extend(page?);
+        }
+        assert!(listed.is_empty(), "{listed:?}");
+        assert!(!storage.is_directory_empty(dir).await?);
+
+        // `remove_all` on S3 deletes only what `list` returns.
+        s3.client()
+            .delete_object()
+            .bucket(bucket)
+            .key(&key)
+            .send()
+            .await?;
+        assert!(storage.is_directory_empty(dir).await?);
+        Ok(())
+    })
 }
 
 async fn test_remove_empty_directory_impl(
