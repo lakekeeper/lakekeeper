@@ -317,13 +317,10 @@ fn interpret_authz_results_for_load_generic_table(
         );
     }
 
-    let storage_permissions = if can_write.unwrap_or(false) {
-        Some(StoragePermissions::ReadWriteDelete)
-    } else if can_read.unwrap_or(false) {
-        Some(StoragePermissions::Read)
-    } else {
-        None
-    };
+    let storage_permissions = StoragePermissions::from_data_privileges(
+        can_read.unwrap_or(false),
+        can_write.unwrap_or(false),
+    );
 
     Ok((gt_info, storage_permissions))
 }

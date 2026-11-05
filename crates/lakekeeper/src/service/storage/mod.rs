@@ -136,6 +136,19 @@ pub enum StoragePermissions {
     ReadWriteDelete,
 }
 
+impl StoragePermissions {
+    /// What a caller may receive for a tabular from its data privileges on it.
+    /// Write credentials can also read, so they need read as well.
+    #[must_use]
+    pub(crate) fn from_data_privileges(can_read: bool, can_write: bool) -> Option<Self> {
+        match (can_read, can_write) {
+            (true, true) => Some(Self::ReadWriteDelete),
+            (true, false) => Some(Self::Read),
+            (false, _) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TableConfig {
     /// The vended credential plus the properties qualifying it (region, endpoint,

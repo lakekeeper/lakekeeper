@@ -1431,13 +1431,10 @@ pub(crate) fn interpret_authz_results_for_load_table(
         );
     }
 
-    let storage_permissions = if can_write.unwrap_or(false) {
-        Some(StoragePermissions::ReadWriteDelete)
-    } else if can_read.unwrap_or(false) {
-        Some(StoragePermissions::Read)
-    } else {
-        None
-    };
+    let storage_permissions = StoragePermissions::from_data_privileges(
+        can_read.unwrap_or(false),
+        can_write.unwrap_or(false),
+    );
 
     Ok((table_info, storage_permissions))
 }
@@ -2989,8 +2986,9 @@ mod unit_tests {
         assert_eq!(perms, Some(StoragePermissions::Read));
     }
 
+    /// Write credentials can read, so write without read vends nothing.
     #[test]
-    fn test_interpret_authz_results_table_no_read_no_write() {
+    fn test_interpret_authz_results_table_no_read() {
         let warehouse_id = WarehouseId::new_random();
         let table = TableInfo::new_random(warehouse_id);
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
@@ -3001,17 +2999,19 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = LoadChainDecisions::from(vec![true, false, false]);
+        for can_write in [false, true] {
+            let results = LoadChainDecisions::from(vec![true, false, can_write]);
 
-        let (_, perms) = interpret_authz_results_for_load_table(
-            &actions,
-            &results,
-            warehouse_id,
-            &table.tabular_ident,
-        )
-        .unwrap();
+            let (_, perms) = interpret_authz_results_for_load_table(
+                &actions,
+                &results,
+                warehouse_id,
+                &table.tabular_ident,
+            )
+            .unwrap();
 
-        assert_eq!(perms, None);
+            assert_eq!(perms, None, "can_write: {can_write}");
+        }
     }
 
     #[test]
