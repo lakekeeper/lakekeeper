@@ -265,45 +265,66 @@ pub trait AuthzWarehouseOps: Authorizer {
         warehouse: Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError>,
         action: impl Into<Self::WarehouseAction> + Send,
     ) -> Result<ArcResolvedWarehouse, RequireWarehouseActionError> {
-        let action = action.into();
+        let action: Self::WarehouseAction = action.into();
+        self.require_warehouse_actions(metadata, user_provided_warehouse, warehouse, &[action])
+            .await
+    }
+
+    /// Requires every one of `actions` on the warehouse, in one batch. A refusal names the
+    /// first refused action in the order given.
+    async fn require_warehouse_actions<A: Into<Self::WarehouseAction> + Clone + Send + Sync>(
+        &self,
+        metadata: &RequestMetadata,
+        user_provided_warehouse: WarehouseId,
+        warehouse: Result<Option<ArcResolvedWarehouse>, CatalogGetWarehouseByIdError>,
+        actions: &[A],
+    ) -> Result<ArcResolvedWarehouse, RequireWarehouseActionError> {
         let warehouse = warehouse?;
         let cant_see_err =
             AuthZCannotUseWarehouseId::new(user_provided_warehouse, warehouse.is_none()).into();
         let Some(warehouse) = warehouse else {
             return Err(cant_see_err);
         };
-        if action == CAN_SEE_PERMISSION.into() {
-            let is_allowed = self
-                .is_allowed_warehouse_action(metadata, None, &warehouse, action)
-                .await?
-                .into_inner();
-            is_allowed.then_some(warehouse).ok_or(cant_see_err)
-        } else {
-            let [can_see, is_allowed] = self
-                .are_allowed_warehouse_actions_arr(
-                    metadata,
-                    None,
-                    &[
-                        (&warehouse, CAN_SEE_PERMISSION.into()),
-                        (&warehouse, action.clone()),
-                    ],
-                )
-                .await?
-                .into_inner();
-            if can_see {
-                is_allowed.then_some(warehouse).ok_or_else(|| {
-                    AuthZWarehouseActionForbidden::new(user_provided_warehouse, &action).into()
-                })
-            } else if is_allowed && action.is_grant_read() {
-                // The grant-read actions double as visibility: reading who holds
-                // access discloses more than existence, so a caller granted one is not
-                // masked. Without this, a principal holding only grant administration
-                // could apply grants but never read them back, and the subtree revoke
-                // would succeed where its own listing is refused.
-                Ok(warehouse)
-            } else {
-                return Err(cant_see_err);
+        let can_see_action: Self::WarehouseAction = CAN_SEE_PERMISSION.into();
+        let actions: Vec<Self::WarehouseAction> = actions
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .filter(|action| *action != can_see_action)
+            .collect();
+        let checks: Vec<(&ResolvedWarehouse, Self::WarehouseAction)> =
+            std::iter::once(can_see_action)
+                .chain(actions.iter().cloned())
+                .map(|action| (warehouse.as_ref(), action))
+                .collect();
+        let decisions = self
+            .are_allowed_warehouse_actions_vec(metadata, None, &checks)
+            .await?
+            .into_allowed();
+        let can_see = decisions.first().copied().unwrap_or(false);
+        let refused = actions
+            .iter()
+            .zip(decisions.iter().skip(1))
+            .find_map(|(action, allowed)| (!allowed).then_some(action));
+        if can_see {
+            match refused {
+                None => Ok(warehouse),
+                Some(action) => {
+                    Err(AuthZWarehouseActionForbidden::new(user_provided_warehouse, action).into())
+                }
             }
+        } else if !actions.is_empty()
+            && refused.is_none()
+            && actions.iter().all(WarehouseAction::is_grant_read)
+        {
+            // The grant-read actions double as visibility: reading who holds
+            // access discloses more than existence, so a caller granted one is not
+            // masked. Without this, a principal holding only grant administration
+            // could apply grants but never read them back, and the subtree revoke
+            // would succeed where its own listing is refused.
+            Ok(warehouse)
+        } else {
+            Err(cant_see_err)
         }
     }
 

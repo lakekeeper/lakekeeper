@@ -1294,6 +1294,8 @@ Grant administration and policy administration stand outside every `<Level>Actio
 
 The **Group** column below names the narrowest group an action is in. An action marked "none" is in no group: a policy reaches it by naming it, or by leaving `action` unconstrained.
 
+One action is also a group: `UpdateStorage` holds `UpdateStorageCredential`. Replacing the storage credential checks `UpdateStorageCredential`. Changing the storage profile checks both actions, because it replaces the credential too. A permit with `action in [Lakekeeper::Action::"UpdateStorage"]` allows both operations. A permit with `action == Lakekeeper::Action::"UpdateStorageCredential"` allows replacing the credential only. Write `in` for `UpdateStorage`, not `==`: `action == Lakekeeper::Action::"UpdateStorage"` does not match `UpdateStorageCredential`, so a permit written that way allows neither operation, and a forbid written that way does not stop credential replacement.
+
 ### Server Actions
 
 At server actions a user carries their groups; see [Role scope at server actions](#role-scope-at-server-actions).
@@ -1374,8 +1376,8 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `GetWarehouseEndpointStatistics` | `get_endpoint_statistics` | `WarehouseDescribeActions` | View API usage statistics for the warehouse |
 | `CreateNamespaceInWarehouse` | `create_namespace` | `WarehouseCreateActions` | Create a namespace directly in the warehouse |
 | `DeleteWarehouse` | `delete` | `WarehouseModifyActions` | Delete the warehouse |
-| `UpdateStorage` | `update_storage` | `WarehouseModifyActions` | Modify storage configuration |
-| `UpdateStorageCredential` | `update_storage_credential` | `WarehouseModifyActions` | Update storage credentials |
+| `UpdateStorage` | `update_storage` | `WarehouseModifyActions` | Change or validate the storage profile, or validate the storage the warehouse currently runs with. Changing or validating the profile also checks `UpdateStorageCredential` |
+| `UpdateStorageCredential` | `update_storage_credential` | `UpdateStorage` | Replace, clear or validate the storage credential, and leave the storage profile as it is |
 | `DeactivateWarehouse` | `deactivate` | `WarehouseModifyActions` | Deactivate the warehouse (suspend operations) |
 | `ActivateWarehouse` | `activate` | `WarehouseModifyActions` | Activate a deactivated warehouse |
 | `RenameWarehouse` | `rename` | `WarehouseModifyActions` | Change the warehouse's name |

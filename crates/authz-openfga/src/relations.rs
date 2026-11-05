@@ -1315,6 +1315,9 @@ impl ReducedRelation for CatalogWarehouseAction {
             }
             CatalogWarehouseAction::Delete { .. } => WarehouseRelation::CanDelete,
             CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
+            CatalogWarehouseAction::UpdateStorageCredential => {
+                WarehouseRelation::CanUpdateStorageCredential
+            }
             CatalogWarehouseAction::ManageTags => WarehouseRelation::CanManageTags,
             CatalogWarehouseAction::GetMetadata => WarehouseRelation::CanGetMetadata,
             CatalogWarehouseAction::GetConfig => WarehouseRelation::CanGetConfig,
@@ -2944,6 +2947,19 @@ pub(crate) mod test {
         assert_eq!(
             commit(&[TableUpdateKind::AddSchema], request),
             TableRelation::CanCommit
+        );
+    }
+
+    // Both relations resolve alike in the model, so a swap would pass every model test.
+    #[test]
+    fn storage_and_credential_updates_map_to_their_own_relations() {
+        assert_eq!(
+            CatalogWarehouseAction::UpdateStorage.to_openfga(),
+            WarehouseRelation::CanUpdateStorage
+        );
+        assert_eq!(
+            CatalogWarehouseAction::UpdateStorageCredential.to_openfga(),
+            WarehouseRelation::CanUpdateStorageCredential
         );
     }
 

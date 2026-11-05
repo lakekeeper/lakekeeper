@@ -160,12 +160,15 @@ test_structural_changes_allowed_with_full_access if {
 	}
 }
 
-# Allows a commit only if it names no update kinds, and refuses `write_data`.
+# Allows a table commit only if it names no update kinds, and refuses `write_data`
+# and every view check.
 _mock_any_commit_result(check) := {"allowed": true} if {
 	check.operation.table.action.action == "commit"
 	object.get(check.operation.table.action, "update_kinds", []) == []
 } else := {"allowed": false} if {
 	check.operation.table.action.action in ["commit", "write_data"]
+} else := {"allowed": false} if {
+	check.operation.view
 } else := {"allowed": true}
 
 mock_http_any_commit(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
@@ -204,5 +207,63 @@ test_data_changes_do_not_ask_a_commit if {
 			with data.configuration.lakekeeper as mock_lakekeeper
 			with data.configuration.trino_catalog as mock_trino_catalog
 			with http.send as mock_http_any_commit
+	}
+}
+
+_view_comment_input(operation) := {
+	"context": mock_context,
+	"action": {
+		"operation": operation,
+		"resource": {"table": {"catalogName": "managed", "schemaName": "schema_a", "tableName": "v"}},
+	},
+}
+
+# Allows only a commit of any kind on the view `v`.
+_view_commit_result(check) := {"allowed": true} if {
+	check.operation.view.action == {"action": "commit"}
+	check.operation.view.table == "v"
+} else := {"allowed": false}
+
+mock_http_view_commit_only(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
+	endswith(request.url, "/token")
+} else := {"status_code": 200, "body": {"defaults": {"prefix": "mock-wh-id"}}} if {
+	contains(request.url, "catalog/v1/config")
+} else := {"status_code": 200, "body": {"results": results}} if {
+	contains(request.url, "batch-check")
+	results := [_view_commit_result(check) | some check in request.body.checks]
+}
+
+# Allows every check except a commit.
+_all_but_commit_result(check) := {"allowed": false} if {
+	some kind
+	check.operation[kind].action.action == "commit"
+} else := {"allowed": true}
+
+mock_http_all_but_commit(request) := {"status_code": 200, "body": {"access_token": "mock-token"}} if {
+	endswith(request.url, "/token")
+} else := {"status_code": 200, "body": {"defaults": {"prefix": "mock-wh-id"}}} if {
+	contains(request.url, "catalog/v1/config")
+} else := {"status_code": 200, "body": {"results": results}} if {
+	contains(request.url, "batch-check")
+	results := [_all_but_commit_result(check) | some check in request.body.checks]
+}
+
+# `COMMENT ON VIEW` and `COMMENT ON COLUMN` on a view ask about a commit of any kind
+# on the view.
+test_view_comments_ask_a_commit_of_any_kind_on_the_view if {
+	every operation in ["SetViewComment", "SetColumnComment"] {
+		trino.allow with input as _view_comment_input(operation)
+			with data.configuration.lakekeeper as mock_lakekeeper
+			with data.configuration.trino_catalog as mock_trino_catalog
+			with http.send as mock_http_view_commit_only
+	}
+}
+
+test_view_comments_refused_without_commit if {
+	every operation in ["SetViewComment", "SetColumnComment"] {
+		not trino.allow with input as _view_comment_input(operation)
+			with data.configuration.lakekeeper as mock_lakekeeper
+			with data.configuration.trino_catalog as mock_trino_catalog
+			with http.send as mock_http_all_but_commit
 	}
 }

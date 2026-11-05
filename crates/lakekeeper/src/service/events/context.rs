@@ -888,7 +888,8 @@ impl APIEventActions for TabularAction {
     }
 }
 
-impl APIEventActions for Vec<CatalogTableAction> {
+/// A request that asks several actions of one kind records each of them.
+impl<T: EventAction> APIEventActions for Vec<T> {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         self.iter()
             .flat_map(APIEventActions::event_actions)
