@@ -49,7 +49,7 @@ type project
     # Drop this project
     define can_delete: modify_effective
     define can_rename: modify_effective
-    # `create` shows the project it may create in, not the objects already inside.
+    # `create` shows the containers it may create in, not the tables, views and generic tables inside.
     define can_get_metadata: describe_effective or create_effective or visible_below from warehouse or admin from server
     # Can list elements in this projects - will be filtered subsequently
     define can_list_warehouses: can_get_metadata

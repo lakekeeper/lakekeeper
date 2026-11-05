@@ -190,7 +190,10 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         }),
         "describe" => ("metadata", "Read the object's metadata."),
         "select" => ("read", "Read the object's data."),
-        "create" => ("create", "Create new objects inside this one."),
+        "create" => ("create", {
+            "Create new objects inside this one. Does not show the tables, views and generic \
+             tables already inside; grant `describe` for that."
+        }),
         "write" => ("write", {
             "Change tables: commit data, schema, partitioning, sort order and properties, \
              manage branches and tags, and expire snapshots. Gives write and delete access \
@@ -253,8 +256,8 @@ fn authority_relation(resource_type: ResourceType, privilege: &str, op: GrantOp)
 /// this level — a structural relation (`parent`, `project`, `child`) or one this
 /// version does not know.
 ///
-/// Resolved by search rather than by assuming the API name and the model relation
-/// share a spelling, which is true today at every level but is not a rule.
+/// Resolved by search: the API name and the stored relation can differ (`write` is stored
+/// as `write_content`).
 fn privilege_of_relation(resource_type: ResourceType, relation: &str) -> Option<String> {
     for_level!(resource_type, |R| R::iter()
         .find(|candidate| candidate.to_openfga().to_string() == relation)

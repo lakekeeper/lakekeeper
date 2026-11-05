@@ -17,6 +17,8 @@ Splits the privileges of `modify` into two tiers: a write tier between `select` 
 
 The grants API and the assignments API call the tier `write`. The model stores it as `write_content`, a relation name no earlier model used. Unreleased models stored data-only tiers as `write` (`v4.14`) and `write_data` (earlier builds of `v4.15`). Reusing either name would turn their tuples into grants of every commit.
 
+During a rolling upgrade from `v4.13`, pods of the previous release do not know `write_content`: a `write` grant allows nothing on them until the rollout finishes, and they still delete its tuples.
+
 `project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_generic_table`:
 
 - Add `write_content` (`[user, role#assignee]`) and `write_content_effective`: `write_content or modify_effective` on the project, and `write_content or ownership or modify_effective` plus `write_content_effective` from the parent below it. `select_effective` reads `write_content_effective` where it read `modify_effective`, which still includes it.
@@ -39,8 +41,10 @@ Everything else stays on `modify`: drop, undrop, rename, protection, task contro
 
 `project`, `warehouse`, `namespace`:
 
-- `describe_effective` drops `create_effective`. A principal who may create objects in a container no longer sees the metadata of the tables, views and generic tables already inside it, and loses what `describe` alone gives on the container: `can_list_everything`, endpoint statistics and task listings.
+- `describe_effective` drops `create_effective`. A principal who may create objects in a container no longer sees the metadata of the tables, views and generic tables already inside it, and loses what `describe` alone gives on the container: `can_list_everything`, endpoint statistics and task listings. With `pass_grants`, it can no longer pass on `describe`.
 - `can_get_metadata` adds `create_effective`, so the principal still sees and lists the containers it may create in. Objects it creates are visible to it through ownership.
+
+Grant `describe` next to `create` where principals must see the objects already inside.
 
 ### Stores provisioned from `main` builds
 

@@ -47,7 +47,7 @@ type namespace
     define can_delete: modify_effective
     define can_move: manage_grants and modify_effective
     define can_update_properties: modify_effective
-    # `create` shows the namespace it may create in, not the objects already inside.
+    # `create` shows the containers it may create in, not the tables, views and generic tables inside.
     define can_get_metadata: describe_effective or create_effective or visible_below from child
     define can_list_tables: can_get_metadata
     define can_list_views: can_get_metadata

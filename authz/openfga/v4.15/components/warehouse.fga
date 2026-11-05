@@ -47,7 +47,7 @@ type warehouse
     define can_delete: modify_effective
     define can_update_storage: modify_effective
     define can_update_storage_credential: modify_effective
-    # `create` shows the warehouse it may create in, not the objects already inside.
+    # `create` shows the containers it may create in, not the tables, views and generic tables inside.
     define can_get_metadata: describe_effective or create_effective or visible_below from namespace
     define can_get_config: can_get_metadata
     define can_set_protection: modify_effective
