@@ -4111,7 +4111,7 @@ pub mod tests {
     }
 
     /// A commit that `on_table` did not mark is never a data commit, as a check or as a
-    /// request, so an authorization site that forgets the mark refuses `write_data`.
+    /// request, so an authorization site that forgets the mark refuses a data-only grant.
     #[test]
     fn test_an_unmarked_commit_is_never_a_data_commit() {
         let append = [
@@ -4900,7 +4900,7 @@ pub mod tests {
                 .insert(object.to_string());
         }
 
-        /// Blocks every table commit that is not a data commit, as `write_data` does; see
+        /// Blocks every table commit that is not a data commit, as a data-only grant does; see
         /// [`CatalogTableAction::is_data_commit`].
         ///
         /// # Panics
