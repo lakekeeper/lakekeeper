@@ -3178,7 +3178,7 @@ pub mod tests {
         assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 0);
     }
 
-    /// A table whose snapshot 1 has no schema id, as Iceberg Java wrote before 0.13, snapshot 2
+    /// A table whose snapshot 1 has no schema id, as Iceberg Java 0.11 and older wrote, snapshot 2
     /// with schema id 0 on `main`, and both statistics files for snapshot 1.
     struct SchemalessSnapshotTable {
         pool: sqlx::PgPool,
