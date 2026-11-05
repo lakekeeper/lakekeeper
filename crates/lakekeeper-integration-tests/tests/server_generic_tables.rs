@@ -1042,7 +1042,7 @@ async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPoo
 }
 
 /// Re-creating a generic table at its own location, which holds files, without the register
-/// right gets the conflict that a re-create with the right gets, not a refusal.
+/// right gets 409, as a re-create with the right does, not a refusal.
 #[sqlx::test]
 async fn test_recreate_generic_table_on_its_files_without_the_register_right(pool: PgPool) {
     let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
