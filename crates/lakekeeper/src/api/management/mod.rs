@@ -2528,6 +2528,7 @@ pub mod v1 {
         tag = "warehouse",
         path = ManagementV1Endpoint::CreateWarehouse.path(),
         request_body = CreateWarehouseRequest,
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 201, description = "Warehouse created successfully", body = CreateWarehouseResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -2754,7 +2755,7 @@ pub mod v1 {
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::ListWarehouses.path(),
-        params(ListWarehousesRequest),
+        params(ListWarehousesRequest, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "List of warehouses", body = ListWarehousesResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -3285,6 +3286,7 @@ pub mod v1 {
         tag = "project",
         path = ManagementV1Endpoint::LoadEndpointStatistics.path(),
         request_body = GetEndpointStatisticsRequest,
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Endpoint statistics", body = EndpointStatisticsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -3886,7 +3888,7 @@ pub mod v1 {
     get,
     tag = "tag",
     path = ManagementV1Endpoint::GetTagActions.path(),
-    params(GetAccessQuery, ("tag_definition_id" = Uuid,)),
+    params(GetAccessQuery, ("tag_definition_id" = Uuid,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
     responses(
         (status = 200, body = GetLakekeeperTagActionsResponse),
         (status = "4XX", body = IcebergErrorResponse),
@@ -4500,6 +4502,7 @@ pub mod v1 {
         tag = "authorization",
         path = ManagementV1Endpoint::BatchCheckActions.path(),
         request_body = CatalogActionsBatchCheckRequest,
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Batch check results, one per request item and in request order", body = CatalogActionsBatchCheckResponse),
             (status = "4XX", body = IcebergErrorResponse),

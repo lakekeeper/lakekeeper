@@ -74,6 +74,7 @@ fn tabular_list_flags(by_name: bool) -> TabularListFlags {
     tag = "permissions-openfga",
     path = "/management/v1/permissions/check",
     request_body = CheckRequest,
+    params(("x-project-id" = Option<String>, Header, description = "Optional project ID")),
     responses(
             (status = 200, body = CheckResponse),
     )

@@ -38,6 +38,15 @@ paths:
         Each check in the request can optionally override the identity being checked.
         If no identity is specified, the current user's identity is used.
       operationId: batch_check_actions
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -130,6 +139,15 @@ paths:
         - 01:00:36: table deleted:
             - `timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},{"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],[{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]`
       operationId: get_endpoint_statistics
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -301,6 +319,15 @@ paths:
         - permissions-openfga
       summary: Check if a specific action is allowed on the given object
       operationId: check
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -519,6 +546,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: Server Relations
@@ -542,6 +577,14 @@ paths:
             type: array
             items:
               $ref: '#/components/schemas/ProjectRelation'
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -554,6 +597,15 @@ paths:
         - permissions-openfga
       summary: Update permissions for the default project
       operationId: update_project_assignments
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -3423,6 +3475,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -4077,6 +4137,14 @@ paths:
             type:
               - string
               - 'null'
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: List of warehouses
@@ -4099,6 +4167,15 @@ paths:
         The project of a warehouse cannot be changed after creation.
         This operation validates the storage configuration.
       operationId: create_warehouse
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
