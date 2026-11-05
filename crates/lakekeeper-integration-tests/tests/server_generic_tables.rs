@@ -10,7 +10,8 @@ use lakekeeper::{
         ApiContext,
         data::v1::generic_tables::{
             CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
-            ListGenericTablesQuery, RenameGenericTableRequest, RenameGenericTableTarget,
+            ListGenericTablesQuery, LoadGenericTableResponse, RenameGenericTableRequest,
+            RenameGenericTableTarget,
         },
         iceberg::{
             types::DropParams,
@@ -952,11 +953,12 @@ async fn test_generic_tables_refuse_invalid_names(pool: PgPool) {
     assert_eq!(loaded.table.name, "daily_sales");
 }
 
-/// Creating a generic table on a location that holds files takes the files over, as
-/// registering a table does, so it needs the register right on the warehouse. An empty
-/// location does not.
-#[sqlx::test]
-async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPool) {
+type HidingCtx = ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>;
+
+/// A namespace `landing` and the location of a dropped table whose files stay in storage.
+async fn location_with_files_setup(
+    pool: PgPool,
+) -> (HidingCtx, HidingAuthorizer, NamespaceParameters, String) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse) = setup_simple(
         pool,
@@ -982,39 +984,79 @@ async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPoo
     )
     .await
     .unwrap();
-    let with_files = dropped.metadata.location().to_string();
-
-    let create = |name: &str, base_location: &str| {
-        let mut request = create_request(name);
-        request.base_location = Some(base_location.to_string());
-        CatalogServer::create_generic_table(
-            NamespaceParameters {
-                prefix: Some(prefix.clone().into()),
-                namespace: ns.namespace.clone(),
-            },
-            request,
-            ctx.clone(),
-            random_request_metadata(),
-        )
+    let ns_params = NamespaceParameters {
+        prefix: Some(prefix.into()),
+        namespace: ns.namespace,
     };
+    (
+        ctx,
+        authz,
+        ns_params,
+        dropped.metadata.location().to_string(),
+    )
+}
+
+async fn create_at(
+    ctx: &HidingCtx,
+    ns_params: &NamespaceParameters,
+    name: &str,
+    base_location: &str,
+) -> lakekeeper::api::Result<LoadGenericTableResponse> {
+    let mut request = create_request(name);
+    request.base_location = Some(base_location.to_string());
+    CatalogServer::create_generic_table(
+        ns_params.clone(),
+        request,
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+}
+
+/// Creating a generic table on a location that holds files takes the files over, as
+/// registering a table does, so it needs the register right on the warehouse. An empty
+/// location does not.
+#[sqlx::test]
+async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPool) {
+    let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
     let register_right = format!("warehouse:{:?}", CatalogWarehouseAction::RegisterTable);
 
     authz.block_action(&register_right);
-    let err = create("adopted", &with_files)
+    let err = create_at(&ctx, &ns_params, "adopted", &with_files)
         .await
         .expect_err("a location with files needs the register right");
     assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
     assert_eq!(err.error.r#type, "WarehouseActionForbidden", "{err:?}");
 
     let empty_sibling = format!("{with_files}-empty");
-    let created = create("fresh", &empty_sibling)
+    let created = create_at(&ctx, &ns_params, "fresh", &empty_sibling)
         .await
         .expect("an empty location needs no register right");
     assert_eq!(created.table.base_location, empty_sibling);
 
     authz.unblock_action(&register_right);
-    let adopted = create("adopted", &with_files)
+    let adopted = create_at(&ctx, &ns_params, "adopted", &with_files)
         .await
         .expect("the register right allows taking the files over");
     assert_eq!(adopted.table.base_location, with_files);
+}
+
+/// Re-creating a generic table at its own location, which holds files, without the register
+/// right gets the conflict that a re-create with the right gets, not a refusal.
+#[sqlx::test]
+async fn test_recreate_generic_table_on_its_files_without_the_register_right(pool: PgPool) {
+    let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
+    create_at(&ctx, &ns_params, "events", &with_files)
+        .await
+        .unwrap();
+
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterTable
+    ));
+    let err = create_at(&ctx, &ns_params, "events", &with_files)
+        .await
+        .expect_err("the name is in use");
+    assert_eq!(err.error.code, StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(err.error.r#type, "GenericTableAlreadyExists", "{err:?}");
 }

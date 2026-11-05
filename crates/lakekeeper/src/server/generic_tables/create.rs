@@ -23,8 +23,9 @@ use crate::{
     },
     service::{
         COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogGenericTableOps,
-        CatalogIdempotencyOps, CatalogStore, GenericTableCreation, GenericTableId,
-        ResolvedWarehouse, Result, SecretStore, State, TabularId, Transaction, WarehouseId,
+        CatalogIdempotencyOps, CatalogStore, CatalogTabularOps, GenericTableAlreadyExists,
+        GenericTableCreation, GenericTableId, ResolvedWarehouse, Result, SecretStore, State,
+        TabularId, TabularIdentBorrowed, TabularListFlags, Transaction, WarehouseId,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
             GrantResource, emit_bootstrap_grants_async, require_file_takeover,
@@ -209,14 +210,15 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
 /// Creating on a location that already holds files brings them into the catalog, as registering
 /// a table does, so it needs `RegisterTable` on the warehouse. Asked before the write
 /// transaction opens, because an authorizer may read the catalog.
-async fn authorize_location_with_files<A: Authorizer, S: SecretStore>(
-    authorizer: &A,
-    secrets: &S,
+async fn authorize_location_with_files<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    state: &ApiContext<State<A, C, S>>,
     (request_metadata, dispatcher): (ArcRequestMetadata, EventDispatcher),
     warehouse: &ResolvedWarehouse,
     location: &Location,
+    table_ident: &TableIdent,
 ) -> Result<()> {
-    let storage_secret = maybe_get_secret(warehouse.storage_secret_id, secrets).await?;
+    let storage_secret =
+        maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
     let file_io = warehouse
         .storage_profile
         .file_io(storage_secret.as_deref())
@@ -230,10 +232,33 @@ async fn authorize_location_with_files<A: Authorizer, S: SecretStore>(
         warehouse.warehouse_id,
         CatalogWarehouseAction::RegisterTable,
     );
-    let authz_result =
-        require_file_takeover(authorizer, event_ctx.request_metadata(), warehouse).await;
-    let (_event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
-    Ok(())
+    let authz_result = require_file_takeover(
+        &state.v1_state.authz,
+        event_ctx.request_metadata(),
+        warehouse,
+    )
+    .await;
+    let Err(refusal) = event_ctx.emit_authz(authz_result) else {
+        return Ok(());
+    };
+    // The insert refuses a name in use with 409 whatever the decision, so a re-create gets that.
+    let same_name = [
+        TabularIdentBorrowed::Table(table_ident),
+        TabularIdentBorrowed::View(table_ident),
+        TabularIdentBorrowed::GenericTable(table_ident),
+    ];
+    let name_in_use = C::get_tabular_infos_by_ident(
+        warehouse.warehouse_id,
+        &same_name,
+        TabularListFlags::active_and_staged(),
+        state.v1_state.catalog.clone(),
+    )
+    .await
+    .is_ok_and(|found| !found.is_empty());
+    if name_in_use {
+        return Err(ErrorModel::from(GenericTableAlreadyExists::new()).into());
+    }
+    Err(refusal.into())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -303,14 +328,14 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
         &warehouse.storage_profile,
     )?;
     authorize_location_with_files(
-        authorizer,
-        &state.v1_state.secrets,
+        state,
         (
             event_ctx.request_metadata_arc(),
             event_ctx.dispatcher().clone(),
         ),
         &warehouse,
         &location,
+        &table_ident,
     )
     .await?;
 
