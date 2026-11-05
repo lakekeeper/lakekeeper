@@ -19,10 +19,11 @@ use crate::{
         },
         authn::{Actor, UserId},
         authz::{
-            ActionDescriptor, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
-            CatalogViewAction, DeterminingFactor, EventAction as _, GrantResource, PolicyEffect,
-            ResourceType, RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal,
-            SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
+            ActionDescriptor, AuthZWarehouseActionForbidden, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, ResourceType,
+            RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges,
+            SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
         },
         events::{
             Authorization, EventDispatcher,
@@ -560,6 +561,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_context",
     "authz_failed_admission_gate",
     "authz_failed_tabular_move",
+    "authz_failed_register_table",
     "authz_failed_create_view_owner_property",
     "authz_failed_view_commit_owner_property",
     "authz_failed_view_version_change",
@@ -1321,6 +1323,25 @@ fn fixture_authz_failed_soft_deletion_skip() {
     );
 
     assert_matches_fixture("authz_failed_soft_deletion_skip", &contract_fields(record));
+}
+
+/// A register refused because the caller lacks the register right on the warehouse: the
+/// warehouse is the entity, as the register handler records it.
+#[test]
+fn fixture_authz_failed_register_table() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let action = CatalogWarehouseAction::RegisterTable;
+    let record = refusal_record(
+        warehouse_id.event_entities(),
+        action.event_actions(),
+        AuthZWarehouseActionForbidden::new(warehouse_id, &action),
+    );
+
+    assert_matches_fixture("authz_failed_register_table", &contract_fields(record));
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`

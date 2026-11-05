@@ -1128,6 +1128,10 @@ pub enum CatalogWarehouseAction {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
+    /// Register a table from an existing metadata file. Asked together with
+    /// `create_table` on the namespace. Registering adopts files anywhere in the
+    /// warehouse's storage, so it is a right on the warehouse.
+    RegisterTable,
     /// Attach/detach governance tags on this warehouse.
     ManageTags,
     /// Accept a namespace being moved in from elsewhere as a child of this entity.
@@ -1177,7 +1181,7 @@ pub enum CatalogWarehouseAction {
 /// The warehouse actions enumerated for permission introspection (`GET
 /// /warehouse/{id}/actions`). The subtree grant actions are enumerated with the
 /// absent scope (the base-capability form).
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 27]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 28]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -1204,6 +1208,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 27]> = LazyL
         CatalogWarehouseAction::SetProtection,
         CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
+        CatalogWarehouseAction::RegisterTable,
         CatalogWarehouseAction::ManageTags,
         CatalogWarehouseAction::AcceptMovedNamespace {
             source: Arc::new(Vec::new()),
@@ -1216,7 +1221,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 27]> = LazyL
 impl CatalogWarehouseAction {
     /// Introspectable warehouse actions — see [`WAREHOUSE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 27] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 28] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -1259,6 +1264,8 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::GetAllTasks
             | CatalogWarehouseAction::ControlAllTasks
             | CatalogWarehouseAction::GetEndpointStatistics
+            // Adds a table, does not change the warehouse.
+            | CatalogWarehouseAction::RegisterTable
             // Governance tag attachment is metadata, not part of the reconciled spec.
             | CatalogWarehouseAction::ManageTags
             // Grant administration is not part of the reconciled spec.
@@ -1314,6 +1321,7 @@ impl EventAction for CatalogWarehouseAction {
             | Self::SetProtection { .. }
             | Self::SetFormatVersionPolicy { .. }
             | Self::GetEndpointStatistics { .. }
+            | Self::RegisterTable { .. }
             | Self::ManageTags { .. }
             | Self::ReadGrants { .. } => {}
         }
@@ -2386,6 +2394,7 @@ pub enum CatalogWarehouseActionKind {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
+    RegisterTable,
     ManageTags,
     AcceptMovedNamespace,
     ReadGrants,
@@ -2418,6 +2427,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::SetProtection => Self::SetProtection,
             CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
+            CatalogWarehouseAction::RegisterTable => Self::RegisterTable,
             CatalogWarehouseAction::ManageTags => Self::ManageTags,
             CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
             CatalogWarehouseAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
@@ -3397,6 +3407,7 @@ pub mod tests {
             A::GetAllTasks,
             A::ControlAllTasks,
             A::GetEndpointStatistics,
+            A::RegisterTable,
             A::ManageTags,
         ] {
             assert!(!a.is_spec_mutation(), "{a:?} should not be a spec mutation");

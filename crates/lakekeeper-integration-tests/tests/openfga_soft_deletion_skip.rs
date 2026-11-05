@@ -390,6 +390,22 @@ mod soft_deletion_skip {
             assert_eq!(err.r#type, "WarehouseActionForbidden", "{what}: {err:?}");
         }
 
+        /// Registering needs `modify` on the warehouse, which also allows skipping soft
+        /// deletion, so a principal without it is refused before any soft-deletion check.
+        #[track_caller]
+        fn assert_needs_register_right(s: &Setup, what: &str, result: Result<(), ErrorModel>) {
+            let err = result.expect_err(what);
+            assert_eq!(err.code, 403, "{what}: {err:?}");
+            assert_eq!(
+                err.message,
+                format!(
+                    "Warehouse action `can_register_table` forbidden on warehouse `{}`",
+                    s.warehouse_id
+                ),
+                "{what}: {err:?}"
+            );
+        }
+
         #[sqlx::test]
         async fn namespace_modify_cannot_skip_soft_deletion(pool: PgPool) {
             let s = Setup::new(pool, Setup::soft()).await;
@@ -405,13 +421,16 @@ mod soft_deletion_skip {
                 "forced view drop",
                 s.drop_view(&md, "v", true).await,
             );
-            assert_needs_modify_soft_deletion(
+            assert_needs_register_right(
+                &s,
                 "register overwrite with a different table",
                 s.register_overwrite_from(&md, "t1", source_location).await,
             );
-            assert_eq!(s.table_id("t1").await, t1);
-            // The same table UUID needs no `modify` on the warehouse.
-            s.register_overwrite(&md, "t1").await.unwrap();
+            assert_needs_register_right(
+                &s,
+                "register overwrite with the same table",
+                s.register_overwrite(&md, "t1").await,
+            );
             assert_eq!(s.table_id("t1").await, t1);
 
             // A drop without force keeps the window.
@@ -469,7 +488,11 @@ mod soft_deletion_skip {
 
             s.drop_table(&md, "t1", true).await.unwrap();
             s.drop_view(&md, "v", true).await.unwrap();
-            s.register_overwrite(&md, "t2").await.unwrap();
+            assert_needs_register_right(
+                &s,
+                "register overwrite",
+                s.register_overwrite(&md, "t2").await,
+            );
             s.delete_namespace_recursively(&md).await.unwrap();
             assert!(!s.table_is_active("t2").await);
         }

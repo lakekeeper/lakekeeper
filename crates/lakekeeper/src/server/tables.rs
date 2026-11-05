@@ -36,6 +36,7 @@ pub mod authorize_load;
 pub mod create_table;
 pub(crate) mod etag;
 pub mod load_table;
+mod register_table;
 mod rename_table;
 
 pub(crate) use authorize_load::*;
@@ -61,8 +62,7 @@ use crate::{
                 ReferencingView, RegisterTableRequest, RenameTableRequest, Result, TableIdent,
                 TableParameters,
                 tables::{
-                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters,
-                    LoadTableRequest, SnapshotsQuery,
+                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters, LoadTableRequest,
                 },
             },
         },
@@ -102,7 +102,7 @@ use crate::{
         idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::{StoragePermissions, credential_revalidate_after_ms},
+        storage::StoragePermissions,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -380,15 +380,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone()),
             C::get_namespace(warehouse_id, provided_ns, state.v1_state.catalog.clone())
         );
-        let warehouse = authorizer
+        // Registering adopts existing files, so it needs a right on the warehouse as well as
+        // `create_table` on the namespace.
+        let register_ctx = APIEventContext::for_warehouse(
+            event_ctx.request_metadata_arc(),
+            event_ctx.dispatcher().clone(),
+            warehouse_id,
+            CatalogWarehouseAction::RegisterTable,
+        );
+        let authz_result = authorizer
             .require_warehouse_action(
-                event_ctx.request_metadata(),
+                register_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                CatalogWarehouseAction::Use,
+                CatalogWarehouseAction::RegisterTable,
             )
-            .await
-            .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
+            .await;
+        let (_, warehouse) = register_ctx.emit_authz(authz_result)?;
         // Before any storage read. `CreateTable` is checked after the read: its properties
         // and table id are only known from the metadata file.
         let namespace = authorizer
@@ -514,24 +522,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
-        // Bound once and reused for the ETag shape below, so the tag follows the
-        // config the delegation actually produced.
-        let storage_permissions = StoragePermissions::ReadWriteDelete;
-        let config = storage_profile
-            .generate_table_config(
-                data_access,
-                storage_secret_ref,
-                &table_location,
-                storage_permissions,
-                request_metadata,
-                &table_info,
-            )
-            .await?;
-        let storage_credentials = config.storage_credentials(&table_location);
-        let credentials_revalidate_after_ms = config
-            .credentials_expiration_ms
-            .map(credential_revalidate_after_ms);
-
         // Insert idempotency key in the same transaction.
         if let Some(ref key) = idempotency_key
             && !C::try_insert_idempotency_key(
@@ -636,37 +626,27 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             data_access,
         );
 
-        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
+        emit_bootstrap_grants_async(
+            &grant_dispatcher,
+            grant_request_metadata.clone(),
+            bootstrap_grants,
+        );
 
-        // Full snapshot list from the metadata file, tagged with the delegation
-        // and permission scope the config above was built for. A read-only
-        // caller's later load is scoped narrower, so it gets a distinct tag
-        // rather than matching this one. Now that register vends, the tag has to
-        // carry the credential's revalidation point too: without it a vending
-        // response yields a tag that can never produce a 304.
-        let etag = etag::TableETag::new(
-            warehouse_id,
-            &metadata_location_str,
-            etag::TableResponseShape::new(
-                SnapshotsQuery::All,
-                etag::StorageAccess::Config {
-                    delegation: data_access,
-                    permissions: storage_permissions,
-                    warehouse_version: warehouse.version,
-                },
-            ),
-            credentials_revalidate_after_ms,
+        register_table::registered_table_result(
+            register_table::RegisteredTable::builder()
+                .authorizer(&authorizer)
+                .request_metadata(&grant_request_metadata)
+                .warehouse(&warehouse)
+                .namespace(&namespace)
+                .table_info(&table_info)
+                .table_metadata(table_metadata)
+                .metadata_location(metadata_location_str)
+                .table_location(&table_location)
+                .data_access(data_access)
+                .storage_secret(storage_secret_ref)
+                .build(),
         )
-        .into_etag();
-
-        Ok(LoadTableResult {
-            metadata_location: Some(metadata_location_str),
-            metadata: table_metadata,
-            remote_signing_config: config.remote_signing.clone(),
-            config: Some(load_response_config(Some(config.config))),
-            storage_credentials,
-            etag: Some(etag),
-        })
+        .await
     }
 
     /// Load a table from the catalog

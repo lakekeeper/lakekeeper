@@ -647,8 +647,9 @@ async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_
             .await,
     );
     assert_eq!(s.table_id("t").await, table_id);
-    // The replaced table skips the window, so its drop is recorded as forced.
-    assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
+    // Allowed: the register right and the create. The replaced table skips the window, so its
+    // drop is recorded as forced.
+    assert_eq!(listener.settled_counts(2, 1).await, (2, 1));
     let (_, failed) = listener.recorded_actions();
     assert_eq!(failed, vec![vec![drop_action(true)]]);
 
@@ -671,7 +672,7 @@ async fn register_overwrite_with_the_same_table_in_soft_deletion_warehouse_needs
     s.register_overwrite("t").await.unwrap();
     assert_eq!(s.table_id("t").await, table_id);
     // With the same table UUID, the drop is not recorded as forced.
-    assert_eq!(listener.settled_counts(2, 0).await, (2, 0));
+    assert_eq!(listener.settled_counts(3, 0).await, (3, 0));
     let (succeeded, failed) = listener.recorded_actions();
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(
@@ -703,7 +704,7 @@ async fn register_overwrite_of_a_staged_table_needs_no_extra_right(pool: PgPool)
         .await
         .unwrap();
     assert_eq!(s.state(Kind::Table, "staged").await, Found::Active);
-    assert_eq!(listener.settled_counts(2, 0).await, (2, 0));
+    assert_eq!(listener.settled_counts(3, 0).await, (3, 0));
     let (succeeded, failed) = listener.recorded_actions();
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(
@@ -788,8 +789,9 @@ async fn assert_registering_the_uuid_of_another_table_is_refused(
             );
         }
     }
-    // Each call is refused after the create is authorized and before any drop is authorized.
-    assert_eq!(listener.settled_counts(6, 0).await, (6, 0));
+    // Each call is refused after the register right and the create are authorized, and before
+    // any drop is authorized.
+    assert_eq!(listener.settled_counts(12, 0).await, (12, 0));
     let (succeeded, _) = listener.recorded_actions();
     assert!(
         succeeded

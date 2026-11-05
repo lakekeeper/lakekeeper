@@ -44,7 +44,10 @@ use lakekeeper::{
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, NamespaceId, SecretStore, State,
         TableId, TabularListFlags, UserId, WriteTransaction,
-        authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
+        authz::{
+            AllowAllAuthorizer, CatalogTableAction, CatalogWarehouseAction,
+            tests::{HidingAuthorizer, RecordedTabularCheck},
+        },
     },
 };
 use lakekeeper_integration_tests::{
@@ -3809,6 +3812,129 @@ async fn test_register_table_checks_create_table_before_validating_the_file(pool
     let err = register().await.unwrap_err();
     assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
     assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+}
+
+/// Registering adopts existing files, so it needs the register right on the warehouse
+/// besides `create_table` on the namespace. It is checked before the metadata file is read.
+#[sqlx::test]
+async fn test_register_table_requires_the_register_right(pool: PgPool) {
+    let (ctx, authz, ns_params, _, missing_location) = register_table_setup(pool).await;
+
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterTable
+    ));
+    let err = CatalogServer::register_table(
+        ns_params,
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("registered".to_string())
+            .metadata_location(missing_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+}
+
+/// Drops `existing` without purging its files, registers its metadata file as `adopted`
+/// with `blocked` refused, and loads `adopted` as the same caller. Returns both responses
+/// and the checks the register made after it created the table.
+async fn adopt_dropped_table(
+    pool: PgPool,
+    blocked: &[CatalogTableAction],
+) -> (
+    LoadTableResult,
+    LoadTableResult,
+    Vec<RecordedTabularCheck>,
+    String,
+) {
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    for action in blocked {
+        authz.block_action(&format!("table:{action:?}"));
+    }
+
+    let registered = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("adopted".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the register right and create_table are allowed");
+    let register_checks = authz.tabular_checks().last().cloned().unwrap();
+    let table_object = format!("table:{}/{}", prefix.as_str(), registered.metadata.uuid());
+
+    let LoadTableResultOrNotModified::LoadTableResult(loaded) = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(prefix),
+            table: TableIdent::new(ns_params.namespace, "adopted".to_string()),
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    (registered, loaded, register_checks, table_object)
+}
+
+/// A register asks for read and write on the table it registered, and vends what
+/// `loadTable` vends the same caller. Both responses are tagged with the storage access
+/// they carry, so equal tags mean equal access.
+async fn assert_register_vends_as_load(pool: PgPool, blocked: &[CatalogTableAction]) {
+    let (registered, loaded, register_checks, table_object) =
+        adopt_dropped_table(pool, blocked).await;
+
+    let check = |action: &str| RecordedTabularCheck {
+        object: table_object.clone(),
+        action: action.to_string(),
+        user: None,
+        is_delegated_execution: false,
+    };
+    assert_eq!(
+        register_checks,
+        vec![check("ReadData"), check("WriteData")],
+        "{blocked:?}"
+    );
+    assert!(registered.etag.is_some(), "{blocked:?}");
+    assert_eq!(registered.etag, loaded.etag, "{blocked:?}");
+}
+
+#[sqlx::test]
+async fn test_register_table_vends_read_write_to_a_reader_and_writer(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[]).await;
+}
+
+#[sqlx::test]
+async fn test_register_table_vends_read_only_to_a_reader(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[CatalogTableAction::WriteData]).await;
+}
+
+/// Write credentials can read, so a caller who may write but not read gets none, as on load.
+#[sqlx::test]
+async fn test_register_table_vends_nothing_without_read(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[CatalogTableAction::ReadData]).await;
 }
 
 #[sqlx::test]
