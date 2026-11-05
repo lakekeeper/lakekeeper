@@ -114,7 +114,7 @@ impl AdlsStorage {
     }
 
     /// Pages of every path under `path`, recursively, also of names that are not a valid
-    /// [`Location`]. Returns the listed directory as well.
+    /// [`Location`]. Directories below `path` are listed too.
     fn list_paths(
         &self,
         path: &str,
