@@ -12740,6 +12740,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionCreateNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionDelete'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionUpdateStorageCredential'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetMetadata'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetConfig'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionListNamespaces'
@@ -12791,6 +12792,7 @@ components:
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
+          update_storage_credential: '#/components/schemas/LakekeeperWarehouseActionUpdateStorageCredential'
           use: '#/components/schemas/LakekeeperWarehouseActionUse'
     LakekeeperWarehouseActionAcceptMovedNamespace:
       type: object
@@ -12933,6 +12935,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindCreateNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindDelete'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorageCredential'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetMetadata'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetConfig'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindListNamespaces'
@@ -12984,6 +12987,7 @@ components:
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
+          update_storage_credential: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorageCredential'
           use: '#/components/schemas/LakekeeperWarehouseActionKindUse'
     LakekeeperWarehouseActionKindAcceptMovedNamespace:
       type: object
@@ -13210,6 +13214,15 @@ components:
           type: string
           enum:
             - update_storage
+    LakekeeperWarehouseActionKindUpdateStorageCredential:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - update_storage_credential
     LakekeeperWarehouseActionKindUse:
       type: object
       required:
@@ -13359,6 +13372,9 @@ components:
             - set_protection
     LakekeeperWarehouseActionUpdateStorage:
       type: object
+      description: |-
+        Change the warehouse's storage profile. The same request also replaces or clears the
+        storage credential, so it asks `update_storage_credential` as well.
       required:
         - action
       properties:
@@ -13366,6 +13382,16 @@ components:
           type: string
           enum:
             - update_storage
+    LakekeeperWarehouseActionUpdateStorageCredential:
+      type: object
+      description: Replace or clear the warehouse's storage credential, leaving the storage profile as it is.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - update_storage_credential
     LakekeeperWarehouseActionUse:
       type: object
       required:

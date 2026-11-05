@@ -103,6 +103,32 @@ impl
     APIEventContext<
         WarehouseId,
         Resolved<ArcResolvedWarehouse>,
+        Vec<CatalogWarehouseAction>,
+        AuthzChecked,
+    >
+{
+    /// Emit warehouse storage updated event
+    pub(crate) fn emit_warehouse_storage_updated(
+        self,
+        request: Arc<UpdateWarehouseStorageRequest>,
+        updated_warehouse: ArcResolvedWarehouse,
+    ) {
+        let event = UpdateWarehouseStorageEvent {
+            request,
+            updated_warehouse,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher.warehouse_storage_updated(event).await;
+        });
+    }
+}
+
+impl
+    APIEventContext<
+        WarehouseId,
+        Resolved<ArcResolvedWarehouse>,
         CatalogWarehouseAction,
         AuthzChecked,
     >
@@ -186,23 +212,6 @@ impl
             let () = dispatcher
                 .warehouse_format_version_policy_updated(event)
                 .await;
-        });
-    }
-
-    /// Emit warehouse storage updated event
-    pub(crate) fn emit_warehouse_storage_updated(
-        self,
-        request: Arc<UpdateWarehouseStorageRequest>,
-        updated_warehouse: ArcResolvedWarehouse,
-    ) {
-        let event = UpdateWarehouseStorageEvent {
-            request,
-            updated_warehouse,
-            request_metadata: self.request_metadata,
-        };
-        let dispatcher = self.dispatcher;
-        tokio::spawn(async move {
-            let () = dispatcher.warehouse_storage_updated(event).await;
         });
     }
 

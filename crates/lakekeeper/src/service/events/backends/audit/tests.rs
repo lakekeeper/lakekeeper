@@ -568,6 +568,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_succeeded_revoke_subtree_grants",
     "authz_succeeded_project_subtree_grants",
     "authz_succeeded_apply_grants",
+    "authz_succeeded_update_storage",
     "authz_succeeded_empty_collections",
     "authz_succeeded_empty_batch_check",
     "grant_created",
@@ -896,6 +897,22 @@ fn fixture_authz_succeeded_apply_grants() {
     });
 
     assert_matches_fixture("authz_succeeded_apply_grants", &contract_fields(record));
+}
+
+/// A storage profile change, which asks two warehouse actions because it also replaces the
+/// credential. Built from the handler's own action list.
+#[test]
+fn fixture_authz_succeeded_update_storage() {
+    let record = emit_and_capture_one(|| {
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_warehouse_entity()),
+            crate::api::management::v1::warehouse::update_storage_actions().event_actions(),
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_matches_fixture("authz_succeeded_update_storage", &contract_fields(record));
 }
 
 /// A request that asked for nothing: a commit that changed nothing, and a drop that forced

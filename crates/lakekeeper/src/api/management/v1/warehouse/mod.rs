@@ -863,9 +863,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ValidateWarehouseResponse> {
-        let (request_metadata, warehouse, spec_check) =
-            Self::authorize_storage_validation(warehouse_id, &context, request_metadata, true)
-                .await?;
+        let (request_metadata, warehouse, spec_check) = Self::authorize_storage_validation(
+            warehouse_id,
+            &context,
+            request_metadata,
+            update_storage_actions(),
+            true,
+        )
+        .await?;
 
         let UpdateWarehouseStorageRequest {
             mut storage_profile,
@@ -935,9 +940,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ValidateWarehouseResponse> {
-        let (request_metadata, warehouse, spec_check) =
-            Self::authorize_storage_validation(warehouse_id, &context, request_metadata, true)
-                .await?;
+        let (request_metadata, warehouse, spec_check) = Self::authorize_storage_validation(
+            warehouse_id,
+            &context,
+            request_metadata,
+            vec![CatalogWarehouseAction::UpdateStorageCredential],
+            true,
+        )
+        .await?;
 
         Ok(stored_profile_report(
             &warehouse.storage_profile,
@@ -959,9 +969,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ValidateWarehouseResponse> {
-        let (request_metadata, warehouse, spec_check) =
-            Self::authorize_storage_validation(warehouse_id, &context, request_metadata, false)
-                .await?;
+        let (request_metadata, warehouse, spec_check) = Self::authorize_storage_validation(
+            warehouse_id,
+            &context,
+            request_metadata,
+            vec![CatalogWarehouseAction::UpdateStorage],
+            false,
+        )
+        .await?;
 
         let credential =
             maybe_get_secret(warehouse.storage_secret_id, &context.v1_state.secrets).await?;
@@ -980,7 +995,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
     /// Shared authz + warehouse resolution for the storage validation endpoints.
     ///
-    /// Uses the same action as the mutation each endpoint stands in for, so
+    /// Asks the same actions as the mutation each endpoint stands in for, so
     /// validation never widens who can reach the storage backend.
     /// `check_spec_mutable` should be false for read-only validation: an
     /// externally managed warehouse is locked against *changes*, which says
@@ -994,13 +1009,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         warehouse_id: WarehouseId,
         context: &ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
+        actions: Vec<CatalogWarehouseAction>,
         check_spec_mutable: bool,
     ) -> Result<(ArcRequestMetadata, ArcResolvedWarehouse, ValidationCheck)> {
         let event_ctx = APIEventContext::for_warehouse(
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             warehouse_id,
-            CatalogWarehouseAction::UpdateStorage,
+            actions,
         );
         let status_filter = if check_spec_mutable {
             WarehouseStatus::active()
@@ -1017,11 +1033,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = context
             .v1_state
             .authz
-            .require_warehouse_action(
+            .require_warehouse_actions(
                 event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                event_ctx.action().clone(),
+                event_ctx.action(),
             )
             .await;
         let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
@@ -1030,7 +1046,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // anything; report that as a check rather than a rejection, so a locked
         // warehouse produces `valid: false` instead of a misleading green.
         // Reported, not emitted as an authz failure — a dry run is not a denial.
-        if !check_spec_mutable {
+        let lock_action = event_ctx
+            .action()
+            .iter()
+            .find(|action| action.is_spec_mutation())
+            .filter(|_| check_spec_mutable);
+        let Some(lock_action) = lock_action else {
             return Ok((
                 event_ctx.request_metadata_arc(),
                 warehouse,
@@ -1039,7 +1060,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     "No change is proposed, so the warehouse's spec lock does not apply.",
                 ),
             ));
-        }
+        };
 
         // A write transaction: the underlying check takes `SELECT ... FOR UPDATE`.
         // Committed before the storage probes start, so no pool connection is
@@ -1048,7 +1069,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog.clone()).await?;
         let mutable = C::ensure_warehouse_spec_mutable(
             warehouse_id,
-            event_ctx.action(),
+            lock_action,
             event_ctx
                 .request_metadata()
                 .bypasses_control_plane_authz(None),
@@ -1741,7 +1762,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             warehouse_id,
-            CatalogWarehouseAction::UpdateStorage,
+            update_storage_actions(),
         );
 
         let warehouse = C::get_warehouse_by_id_cache_aware(
@@ -1752,11 +1773,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await;
         let authz_result = authorizer
-            .require_warehouse_action(
+            .require_warehouse_actions(
                 event_ctx.request_metadata(),
                 warehouse_id,
                 warehouse,
-                event_ctx.action().clone(),
+                event_ctx.action(),
             )
             .await;
         let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
@@ -1783,7 +1804,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let mut transaction = WriteTransaction::<C>::begin(context.v1_state.catalog).await?;
         C::ensure_warehouse_spec_mutable(
             warehouse_id,
-            event_ctx.action(),
+            &CatalogWarehouseAction::UpdateStorage,
             event_ctx
                 .request_metadata()
                 .bypasses_control_plane_authz(None),
@@ -1851,7 +1872,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             warehouse_id,
-            CatalogWarehouseAction::UpdateStorage,
+            CatalogWarehouseAction::UpdateStorageCredential,
         );
 
         let warehouse = C::get_warehouse_by_id_cache_aware(
@@ -2368,6 +2389,15 @@ async fn resolve_credential_type<S: SecretStore>(
             None
         }
     }
+}
+
+/// What changing the storage profile asks: it also replaces or clears the credential, so a
+/// policy that refuses `update_storage_credential` refuses it too.
+pub(crate) fn update_storage_actions() -> Vec<CatalogWarehouseAction> {
+    vec![
+        CatalogWarehouseAction::UpdateStorage,
+        CatalogWarehouseAction::UpdateStorageCredential,
+    ]
 }
 
 /// Map the spec-mutability guard's error to an API error. A [`WarehouseSpecLocked`]
