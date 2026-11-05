@@ -8478,6 +8478,30 @@ components:
                     action:
                       $ref: '#/components/schemas/LakekeeperViewAction'
         - type: object
+          title: CatalogActionCheckOperationViewInDefinerView
+          description: |-
+            May the identity, as the owner of a DEFINER view (one an engine runs as its
+            owner), read this view inside the DEFINER view's query?
+
+            Allowed only if this view has the `trino.run-as-owner` property, which Trino reads, and
+            the identity may `select` it. Trino runs a view without this property in the session of
+            the outer view's owner, and anyone who may change that view would read with the owner's
+            rights. The audit log records this check as `select` on the view.
+          required:
+            - view-in-definer-view
+          properties:
+            view-in-definer-view:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+              description: |-
+                May the identity, as the owner of a DEFINER view (one an engine runs as its
+                owner), read this view inside the DEFINER view's query?
+
+                Allowed only if this view has the `trino.run-as-owner` property, which Trino reads, and
+                the identity may `select` it. Trino runs a view without this property in the session of
+                the outer view's owner, and anyone who may change that view would read with the owner's
+                rights. The audit log records this check as `select` on the view.
+        - type: object
           title: CatalogActionCheckOperationGenericTable
           required:
             - generic-table

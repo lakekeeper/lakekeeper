@@ -3,6 +3,9 @@ services:
     environment:
       - LAKEKEEPER_TEST__LAKEKEEPER_WAREHOUSE=trino_opa
       - LAKEKEEPER_TEST__TRINO_URI=https://trino-proxy:443
+      # A second Trino user: the service account of the "trino" client.
+      - LAKEKEEPER_TEST__OPENID_OTHER_CLIENT_ID=trino
+      - LAKEKEEPER_TEST__OPENID_OTHER_CLIENT_SECRET=AK48QgaKsqdEpP9PomRJw7l2T7qWGHdZ
     depends_on:
       trino-opa:
         condition: service_healthy

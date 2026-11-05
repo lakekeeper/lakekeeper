@@ -1315,7 +1315,8 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     )?;
 
     // 8. Resolve owners and assign the current user for each tabular in the chain.
-    //    DEFINER views switch current_user to the view owner for subsequent tabulars.
+    //    A DEFINER view switches current_user to its owner for the following tabulars,
+    //    an INVOKER view switches it back to the request actor.
     let token_idp_id = request_metadata
         .authentication()
         .and_then(|a| a.subject().idp_id())
