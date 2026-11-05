@@ -296,4 +296,4 @@ Lakekeeper relies on a persistent backend (Postgres) and an optional authorizati
 
 **Always create a backup of your Postgres database before running migrations.** While migrations are designed to be safe, having a backup ensures you can restore your system to a known good state if needed.
 
-When using the Lakekeeper Helm Chart, migrations are handled automatically through a dedicated job during deployment. The chart also runs this check in an init container before `serve` starts, so `--force-start` does not skip it there.
+When using the Lakekeeper Helm Chart, migrations are handled automatically through a dedicated job during deployment. The chart also runs this check in an init container before `serve` starts.

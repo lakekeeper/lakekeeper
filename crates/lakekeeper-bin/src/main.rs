@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_checks_migrations_unless_forced() {
+    fn serve_force_start_defaults_to_false() {
         assert!(!parse_force_start(&["lakekeeper", "serve"]));
         assert!(parse_force_start(&["lakekeeper", "serve", "--force-start"]));
         assert!(parse_force_start(&["lakekeeper", "serve", "-f"]));
