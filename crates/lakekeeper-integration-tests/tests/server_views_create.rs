@@ -1,10 +1,7 @@
 use http::StatusCode;
 use iceberg::NamespaceIdent;
 use lakekeeper::{
-    api::iceberg::{
-        types::Prefix,
-        v1::{DataAccess, NamespaceParameters},
-    },
+    api::iceberg::{types::Prefix, v1::NamespaceParameters},
     server::views::create::create_view,
     service::ServerAuthentication,
 };
@@ -112,10 +109,6 @@ async fn test_create_view_with_owner_property_refused_from_untrusted_client(pool
             },
             rq,
             api_context.clone(),
-            DataAccess {
-                vended_credentials: true,
-                remote_signing: false,
-            },
             user_request(),
         ))
         .await
@@ -150,10 +143,6 @@ async fn test_create_view_with_owner_property_from_trusted_engine(pool: PgPool) 
         },
         rq,
         api_context,
-        DataAccess {
-            vended_credentials: true,
-            remote_signing: false,
-        },
         trino_engine_request(),
     ))
     .await
@@ -182,10 +171,6 @@ async fn test_create_view_with_owner_property_without_authentication(pool: PgPoo
         },
         rq,
         api_context,
-        DataAccess {
-            vended_credentials: true,
-            remote_signing: false,
-        },
         random_request_metadata(),
     ))
     .await
@@ -215,10 +200,6 @@ async fn test_create_view_with_owner_property_refused_from_request_without_authe
         },
         rq,
         api_context,
-        DataAccess {
-            vended_credentials: true,
-            remote_signing: false,
-        },
         random_request_metadata(),
     ))
     .await
