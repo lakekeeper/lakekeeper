@@ -1,7 +1,8 @@
 //! The `write` privilege end-to-end against a real OpenFGA store plus a Postgres catalog: a
 //! principal granted `write` on a namespace makes every commit to a table below it through
 //! the REST endpoints, including schema, property and history changes and the commit that
-//! finishes a staged create, but cannot drop or rename the table.
+//! finishes a staged create, but cannot drop or rename the table. Also pins that `create` on
+//! a namespace shows the namespace but not the tables already inside it.
 //!
 //! The model tests pin the relations and `authz-openfga`'s own tests pin the mapping of a
 //! commit to them. This file covers what neither can: that real requests reach the relations
@@ -32,7 +33,8 @@ mod write {
                 iceberg::{
                     types::{DropParams, Prefix},
                     v1::{
-                        CreateNamespaceRequest, DataAccess, NamespaceParameters, TableParameters,
+                        CreateNamespaceRequest, DataAccess, ListTablesQuery, NamespaceParameters,
+                        TableParameters,
                         namespace::NamespaceService as _,
                         tables::{
                             LoadTableRequest, LoadTableResultOrNotModified, TablesService as _,
@@ -511,6 +513,74 @@ mod write {
                 allowed(&reader_md).await,
                 vec![false, false, false, false, false, false]
             );
+        }
+
+        /// `create` on a namespace shows the namespace and lets the principal create tables
+        /// there, but does not show the tables already inside it.
+        #[sqlx::test]
+        async fn create_does_not_describe_the_tables_inside(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = principal_metadata(&admin, &project_id);
+            namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
+            let creator_md = principal_with(
+                &ctx,
+                &admin_md,
+                &project_id,
+                warehouse_id,
+                "creator",
+                "create",
+            )
+            .await;
+            let params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse_id.to_string())),
+                namespace: namespace(),
+            };
+
+            CatalogServer::load_namespace_metadata(
+                params.clone(),
+                lakekeeper::api::iceberg::v1::namespace::GetNamespacePropertiesQuery {
+                    return_uuid: false,
+                },
+                ctx.clone(),
+                creator_md.clone(),
+            )
+            .await
+            .expect("create shows the namespace");
+            let err = CatalogServer::load_table(
+                table_params(warehouse_id),
+                LoadTableRequest::default(),
+                ctx.clone(),
+                creator_md.clone(),
+            )
+            .await
+            .expect_err("create does not describe a table it did not create")
+            .error;
+            // Without `describe`, the table is hidden.
+            assert_eq!(err.code, 404, "{err:?}");
+
+            CatalogServer::create_table(
+                params.clone(),
+                create_table_request(Some("own".to_string()), Some(false)),
+                DataAccess::not_specified(),
+                ctx.clone(),
+                creator_md.clone(),
+            )
+            .await
+            .expect("create creates tables");
+            load(&ctx, &creator_md, named_table_params(warehouse_id, "own")).await;
+            let listed = CatalogServer::list_tables(
+                params,
+                ListTablesQuery::default(),
+                ctx.clone(),
+                creator_md.clone(),
+            )
+            .await
+            .unwrap()
+            .identifiers
+            .iter()
+            .map(|ident| ident.name.clone())
+            .collect::<Vec<_>>();
+            assert_eq!(listed, vec!["own".to_string()]);
         }
     }
 }

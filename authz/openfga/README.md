@@ -11,7 +11,7 @@ MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Splits the privileges of `modify` into two tiers: a write tier between `select` and `modify`, for principals that change everything a table holds but cannot drop, rename or protect it, and `modify`, which keeps those lifecycle rights. No tuple is written, rewritten or backfilled: `modify` implies the write tier, so every `modify` grant from `v4.13` authorizes exactly what it did before.
+Splits the privileges of `modify` into two tiers: a write tier between `select` and `modify`, for principals that change everything a table holds but cannot drop, rename or protect it, and `modify`, which keeps those lifecycle rights. Also stops `create` from implying `describe` on the objects beneath. No tuple is written, rewritten or backfilled: `modify` implies the write tier, so every `modify` grant from `v4.13` authorizes exactly what it did before.
 
 ### Write tier
 
@@ -34,6 +34,13 @@ The grants API and the assignments API call the tier `write`. The model stores i
 Everything else stays on `modify`: drop, undrop, rename, protection, task control and, with `manage_grants`, moves; on a namespace also its deletion and its properties; on a warehouse and a project their deletion, rename and settings. `modify` does not include `create`.
 
 `lakekeeper_view` gets no `write_content`, and a view commit stays on `modify`. This is deliberate: a view commit replaces the definition, and whether the write tier may do that depends on how views that run with their owner's privileges (`DEFINER`) are protected. A `write` grant on a namespace or above still yields `select` on the views below it.
+
+### `create` no longer implies `describe` beneath
+
+`project`, `warehouse`, `namespace`:
+
+- `describe_effective` drops `create_effective`. A principal who may create objects in a container no longer sees the metadata of the tables, views and generic tables already inside it, and loses what `describe` alone gives on the container: `can_list_everything`, endpoint statistics and task listings.
+- `can_get_metadata` adds `create_effective`, so the principal still sees and lists the containers it may create in. Objects it creates are visible to it through ownership.
 
 ### Stores provisioned from `main` builds
 

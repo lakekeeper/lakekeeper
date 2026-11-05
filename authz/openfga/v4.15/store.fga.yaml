@@ -363,6 +363,11 @@ tuples:
   - user: user:namespace_1_modify_delegator
     relation: pass_grants
     object: namespace:namespace_1
+  # `create` on the project only: may create warehouses and, below them, namespaces and
+  # tables, but sees nothing that already exists there.
+  - user: user:project_1_create_only
+    relation: create
+    object: project:project_1
 tests:
   - name: Tags - project security admin governs vocabulary and attachment
     check:
@@ -2058,18 +2063,21 @@ tests:
           can_get_metadata: false
 
   - name: create alone below the warehouse is a visibility source
-    # A direct `create` on a namespace exercises `create_effective`, the
-    # `describe_effective` it implies, and visibility at every ancestor.
+    # A direct `create` on a namespace exercises `create_effective`, the container
+    # metadata it shows, and visibility at every ancestor.
     check:
       - user: user:namespace_1_2_create_only
         object: namespace:namespace_1_2
         assertions:
           create: true
           describe: false
-          describe_effective: true
+          describe_effective: false    # create does not imply describe
           visible_below: true
           can_create_table: true
-          can_get_metadata: true
+          can_get_metadata: true       # but shows the namespace it may create in
+          can_list_tables: true
+          can_include_in_list: true
+          can_list_everything: false
       - user: user:namespace_1_2_create_only
         object: namespace:namespace_1_1
         assertions:
@@ -2092,15 +2100,98 @@ tests:
           # A sibling subtree: nothing flows sideways.
           visible_below: false
           can_get_metadata: false
+
+  - name: create shows the containers it may create in, never the objects inside
+    # `create` on a container gives no `describe` on the tables, views and generic
+    # tables already inside it, at any level.
+    check:
       - user: user:namespace_1_2_create_only
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
-          # `create` implies `describe` on the namespace, which flows down to its
-          # contents; the grant itself stays on the namespace.
-          describe_effective: true
+          describe_effective: false
           visible_below: false
-          can_get_metadata: true
+          can_get_metadata: false
+          can_include_in_list: false
           can_read_data: false
+          can_get_tasks: false
+      - user: user:namespace_1_2_create_only
+        object: lakekeeper_view:warehouse_1/view_1
+        assertions:
+          describe_effective: false
+          can_get_metadata: false
+          can_include_in_list: false
+      - user: user:warehouse_1_create_only
+        object: warehouse:warehouse_1
+        assertions:
+          describe_effective: false
+          can_get_metadata: true
+          can_use: true
+          can_list_namespaces: true
+          can_list_everything: false
+          can_get_all_tasks: false
+          can_get_endpoint_statistics: false
+          can_create_namespace: true
+      - user: user:warehouse_1_create_only
+        object: namespace:namespace_1_2
+        assertions:
+          # Below the warehouse it may create in every namespace, so it sees them all.
+          describe_effective: false
+          can_get_metadata: true
+          can_list_tables: true
+          can_include_in_list: true
+          can_create_table: true
+      - user: user:warehouse_1_create_only
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_get_metadata: false
+          can_include_in_list: false
+      - user: user:warehouse_1_create_only
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_get_metadata: false
+      - user: user:project_1_create_only
+        object: project:project_1
+        assertions:
+          create: true
+          describe_effective: false
+          can_create_warehouse: true
+          can_get_metadata: true
+          can_list_warehouses: true
+          can_include_in_list: true
+          can_list_roles: true
+          can_get_endpoint_statistics: false
+          can_get_project_tasks: false
+      - user: user:project_1_create_only
+        object: warehouse:warehouse_1
+        assertions:
+          describe_effective: false
+          can_get_metadata: true
+          can_use: true
+          can_include_in_list: true
+          can_create_namespace: true
+          can_list_everything: false
+      - user: user:project_1_create_only
+        object: namespace:namespace_1_2
+        assertions:
+          describe_effective: false
+          can_get_metadata: true
+      - user: user:project_1_create_only
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          describe_effective: false
+          can_get_metadata: false
+          can_read_data: false
+      - user: user:namespace_1_1_owner
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          # Ownership still describes everything beneath.
+          describe_effective: true
+          can_get_metadata: true
+      - user: user:project_1_data_admin
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          # data_admin implies create and keeps describe on its own.
+          describe_effective: true
 
   - name: a project grant flows down as effective only, never as a stored grant
     # Grant listings read the bare relation, so inheritance must never populate it.
