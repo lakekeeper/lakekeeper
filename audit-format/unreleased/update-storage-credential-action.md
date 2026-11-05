@@ -2,7 +2,7 @@
 level: none
 ---
 
-**Replacing the storage credential of a warehouse is recorded with the new action `update_storage_credential`. A change of the storage profile also replaces the credential, so its records carry both actions.**
+**Replacing a warehouse's storage credential is recorded as `update_storage_credential`; a storage profile change records `update_storage` and `update_storage_credential`.**
 
 ```text
                                                   before            after
@@ -13,6 +13,6 @@ POST …/warehouse/{id}/storage/validate-profile    update_storage    update_sto
 POST …/warehouse/{id}/storage/validate-access     update_storage    update_storage
 ```
 
-A record with both actions has two entries in `actions` and one entry per action in `authorizations`. If the request is denied, both entries have `allowed: false`, and the `error` message names the action that was refused. If an error stopped the evaluation, neither entry has `allowed`.
+A record with both actions has two entries in `actions` and one entry per action in `authorizations`. If the request is denied, both entries have `allowed: false`. If an error stopped the evaluation, neither entry has `allowed`.
 
 **What to do:** If a rule finds credential replacements by `update_storage`, match `update_storage_credential` as well. If a rule reads only the first entry of `actions`, read all entries.

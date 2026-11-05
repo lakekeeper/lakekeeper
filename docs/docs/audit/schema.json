@@ -1248,8 +1248,8 @@
         "read_grants": "Can list the grants held on this warehouse.",
         "read_subtree_grants": "Can list and read every grant in the warehouse: the warehouse's own and those on\nevery namespace and tabular inside it. Strictly stronger than `read_grants`, which\ncovers this one resource; granted separately because it enumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
         "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `read_subtree_grants`.",
-        "update_storage": "Change the warehouse's storage profile, or check the storage it currently runs with. A\nprofile change also replaces or clears the credential, so it asks\n`update_storage_credential` too.",
-        "update_storage_credential": "Replace or clear the warehouse's storage credential, leaving the storage profile as it is."
+        "update_storage": "Change or validate the warehouse's storage profile, or validate the storage the warehouse\ncurrently runs with. Changing or validating a profile also requires\n`update_storage_credential`, because a profile change replaces or clears the credential.",
+        "update_storage_credential": "Replace or clear the warehouse's storage credential, or validate a replacement, leaving\nthe storage profile as it is."
       }
     },
     "Decision": {

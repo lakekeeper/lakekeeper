@@ -1103,11 +1103,12 @@ pub enum CatalogWarehouseAction {
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
     },
-    /// Change the warehouse's storage profile, or check the storage it currently runs with. A
-    /// profile change also replaces or clears the credential, so it asks
-    /// `update_storage_credential` too.
+    /// Change or validate the warehouse's storage profile, or validate the storage the warehouse
+    /// currently runs with. Changing or validating a profile also requires
+    /// `update_storage_credential`, because a profile change replaces or clears the credential.
     UpdateStorage,
-    /// Replace or clear the warehouse's storage credential, leaving the storage profile as it is.
+    /// Replace or clear the warehouse's storage credential, or validate a replacement, leaving
+    /// the storage profile as it is.
     UpdateStorageCredential,
     GetMetadata,
     GetConfig,
