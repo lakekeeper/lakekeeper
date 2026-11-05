@@ -32,8 +32,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    OWNER_PROPERTY, create_view_helper, create_view_request, load_view_helper,
-    random_request_metadata, trino_engine_request, user_request, views_test_setup,
+    OWNER_PROPERTY, create_view_helper, create_view_request, load_view_helper, memory_files_under,
+    put_memory_file, random_request_metadata, trino_engine_request, user_request, views_test_setup,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use maplit::hashmap;
@@ -340,6 +340,164 @@ fn assert_protected_property_error(err: &iceberg_ext::catalog::rest::IcebergErro
 fn assert_protected_version_error(err: &iceberg_ext::catalog::rest::IcebergErrorResponse) {
     assert_eq!(err.error.code, StatusCode::FORBIDDEN);
     assert_eq!(err.error.r#type, "ProtectedViewVersionChange");
+}
+
+fn set_location(location: &str) -> serde_json::Value {
+    json!([{"action": "set-location", "location": location}])
+}
+
+async fn create_myview(
+    ctx: &TestContext,
+    namespace: &NamespaceIdent,
+    prefix: &str,
+) -> LoadViewResult {
+    create_view_helper(
+        ctx.clone(),
+        namespace.clone(),
+        create_view_request(Some("myview"), None),
+        Some(prefix.to_string()),
+    )
+    .await
+    .unwrap()
+}
+
+/// A location in the same directory as `location`.
+fn sibling(location: &str, name: &str) -> String {
+    let (parent, _) = location.rsplit_once('/').unwrap();
+    format!("{parent}/{name}")
+}
+
+/// Moving a view into a location that holds files is refused: moving it away again would
+/// remove that location with all its files. The failed commit deletes nothing.
+#[sqlx::test]
+async fn test_commit_view_refuses_move_to_location_with_files(pool: PgPool) {
+    let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
+    let prefix = whi.to_string();
+    let view = create_myview(&ctx, &namespace, &prefix).await;
+    let old_location = view.metadata.location().to_string();
+    assert_eq!(
+        memory_files_under(&old_location).await,
+        vec![view.metadata_location.clone()]
+    );
+    let occupied = sibling(&old_location, "occupied");
+    let foreign_file = format!("{occupied}/data/foreign.parquet");
+    put_memory_file(&foreign_file).await;
+
+    let err = commit_view_as(
+        &ctx,
+        view_params(&prefix, &namespace, "myview"),
+        set_location(&occupied),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
+    assert_eq!(err.error.r#type, "InvalidLocation");
+
+    assert_eq!(memory_files_under(&occupied).await, vec![foreign_file]);
+    assert_eq!(
+        memory_files_under(&old_location).await,
+        vec![view.metadata_location.clone()]
+    );
+    let loaded = load(&ctx, view_params(&prefix, &namespace, "myview")).await;
+    assert_eq!(loaded.metadata.location(), old_location);
+    assert_eq!(loaded.metadata_location, view.metadata_location);
+}
+
+/// Moving a view into its own location is refused: removing the old location would remove
+/// the new metadata. The failed commit deletes nothing.
+#[sqlx::test]
+async fn test_commit_view_refuses_move_into_own_location(pool: PgPool) {
+    let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
+    let prefix = whi.to_string();
+    let view = create_myview(&ctx, &namespace, &prefix).await;
+    let old_location = view.metadata.location().to_string();
+
+    let err = commit_view_as(
+        &ctx,
+        view_params(&prefix, &namespace, "myview"),
+        set_location(&format!("{old_location}/sub")),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
+    assert_eq!(err.error.r#type, "SetLocationNotAllowed");
+
+    assert_eq!(
+        memory_files_under(&old_location).await,
+        vec![view.metadata_location.clone()]
+    );
+    let loaded = load(&ctx, view_params(&prefix, &namespace, "myview")).await;
+    assert_eq!(loaded.metadata_location, view.metadata_location);
+}
+
+/// Trino up to version 481 gives a view a new location on `CREATE OR REPLACE VIEW`. The view
+/// moves to the new, empty location, and its old location is removed.
+#[sqlx::test]
+async fn test_commit_view_moves_to_empty_location(pool: PgPool) {
+    let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
+    let prefix = whi.to_string();
+    let view = create_myview(&ctx, &namespace, &prefix).await;
+    let old_location = view.metadata.location().to_string();
+    let new_location = sibling(&old_location, "moved");
+
+    let moved = commit_view_as(
+        &ctx,
+        view_params(&prefix, &namespace, "myview"),
+        set_location(&new_location),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(moved.metadata.location(), new_location);
+    assert_eq!(
+        memory_files_under(&new_location).await,
+        vec![moved.metadata_location.clone()]
+    );
+    assert_eq!(
+        memory_files_under(&old_location).await,
+        Vec::<String>::new()
+    );
+    let loaded = load(&ctx, view_params(&prefix, &namespace, "myview")).await;
+    assert_eq!(loaded.metadata_location, moved.metadata_location);
+}
+
+/// Setting the location a view already has, also with a trailing slash, keeps the view in
+/// place and deletes none of its files.
+#[sqlx::test]
+async fn test_commit_view_set_location_to_own_location_deletes_nothing(pool: PgPool) {
+    let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
+    let prefix = whi.to_string();
+    let view = create_myview(&ctx, &namespace, &prefix).await;
+    let location = view.metadata.location().to_string();
+
+    let same = commit_view_as(
+        &ctx,
+        view_params(&prefix, &namespace, "myview"),
+        set_location(&location),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let with_slash = commit_view_as(
+        &ctx,
+        view_params(&prefix, &namespace, "myview"),
+        set_location(&format!("{location}/")),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(with_slash.metadata.location(), location);
+    let mut expected = vec![
+        view.metadata_location,
+        same.metadata_location,
+        with_slash.metadata_location,
+    ];
+    expected.sort();
+    assert_eq!(memory_files_under(&location).await, expected);
 }
 
 #[sqlx::test]

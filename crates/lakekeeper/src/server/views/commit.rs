@@ -28,6 +28,7 @@ use crate::{
             MAX_RETRIES_ON_CONCURRENT_UPDATE, concurrent_update_backoff, determine_table_ident,
             extract_count_from_metadata_location, validate_table_or_view_ident,
         },
+        tabular::require_empty_location,
         views::{
             owner_property::{self, PropertyWrites},
             validate_view_updates,
@@ -227,8 +228,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     let CommittedMetadata {
         request,
         metadata: new_metadata,
-        delete_old_location,
-    } = build_committed_metadata(ctx, &previous_view.metadata, &previous_view_location)?;
+    } = build_committed_metadata(ctx, &previous_view.metadata)?;
     let new_metadata = Arc::new(new_metadata);
 
     state
@@ -247,10 +247,10 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         extract_count_from_metadata_location(&previous_metadata_location).map_or(0, |v| v + 1),
     );
 
-    if delete_old_location.is_some() {
-        ctx.storage_profile
-            .require_allowed_location(&new_location)?;
-    }
+    let storage_secret = maybe_get_secret(ctx.storage_secret_id, &state.v1_state.secrets).await?;
+    let storage_secret_ref = storage_secret.as_deref();
+    let file_io = ctx.storage_profile.file_io(storage_secret_ref).await?;
+    let moved = check_view_location(ctx, &file_io, &previous_view_location, &new_location).await?;
 
     let new_view = CatalogView {
         metadata: new_metadata.clone(),
@@ -270,11 +270,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     )
     .await?;
 
-    let storage_secret = maybe_get_secret(ctx.storage_secret_id, &state.v1_state.secrets).await?;
-    let storage_secret_ref = storage_secret.as_deref();
-
     // Write the metadata file and commit
-    let file_io = ctx.storage_profile.file_io(storage_secret_ref).await?;
     let config = delete_on_failure(&file_io, &[&new_view.metadata_location], async {
         write_file(
             &file_io,
@@ -331,15 +327,15 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
     // The removal ends before the response: the client's next commit may move the view back
     // into this location.
-    if let Some(DeleteLocation(before_update_view_location)) = delete_old_location
+    if moved
         && !cleanup_before_response(
             request_metadata.received_at(),
-            remove_old_view_location(&file_io, before_update_view_location),
+            remove_old_view_location(&file_io, &previous_view_location),
         )
         .await
     {
         tracing::warn!(
-            "Stopped deleting old view location '{before_update_view_location}' at the request deadline. Its remaining files stay in storage."
+            "Stopped deleting old view location '{previous_view_location}' at the request deadline. Its remaining files stay in storage."
         );
     }
 
@@ -360,28 +356,22 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 }
 
 /// The metadata a commit produces from the stored view, and the request it is built from.
-struct CommittedMetadata<'l> {
+struct CommittedMetadata {
     /// The client's request, with a `remove-properties` update appended if the owner property
     /// rules remove owner properties.
     request: Arc<CommitViewRequest>,
     metadata: ViewMetadata,
-    delete_old_location: Option<DeleteLocation<'l>>,
 }
 
 /// Builds the metadata a commit produces from the stored view and applies the owner property
 /// rules of [`owner_property::check_version_change`]. A refusal follows the request's
 /// authorization record. If the rules remove owner properties, the metadata is built again from
 /// the stored view, with the removal appended to the request.
-fn build_committed_metadata<'l>(
+fn build_committed_metadata(
     ctx: &CommitViewContext<'_>,
     previous_metadata: &ViewMetadata,
-    previous_location: &'l Location,
-) -> Result<CommittedMetadata<'l>> {
-    let (metadata, delete_old_location) = build_new_metadata(
-        &ctx.request.updates,
-        previous_metadata.clone(),
-        previous_location,
-    )?;
+) -> Result<CommittedMetadata> {
+    let metadata = build_new_metadata(&ctx.request.updates, previous_metadata.clone())?;
     let stale_owner_properties = owner_property::check_version_change(
         previous_metadata,
         &metadata,
@@ -394,7 +384,6 @@ fn build_committed_metadata<'l>(
         return Ok(CommittedMetadata {
             request: ctx.request.clone(),
             metadata,
-            delete_old_location,
         });
     }
 
@@ -402,16 +391,56 @@ fn build_committed_metadata<'l>(
     request.updates.push(ViewUpdate::RemoveProperties {
         removals: stale_owner_properties,
     });
-    let (metadata, delete_old_location) = build_new_metadata(
-        &request.updates,
-        previous_metadata.clone(),
-        previous_location,
-    )?;
+    let metadata = build_new_metadata(&request.updates, previous_metadata.clone())?;
     Ok(CommittedMetadata {
         request: Arc::new(request),
         metadata,
-        delete_old_location,
     })
+}
+
+/// Checks the location a commit gives the view, and returns whether the view moves away from
+/// `previous`. The old location is then removed with all files in it, so the view moves only
+/// to an empty location, as on create.
+async fn check_view_location(
+    ctx: &CommitViewContext<'_>,
+    file_io: &impl LakekeeperStorage,
+    previous: &Location,
+    new: &Location,
+) -> Result<bool> {
+    if new == previous {
+        return Ok(false);
+    }
+    ctx.storage_profile.require_allowed_location(new)?;
+    let moved = is_move(previous, new)?;
+    if moved {
+        require_empty_location(file_io, new).await?;
+    }
+    Ok(moved)
+}
+
+/// Whether `new` is another directory than `previous`. Compared as the catalog stores
+/// locations, without scheme and trailing slash: `s3a://b/v` is the directory of `s3://b/v`.
+/// Fails if one is inside the other: removing the old location would remove the new metadata.
+fn is_move(previous: &Location, new: &Location) -> Result<bool> {
+    let previous = previous.authority_and_path().trim_end_matches('/');
+    let new = new.authority_and_path().trim_end_matches('/');
+    let inside = |inner: &str, outer: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    if previous == new {
+        return Ok(false);
+    }
+    if inside(new, previous) || inside(previous, new) {
+        return Err(ErrorModel::bad_request(
+            "Cannot move a view into its own location or into a parent of it",
+            "SetLocationNotAllowed",
+            None,
+        )
+        .into());
+    }
+    Ok(true)
 }
 
 /// Removes the location a view moved away from, and logs a failure.
@@ -444,21 +473,16 @@ fn check_requirements(requirements: Option<&Vec<ViewRequirement>>, view_id: View
     Ok(())
 }
 
-struct DeleteLocation<'c>(&'c Location);
-
-fn build_new_metadata<'l>(
+fn build_new_metadata(
     updates: &[ViewUpdate],
     before_update_metadata: ViewMetadata,
-    before_location: &'l Location,
-) -> Result<(ViewMetadata, Option<DeleteLocation<'l>>)> {
-    let previous_location = before_update_metadata.location().to_string();
+) -> Result<ViewMetadata> {
     // Snapshot persisted schemas before the builder consumes the metadata, to reject a commit that
     // recycles a schema id onto different content (defense-in-depth: views have no RemoveSchema
     // update today, so this cannot currently trip — but the storage store diffs schemas by id).
     let previous_schemas: Vec<_> = before_update_metadata.schemas_iter().cloned().collect();
 
     let mut m = ViewMetadataBuilder::new_from_metadata(before_update_metadata);
-    let mut delete_old_location = None;
     for upd in updates {
         m = match upd {
             ViewUpdate::AssignUuid { .. } => {
@@ -469,18 +493,7 @@ fn build_new_metadata<'l>(
                 )
                 .into());
             }
-            ViewUpdate::SetLocation { location } => {
-                // Compared without trailing slashes, because that is the only
-                // difference the builder erases: `set_location` trims before
-                // storing, so `s3://b/v/` and `s3://b/v` become the same location.
-                // Comparing raw, a client that sends the location it already has
-                // with a slash reads as a move to itself -- and `delete_old_location`
-                // then purges the directory this commit just wrote its metadata into.
-                if location.trim_end_matches('/') != previous_location.trim_end_matches('/') {
-                    delete_old_location = Some(DeleteLocation(before_location));
-                }
-                m.set_location(location.clone())
-            }
+            ViewUpdate::SetLocation { location } => m.set_location(location.clone()),
 
             ViewUpdate::UpgradeFormatVersion { format_version } => match *format_version {
                 ViewFormatVersion::V1 => m,
@@ -531,7 +544,7 @@ fn build_new_metadata<'l>(
         previous_schemas.iter(),
         requested_update_metadata.metadata.schemas_iter(),
     )?;
-    Ok((requested_update_metadata.metadata, delete_old_location))
+    Ok(requested_update_metadata.metadata)
 }
 
 pub(crate) fn parse_view_property_updates(
@@ -570,7 +583,7 @@ mod tests {
     use iceberg_ext::catalog::rest::{CommitViewRequest, ViewUpdate};
     use lakekeeper_io::Location;
 
-    use super::build_new_metadata;
+    use super::{build_new_metadata, is_move};
 
     fn view_metadata(location: &str) -> ViewMetadata {
         let schema = Schema::builder()
@@ -617,42 +630,50 @@ mod tests {
         }
     }
 
-    /// Committing a view's own location back with a trailing slash is not a move,
-    /// so the old location must not be scheduled for deletion.
-    ///
-    /// It is the same directory: `ViewMetadataBuilder::set_location` trims, so the
-    /// new location is byte-identical to the old one. Treating it as a move purges
-    /// the prefix the commit has just written its metadata into, which leaves the
-    /// view unloadable and its data gone.
+    fn location(location: &str) -> Location {
+        Location::from_str(location).unwrap()
+    }
+
+    /// The builder stores a location without its trailing slash, so a client that sends the
+    /// view's own location with one leaves the location unchanged, and nothing is removed.
     #[test]
-    fn recommitting_the_same_location_with_a_slash_deletes_nothing() {
-        let before = Location::from_str("s3://bucket/view").unwrap();
-        let (metadata, delete_old) = build_new_metadata(
+    fn the_own_location_with_a_trailing_slash_is_unchanged() {
+        let metadata = build_new_metadata(
             &set_location("s3://bucket/view/").updates,
             view_metadata("s3://bucket/view"),
-            &before,
         )
         .unwrap();
 
         assert_eq!(metadata.location(), "s3://bucket/view");
-        assert!(
-            delete_old.is_none(),
-            "a view's own location was scheduled for deletion"
-        );
     }
 
-    /// A genuine relocation still schedules the old location for deletion.
+    /// An alternative scheme names the same directory: the view stays, nothing is removed.
     #[test]
-    fn relocating_a_view_deletes_the_old_location() {
-        let before = Location::from_str("s3://bucket/view").unwrap();
-        let (metadata, delete_old) = build_new_metadata(
-            &set_location("s3://bucket/elsewhere").updates,
-            view_metadata("s3://bucket/view"),
-            &before,
-        )
-        .unwrap();
+    fn another_spelling_of_the_own_location_is_no_move() {
+        let previous = location("s3://bucket/view");
+        assert!(!is_move(&previous, &location("s3a://bucket/view")).unwrap());
+        assert!(!is_move(&previous, &location("s3a://bucket/view/")).unwrap());
+    }
 
-        assert_eq!(metadata.location(), "s3://bucket/elsewhere");
-        assert!(delete_old.is_some(), "the vacated location was left behind");
+    #[test]
+    fn another_directory_is_a_move() {
+        let previous = location("s3://bucket/ns/view");
+        assert!(is_move(&previous, &location("s3://bucket/ns/elsewhere")).unwrap());
+        assert!(is_move(&previous, &location("s3://bucket/ns/view2")).unwrap());
+        assert!(is_move(&previous, &location("s3://other-bucket/ns/view")).unwrap());
+    }
+
+    /// Removing the old location after the move would remove the new metadata inside it.
+    #[test]
+    fn a_move_into_or_above_the_own_location_is_refused() {
+        let previous = location("s3://bucket/ns/view");
+        for new in [
+            "s3://bucket/ns/view/sub",
+            "s3a://bucket/ns/view/sub",
+            "s3://bucket/ns",
+        ] {
+            let err = is_move(&previous, &location(new)).unwrap_err();
+            assert_eq!(err.error.r#type, "SetLocationNotAllowed", "{new}");
+        }
     }
 }
