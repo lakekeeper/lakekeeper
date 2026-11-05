@@ -153,4 +153,4 @@ On [ADLS Gen2](storage-adls.md) with hierarchical namespace and on [OneLake](sto
 
 Only directories strictly below the warehouse base location are removed. With the `default` and `tabular-only` layouts a namespace's location is the base location itself, so this affects `full-hierarchy` warehouses, namespaces created before 0.13, and namespaces with an explicit `location`.
 
-Removal runs once, during the drop request, and never fails the drop. A recursive drop queues table and view files for deletion in the background, so the directories of namespaces that contained tables usually remain. To have them removed, drop the tables first and drop the namespace with `purge=true` once their purge tasks have finished.
+Removal runs once, during the drop request, and never fails the drop. A recursive drop queues the files of tables, views and generic tables for deletion in the background, so the directories of namespaces that contained them usually remain. To have them removed, drop the tables and generic tables first and drop the namespace with `purge=true` once their purge tasks have finished.

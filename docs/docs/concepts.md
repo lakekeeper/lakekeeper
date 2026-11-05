@@ -247,7 +247,7 @@ Protection can be applied to Warehouses, Namespaces, Tables, and Views via the M
 
 By default, Lakekeeper enforces that namespaces must be empty before deletion. Recursive deletion provides a way to delete a namespace and all its contained entities in a single operation.
 
-When deleting a namespace, add the recursive=true query parameter to the request.
+When deleting a namespace, add the recursive=true query parameter to the request. The files of the dropped tables, views and generic tables are removed only if `purge=true` is set.
 
 Protected entities within the hierarchy will prevent recursive deletion unless force is also used.
 
@@ -264,7 +264,7 @@ Add the `force=true` query parameter to deletion requests:
 DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 
-Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The files of the dropped tables, views and generic tables are removed only if `purge=true` is set.
+Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy.
 
 ## Upgrades & Migration
 
