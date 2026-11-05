@@ -59,11 +59,11 @@ Alice --> View1 (DEFINER, owner=Bob) --> View2 (INVOKER) --> View3 (DEFINER, own
 - **View3** is checked as Alice, because View2 is INVOKER and runs as Alice.
 - The **Table** is checked as Carol, because View3 is DEFINER and runs as Carol.
 
-This is the rule of PostgreSQL. Trino itself runs an INVOKER view inside a DEFINER view as the outer owner, so a query that Trino allows can fail in Lakekeeper if the calling user may not read what the INVOKER view reads. Whoever can change an INVOKER view could otherwise read data with the owner's permissions. To keep such a query working, do one of these:
+This rule keeps whoever can change an INVOKER view from reading data with the owner's permissions. PostgreSQL uses the same rule. Trino runs an INVOKER view inside a DEFINER view as the outer owner, so a query that Trino allows can fail. To keep such a query working, do one of these:
 
 - Create the inner view as `SECURITY DEFINER`, so that its owner is responsible for what it reads.
 - Reference the base tables directly in the outer view.
-- Grant the calling users read access to what the inner view reads.
+- Grant the calling users read access to what the inner view reads. This does not help with the [OPA bridge](./opa.md#views-inside-definer-views): it refuses an INVOKER view inside a DEFINER view of another user, whatever the grants are.
 
 ## How It Works
 
@@ -179,9 +179,9 @@ To correct the owner of a view, run `CREATE OR REPLACE VIEW ... SECURITY DEFINER
 
 ### Delegated Execution
 
-When a user accesses a table through a DEFINER view, the table load happens with the **owner's** permissions. This is flagged as "delegated execution" in authorization checks and audit logs. Authorization backends can use this flag to apply different policies — for example, skipping permission-inspection rights that would normally be required.
+When a DEFINER view references a table, the table load happens with the **owner's** permissions. This is flagged as "delegated execution" in authorization checks. Authorization backends can use this flag to apply different policies — for example, skipping permission-inspection rights that would normally be required.
 
-A DEFINER view runs everything it references with the owner's rights. So whoever can change a table or view that a DEFINER view references also changes what runs with the owner's rights. An INVOKER view stops this: what it references is checked as the calling user.
+A DEFINER view runs its own SQL with the owner's rights. A view that it references runs as that view's owner if it is DEFINER, and as the calling user if it is INVOKER, see [Chained Views](#chained-views). So whoever can change a referenced view cannot read data with the outer owner's rights, and checks below an INVOKER view are not delegated. The calling user is the identity of the request. If Trino authenticates with its own service account, Lakekeeper checks that account, and only the [OPA bridge](./opa.md#views-inside-definer-views) protects the owner's rights for each Trino user.
 
 ### Metadata vs. execution: `get_metadata` and `select`
 
@@ -196,7 +196,7 @@ Views expose two authorization checkpoints:
 
 - **View with no downstream objects** (e.g. `SELECT 1`). No referenced-by chain is built, so `select` is never checked via the chain. `get_metadata` on the view is enough for `loadView` (reading the SQL). `select` is only required if the engine actually executes the view (which it does via the OPA bridge, see below).
 - **INVOKER view referencing other objects.** The referenced-by chain emits `select` on the view. Downstream objects are checked against the **caller**. The caller needs `select` on the view to traverse the chain plus `read_data` / `write_data` on downstream tables.
-- **DEFINER view.** Same `select`-on-view requirement for the caller, but downstream objects are checked against the **owner**. `select` on the view is what gates the caller from entering the owner's context without explicit permission. This is also the boundary where the instance-admin `get_metadata` bypass stops short — admins cannot traverse a DEFINER chain they weren't granted `select` on.
+- **DEFINER view.** Same `select`-on-view requirement for the caller, but the objects it references are checked against the **owner**. `select` on the view is what gates the caller from entering the owner's context without explicit permission. This is also the boundary where the instance-admin `get_metadata` bypass stops short — admins cannot traverse a DEFINER chain they weren't granted `select` on.
 - **OPA bridge.** When the engine is fronted by the [OPA bridge](./opa.md), the bridge issues a `select` check on the view for every query that returns data (via Trino's `SelectFromColumns`). Under the OPA bridge, `select` on the view is always required to read data. Inside a DEFINER view of another user, the bridge allows a view only if it is a DEFINER view itself, see [Views inside DEFINER views](./opa.md#views-inside-definer-views).
 
 The data-plane / control-plane split lets policies differentiate the two dimensions — for example, the instance-admin bypass applies to `get_metadata` but not to `select`, matching the carve-out that already excludes `read_data` / `write_data` on tables. Operator-style identities can list and manage views they have no explicit access to, but cannot execute them through a referenced-by chain without `select` on that view.
@@ -213,8 +213,4 @@ The owner property on a view is critical for security. Lakekeeper ensures that:
 
 ### Audit Trail
 
-All authorization decisions in the referenced-by chain are logged when [audit logging](./configuration.md#audit-logging) is enabled. The audit log includes:
-
-- Which user was checked at each step.
-- Whether the check was a delegated execution.
-- The full view chain that was evaluated.
+When [audit logging](./configuration.md#audit-logging) is enabled, the audit log records each `loadTable` and `loadView` request with the calling user, the loaded table or view, and the decision. It does not list the checks along the view chain. If a check that ran with a DEFINER view owner's permissions is refused, the error in the record says so.

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
-    config::ENGINE_OWNER_PROPERTIES,
+    config::TRINO_OWNER_PROPERTY,
     request_metadata::ProjectIdMissing,
     service::{
         ArcProjectId, ArcResolvedWarehouse, ArcRole, BasicTabularInfo, CachePolicy,
@@ -278,10 +278,10 @@ pub enum CatalogActionCheckOperation {
     /// May the identity, as the owner of a DEFINER view (one an engine runs as its
     /// owner), read this view inside the DEFINER view's query?
     ///
-    /// Allowed only if this view is a DEFINER view itself, which has an engine owner property
-    /// such as `trino.run-as-owner`, and the identity may `select` it. An engine runs a view
-    /// without an owner property in the session of the outer view's owner, and anyone who may
-    /// change that view would read with the owner's rights.
+    /// Allowed only if this view has the `trino.run-as-owner` property, which Trino reads, and
+    /// the identity may `select` it. Trino runs a view without this property in the session of
+    /// the outer view's owner, and anyone who may change that view would read with the owner's
+    /// rights. The audit log records this check as `select` on the view.
     ViewInDefinerView {
         #[serde(flatten)]
         view: TabularIdentOrUuid,
@@ -1083,11 +1083,10 @@ fn convert_tabular_action<'a, 'u>(
     }
 }
 
-/// An engine runs this view as the user its owner property names.
+/// Trino runs this view as the user in `trino.run-as-owner`. Only this key counts: the caller is
+/// the Trino bridge, and Trino runs a view without it as the outer view's owner.
 fn is_definer_view(view_info: &ViewInfo) -> bool {
-    ENGINE_OWNER_PROPERTIES
-        .iter()
-        .any(|property| view_info.properties.contains_key(*property))
+    view_info.properties.contains_key(TRINO_OWNER_PROPERTY)
 }
 
 /// Refetch namespaces that don't meet minimum version requirements

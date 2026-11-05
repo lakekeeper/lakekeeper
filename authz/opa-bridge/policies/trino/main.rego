@@ -94,10 +94,10 @@ _batch_unmanaged_catalogs contains name if {
 }
 
 # Catalogs blanket-allowed via allow_unmanaged, evaluated once per unique
-# catalog (not per resource). allow_unmanaged's decision is catalog-level
-# (depends on configuration.trino_allow_unmanaged_catalogs + catalog name),
-# so one evaluation per catalog suffices — avoids re-running the rule for
-# every filterResource in a large batch.
+# catalog (not per resource). allow_unmanaged's decision depends on
+# configuration.trino_allow_unmanaged_catalogs, the catalog name and the
+# operation, which all resources of a batch share, so one evaluation per catalog
+# suffices — avoids re-running the rule for every filterResource in a large batch.
 _allowed_unmanaged_batch_catalogs contains catalog_name if {
 	some catalog_name in _batch_unmanaged_catalogs
 	representative := [r |
