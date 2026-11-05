@@ -54,7 +54,7 @@ All above mentioned configuration options refer to a specific Lakekeeper instanc
 
 | Variable                                       | Example | Description |
 |------------------------------------------------|---------|-----|
-| `TRINO_ALLOW_UNMANAGED_CATALOGS` | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
+| `TRINO_ALLOW_UNMANAGED_CATALOGS` | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. It does not allow reading tables and views of these catalogs, other than Trino's `system` catalog, inside a DEFINER view, see [Views inside DEFINER views](#views-inside-definer-views). Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
 
 ### Admin Users
 
@@ -85,6 +85,23 @@ Do **not** add the OPA bridge client to the trusted engine. The OPA bridge only 
 We recommend giving the OPA bridge its **own** Keycloak client, separate from the Trino catalog client. The OPA bridge only needs permission-check access on Lakekeeper, which is a narrower privilege scope than what the Trino catalog client needs — keeping them separate limits blast radius if either credential leaks.
 
 When you set up the trusted engine, [check the existing views](./view-security.md#check-existing-views) that have `trino.run-as-owner`.
+
+### Views inside DEFINER views
+
+Trino runs an INVOKER view inside a DEFINER view as the DEFINER view's owner. Then whoever can change the INVOKER view could read data with the owner's permissions. So inside a DEFINER view of another user, the bridge allows a view only if it has `trino.run-as-owner` and the owner may `select` it. For a table, the owner needs `read_data`. The bridge decides this for each Trino user, also if Trino authenticates to Lakekeeper with a service account.
+
+A query over a DEFINER view that reads an INVOKER view therefore fails for every user except the owner, with `View owner does not have sufficient privileges`. [Chained Views](./view-security.md#chained-views) lists how to keep such a query working.
+
+The bridge cannot tell views from tables in catalogs that are not listed in `trino_catalog`. `TRINO_ALLOW_UNMANAGED_CATALOGS` therefore does not allow reading tables and views of these catalogs inside a DEFINER view. This does not apply to Trino's `system` catalog, which cannot hold views. For a catalog that cannot hold Trino views, such as a PostgreSQL or Exasol catalog, add an [`allow_unmanaged`](#allow_unmanaged-unmanaged-catalog-extensions) rule:
+
+```rego
+package trino
+
+allow_unmanaged if {
+    input.action.operation == "CreateViewWithSelectFromColumns"
+    input.action.resource.table.catalogName == "my_external_catalog"
+}
+```
 
 ### Trino Configuration
 
@@ -176,9 +193,18 @@ For a simple blanket allow, set `TRINO_ALLOW_UNMANAGED_CATALOGS=true` (see above
 package trino
 
 allow_unmanaged if {
-    input.action.operation in ["AccessCatalog", "FilterCatalogs", "ShowSchemas",
-        "FilterSchemas", "SelectFromColumns", "FilterTables", "FilterColumns"]
+    input.action.operation in ["AccessCatalog", "FilterCatalogs", "ShowSchemas"]
     input.action.resource.catalog.name == "my_external_catalog"
+}
+
+allow_unmanaged if {
+    input.action.operation == "FilterSchemas"
+    input.action.resource.schema.catalogName == "my_external_catalog"
+}
+
+allow_unmanaged if {
+    input.action.operation in ["SelectFromColumns", "FilterTables", "FilterColumns"]
+    input.action.resource.table.catalogName == "my_external_catalog"
 }
 ```
 
@@ -225,7 +251,7 @@ A rename into another catalog is refused.
 
 Lakekeeper drops the tables and views that Trino drops with purge, so the `drop` checks of `DropTable` and `DropView` say `purge: true`. Trino's `DropSchema` request does not say whether the statement has `CASCADE`. With `CASCADE`, Trino drops and purges every table and view in the schema without checking each of them. The `delete` check of `DropSchema` therefore always says `recursive: true` and `purge: true`, also for an empty schema. Policies that look at these fields, for example in Cedar, apply to every `DROP SCHEMA` through Trino. OpenFGA does not use them.
 
-The table procedures `expire_snapshots` and `remove_orphan_files` also delete files. The bridge checks them as a `commit` of any kind on the table, which with OpenFGA needs `modify`.
+The table procedures `expire_snapshots` and `remove_orphan_files` also delete files. The bridge checks them as a `commit` of any kind on the table, which with OpenFGA needs `write`.
 
 ## Replacing Tables and Views
 
@@ -236,7 +262,7 @@ Trino asks for the same permission to create a table as to replace it with `CREA
 
 A table or view that was dropped and can still be restored does not count.
 
-The bridge cannot see which changes Trino makes when it replaces a table or view, so it checks a `commit` of any kind. With OpenFGA, a `commit` of any kind needs `modify` or ownership on the table or view, or on anything that contains it, such as its namespace or warehouse. The [`write_data`](./authorization-openfga.md#write-data) privilege is not enough. See [Authorization with OpenFGA](./authorization-openfga.md). When Trino connects to Lakekeeper with its own credentials, tables and views that users create through Trino belong to Trino's service account. Roles that replace tables or views through Trino therefore need `modify` on the namespace. Examples are roles that run dbt view models, or dbt table models with `on_table_exists='replace'`.
+The bridge cannot see which changes Trino makes when it replaces a table or view, so it checks a `commit` of any kind. With OpenFGA, replacing a table or a view needs `write`. Ownership is also enough. The grant can be on the object itself or on anything that contains it, such as its namespace or warehouse. See [Authorization with OpenFGA](./authorization-openfga.md). When Trino connects to Lakekeeper with its own credentials, tables and views that users create through Trino belong to Trino's service account. Roles that replace tables or views through Trino therefore need `write` on the namespace, for example to run dbt table models with `on_table_exists='replace'` or dbt view models. For the same reason, users who create tables or views through Trino need `describe` on the namespace next to `create` to see what they created.
 
 Trino checks the permission to create a view before it checks if the view exists. If a view with the name exists and the user does not have `commit` on it, `CREATE VIEW` fails with an access error, not with an error that the view already exists. `CREATE VIEW IF NOT EXISTS` with the name of an existing view also needs `commit` on that view.
 
@@ -248,13 +274,13 @@ The bridge requires `iceberg.rest-catalog.case-insensitive-name-matching` to be 
 
 ## Adding Files with `add_files`
 
-The bridge allows Trino's `add_files` table procedure for users who may commit any change to the table (`commit`, with OpenFGA `modify`; `write_data` is not enough). The procedure reads the files at the location given in the statement. It uses the storage access that Trino has for the table:
+The bridge allows Trino's `add_files` table procedure for users who may commit any change to the table (`commit`; with OpenFGA, `write`). The procedure reads the files at the location given in the statement. It uses the storage access that Trino has for the table:
 
 - If Lakekeeper vends credentials to Trino, these credentials only reach the table's own location. `add_files` can then only add files from inside the table's location.
-- If Trino uses its own static storage credentials, `add_files` can read every location that these credentials can read. Use `add_files` in this setup only if everyone who may commit any change to a table may read all data that Trino can read. Otherwise remove `ADD_FILES` from the allowed procedures in `policies/trino/allow_table.rego`.
+- If Trino uses its own static storage credentials, `add_files` can read every location that these credentials can read. Use `add_files` in this setup only if everyone who may commit to a table (with OpenFGA, everyone who has `write`, `modify` or ownership on the table or on a namespace, warehouse or project that contains it) may read all data that Trino can read. Otherwise remove `ADD_FILES` from the allowed procedures in `policies/trino/allow_table.rego`.
 
 ## Deployment
 
-Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older policies can allow too much on a newer server: bridge policies from releases before the OpenFGA [`write_data`](./authorization-openfga.md#write-data) privilege existed let a holder of `write_data` change a table's columns and comments, add files, expire snapshots and remove orphan files through Trino. Upgrade the policies before granting `write_data`.
+Use the bridge policies of the same release as the Lakekeeper server. To upgrade, upgrade the server first, then the policies. The policies ask the server for actions, such as `move`, that older servers do not know. Older servers deny these requests: with new policies on an older server, a DEFINER view of another user fails if it reads another view.
 
 A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).

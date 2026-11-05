@@ -126,7 +126,7 @@ You can move a Namespace to another parent in the same Warehouse, rename it, or 
 
 ### Tables & Views
 
-Each Namespace can contain multiple Tables and Views. When creating new Tables and Views, we recommend to not specify the `location` explicitly. If locations are specified explicitly, the location must be a valid sub location of the `storage-profile` of the Warehouse - this is validated by Lakekeeper upon creation. Lakekeeper also ensures that there are no Tables or Views that use a parent- or sub-folder as their `location` and that the location is empty on creation. These checks are required to ensure that no data is leaked via vended-credentials.
+Each Namespace can contain multiple Tables and Views. When creating new Tables and Views, we recommend to not specify the `location` explicitly. If locations are specified explicitly, the location must be a valid sub location of the `storage-profile` of the Warehouse - this is validated by Lakekeeper upon creation. Lakekeeper also ensures that there are no Tables or Views that use a parent- or sub-folder as their `location` and that the location is empty on creation. These checks are required to ensure that no data is leaked via vended-credentials. A commit can move a View to a new location that passes the same checks and is neither inside nor above the old location. Lakekeeper then deletes the old location with all files in it.
 
 ### Users
 
@@ -228,7 +228,7 @@ spark.sql(f"USE {catalog_name}")
 
 ## What Lakekeeper Enforces
 
-Lakekeeper decides every request made to the catalog: creating, changing, dropping, renaming and protecting tables, and granting access. Depending on the authorizer, it also checks what a change to a table does: with [OpenFGA](./authorization-openfga.md#write-data), a user who may only write data cannot change the table's schema.
+Lakekeeper decides every request made to the catalog: creating, changing, dropping, renaming and protecting tables, and granting access.
 
 Reading and writing files in storage does not go through Lakekeeper. A user who may only read a table gets read-only access to its storage location. A user who may write gets access to write and delete files there, through vended credentials or remote signing. A writer can therefore overwrite or delete any file of the table, including the files of older versions, and Lakekeeper cannot see or prevent it. Snapshots, time travel, soft deletion and protection guard against changes made through the catalog, not against changes to the files themselves. Settings that ask clients not to delete files, such as `push-s3-delete-disabled`, are a request a client can ignore.
 
@@ -248,7 +248,7 @@ Protection can be applied to Warehouses, Namespaces, Tables, and Views via the M
 
 By default, Lakekeeper enforces that namespaces must be empty before deletion. Recursive deletion provides a way to delete a namespace and all its contained entities in a single operation.
 
-When deleting a namespace, add the recursive=true query parameter to the request.
+When deleting a namespace, add the recursive=true query parameter to the request. The files of the dropped tables, views and generic tables are removed only if `purge=true` is set.
 
 Protected entities within the hierarchy will prevent recursive deletion unless force is also used.
 
@@ -265,7 +265,7 @@ Add the `force=true` query parameter to deletion requests:
 DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 
-Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The `purgeRequested` flag for tables is still respected and determines if the physical data of the table should be removed. Purge defaults to true for tables managed by Lakekeeper.
+Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy.
 
 In a warehouse with soft deletion, a recursive namespace deletion needs `force`. Namespaces cannot be soft-deleted, so it deletes every table, view and generic table below the namespace at once, including those that were already dropped and wait for expiration.
 

@@ -9,7 +9,7 @@ use std::{
 use iceberg::TableUpdate;
 use iceberg_ext::catalog::rest::{CommitTableRequest, ErrorModel};
 use lakekeeper::{
-    WarehouseId,
+    MatchedEngines, TrinoEngineConfig, TrustedEngine, WarehouseId,
     api::{
         ApiContext, RequestMetadata,
         data::v1::generic_tables::{
@@ -1820,9 +1820,9 @@ async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: 
     assert_eq!(setup.commit("staged", vec![set_owner()]).await, Ok(()));
 }
 
-/// With an authorizer that allows data commits only, as `write_data` does, batch-check and
-/// the server agree: a data commit to a live table is allowed, and the same commit to a
-/// staged table is refused, because it finishes the table's creation.
+/// With an authorizer that allows data commits only, as a policy on the data-commit context
+/// can, batch-check and the server agree: a data commit to a live table is allowed, and the
+/// same commit to a staged table is refused, because it finishes the table's creation.
 #[sqlx::test]
 async fn test_check_internal_data_commit_decides_as_the_server(pool: sqlx::PgPool) {
     let setup = StagedAndLive::new(pool).await;
@@ -1838,4 +1838,112 @@ async fn test_check_internal_data_commit_decides_as_the_server(pool: sqlx::PgPoo
 
     assert!(!setup.check("live", &[set_owner()]).await);
     assert_eq!(setup.commit("live", vec![set_owner()]).await, Err(403));
+}
+
+/// `view-in-definer-view` allows a view only if it has an engine owner property and the
+/// identity may select it. The authorizer is asked about `Select`, outside delegated
+/// execution, and never about a view without an owner.
+#[sqlx::test]
+async fn test_check_internal_view_in_definer_view_needs_an_owner(pool: sqlx::PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool,
+        lakekeeper_integration_tests::memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+    let namespace = lakekeeper_integration_tests::create_ns(
+        api_context.clone(),
+        warehouse_id.to_string(),
+        "ns".to_string(),
+    )
+    .await
+    .namespace;
+    // Only a trusted engine may write the owner property.
+    let mut engine = RequestMetadata::test_user(UserId::new_unchecked("oidc", "trino"));
+    engine.set_engines(MatchedEngines::single(TrustedEngine::Trino(
+        TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        },
+    )));
+    let mut view_ids = HashMap::new();
+    for (name, owner) in [("definer", Some("bob")), ("invoker", None)] {
+        let mut request = create_view_request(Some(name), None);
+        if let Some(owner) = owner {
+            request
+                .properties
+                .insert("trino.run-as-owner".to_string(), owner.to_string());
+        }
+        let view_id = CatalogServer::create_view(
+            NamespaceParameters {
+                prefix: Some(Prefix(warehouse_id.to_string())),
+                namespace: namespace.clone(),
+            },
+            request,
+            api_context.clone(),
+            DataAccess::not_specified(),
+            engine.clone(),
+        )
+        .await
+        .unwrap()
+        .metadata
+        .uuid();
+        view_ids.insert(name, view_id);
+    }
+    let bob = UserOrRole::User(UserId::new_unchecked("oidc", "bob"));
+    let check = |name: &str| CatalogActionCheckItem {
+        id: None,
+        identity: Some(bob.clone()),
+        operation: CatalogActionCheckOperation::ViewInDefinerView {
+            view: TabularIdentOrUuid::Name {
+                namespace: namespace.clone(),
+                table: name.to_string(),
+                warehouse_id,
+            },
+        },
+    };
+    let decide = |checks: Vec<CatalogActionCheckItem>| {
+        check_internal(
+            api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+            CatalogActionsBatchCheckRequest {
+                checks,
+                error_on_not_found: false,
+            },
+        )
+    };
+
+    let since = authz.tabular_checks().len();
+    let response = decide(vec![check("definer"), check("invoker")])
+        .await
+        .unwrap();
+    assert_eq!(
+        response
+            .results
+            .iter()
+            .map(|r| r.allowed)
+            .collect::<Vec<_>>(),
+        vec![true, false]
+    );
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![vec![authz::tests::RecordedTabularCheck {
+            object: format!("view:{warehouse_id}/{}", view_ids["definer"]),
+            action: "Select".to_string(),
+            user: Some(authz::UserOrRole::User(UserId::new_unchecked(
+                "oidc", "bob"
+            ))),
+            is_delegated_execution: false,
+        }]]
+    );
+
+    // The owner property is necessary, not sufficient.
+    authz.hide(&format!("view:{warehouse_id}/{}", view_ids["definer"]));
+    let response = decide(vec![check("definer")]).await.unwrap();
+    assert!(!response.results[0].allowed);
 }

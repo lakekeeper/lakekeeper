@@ -29,13 +29,13 @@ type project
     # weaker privileges it subsumes. A project sits at the top of the privilege
     # hierarchy, so nothing flows into it from above. Actions read the twin.
     define describe: [user, role#assignee]
-    define describe_effective: describe or select_effective or create_effective or data_admin or security_admin
+    define describe_effective: describe or select_effective or data_admin or security_admin
     define select: [user, role#assignee]
-    define select_effective: select or write_data_effective
+    define select_effective: select or write_effective
     define create: [user, role#assignee]
     define create_effective: create or data_admin
-    define write_data: [user, role#assignee]
-    define write_data_effective: write_data or modify_effective
+    define write: [user, role#assignee]
+    define write_effective: write or modify_effective
     define modify: [user, role#assignee]
     define modify_effective: modify or project_admin
     # A project carries no `visible_below`: it is the top of the resource tree
@@ -49,7 +49,8 @@ type project
     # Drop this project
     define can_delete: modify_effective
     define can_rename: modify_effective
-    define can_get_metadata: describe_effective or visible_below from warehouse or admin from server
+    # `create` shows the containers it may create in, not the tables, views and generic tables inside.
+    define can_get_metadata: describe_effective or create_effective or visible_below from warehouse or admin from server
     # Can list elements in this projects - will be filtered subsequently
     define can_list_warehouses: can_get_metadata
     define can_include_in_list: can_get_metadata
@@ -80,7 +81,7 @@ type project
     define can_grant_tag_creator: security_admin or admin from server
     define can_grant_create: security_admin or admin from server
     define can_grant_describe: security_admin or admin from server
-    define can_grant_write_data: security_admin or admin from server
+    define can_grant_write: security_admin or admin from server
     define can_grant_modify: security_admin or admin from server
     define can_grant_select: security_admin or admin from server
     define can_grant_project_admin: project_admin or admin from server

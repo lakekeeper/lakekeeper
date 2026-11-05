@@ -10,7 +10,8 @@ use lakekeeper::{
 };
 use lakekeeper_integration_tests::{
     OWNER_PROPERTY, REFUSED_NEW_TABULAR_NAMES, create_view_helper, create_view_request,
-    random_request_metadata, trino_engine_request, user_request, views_test_setup,
+    memory_files_under, put_memory_file, random_request_metadata, trino_engine_request,
+    user_request, views_test_setup,
 };
 use lakekeeper_storage_postgres::namespace::tests::initialize_namespace;
 use sqlx::PgPool;
@@ -61,6 +62,37 @@ async fn test_create_view(pool: PgPool) {
     let _view = create_view_helper(api_context, new_ns, rq, Some(whi.to_string()))
         .await
         .expect("Recreate with same name but different ns should work.");
+}
+
+/// A view cannot be created in a location that holds files, as a table cannot: dropping the
+/// view removes its location with all its files.
+#[sqlx::test]
+async fn test_create_view_refuses_location_with_files(pool: PgPool) {
+    let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
+    let first = create_view_helper(
+        api_context.clone(),
+        namespace.clone(),
+        create_view_request(Some("first"), None),
+        Some(whi.to_string()),
+    )
+    .await
+    .unwrap();
+    let (parent, _) = first.metadata.location().rsplit_once('/').unwrap();
+    let occupied = format!("{parent}/occupied");
+    let foreign_file = format!("{occupied}/data/foreign.parquet");
+    put_memory_file(&foreign_file).await;
+
+    let err = create_view_helper(
+        api_context.clone(),
+        namespace.clone(),
+        create_view_request(Some("second"), Some(&occupied)),
+        Some(whi.to_string()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
+    assert_eq!(err.error.r#type, "InvalidLocation");
+    assert_eq!(memory_files_under(&occupied).await, vec![foreign_file]);
 }
 
 /// The test server configures no trusted engine. The owner property is protected anyway: a
