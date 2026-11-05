@@ -34,6 +34,12 @@ spec:
     template:
       spec:
         restartPolicy: Never
+        initContainers:
+          - name: check-db
+            image: quay.io/lakekeeper/catalog:<version>
+            args: ["wait-for-db", "-dm", "-r", "100", "-b", "2"]
+            env:
+              # The database settings of the worker.
         containers:
           - name: worker
             image: quay.io/lakekeeper/catalog:<version>
@@ -63,6 +69,8 @@ spec:
 ```
 
 `targetValue` is the number of tasks one worker pod runs at the same time, here `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`. With `restartPolicy: Never` and `backoffLimit: 0`, Kubernetes does not restart a worker that failed. The task queue tries the task again, and KEDA starts a new Job while tasks wait. [Task Queue Demand](./monitoring.md#task-queue-demand) lists the queue names and further recommended settings.
+
+`serve` refuses to start while the database is not migrated for its version. The `check-db` init container waits up to 200 seconds for the migration, like the Helm chart does for the API pods, so a worker that starts during an upgrade waits and does not fail its Job.
 
 We recommend leaving `LAKEKEEPER__TASK_MAX_LIFETIME` unset on these workers. A worker that reached it takes no new tasks while it finishes a long task, but KEDA still counts it, so other due tasks can wait for that task.
 
