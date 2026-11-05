@@ -562,6 +562,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_admission_gate",
     "authz_failed_tabular_move",
     "authz_failed_register_table",
+    "authz_failed_generic_table_location_with_files",
     "authz_failed_create_view_owner_property",
     "authz_failed_view_commit_owner_property",
     "authz_failed_view_version_change",
@@ -1342,6 +1343,27 @@ fn fixture_authz_failed_register_table() {
     );
 
     assert_matches_fixture("authz_failed_register_table", &contract_fields(record));
+}
+
+/// A generic table create refused because its location already holds files and the caller
+/// lacks the register right on the warehouse: recorded on the warehouse, as the handler does.
+#[test]
+fn fixture_authz_failed_generic_table_location_with_files() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let record = refusal_record(
+        warehouse_id.event_entities(),
+        CatalogWarehouseAction::RegisterTable.event_actions(),
+        crate::service::authz::file_takeover_forbidden(warehouse_id),
+    );
+
+    assert_matches_fixture(
+        "authz_failed_generic_table_location_with_files",
+        &contract_fields(record),
+    );
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`

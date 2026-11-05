@@ -1382,7 +1382,7 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `ActivateWarehouse` | `activate` | `WarehouseModifyActions` | Activate a deactivated warehouse |
 | `RenameWarehouse` | `rename` | `WarehouseModifyActions` | Change the warehouse's name |
 | `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseModifyActions` | Configure soft-deletion settings, and [skip soft deletion](./concepts.md#skipping-soft-deletion) |
-| `RegisterTable` | `register_table` | `WarehouseModifyActions` | Register a table from an existing metadata file. Asked together with `CreateTable` on the namespace |
+| `RegisterTable` | `register_table` | `WarehouseModifyActions` | Register a table from an existing metadata file, or create a generic table on a location that already holds files. Asked together with `CreateTable` or `CreateGenericTableInNamespace` on the namespace |
 | `ModifyTaskQueueConfig` | `modify_task_queue_config` | `WarehouseModifyActions` | Update task queue configuration |
 | `ControlAllTasks` | `control_all_tasks` | `WarehouseModifyActions` | Manage all background tasks |
 | `SetWarehouseProtection` | `set_protection` | `WarehouseModifyActions` | Enable or disable deletion protection |

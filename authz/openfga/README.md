@@ -50,7 +50,7 @@ Grant `describe` next to `create` where principals must see the objects already 
 
 `warehouse`:
 
-- Add `can_register_table` (from `modify_effective`). Registering a table adopts files that already exist, anywhere in the warehouse's storage. Lakekeeper asks it together with `can_create_table` on the namespace, so `create` alone no longer allows registering.
+- Add `can_register_table` (from `modify_effective`). Registering a table adopts files that already exist, anywhere in the warehouse's storage. Lakekeeper asks it together with `can_create_table` on the namespace, so `create` alone no longer allows registering. Creating a generic table on a location that already holds files also adopts them, and Lakekeeper asks `can_register_table` together with `can_create_generic_table` for it.
 
 ### Stores provisioned from `main` builds
 
