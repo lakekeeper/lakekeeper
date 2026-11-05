@@ -37,6 +37,7 @@ mod normalize_fs_location;
 pub(crate) mod normalize_schema;
 mod patch_migration_hash;
 mod split_table_metadata;
+mod table_snapshot_key;
 
 const CORE_MIGRATIONS_TABLE: &str = "_sqlx_migrations";
 
@@ -491,6 +492,9 @@ async fn migrate_in_schema(
     // returned `Err` above) releases the transaction-scoped advisory
     // lock automatically.
     trx.commit().await.map_err(|e| anyhow::anyhow!(e.error))?;
+
+    // Scans that would block writes if they ran while the run holds its locks.
+    table_snapshot_key::complete(pool, migration_lock_id(&db_name)).await?;
     Ok(server_id)
 }
 

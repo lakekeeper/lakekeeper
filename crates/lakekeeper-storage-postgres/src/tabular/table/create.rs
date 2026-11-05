@@ -61,8 +61,6 @@ pub(crate) async fn create_table(
     };
     let table_id = table_info.table_id();
 
-    // table_snapshot has no FK to "table": clear what an earlier drop of this table id left behind.
-    common::remove_all_snapshots(warehouse_id, [table_id], transaction).await?;
     insert_table(table_metadata, transaction, *warehouse_id, table_id).await?;
 
     common::insert_schemas(

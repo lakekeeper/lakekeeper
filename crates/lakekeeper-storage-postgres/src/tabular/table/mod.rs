@@ -6,7 +6,7 @@ pub(crate) mod normalized_schema;
 use std::{collections::HashMap, default::Default, ops::Deref, str::FromStr, sync::Arc};
 
 pub(crate) use commit::commit_table_transaction;
-pub(crate) use common::{SchemaFieldBatch, remove_all_snapshots};
+pub(crate) use common::SchemaFieldBatch;
 pub(crate) use create::create_table;
 use iceberg::{
     TableUpdate,
@@ -3179,7 +3179,8 @@ pub mod tests {
     }
 
     /// A table whose snapshot 1 has no schema id, as Iceberg Java 0.11 and older wrote, snapshot 2
-    /// with schema id 0 on `main`, and both statistics files for snapshot 1.
+    /// with schema id 0 on `main`, and both statistics files for snapshot 1. Each table has its
+    /// own namespace.
     struct SchemalessSnapshotTable {
         pool: sqlx::PgPool,
         warehouse_id: WarehouseId,
@@ -3190,10 +3191,18 @@ pub mod tests {
     }
 
     impl SchemalessSnapshotTable {
-        async fn create(pool: sqlx::PgPool) -> Self {
+        /// Two such tables in one new warehouse.
+        async fn pair(pool: sqlx::PgPool) -> (Self, Self) {
             let state = CatalogState::from_pools(pool.clone(), pool.clone());
-            let (_, warehouse_id) =
-                initialize_warehouse(state.clone(), None, None, None, true).await;
+            let (_, warehouse_id) = initialize_warehouse(state, None, None, None, true).await;
+            (
+                Self::create(pool.clone(), warehouse_id).await,
+                Self::create(pool, warehouse_id).await,
+            )
+        }
+
+        async fn create(pool: sqlx::PgPool, warehouse_id: WarehouseId) -> Self {
+            let state = CatalogState::from_pools(pool.clone(), pool.clone());
             let namespace =
                 NamespaceIdent::from_vec(vec![format!("ns_{}", Uuid::now_v7())]).unwrap();
             initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
@@ -3335,14 +3344,7 @@ pub mod tests {
         }
     }
 
-    /// `table_snapshot` has no FK to `"table"`, so the cascade of a hard drop reaches a snapshot
-    /// only through its schema. A snapshot without a schema id and its statistics go with the
-    /// table, and the same file registers again under the same table id.
-    #[sqlx::test]
-    async fn hard_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
-        let table = SchemalessSnapshotTable::create(pool).await;
-        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
-
+    async fn hard_drop(table: &SchemalessSnapshotTable) {
         let mut transaction = table.pool.begin().await.unwrap();
         drop_tabular(
             table.warehouse_id,
@@ -3354,57 +3356,102 @@ pub mod tests {
         .await
         .unwrap();
         transaction.commit().await.unwrap();
+    }
+
+    /// Dropping a table removes all of its snapshots, also those without a schema id, and their
+    /// statistics. The other table keeps all of its rows, and the same file registers again
+    /// under the same table id.
+    #[sqlx::test]
+    async fn hard_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
+        let (table, other) = SchemalessSnapshotTable::pair(pool).await;
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+
+        hard_drop(&table).await;
         assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.load().await, other.metadata);
 
         table.create_from(&table.metadata, "00001").await;
         assert_eq!(table.load().await, table.metadata);
         assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
     }
 
-    /// A drop that only deleted the `tabular` row leaves a snapshot without a schema id and its
-    /// statistics behind. A create with the same table id removes them, so a load shows exactly
-    /// the new file, which expired that snapshot.
-    #[sqlx::test]
-    async fn create_removes_snapshots_a_drop_left_behind(pool: sqlx::PgPool) {
-        let table = SchemalessSnapshotTable::create(pool).await;
-        sqlx::query("DELETE FROM tabular WHERE warehouse_id = $1 AND tabular_id = $2")
-            .bind(*table.warehouse_id)
-            .bind(*table.table_id)
-            .execute(&table.pool)
+    /// `convalidated` of the key from `table_snapshot` to `"table"`, `None` if it is missing.
+    async fn snapshot_table_key(pool: &sqlx::PgPool) -> Option<bool> {
+        sqlx::query_scalar(
+            "SELECT convalidated FROM pg_constraint \
+             WHERE conrelid = 'table_snapshot'::regclass AND conname = 'table_snapshot_table_id_fkey'",
+        )
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+    }
+
+    /// Before the migration, a drop left the snapshot without a schema id and its statistics
+    /// behind. Migrating removes exactly these rows and validates the key: the other table keeps
+    /// all of its rows, and the same file registers again under the same table id.
+    #[sqlx::test(migrations = false)]
+    async fn migration_removes_snapshots_that_drops_left_behind(pool: sqlx::PgPool) {
+        use sqlx::migrate::Migrate as _;
+
+        const VERSION: i64 = 20_261_105_120_000;
+        let migrator = sqlx::migrate!();
+        assert!(migrator.iter().any(|m| m.version == VERSION));
+        let mut conn = pool.acquire().await.unwrap();
+        conn.ensure_migrations_table("_sqlx_migrations")
             .await
             .unwrap();
+        for migration in migrator.iter().filter(|m| m.version < VERSION) {
+            conn.apply("_sqlx_migrations", migration).await.unwrap();
+        }
+        drop(conn);
+
+        let (table, other) = SchemalessSnapshotTable::pair(pool.clone()).await;
+        hard_drop(&table).await;
+        assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+
+        crate::migrations::migrate_core_only(&pool).await.unwrap();
+        assert_eq!(snapshot_table_key(&pool).await, Some(true));
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.load().await, other.metadata);
+
+        table.create_from(&table.metadata, "00001").await;
+        assert_eq!(table.load().await, table.metadata);
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+    }
+
+    /// The migration adds the key only if no writer holds either table. Otherwise the next step
+    /// of the run adds it after the commit, and then removes what drops left behind.
+    #[sqlx::test(migrations = false)]
+    async fn migrate_adds_the_key_the_migration_left_out(pool: sqlx::PgPool) {
+        crate::migrations::migrate_core_only(&pool).await.unwrap();
+        sqlx::query("ALTER TABLE table_snapshot DROP CONSTRAINT table_snapshot_table_id_fkey")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (table, other) = SchemalessSnapshotTable::pair(pool.clone()).await;
+        hard_drop(&table).await;
         assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
 
-        let metadata = table
-            .metadata
-            .clone()
-            .into_builder(None)
-            .remove_snapshots(&[1])
-            .remove_statistics(1)
-            .remove_partition_statistics(1)
-            .build()
-            .unwrap()
-            .metadata;
-        assert_eq!(
-            metadata
-                .snapshots()
-                .map(|s| s.snapshot_id())
-                .collect::<Vec<_>>(),
-            vec![2]
-        );
-
-        table.create_from(&metadata, "00001").await;
-        assert_eq!(table.load().await, metadata);
-        assert_eq!(table.snapshot_rows().await, (1, 0, 0, 1));
+        crate::migrations::migrate_core_only(&pool).await.unwrap();
+        assert_eq!(snapshot_table_key(&pool).await, Some(true));
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.load().await, other.metadata);
     }
 
     /// A recursive namespace drop deletes its tabulars in bulk. It removes the snapshots without
-    /// schema id, and their statistics, of active and soft-deleted tables.
+    /// schema id, and their statistics, of active and soft-deleted tables. The table in the
+    /// other namespace keeps all of its rows.
     async fn assert_recursive_namespace_drop_removes_snapshots(
         pool: sqlx::PgPool,
         soft_deleted: bool,
     ) {
-        let table = SchemalessSnapshotTable::create(pool).await;
+        let (table, other) = SchemalessSnapshotTable::pair(pool).await;
         if soft_deleted {
             let mut transaction = table.pool.begin().await.unwrap();
             mark_tabular_as_deleted(
@@ -3435,6 +3482,7 @@ pub mod tests {
         .unwrap();
         transaction.commit().await.unwrap();
         assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
     }
 
     #[sqlx::test]

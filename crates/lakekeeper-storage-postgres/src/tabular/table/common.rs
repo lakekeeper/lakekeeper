@@ -536,31 +536,6 @@ pub(super) async fn remove_snapshots(
     Ok(())
 }
 
-/// Removes every snapshot of the tables; cascades to their statistics and refs.
-pub(crate) async fn remove_all_snapshots(
-    warehouse_id: WarehouseId,
-    tables: impl IntoIterator<Item = TableId>,
-    transaction: &mut Transaction<'_, Postgres>,
-) -> Result<(), CatalogBackendError> {
-    let table_ids = tables
-        .into_iter()
-        .map(Into::into)
-        .collect::<Vec<uuid::Uuid>>();
-    let _ = sqlx::query!(
-        r#"DELETE FROM table_snapshot WHERE warehouse_id = $1 AND table_id = ANY($2)"#,
-        *warehouse_id,
-        &table_ids,
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|e| {
-        e.into_catalog_backend_error()
-            .append_detail("Failed to remove snapshots")
-    })?;
-
-    Ok(())
-}
-
 pub(super) async fn insert_snapshots(
     warehouse_id: WarehouseId,
     table_id: TableId,
