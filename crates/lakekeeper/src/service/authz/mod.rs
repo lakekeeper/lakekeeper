@@ -1099,8 +1099,7 @@ pub enum CatalogWarehouseAction {
     },
     Delete {
         /// Whether protection is bypassed, so a warehouse marked protected can be deleted. The
-        /// warehouse must still be empty, and unfinished tasks still block the delete, except
-        /// tasks of queues that are cancelled when their warehouse is deleted.
+        /// warehouse must still be empty and have no unfinished tasks.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
     },
