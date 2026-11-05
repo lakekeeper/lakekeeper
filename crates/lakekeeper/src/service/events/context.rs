@@ -212,7 +212,8 @@ pub enum ActionContextKey {
     /// `true` when the call only reports what it would do and changes nothing.
     DryRun(bool),
     /// `true` when the client asked to force the operation. Also `true` on the drop of an active
-    /// table that a register with `overwrite` replaces in a warehouse with soft deletion.
+    /// table that a register with `overwrite` replaces with another table (a different table
+    /// UUID) in a warehouse with soft deletion.
     Force(bool),
     /// The table format the client requested.
     Format(String),

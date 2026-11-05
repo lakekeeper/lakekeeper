@@ -10472,7 +10472,7 @@ components:
           type: boolean
           description: |-
             Whether the drop skips the generic table's protection and, in a warehouse with
-            soft-deletion, the soft-deletion window: the generic table is hard-deleted at once.
+            soft deletion, the soft-deletion window: the generic table is hard-deleted at once.
         purge:
           type: boolean
           description: Whether the underlying data files are physically purged from storage.
@@ -10795,7 +10795,7 @@ components:
           type: boolean
           description: |-
             Whether protection is skipped: of the namespace, and with `recursive` of everything
-            below it. A recursive delete in a warehouse with soft-deletion requires it: namespaces
+            below it. A recursive delete in a warehouse with soft deletion requires it: namespaces
             have no soft-deleted state, so every table, view and generic table below is
             hard-deleted at once, dropped ones included.
         purge:
@@ -12005,10 +12005,11 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the drop skips the table's protection and, in a warehouse with soft-deletion,
+            Whether the drop skips the table's protection and, in a warehouse with soft deletion,
             the soft-deletion window: the table is hard-deleted at once. Also set for the drop of
-            the table that a register with `overwrite` replaces, when the replaced table is active
-            in a warehouse with soft-deletion. That drop skips only the window; protection holds.
+            an active table that a register with `overwrite` replaces with another table (a
+            different table UUID) in a warehouse with soft deletion. That drop skips only the
+            window; protection holds.
         purge:
           type: boolean
           description: Whether the underlying data files are physically purged from storage.
@@ -12486,7 +12487,7 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the drop skips the view's protection and, in a warehouse with soft-deletion,
+            Whether the drop skips the view's protection and, in a warehouse with soft deletion,
             the soft-deletion window: the view is hard-deleted at once.
         purge:
           type: boolean

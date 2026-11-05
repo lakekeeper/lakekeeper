@@ -168,6 +168,7 @@ Lakekeeper allows warehouses to enable soft deletion as a data protection mechan
 * The data remains recoverable until the configured expiration period elapses
 * Recovery is only possible for warehouses with soft deletion enabled
 * The expiration delay is fixed at the time of dropping - changing warehouse settings only affects newly dropped tables
+* A dropped table keeps its table UUID until it expires. Until then, its metadata file cannot be registered again; restore the table instead.
 
 Soft deletion works correctly only when clients follow these behaviors:
 
@@ -270,19 +271,20 @@ In a warehouse with soft deletion, a recursive namespace deletion needs `force`.
 
 ### Skipping Soft Deletion
 
-Soft deletion is a safety net for the whole warehouse: dropped tables and views can be restored until they expire. Only users who may change the soft-deletion settings of the warehouse can skip it. In OpenFGA this is `modify` on the warehouse, in Cedar the action `ModifySoftDeletion`<span class="lkp"></span>.
+Soft deletion is a safety net for the whole warehouse: dropped tables and views can be restored until they expire. Skipping it needs the permission that also changes the soft-deletion settings of the warehouse: `modify` on the warehouse in OpenFGA, the action `ModifySoftDeletion`<span class="lkp"></span> in Cedar.
 
 In a warehouse with soft deletion, these calls need this permission in addition to their own:
 
 * Dropping a table, view or generic table with `force=true`
 * Deleting a namespace with `recursive=true`
-* Registering a table with `overwrite` over an existing table that is not staged
-
-Running a soft-deletion task now or at a set time, through the task management API, always needs this permission, also after the warehouse switched to hard deletion.
+* Registering a table with `overwrite` that replaces an active table with another table (a different table UUID). Registering another metadata file of the same table, also at another location, needs no extra permission.
+* Running a soft-deletion task now or at a set time through the task management API
 
 In warehouses with hard deletion, and when deleting a namespace without `recursive=true`, `force` only skips protection and needs no extra permission.
 
 In a warehouse with soft deletion, users without this permission can delete a namespace only when it is empty. Dropped tables and views count until they expire.
+
+In a warehouse managed by the instance (`managed-by: instance-admin`), only instance admins can change the soft-deletion settings, but this permission still decides who may skip soft deletion.
 
 ## Upgrades & Migration
 

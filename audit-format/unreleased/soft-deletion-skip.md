@@ -13,8 +13,8 @@ drop (table), invoked_by: register_table_overwrite         force: true
 
 The `control_tasks` record does not say which control or which tasks were asked for.
 
-The refusal is recorded on the call, with `decision: denied`, `failure_reason: action_forbidden` and error type `WarehouseActionForbidden`. The error message names the warehouse action `modify_soft_deletion`. The first, second and fourth case apply in warehouses with soft deletion, the third in every warehouse.
+The refusal is recorded on the call, with `decision: denied`, `failure_reason: action_forbidden` and error type `WarehouseActionForbidden`. The error message names the warehouse action `modify_soft_deletion`. All four cases apply only in warehouses with soft deletion.
 
-A register with `overwrite` that replaces an active table in a warehouse with soft deletion records the drop of the replaced table with `force: true`, also when the call is allowed. Before, it recorded `force: false`.
+A register with `overwrite` that replaces an active table with another table (a different table UUID) in a warehouse with soft deletion records the drop of the replaced table with `force: true`, also when the call is allowed. Before, it recorded `force: false`.
 
-**What to do:** If you filter or alert on drops with `force: true`, these now also include the drop of a table that a register with `overwrite` replaces. You can tell these records apart by `invoked_by: register_table_overwrite`.
+**What to do:** If you filter or alert on drops with `force: true`, these now also include drops by a register with `overwrite`. You can tell them apart by `invoked_by: register_table_overwrite`.

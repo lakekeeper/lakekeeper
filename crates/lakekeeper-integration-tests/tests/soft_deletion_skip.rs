@@ -14,7 +14,7 @@ use iceberg_ext::catalog::rest::RegisterTableRequest;
 use lakekeeper::{
     WarehouseId,
     api::{
-        ApiContext, ErrorModel,
+        ApiContext, ErrorModel, RequestMetadata,
         data::v1::generic_tables::{GenericTableParameters, GenericTableService as _},
         iceberg::{
             types::{DropParams, Prefix},
@@ -30,13 +30,16 @@ use lakekeeper::{
             namespace::NamespaceManagementService as _,
             table::TableManagementService as _,
             tasks::{ControlTaskAction, ControlTasksRequest, ListTasksRequest, Service as _},
-            warehouse::{Service as _, TabularDeleteProfile, UpdateWarehouseDeleteProfileRequest},
+            warehouse::{
+                Service as _, SetWarehouseManagedByRequest, TabularDeleteProfile,
+                UpdateWarehouseDeleteProfileRequest,
+            },
         },
     },
     server::CatalogServer,
     service::{
-        CatalogNamespaceOps as _, CatalogTabularOps as _, State, TableId, TabularIdentBorrowed,
-        TabularListFlags,
+        CatalogNamespaceOps as _, CatalogTabularOps as _, ManagedBy, State, TableId,
+        TabularIdentBorrowed, TabularListFlags, UserId,
         authz::tests::HidingAuthorizer,
         events::{AuthorizationFailureReason, EventListener, context::ActionContextKey},
         tasks::{TaskId, tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME},
@@ -217,7 +220,11 @@ impl Setup {
     }
 
     async fn state(&self, kind: Kind, name: &str) -> Found {
-        let ident = TableIdent::new(NamespaceIdent::new(NS.to_string()), name.to_string());
+        self.state_in(NS, kind, name).await
+    }
+
+    async fn state_in(&self, namespace: &str, kind: Kind, name: &str) -> Found {
+        let ident = TableIdent::new(NamespaceIdent::new(namespace.to_string()), name.to_string());
         let borrowed = || match kind {
             Kind::Table => TabularIdentBorrowed::Table(&ident),
             Kind::View => TabularIdentBorrowed::View(&ident),
@@ -242,6 +249,40 @@ impl Setup {
         Found::Gone
     }
 
+    /// A metadata file of a different table: creates `name`, drops it with `force` and returns
+    /// its id and metadata location. The registered table takes the source's id, so the source
+    /// must be gone. Call it while `ModifySoftDeletion` is allowed.
+    async fn source(&self, name: &str) -> (TableId, String) {
+        let source = create_table(
+            self.ctx.clone(),
+            self.warehouse_id.to_string(),
+            NS,
+            name,
+            false,
+        )
+        .await
+        .unwrap();
+        self.drop(Kind::Table, name, true).await.unwrap();
+        (
+            source.metadata.uuid().into(),
+            source.metadata_location.unwrap(),
+        )
+    }
+
+    async fn table_id(&self, name: &str) -> TableId {
+        PostgresBackend::get_table_info(
+            self.warehouse_id,
+            TableIdent::new(NamespaceIdent::new(NS.to_string()), name.to_string()),
+            TabularListFlags::active(),
+            self.ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .tabular_id
+    }
+
+    /// Registers the current metadata file of `name` over itself: the same table UUID.
     async fn register_overwrite(&self, name: &str) -> Result<(), ErrorModel> {
         let table = TableIdent::new(NamespaceIdent::new(NS.to_string()), name.to_string());
         let metadata_location = PostgresBackend::get_table_info(
@@ -264,15 +305,25 @@ impl Setup {
         name: &str,
         metadata_location: String,
     ) -> Result<(), ErrorModel> {
+        self.register_from(NS, name, metadata_location, true).await
+    }
+
+    async fn register_from(
+        &self,
+        namespace: &str,
+        name: &str,
+        metadata_location: String,
+        overwrite: bool,
+    ) -> Result<(), ErrorModel> {
         CatalogServer::register_table(
             NamespaceParameters {
                 prefix: self.prefix(),
-                namespace: NamespaceIdent::new(NS.to_string()),
+                namespace: NamespaceIdent::new(namespace.to_string()),
             },
             RegisterTableRequest::builder()
                 .name(name.to_string())
                 .metadata_location(metadata_location)
-                .overwrite(true)
+                .overwrite(overwrite)
                 .build(),
             DataAccess::not_specified(),
             self.ctx.clone(),
@@ -344,7 +395,7 @@ enum Found {
 
 #[track_caller]
 fn assert_needs_modify_soft_deletion(result: Result<(), ErrorModel>) {
-    let err = result.expect_err("skipping soft-deletion without ModifySoftDeletion");
+    let err = result.expect_err("skipping soft deletion without ModifySoftDeletion");
     assert_eq!(err.code, StatusCode::FORBIDDEN.as_u16(), "{err:?}");
     assert_eq!(err.r#type, "WarehouseActionForbidden", "{err:?}");
 }
@@ -392,6 +443,29 @@ async fn forced_drop_in_soft_deletion_warehouse_needs_modify_soft_deletion(pool:
         s.drop(kind, &forced, true).await.unwrap();
         assert_eq!(s.state(kind, &forced).await, Found::Gone, "{kind:?}");
     }
+}
+
+#[sqlx::test]
+async fn skipping_soft_deletion_in_a_managed_warehouse_is_decided_by_the_authorizer(pool: PgPool) {
+    let s = Setup::new(pool, soft()).await;
+    ApiServer::set_warehouse_managed_by(
+        s.warehouse_id,
+        SetWarehouseManagedByRequest {
+            managed_by: ManagedBy::InstanceAdmin,
+        },
+        s.ctx.clone(),
+        RequestMetadata::test_instance_admin(UserId::new_unchecked("oidc", "instance-admin")),
+    )
+    .await
+    .unwrap();
+    s.table("t").await;
+
+    s.authz.block_action(MODIFY_SOFT_DELETION);
+    assert_needs_modify_soft_deletion(s.drop(Kind::Table, "t", true).await);
+    // A caller who is not an instance admin skips soft deletion with the permission alone.
+    s.authz.unblock_action(MODIFY_SOFT_DELETION);
+    s.drop(Kind::Table, "t", true).await.unwrap();
+    assert_eq!(s.state(Kind::Table, "t").await, Found::Gone);
 }
 
 #[sqlx::test]
@@ -516,8 +590,21 @@ async fn running_a_soft_deletion_task_early_needs_modify_soft_deletion(pool: PgP
         .await,
     );
 
-    // The check follows the task's queue, not the warehouse's profile today.
+    assert_eq!(s.state(Kind::Table, "t").await, Found::SoftDeleted);
+
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
+    s.control(ControlTaskAction::RunNow, tasks).await.unwrap();
+}
+
+#[sqlx::test]
+async fn running_a_leftover_soft_deletion_task_after_switch_to_hard_deletion_needs_no_extra_right(
+    pool: PgPool,
+) {
+    let s = Setup::new(pool, soft()).await;
+    s.table("t").await;
+    s.drop(Kind::Table, "t", false).await.unwrap();
+    let tasks = s.soft_deletion_tasks().await;
+    assert_eq!(tasks.len(), 1);
     ApiServer::update_warehouse_delete_profile(
         s.warehouse_id,
         UpdateWarehouseDeleteProfileRequest {
@@ -529,10 +616,7 @@ async fn running_a_soft_deletion_task_early_needs_modify_soft_deletion(pool: PgP
     .await
     .unwrap();
     s.authz.block_action(MODIFY_SOFT_DELETION);
-    assert_needs_modify_soft_deletion(s.control(ControlTaskAction::RunNow, tasks.clone()).await);
-    assert_eq!(s.state(Kind::Table, "t").await, Found::SoftDeleted);
 
-    s.authz.unblock_action(MODIFY_SOFT_DELETION);
     s.control(ControlTaskAction::RunNow, tasks).await.unwrap();
 }
 
@@ -554,44 +638,55 @@ async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_
 ) {
     let s = Setup::new(pool, soft()).await;
     let table_id = s.table("t").await;
+    let (source_id, source_location) = s.source("source").await;
     s.authz.block_action(MODIFY_SOFT_DELETION);
     let listener = s.listen().await;
 
-    assert_needs_modify_soft_deletion(s.register_overwrite("t").await);
-    assert_eq!(s.state(Kind::Table, "t").await, Found::Active);
+    assert_needs_modify_soft_deletion(
+        s.register_overwrite_from("t", source_location.clone())
+            .await,
+    );
+    assert_eq!(s.table_id("t").await, table_id);
     // The replaced table skips the window, so its drop is recorded as forced.
     assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
     let (_, failed) = listener.recorded_actions();
     assert_eq!(failed, vec![vec![drop_action(true)]]);
 
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
+    s.register_overwrite_from("t", source_location)
+        .await
+        .unwrap();
+    assert_eq!(s.table_id("t").await, source_id);
+}
+
+#[sqlx::test]
+async fn register_overwrite_with_the_same_table_in_soft_deletion_warehouse_needs_no_extra_right(
+    pool: PgPool,
+) {
+    let s = Setup::new(pool, soft()).await;
+    let table_id = s.table("t").await;
+    s.authz.block_action(MODIFY_SOFT_DELETION);
+    let listener = s.listen().await;
+
     s.register_overwrite("t").await.unwrap();
-    let info = PostgresBackend::get_table_info(
-        s.warehouse_id,
-        TableIdent::new(NamespaceIdent::new(NS.to_string()), "t".to_string()),
-        TabularListFlags::active(),
-        s.ctx.v1_state.catalog.clone(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(info.tabular_id, table_id);
+    assert_eq!(s.table_id("t").await, table_id);
+    // With the same table UUID, the drop is not recorded as forced.
+    assert_eq!(listener.settled_counts(2, 0).await, (2, 0));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(
+        succeeded
+            .into_iter()
+            .filter(|actions| actions.iter().any(|a| a.action_name == "drop"))
+            .collect::<Vec<_>>(),
+        vec![vec![drop_action(false)]]
+    );
 }
 
 #[sqlx::test]
 async fn register_overwrite_of_a_staged_table_needs_no_extra_right(pool: PgPool) {
     let s = Setup::new(pool, soft()).await;
-    let source = create_table(
-        s.ctx.clone(),
-        s.warehouse_id.to_string(),
-        NS,
-        "source",
-        false,
-    )
-    .await
-    .unwrap();
-    // The registered table takes the id of the source, so the source must be gone.
-    s.drop(Kind::Table, "source", true).await.unwrap();
+    let (_, source_location) = s.source("source").await;
     create_table(
         s.ctx.clone(),
         s.warehouse_id.to_string(),
@@ -604,7 +699,7 @@ async fn register_overwrite_of_a_staged_table_needs_no_extra_right(pool: PgPool)
     s.authz.block_action(MODIFY_SOFT_DELETION);
     let listener = s.listen().await;
 
-    s.register_overwrite_from("staged", source.metadata_location.unwrap())
+    s.register_overwrite_from("staged", source_location)
         .await
         .unwrap();
     assert_eq!(s.state(Kind::Table, "staged").await, Found::Active);
@@ -630,15 +725,17 @@ async fn register_overwrite_in_hard_deletion_warehouse_needs_no_extra_right(pool
     assert_eq!(s.state(Kind::Table, "t").await, Found::Active);
 }
 
-/// The holder of the warehouse right overwrites a protected table: refused, as the replaced
-/// table's protection holds although its drop is recorded as forced.
+/// The holder of the warehouse right overwrites a protected table with a different table:
+/// refused, as the replaced table's protection holds although, with soft deletion, its drop is
+/// recorded as forced.
 async fn assert_register_overwrite_keeps_protection(pool: PgPool, profile: TabularDeleteProfile) {
     let s = Setup::new(pool, profile).await;
     let table_id = s.table("t").await;
     s.protect_table(table_id).await;
+    let (_, source_location) = s.source("source").await;
 
     let err = s
-        .register_overwrite("t")
+        .register_overwrite_from("t", source_location)
         .await
         .expect_err("a protected table cannot be overwritten");
     assert_eq!(err.code, StatusCode::CONFLICT.as_u16(), "{err:?}");
@@ -646,7 +743,7 @@ async fn assert_register_overwrite_keeps_protection(pool: PgPool, profile: Tabul
         err.r#type, "ProtectedTabularDeletionWithoutForce",
         "{err:?}"
     );
-    assert_eq!(s.state(Kind::Table, "t").await, Found::Active);
+    assert_eq!(s.table_id("t").await, table_id);
 }
 
 #[sqlx::test]
@@ -657,4 +754,107 @@ async fn register_overwrite_keeps_protection_in_soft_deletion_warehouse(pool: Pg
 #[sqlx::test]
 async fn register_overwrite_keeps_protection_in_hard_deletion_warehouse(pool: PgPool) {
     assert_register_overwrite_keeps_protection(pool, TabularDeleteProfile::Hard {}).await;
+}
+
+#[track_caller]
+fn assert_uuid_taken(what: &str, result: Result<(), ErrorModel>) {
+    let err = result.expect_err(what);
+    assert_eq!(err.code, StatusCode::CONFLICT.as_u16(), "{what}: {err:?}");
+    assert_eq!(err.r#type, "AlreadyExistsException", "{what}: {err:?}");
+    // The message tells this refusal apart from a conflict on the name.
+    assert_eq!(
+        err.message,
+        "The table UUID in this metadata file belongs to another table, view or generic table in \
+         this warehouse, possibly a dropped one. Register the file under the name of that table \
+         with overwrite, or restore the dropped table first.",
+        "{what}: {err:?}"
+    );
+}
+
+/// Registers the metadata file of `holder` under other names, with and without `overwrite`:
+/// into a new name, over the active table `t`, and into the namespace `other`.
+async fn assert_registering_the_uuid_of_another_table_is_refused(
+    s: &Setup,
+    holder_location: &str,
+    t: TableId,
+) {
+    let listener = s.listen().await;
+    for overwrite in [false, true] {
+        for (namespace, name) in [(NS, "new"), (NS, "t"), (OTHER_NS, "holder")] {
+            assert_uuid_taken(
+                &format!("{namespace}.{name}, overwrite: {overwrite}"),
+                s.register_from(namespace, name, holder_location.to_string(), overwrite)
+                    .await,
+            );
+        }
+    }
+    // Each call is refused after the create is authorized and before any drop is authorized.
+    assert_eq!(listener.settled_counts(6, 0).await, (6, 0));
+    let (succeeded, _) = listener.recorded_actions();
+    assert!(
+        succeeded
+            .iter()
+            .flatten()
+            .all(|action| action.action_name != "drop"),
+        "{succeeded:?}"
+    );
+    assert_eq!(s.state(Kind::Table, "new").await, Found::Gone);
+    assert_eq!(s.table_id("t").await, t);
+    assert_eq!(
+        s.state_in(OTHER_NS, Kind::Table, "holder").await,
+        Found::Gone
+    );
+}
+
+const OTHER_NS: &str = "other";
+
+async fn uuid_setup(pool: PgPool) -> (Setup, TableId, TableId, String) {
+    let s = Setup::new(pool, soft()).await;
+    create_ns(
+        s.ctx.clone(),
+        s.warehouse_id.to_string(),
+        OTHER_NS.to_string(),
+    )
+    .await;
+    let holder = create_table(
+        s.ctx.clone(),
+        s.warehouse_id.to_string(),
+        NS,
+        "holder",
+        false,
+    )
+    .await
+    .unwrap();
+    let t = s.table("t").await;
+    (
+        s,
+        holder.metadata.uuid().into(),
+        t,
+        holder.metadata_location.unwrap(),
+    )
+}
+
+#[sqlx::test]
+async fn registering_the_uuid_of_an_active_table_under_another_name_is_refused(pool: PgPool) {
+    let (s, holder, t, holder_location) = uuid_setup(pool).await;
+
+    assert_registering_the_uuid_of_another_table_is_refused(&s, &holder_location, t).await;
+    assert_eq!(s.table_id("holder").await, holder);
+}
+
+#[sqlx::test]
+async fn registering_the_uuid_of_a_dropped_table_is_refused(pool: PgPool) {
+    let (s, _, t, holder_location) = uuid_setup(pool).await;
+    s.drop(Kind::Table, "holder", false).await.unwrap();
+
+    assert_registering_the_uuid_of_another_table_is_refused(&s, &holder_location, t).await;
+    // Also under the name of the dropped table, which holds the UUID until it expires.
+    for overwrite in [false, true] {
+        assert_uuid_taken(
+            &format!("{NS}.holder, overwrite: {overwrite}"),
+            s.register_from(NS, "holder", holder_location.clone(), overwrite)
+                .await,
+        );
+    }
+    assert_eq!(s.state(Kind::Table, "holder").await, Found::SoftDeleted);
 }

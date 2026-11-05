@@ -463,14 +463,25 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         });
         let request_metadata = event_ctx.request_metadata();
 
+        ensure_registered_uuid_is_free::<C>(
+            warehouse_id,
+            &table_ident,
+            table_metadata.uuid(),
+            state.v1_state.catalog.clone(),
+        )
+        .await?;
+
         let previous_table_to_drop = if request.overwrite {
             authorize_register_overwrite::<C, A>(
                 &authorizer,
                 event_ctx.request_metadata_arc(),
                 event_ctx.dispatcher().clone(),
-                &warehouse,
-                &namespace,
-                &table_ident,
+                RegisterOverwriteTarget::builder()
+                    .warehouse(&warehouse)
+                    .namespace(&namespace)
+                    .table_ident(&table_ident)
+                    .registered_metadata(&table_metadata)
+                    .build(),
                 state.v1_state.catalog.clone(),
             )
             .await?
@@ -576,6 +587,21 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         // Commit the transaction
         t_write.commit().await?;
+
+        // Keeps the replaced metadata file findable, so an operator can register it back.
+        if let Some(previous_table) = &previous_table_to_drop {
+            tracing::info!(
+                warehouse_id = %warehouse_id,
+                table = %table_ident,
+                previous_table_id = %previous_table.tabular_id,
+                previous_metadata_location = previous_table.metadata_location.as_ref().map(tracing::field::display),
+                previous_table_location = %previous_table.location,
+                table_id = %tabular_id,
+                metadata_location = %metadata_location,
+                table_location = %table_location,
+                "Register with overwrite replaced an existing table"
+            );
+        }
 
         // Held across the register event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
@@ -1097,21 +1123,77 @@ pub(crate) fn load_response_config(
     config.into()
 }
 
+/// Refuses a register whose table UUID belongs to another table, view or generic table of the
+/// warehouse: one with another name, or a dropped one. Runs before anything is dropped. The
+/// error does not name that table, which the caller may not see. Its type matches the conflict
+/// the insert raises when a concurrent register takes the UUID first.
+async fn ensure_registered_uuid_is_free<C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    table_ident: &TableIdent,
+    registered_uuid: Uuid,
+    catalog_state: C::State,
+) -> Result<()> {
+    let Some(holder) = C::get_tabular_info_by_uuid(
+        warehouse_id,
+        registered_uuid,
+        TabularListFlags::all(),
+        catalog_state.clone(),
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    // Names compare by the catalog's collation, so the table at the name is looked up.
+    let table_at_name = C::get_table_info(
+        warehouse_id,
+        table_ident.clone(),
+        TabularListFlags::active_and_staged(),
+        catalog_state,
+    )
+    .await?;
+    if table_at_name.is_some_and(|table| TabularId::Table(table.tabular_id) == holder.tabular_id())
+    {
+        return Ok(());
+    }
+    Err(ErrorModel::conflict(
+        "The table UUID in this metadata file belongs to another table, view or generic table in this warehouse, possibly a dropped one. Register the file under the name of that table with overwrite, or restore the dropped table first.",
+        "AlreadyExistsException",
+        None,
+    )
+    .into())
+}
+
+/// Where a register with `overwrite` puts the table.
+#[derive(typed_builder::TypedBuilder)]
+struct RegisterOverwriteTarget<'a> {
+    warehouse: &'a ResolvedWarehouse,
+    namespace: &'a NamespaceHierarchy,
+    table_ident: &'a TableIdent,
+    /// Metadata file being registered.
+    registered_metadata: &'a TableMetadata,
+}
+
 /// Authorizes dropping the table that a register with `overwrite` replaces, if one exists.
 /// Files of the replaced table are kept.
 ///
-/// Replacing an active table in a soft-deletion warehouse skips the window, so the drop is
-/// recorded as forced and needs `ModifySoftDeletion`. The caller deletes the row with
-/// `force = false`, so protection still holds.
+/// Replacing an active table with another table (a different table UUID) in a soft-deletion
+/// warehouse skips the window, so the drop is recorded as forced and needs
+/// `ModifySoftDeletion`. Registering a metadata file of the same table keeps the table id; its
+/// drop is recorded with `force: false` and needs no `ModifySoftDeletion`. The caller deletes
+/// the row with `force = false`, so protection still holds.
 async fn authorize_register_overwrite<C: CatalogStore, A: Authorizer>(
     authorizer: &A,
     request_metadata: ArcRequestMetadata,
     dispatcher: EventDispatcher,
-    warehouse: &ResolvedWarehouse,
-    namespace: &NamespaceHierarchy,
-    table_ident: &TableIdent,
+    target: RegisterOverwriteTarget<'_>,
     catalog_state: C::State,
 ) -> Result<Option<TableInfo>> {
+    let RegisterOverwriteTarget {
+        warehouse,
+        namespace,
+        table_ident,
+        registered_metadata,
+    } = target;
     let previous_table_info = C::get_table_info(
         warehouse.warehouse_id,
         table_ident.clone(),
@@ -1122,7 +1204,9 @@ async fn authorize_register_overwrite<C: CatalogStore, A: Authorizer>(
     let Ok(Some(previous_table)) = &previous_table_info else {
         return Ok(None);
     };
-    let skips_window = warehouse.tabular_delete_profile.is_soft() && !previous_table.is_staged();
+    let same_table = previous_table.table_id() == TableId::from(registered_metadata.uuid());
+    let skips_window =
+        warehouse.tabular_delete_profile.is_soft() && !previous_table.is_staged() && !same_table;
 
     let mut event_ctx = APIEventContext::for_table(
         request_metadata,

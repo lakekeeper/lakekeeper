@@ -1549,7 +1549,7 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | `Read…SubtreeGrants`, `Revoke…SubtreeGrants` | `subtree?: SubtreeGrantScope` |
 | `Toggle…PredefinedPolicy`                 | `policy_id: String`, `enabled: Bool` |
 
-A register with `overwrite` that replaces an active table in a warehouse with soft deletion sends `DropTable` for the replaced table with `force: true`, because the table skips soft deletion. The protection of the replaced table still applies.
+A register with `overwrite` that replaces an active table with another table (a different table UUID) in a warehouse with soft deletion sends `DropTable` for the replaced table with `force: true`, because the table skips soft deletion. The protection of the replaced table still applies.
 
 **Example**: Prevent a table from being created with an `access-owners` property that doesn't include at least one owner from the `oidc~data-governance` role:
 

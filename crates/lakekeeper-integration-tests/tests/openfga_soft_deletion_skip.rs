@@ -1,4 +1,4 @@
-//! Skipping soft-deletion against a real OpenFGA store plus a Postgres catalog: `modify` on a
+//! Skipping soft deletion against a real OpenFGA store plus a Postgres catalog: `modify` on a
 //! namespace drops, deletes and runs tasks below it, but a call that skips the soft-deletion
 //! window also needs `modify` on the warehouse. In a warehouse with hard deletion, force only
 //! skips protection and `modify` on the namespace suffices.
@@ -257,6 +257,27 @@ mod soft_deletion_skip {
                 .map_err(|e| e.error)
             }
 
+            /// A metadata file of a different table: the admin creates `name`, drops it with
+            /// `force` and gets its id and metadata location. The registered table takes the
+            /// source's id, so the source must be gone.
+            async fn source(&self, name: &str) -> (TableId, String) {
+                let source = CatalogServer::create_table(
+                    self.ns_params(),
+                    create_table_request(Some(name.to_string()), Some(false)),
+                    DataAccess::not_specified(),
+                    self.ctx.clone(),
+                    self.admin.clone(),
+                )
+                .await
+                .unwrap();
+                self.drop_table(&self.admin, name, true).await.unwrap();
+                (
+                    source.metadata.uuid().into(),
+                    source.metadata_location.unwrap(),
+                )
+            }
+
+            /// Registers the current metadata file of `name` over itself: the same table UUID.
             async fn register_overwrite(
                 &self,
                 md: &RequestMetadata,
@@ -273,11 +294,21 @@ mod soft_deletion_skip {
                 .unwrap()
                 .metadata_location
                 .unwrap();
+                self.register_overwrite_from(md, name, metadata_location.to_string())
+                    .await
+            }
+
+            async fn register_overwrite_from(
+                &self,
+                md: &RequestMetadata,
+                name: &str,
+                metadata_location: String,
+            ) -> Result<(), ErrorModel> {
                 CatalogServer::register_table(
                     self.ns_params(),
                     RegisterTableRequest::builder()
                         .name(name.to_string())
-                        .metadata_location(metadata_location.to_string())
+                        .metadata_location(metadata_location)
                         .overwrite(true)
                         .build(),
                     DataAccess::not_specified(),
@@ -362,7 +393,9 @@ mod soft_deletion_skip {
         #[sqlx::test]
         async fn namespace_modify_cannot_skip_soft_deletion(pool: PgPool) {
             let s = Setup::new(pool, Setup::soft()).await;
+            let (_, source_location) = s.source("source").await;
             let md = s.namespace_modifier().await;
+            let t1 = s.table_id("t1").await;
 
             assert_needs_modify_soft_deletion(
                 "forced table drop",
@@ -373,10 +406,13 @@ mod soft_deletion_skip {
                 s.drop_view(&md, "v", true).await,
             );
             assert_needs_modify_soft_deletion(
-                "register overwrite",
-                s.register_overwrite(&md, "t1").await,
+                "register overwrite with a different table",
+                s.register_overwrite_from(&md, "t1", source_location).await,
             );
-            assert!(s.table_is_active("t1").await);
+            assert_eq!(s.table_id("t1").await, t1);
+            // The same table UUID needs no `modify` on the warehouse.
+            s.register_overwrite(&md, "t1").await.unwrap();
+            assert_eq!(s.table_id("t1").await, t1);
 
             // A drop without force keeps the window.
             s.drop_table(&md, "t2", false).await.unwrap();
@@ -394,11 +430,13 @@ mod soft_deletion_skip {
         #[sqlx::test]
         async fn warehouse_modify_can_skip_soft_deletion(pool: PgPool) {
             let s = Setup::new(pool, Setup::soft()).await;
+            let (source_id, source_location) = s.source("source").await;
             let md = s.warehouse_modifier().await;
-            let t1 = s.table_id("t1").await;
 
-            s.register_overwrite(&md, "t1").await.unwrap();
-            assert_eq!(s.table_id("t1").await, t1);
+            s.register_overwrite_from(&md, "t1", source_location)
+                .await
+                .unwrap();
+            assert_eq!(s.table_id("t1").await, source_id);
             s.drop_view(&md, "v", true).await.unwrap();
             s.drop_table(&md, "t2", false).await.unwrap();
             s.run_now(&md, s.soft_deletion_tasks().await).await.unwrap();

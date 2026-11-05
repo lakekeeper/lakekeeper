@@ -1359,7 +1359,7 @@ pub enum CatalogNamespaceAction {
     },
     Delete {
         /// Whether protection is skipped: of the namespace, and with `recursive` of everything
-        /// below it. A recursive delete in a warehouse with soft-deletion requires it: namespaces
+        /// below it. A recursive delete in a warehouse with soft deletion requires it: namespaces
         /// have no soft-deleted state, so every table, view and generic table below is
         /// hard-deleted at once, dropped ones included.
         #[serde(default, skip_serializing_if = "is_false")]
@@ -1670,10 +1670,11 @@ impl EventAction for CatalogNamespaceAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
     Drop {
-        /// Whether the drop skips the table's protection and, in a warehouse with soft-deletion,
+        /// Whether the drop skips the table's protection and, in a warehouse with soft deletion,
         /// the soft-deletion window: the table is hard-deleted at once. Also set for the drop of
-        /// the table that a register with `overwrite` replaces, when the replaced table is active
-        /// in a warehouse with soft-deletion. That drop skips only the window; protection holds.
+        /// an active table that a register with `overwrite` replaces with another table (a
+        /// different table UUID) in a warehouse with soft deletion. That drop skips only the
+        /// window; protection holds.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data files are physically purged from storage.
@@ -1955,7 +1956,7 @@ impl EventAction for CatalogTableAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
     Drop {
-        /// Whether the drop skips the view's protection and, in a warehouse with soft-deletion,
+        /// Whether the drop skips the view's protection and, in a warehouse with soft deletion,
         /// the soft-deletion window: the view is hard-deleted at once.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
@@ -2085,7 +2086,7 @@ impl EventAction for CatalogViewAction {
 pub enum CatalogGenericTableAction {
     Drop {
         /// Whether the drop skips the generic table's protection and, in a warehouse with
-        /// soft-deletion, the soft-deletion window: the generic table is hard-deleted at once.
+        /// soft deletion, the soft-deletion window: the generic table is hard-deleted at once.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data files are physically purged from storage.
