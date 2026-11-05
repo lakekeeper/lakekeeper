@@ -280,9 +280,9 @@ In a warehouse with soft deletion, these calls need this permission in addition 
 
 Running a soft-deletion task now or at a set time, through the task management API, always needs this permission, also after the warehouse switched to hard deletion.
 
-In warehouses with hard deletion, and when deleting an empty namespace, `force` only skips protection and needs no extra permission.
+In warehouses with hard deletion, and when deleting a namespace without `recursive=true`, `force` only skips protection and needs no extra permission.
 
-Users without this permission can delete a namespace only when it is empty. Dropped tables and views count until they expire.
+In a warehouse with soft deletion, users without this permission can delete a namespace only when it is empty. Dropped tables and views count until they expire.
 
 ## Upgrades & Migration
 
