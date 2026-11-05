@@ -464,8 +464,8 @@ async fn test_commit_view_moves_to_empty_location(pool: PgPool) {
     assert_eq!(loaded.metadata_location, moved.metadata_location);
 }
 
-/// Setting the location a view already has, also with a trailing slash, keeps the view in
-/// place and deletes none of its files.
+/// A commit that ends in the location the view already has, also with a trailing slash or after
+/// setting another location first, keeps the view in place and deletes none of its files.
 #[sqlx::test]
 async fn test_commit_view_set_location_to_own_location_deletes_nothing(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
@@ -489,15 +489,32 @@ async fn test_commit_view_set_location_to_own_location_deletes_nothing(pool: PgP
     )
     .await
     .unwrap();
+    let elsewhere = sibling(&location, "elsewhere");
+    let back = commit_view_as(
+        &ctx,
+        view_params(&prefix, &namespace, "myview"),
+        json!([
+            {"action": "set-location", "location": elsewhere},
+            {"action": "set-location", "location": location},
+        ]),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(with_slash.metadata.location(), location);
+    assert_eq!(back.metadata.location(), location);
     let mut expected = vec![
         view.metadata_location,
         same.metadata_location,
         with_slash.metadata_location,
+        back.metadata_location.clone(),
     ];
     expected.sort();
     assert_eq!(memory_files_under(&location).await, expected);
+    assert_eq!(memory_files_under(&elsewhere).await, Vec::<String>::new());
+    let loaded = load(&ctx, view_params(&prefix, &namespace, "myview")).await;
+    assert_eq!(loaded.metadata_location, back.metadata_location);
 }
 
 #[sqlx::test]

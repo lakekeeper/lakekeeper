@@ -64,8 +64,6 @@ async fn test_create_view(pool: PgPool) {
         .expect("Recreate with same name but different ns should work.");
 }
 
-/// The test server configures no trusted engine. The owner property is protected anyway: a
-/// client that is not a trusted engine must not create a view that runs as another user.
 /// A view cannot be created in a location that holds files, as a table cannot: dropping the
 /// view removes its location with all its files.
 #[sqlx::test]
@@ -97,6 +95,8 @@ async fn test_create_view_refuses_location_with_files(pool: PgPool) {
     assert_eq!(memory_files_under(&occupied).await, vec![foreign_file]);
 }
 
+/// The test server configures no trusted engine. The owner property is protected anyway: a
+/// client that is not a trusted engine must not create a view that runs as another user.
 #[sqlx::test]
 async fn test_create_view_with_owner_property_refused_from_untrusted_client(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;

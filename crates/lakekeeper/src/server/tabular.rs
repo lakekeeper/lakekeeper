@@ -370,7 +370,7 @@ pub(super) async fn file_io_if_empty(
 }
 
 /// Fails if `location` holds files. A purge, and a view that moves away, remove the whole
-/// location, so a tabular takes only an empty one: the removal then reaches no files of others.
+/// location with all files in it, so a tabular takes only an empty location.
 pub(super) async fn require_empty_location(
     file_io: &impl LakekeeperStorage,
     location: &Location,
