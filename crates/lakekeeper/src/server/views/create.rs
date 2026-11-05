@@ -15,7 +15,7 @@ use crate::{
         io::{delete_on_failure, write_file},
         maybe_get_secret, require_warehouse_id,
         tables::{require_active_warehouse, validate_table_or_view_ident_creation},
-        tabular::determine_tabular_location,
+        tabular::{determine_tabular_location, file_io_if_empty},
         views::{owner_property, validate_view_properties},
     },
     service::{
@@ -147,10 +147,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
     let storage_secret_ref = storage_secret.as_deref();
 
-    let file_io = warehouse
-        .storage_profile
-        .file_io(storage_secret_ref)
-        .await?;
+    let file_io = file_io_if_empty(&warehouse, storage_secret_ref, &view_location).await?;
     let bootstrap_grants = delete_on_failure(&file_io, &[&metadata_location], async {
         let compression_codec = CompressionCodec::try_from_metadata(&metadata)?;
         write_file(&file_io, &metadata_location, &metadata, compression_codec).await?;
