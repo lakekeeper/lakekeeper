@@ -11,7 +11,7 @@ use crate::{
             tables::{DataAccessMode, SnapshotsQuery},
         },
     },
-    request_metadata::RequestMetadata,
+    request_metadata::ArcRequestMetadata,
     server::tables::{
         etag::{TableETag, TableResponseShape},
         load_response_config,
@@ -20,14 +20,13 @@ use crate::{
     service::{
         ArcResolvedWarehouse, NamespaceHierarchy, ResolvedWarehouse, TableInfo,
         authz::{
-            ActionOnTable, AuthZTableOps, Authorizer, AuthzWarehouseOps, CatalogTableAction,
-            CatalogWarehouseAction,
+            ActionOnTable, AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzWarehouseOps,
+            CatalogTableAction, CatalogWarehouseAction, RequireTableActionError,
         },
         events::{
             APIEventContext, AuthorizationFailureReason, AuthorizationFailureSource,
-            context::{
-                APIEventActions, ResolutionState, UserProvidedEntity, authz_to_error_no_audit,
-            },
+            EventDispatcher,
+            context::{APIEventActions, ResolutionState, UserProvidedEntity},
         },
         storage::{StorageCredential, StoragePermissions, credential_revalidate_after_ms},
     },
@@ -94,7 +93,8 @@ impl AuthorizationFailureSource for RecordedFailure {
 #[derive(typed_builder::TypedBuilder)]
 pub(super) struct RegisteredTable<'a, A> {
     authorizer: &'a A,
-    request_metadata: &'a RequestMetadata,
+    request_metadata: &'a ArcRequestMetadata,
+    dispatcher: &'a EventDispatcher,
     warehouse: &'a ResolvedWarehouse,
     namespace: &'a NamespaceHierarchy,
     table_info: &'a TableInfo,
@@ -105,8 +105,7 @@ pub(super) struct RegisteredTable<'a, A> {
     storage_secret: Option<&'a StorageCredential>,
 }
 
-/// The response to a register. It carries the storage access `loadTable` would give the
-/// caller: credentials by the caller's read and write privileges on the registered table.
+/// The response to a register: what `loadTable` would return the caller, credentials included.
 /// A failure here leaves the table registered; the error is what `loadTable` would return.
 pub(super) async fn registered_table_result<A: Authorizer>(
     table: RegisteredTable<'_, A>,
@@ -167,7 +166,7 @@ pub(super) async fn registered_table_result<A: Authorizer>(
 }
 
 /// Asked once the table is committed, so the authorizer sees what creating it conferred.
-/// The register itself was authorized before; these checks decide no access, only scope.
+/// As on `loadTable`, `GetMetadata` decides access and `ReadData`/`WriteData` the credentials.
 async fn storage_permissions_on_registered_table<A: Authorizer>(
     table: &RegisteredTable<'_, A>,
 ) -> Result<Option<StoragePermissions>> {
@@ -188,21 +187,45 @@ async fn storage_permissions_on_registered_table<A: Authorizer>(
             },
         )
     };
-    let [can_read, can_write] = table
+    let table_ident = &table.table_info.tabular_ident;
+    let decision = table
         .authorizer
         .are_allowed_table_actions_arr(
             table.request_metadata,
             table.warehouse,
             &parent_namespaces,
             &[
+                on_table(CatalogTableAction::GetMetadata),
                 on_table(CatalogTableAction::ReadData),
                 on_table(CatalogTableAction::WriteData),
             ],
         )
         .await
-        .map_err(authz_to_error_no_audit)?
-        .into_inner();
-    Ok(StoragePermissions::from_data_privileges(
-        can_read, can_write,
-    ))
+        .map_err(RequireTableActionError::from)
+        .and_then(|allowed| {
+            let [can_get_metadata, can_read, can_write] = allowed.into_inner();
+            if can_get_metadata {
+                Ok(StoragePermissions::from_data_privileges(
+                    can_read, can_write,
+                ))
+            } else {
+                Err(AuthZCannotSeeTable::new_forbidden(
+                    table.warehouse.warehouse_id,
+                    table_ident.clone(),
+                )
+                .into())
+            }
+        });
+    // Recorded as `loadTable` records it: the create on the namespace was allowed and is done.
+    decision.map_err(|refusal| {
+        APIEventContext::for_table(
+            Arc::clone(table.request_metadata),
+            table.dispatcher.clone(),
+            table.warehouse.warehouse_id,
+            table_ident.clone(),
+            CatalogTableAction::GetMetadata,
+        )
+        .emit_early_authz_failure(refusal)
+        .into()
+    })
 }

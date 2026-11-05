@@ -562,6 +562,7 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_admission_gate",
     "authz_failed_tabular_move",
     "authz_failed_register_table",
+    "authz_failed_cannot_see_registered_table",
     "authz_failed_generic_table_location_with_files",
     "authz_failed_create_view_owner_property",
     "authz_failed_view_commit_owner_property",
@@ -1343,6 +1344,35 @@ fn fixture_authz_failed_register_table() {
     );
 
     assert_matches_fixture("authz_failed_register_table", &contract_fields(record));
+}
+
+/// A register whose caller may not see the table it registered: recorded as `loadTable`
+/// records it, `get_metadata` on the table by name, refused as not found.
+#[test]
+fn fixture_authz_failed_cannot_see_registered_table() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let table = TableIdent::new(
+        NamespaceIdent::new("sales".to_string()),
+        "orders".to_string(),
+    );
+    let record = refusal_record(
+        UserProvidedTable {
+            warehouse_id,
+            table: table.clone().into(),
+        }
+        .event_entities(),
+        CatalogTableAction::GetMetadata.event_actions(),
+        crate::service::authz::AuthZCannotSeeTable::new_forbidden(warehouse_id, table),
+    );
+
+    assert_matches_fixture(
+        "authz_failed_cannot_see_registered_table",
+        &contract_fields(record),
+    );
 }
 
 /// A generic table create refused because its location already holds files and the caller

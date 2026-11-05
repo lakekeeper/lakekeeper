@@ -630,6 +630,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             register_table::RegisteredTable::builder()
                 .authorizer(&authorizer)
                 .request_metadata(&grant_request_metadata)
+                .dispatcher(&grant_dispatcher)
                 .warehouse(&warehouse)
                 .namespace(&namespace)
                 .table_info(&table_info)
