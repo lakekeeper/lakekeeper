@@ -3360,9 +3360,11 @@ pub mod tests {
 
     /// Dropping a table removes all of its snapshots, also those without a schema id, and their
     /// statistics. The other table keeps all of its rows, and the same file registers again
-    /// under the same table id.
+    /// under the same table id. sqlx's migrator built the empty catalog, so only the migration
+    /// added the key.
     #[sqlx::test]
     async fn hard_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
+        assert_eq!(snapshot_table_key(&pool).await, Some(false));
         let (table, other) = SchemalessSnapshotTable::pair(pool).await;
         assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
         assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
@@ -3388,20 +3390,27 @@ pub mod tests {
         .unwrap()
     }
 
-    /// Applies every migration before the one that adds the key from `table_snapshot` to `"table"`.
-    async fn migrate_to_before_the_key(pool: &sqlx::PgPool) {
+    /// The migration that adds the key from `table_snapshot` to `"table"`.
+    const KEY_MIGRATION: i64 = 20_261_105_120_000;
+
+    /// Applies the migrations whose version `include` accepts, with sqlx's migrator, which runs
+    /// no step after the commit.
+    async fn apply_migrations(pool: &sqlx::PgPool, include: impl Fn(i64) -> bool) {
         use sqlx::migrate::Migrate as _;
 
-        const VERSION: i64 = 20_261_105_120_000;
         let migrator = sqlx::migrate!();
-        assert!(migrator.iter().any(|m| m.version == VERSION));
+        assert!(migrator.iter().any(|m| m.version == KEY_MIGRATION));
         let mut conn = pool.acquire().await.unwrap();
         conn.ensure_migrations_table("_sqlx_migrations")
             .await
             .unwrap();
-        for migration in migrator.iter().filter(|m| m.version < VERSION) {
+        for migration in migrator.iter().filter(|m| include(m.version)) {
             conn.apply("_sqlx_migrations", migration).await.unwrap();
         }
+    }
+
+    async fn migrate_to_before_the_key(pool: &sqlx::PgPool) {
+        apply_migrations(pool, |version| version < KEY_MIGRATION).await;
     }
 
     /// Before the migration, a drop left the snapshot without a schema id and its statistics
@@ -3426,19 +3435,18 @@ pub mod tests {
         assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
     }
 
-    /// The migration adds the key only if no writer holds either table. Otherwise the next step
-    /// of the run adds it after the commit, and then removes what drops left behind.
+    /// The migration leaves the key out of a catalog with tables. The next `migrate` adds it after
+    /// the commit, although no migration is left to apply, removes what drops left behind and
+    /// validates it.
     #[sqlx::test(migrations = false)]
     async fn migrate_adds_the_key_the_migration_left_out(pool: sqlx::PgPool) {
-        crate::migrations::migrate_core_only(&pool).await.unwrap();
-        sqlx::query("ALTER TABLE table_snapshot DROP CONSTRAINT table_snapshot_table_id_fkey")
-            .execute(&pool)
-            .await
-            .unwrap();
-
+        migrate_to_before_the_key(&pool).await;
         let (table, other) = SchemalessSnapshotTable::pair(pool.clone()).await;
         hard_drop(&table).await;
         assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
+
+        apply_migrations(&pool, |version| version >= KEY_MIGRATION).await;
+        assert_eq!(snapshot_table_key(&pool).await, None);
 
         crate::migrations::migrate_core_only(&pool).await.unwrap();
         assert_eq!(snapshot_table_key(&pool).await, Some(true));

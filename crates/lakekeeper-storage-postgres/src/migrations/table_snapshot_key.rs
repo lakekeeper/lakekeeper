@@ -1,6 +1,7 @@
 //! Completes migration `20261105120000_table_snapshot_table_fkey` after the migration run
-//! commits. The run holds every lock until it commits, so the scans run here, where they
-//! never block writes.
+//! commits. The run holds every lock until it commits, so the migration adds the key only to an
+//! empty catalog; any other catalog gets it here. The scans run here too, where they never block
+//! writes.
 
 use anyhow::Context;
 use sqlx::{AssertSqlSafe, PgPool, Postgres, SqlSafeStr};
@@ -10,8 +11,9 @@ use sqlx::{AssertSqlSafe, PgPool, Postgres, SqlSafeStr};
 const LOCK_WAIT: &str = if cfg!(test) { "2s" } else { "60s" };
 
 /// Adds the key unless the migration already did. Waiting for `SHARE UPDATE EXCLUSIVE` blocks no
-/// writer and lets Postgres cancel a blocking autovacuum. Writers lock both tables in either order,
-/// so each attempt at the key's lock waits 100 ms, below `deadlock_timeout`; `NOWAIT` would starve.
+/// writer and lets Postgres cancel a blocking autovacuum. Writers queue behind each attempt: it
+/// waits 100 ms for `table_snapshot` (`NOWAIT` would starve), 20 ms for `"table"`, whose creates
+/// and drops then wait for `table_snapshot`, and pauses between attempts.
 fn add_key() -> AssertSqlSafe<String> {
     AssertSqlSafe(format!(
         r#"
@@ -28,13 +30,15 @@ BEGIN
     END IF;
     LOOP
         BEGIN
-            LOCK TABLE table_snapshot, "table" IN SHARE ROW EXCLUSIVE MODE;
+            LOCK TABLE table_snapshot IN SHARE ROW EXCLUSIVE MODE;
+            PERFORM set_config('lock_timeout', '20ms', true);
+            LOCK TABLE "table" IN SHARE ROW EXCLUSIVE MODE;
             EXIT;
         EXCEPTION WHEN lock_not_available OR deadlock_detected THEN
             IF clock_timestamp() > give_up THEN
                 RAISE;
             END IF;
-            PERFORM pg_sleep(0.01 + random() * 0.04);
+            PERFORM pg_sleep(0.125 + random() * 0.25);
         END;
     END LOOP;
     ALTER TABLE table_snapshot ADD CONSTRAINT table_snapshot_table_id_fkey
@@ -58,9 +62,9 @@ ALTER TABLE table_snapshot VALIDATE CONSTRAINT table_snapshot_table_id_fkey"
     ))
 }
 
-/// Adds the key if the migration found the tables busy, deletes orphaned snapshots and validates
-/// the key, each in its own transaction. Once the key exists, no drop leaves a snapshot behind,
-/// so the delete removes all of them. Does nothing once the key is validated.
+/// Adds the key unless the migration did, deletes orphaned snapshots and validates the key, each
+/// in its own transaction. Once the key exists, no drop leaves a snapshot behind, so the delete
+/// removes all of them. Does nothing once the key is validated.
 pub(super) async fn complete(pool: &PgPool, lock_id: i64) -> anyhow::Result<()> {
     let validated: Option<bool> = sqlx::query_scalar(
         "SELECT convalidated FROM pg_constraint \
