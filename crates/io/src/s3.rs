@@ -296,7 +296,9 @@ impl S3Settings {
                 if let Some(endpoint) = endpoint {
                     builder = builder.endpoint_url(endpoint.to_string());
                 }
-                builder.load().await
+                // The SDK's config loader future is large. Boxed, it does not inflate the
+                // future of every caller that builds a client.
+                Box::pin(builder.load()).await
             }
             None => {
                 let mut builder = apply_aws_config!(SdkConfig::builder(), region);
@@ -331,7 +333,8 @@ impl S3Settings {
                 let tags = sts_session_tags.iter();
                 assume_role_provider = assume_role_provider.tags(tags);
             }
-            let assume_role_provider = assume_role_provider.build().await;
+            // Boxed like `load` above: `build` can run the SDK's config loader.
+            let assume_role_provider = Box::pin(assume_role_provider.build()).await;
 
             // The provider calls STS on every request, so this config caches its credentials.
             // The cache belongs to the clients built from this config and goes away with them.

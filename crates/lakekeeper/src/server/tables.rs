@@ -36,6 +36,7 @@ pub mod authorize_load;
 pub mod create_table;
 pub(crate) mod etag;
 pub mod load_table;
+mod register_table;
 mod rename_table;
 
 pub(crate) use authorize_load::*;
@@ -61,8 +62,7 @@ use crate::{
                 ReferencingView, RegisterTableRequest, RenameTableRequest, Result, TableIdent,
                 TableParameters,
                 tables::{
-                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters,
-                    LoadTableRequest, SnapshotsQuery,
+                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters, LoadTableRequest,
                 },
             },
         },
@@ -70,7 +70,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
-        self,
+        self, authorize_soft_deletion_skip,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
         tabular::{
             authorize_entities, claim_idempotency_key, claim_no_content_idempotency_key,
@@ -90,7 +90,6 @@ use crate::{
             AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
             CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction, GrantResource,
             RequireNamespaceActionError, RequireTableActionError, emit_bootstrap_grants_async,
-            require_soft_deletion_skip, require_soft_deletion_skip_for_drop,
             write_bootstrap_grants,
         },
         build_namespace_hierarchy,
@@ -102,7 +101,7 @@ use crate::{
         idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::{StoragePermissions, credential_revalidate_after_ms},
+        storage::StoragePermissions,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -391,6 +390,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
         // Before any storage read. `CreateTable` is checked after the read: its properties
         // and table id are only known from the metadata file.
+        register_table::authorize_register_on_warehouse(&authorizer, &event_ctx, &warehouse)
+            .await?;
         let namespace = authorizer
             .require_namespace_action(
                 event_ctx.request_metadata(),
@@ -514,24 +515,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
-        // Bound once and reused for the ETag shape below, so the tag follows the
-        // config the delegation actually produced.
-        let storage_permissions = StoragePermissions::ReadWriteDelete;
-        let config = storage_profile
-            .generate_table_config(
-                data_access,
-                storage_secret_ref,
-                &table_location,
-                storage_permissions,
-                request_metadata,
-                &table_info,
-            )
-            .await?;
-        let storage_credentials = config.storage_credentials(&table_location);
-        let credentials_revalidate_after_ms = config
-            .credentials_expiration_ms
-            .map(credential_revalidate_after_ms);
-
         // Insert idempotency key in the same transaction.
         if let Some(ref key) = idempotency_key
             && !C::try_insert_idempotency_key(
@@ -636,37 +619,28 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             data_access,
         );
 
-        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
+        emit_bootstrap_grants_async(
+            &grant_dispatcher,
+            grant_request_metadata.clone(),
+            bootstrap_grants,
+        );
 
-        // Full snapshot list from the metadata file, tagged with the delegation
-        // and permission scope the config above was built for. A read-only
-        // caller's later load is scoped narrower, so it gets a distinct tag
-        // rather than matching this one. Now that register vends, the tag has to
-        // carry the credential's revalidation point too: without it a vending
-        // response yields a tag that can never produce a 304.
-        let etag = etag::TableETag::new(
-            warehouse_id,
-            &metadata_location_str,
-            etag::TableResponseShape::new(
-                SnapshotsQuery::All,
-                etag::StorageAccess::Config {
-                    delegation: data_access,
-                    permissions: storage_permissions,
-                    warehouse_version: warehouse.version,
-                },
-            ),
-            credentials_revalidate_after_ms,
+        register_table::registered_table_result(
+            register_table::RegisteredTable::builder()
+                .authorizer(&authorizer)
+                .request_metadata(&grant_request_metadata)
+                .dispatcher(&grant_dispatcher)
+                .warehouse(&warehouse)
+                .namespace(&namespace)
+                .table_info(&table_info)
+                .table_metadata(table_metadata)
+                .metadata_location(metadata_location_str)
+                .table_location(&table_location)
+                .data_access(data_access)
+                .storage_secret(storage_secret_ref)
+                .build(),
         )
-        .into_etag();
-
-        Ok(LoadTableResult {
-            metadata_location: Some(metadata_location_str),
-            metadata: table_metadata,
-            remote_signing_config: config.remote_signing.clone(),
-            config: Some(load_response_config(Some(config.config))),
-            storage_credentials,
-            etag: Some(etag),
-        })
+        .await
     }
 
     /// Load a table from the catalog
@@ -897,14 +871,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 state.v1_state.catalog.clone(),
             )
             .await;
-        let authz_result = require_soft_deletion_skip_for_drop(
-            &authorizer,
-            event_ctx.request_metadata(),
-            force,
-            authz_result,
-        )
-        .await;
         let (event_ctx, (warehouse, _ns, table_info)) = event_ctx.emit_authz(authz_result)?;
+        if force && warehouse.tabular_delete_profile.is_soft() {
+            authorize_soft_deletion_skip(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                &warehouse,
+            )
+            .await?;
+        }
 
         let table_id = table_info.table_id();
         let event_ctx = event_ctx.resolve(ResolvedTable {
@@ -1221,24 +1197,26 @@ async fn authorize_register_overwrite<C: CatalogStore, A: Authorizer>(
     event_ctx.push_extra_context(HandlerContextKey::InvokedBy(
         InvokingOperation::RegisterTableOverwrite.as_wire(),
     ));
-    let authz_result = async {
-        let previous_table = authorizer
-            .require_table_action(
-                event_ctx.request_metadata(),
-                warehouse,
-                namespace,
-                event_ctx.user_provided_entity().table.clone(),
-                previous_table_info,
-                event_ctx.action().clone(),
-            )
-            .await?;
-        if skips_window {
-            require_soft_deletion_skip(authorizer, event_ctx.request_metadata(), warehouse).await?;
-        }
-        Ok::<_, AuthZError>(previous_table)
+    let authz_result = authorizer
+        .require_table_action(
+            event_ctx.request_metadata(),
+            warehouse,
+            namespace,
+            event_ctx.user_provided_entity().table.clone(),
+            previous_table_info,
+            event_ctx.action().clone(),
+        )
+        .await;
+    let (event_ctx, previous_table) = event_ctx.emit_authz(authz_result)?;
+    if skips_window {
+        authorize_soft_deletion_skip(
+            authorizer,
+            event_ctx.request_metadata_arc(),
+            event_ctx.dispatcher().clone(),
+            warehouse,
+        )
+        .await?;
     }
-    .await;
-    let (_, previous_table) = event_ctx.emit_authz(authz_result)?;
 
     tracing::debug!(
         "Register Table: Dropping existing table '{table_ident}' of warehouse '{}' for overwrite operation",
@@ -1431,13 +1409,10 @@ pub(crate) fn interpret_authz_results_for_load_table(
         );
     }
 
-    let storage_permissions = if can_write.unwrap_or(false) {
-        Some(StoragePermissions::ReadWriteDelete)
-    } else if can_read.unwrap_or(false) {
-        Some(StoragePermissions::Read)
-    } else {
-        None
-    };
+    let storage_permissions = StoragePermissions::from_data_privileges(
+        can_read.unwrap_or(false),
+        can_write.unwrap_or(false),
+    );
 
     Ok((table_info, storage_permissions))
 }
@@ -2989,8 +2964,9 @@ mod unit_tests {
         assert_eq!(perms, Some(StoragePermissions::Read));
     }
 
+    /// Write credentials can read, so write without read vends nothing.
     #[test]
-    fn test_interpret_authz_results_table_no_read_no_write() {
+    fn test_interpret_authz_results_table_no_read() {
         let warehouse_id = WarehouseId::new_random();
         let table = TableInfo::new_random(warehouse_id);
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
@@ -3001,17 +2977,19 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = LoadChainDecisions::from(vec![true, false, false]);
+        for can_write in [false, true] {
+            let results = LoadChainDecisions::from(vec![true, false, can_write]);
 
-        let (_, perms) = interpret_authz_results_for_load_table(
-            &actions,
-            &results,
-            warehouse_id,
-            &table.tabular_ident,
-        )
-        .unwrap();
+            let (_, perms) = interpret_authz_results_for_load_table(
+                &actions,
+                &results,
+                warehouse_id,
+                &table.tabular_ident,
+            )
+            .unwrap();
 
-        assert_eq!(perms, None);
+            assert_eq!(perms, None, "can_write: {can_write}");
+        }
     }
 
     #[test]

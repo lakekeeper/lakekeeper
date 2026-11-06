@@ -374,10 +374,7 @@ pub(super) async fn require_empty_location(
     file_io: &impl LakekeeperStorage,
     location: &Location,
 ) -> Result<()> {
-    if is_empty(file_io, location)
-        .await
-        .map_err(location_check_error)?
-    {
+    if location_is_empty(file_io, location).await? {
         return Ok(());
     }
     Err(ValidationError::from(InvalidLocationError::new(
@@ -385,6 +382,17 @@ pub(super) async fn require_empty_location(
         "Unexpected files in location, tabular locations have to be empty",
     ))
     .into())
+}
+
+/// Whether `location` holds no files. A temporary storage error returns 503, so that the
+/// client retries.
+pub(super) async fn location_is_empty(
+    file_io: &impl LakekeeperStorage,
+    location: &Location,
+) -> Result<bool> {
+    Ok(is_empty(file_io, location)
+        .await
+        .map_err(location_check_error)?)
 }
 
 /// Error of the check that a tabular location is empty. A temporary storage error returns 503,

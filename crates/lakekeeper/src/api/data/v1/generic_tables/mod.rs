@@ -368,7 +368,21 @@ async fn load_generic_table<I: GenericTableService<S>, S: crate::api::ThreadSafe
     delete,
     tag = "generic-table",
     path = GenericTableV1Endpoint::DropGenericTable.path(),
-    params(("prefix" = String,), ("namespace" = String,), ("table" = String,)),
+    params(
+        ("prefix" = String,),
+        ("namespace" = String,),
+        ("table" = String,),
+        (
+            "purgeRequested" = Option<bool>,
+            Query,
+            description = "If true, delete all files under the location of the generic table. In a warehouse with soft deletion, they are deleted when the soft deletion expires. Defaults to `true`.",
+        ),
+        (
+            "force" = Option<bool>,
+            Query,
+            description = "If true, drop the generic table even if it is protected. In a warehouse with soft deletion, the generic table is also deleted at once, which needs permission to change the soft-deletion settings of the warehouse. Defaults to `false`.",
+        ),
+    ),
     responses(
         (status = 204, description = "Generic table dropped successfully"),
         (status = "4XX", body = IcebergErrorResponse),

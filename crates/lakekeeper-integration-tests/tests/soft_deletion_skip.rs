@@ -410,6 +410,21 @@ fn drop_action(force: bool) -> RecordedAction {
     }
 }
 
+/// The record of the `ModifySoftDeletion` check of a call that skips the window.
+fn skip_record() -> Vec<RecordedAction> {
+    vec![RecordedAction {
+        action_name: "modify_soft_deletion".to_string(),
+        context: vec![],
+    }]
+}
+
+/// Records in a fixed order: a call sends its own record and its skip record from separate
+/// tasks.
+fn sorted(mut records: Vec<Vec<RecordedAction>>) -> Vec<Vec<RecordedAction>> {
+    records.sort_by_key(|actions| format!("{actions:?}"));
+    records
+}
+
 #[sqlx::test]
 async fn forced_drop_in_soft_deletion_warehouse_needs_modify_soft_deletion(pool: PgPool) {
     let s = Setup::new(pool, soft()).await;
@@ -427,6 +442,7 @@ async fn forced_drop_in_soft_deletion_warehouse_needs_modify_soft_deletion(pool:
         }
     }
     s.authz.block_action(MODIFY_SOFT_DELETION);
+    let listener = s.listen().await;
 
     for kind in all {
         let (kept, forced) = (name(kind, "kept"), name(kind, "forced"));
@@ -443,6 +459,21 @@ async fn forced_drop_in_soft_deletion_warehouse_needs_modify_soft_deletion(pool:
         s.drop(kind, &forced, true).await.unwrap();
         assert_eq!(s.state(kind, &forced).await, Found::Gone, "{kind:?}");
     }
+
+    // Each forced drop is allowed as a drop, and its skip check has a record of its own.
+    assert_eq!(listener.settled_counts(12, 3).await, (12, 3));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record(); 3]);
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::ActionForbidden; 3]
+    );
+    let forced_drops = vec![vec![drop_action(true)]; 6];
+    let kept_drops = vec![vec![drop_action(false)]; 3];
+    assert_eq!(
+        sorted(succeeded),
+        sorted([forced_drops, kept_drops, vec![skip_record(); 3]].concat())
+    );
 }
 
 #[sqlx::test]
@@ -466,26 +497,6 @@ async fn skipping_soft_deletion_in_a_managed_warehouse_is_decided_by_the_authori
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
     s.drop(Kind::Table, "t", true).await.unwrap();
     assert_eq!(s.state(Kind::Table, "t").await, Found::Gone);
-}
-
-#[sqlx::test]
-async fn refused_forced_drop_is_audited_as_the_drop(pool: PgPool) {
-    let s = Setup::new(pool, soft()).await;
-    s.table("t").await;
-    s.authz.block_action(MODIFY_SOFT_DELETION);
-    let listener = s.listen().await;
-
-    assert_needs_modify_soft_deletion(s.drop(Kind::Table, "t", true).await);
-
-    assert_eq!(listener.settled_counts(0, 1).await, (0, 1));
-    assert_eq!(
-        listener.failure_reasons(),
-        vec![AuthorizationFailureReason::ActionForbidden]
-    );
-    assert_eq!(
-        listener.recorded_actions(),
-        (vec![], vec![vec![drop_action(true)]])
-    );
 }
 
 #[sqlx::test]
@@ -515,6 +526,7 @@ async fn recursive_namespace_delete_in_soft_deletion_warehouse_needs_modify_soft
     s.table("dropped").await;
     s.drop(Kind::Table, "dropped", false).await.unwrap();
     s.authz.block_action(MODIFY_SOFT_DELETION);
+    let listener = s.listen().await;
 
     assert_needs_modify_soft_deletion(s.delete_namespace(true, true).await);
     // Without force the delete is refused anyway; the missing right is reported first.
@@ -528,6 +540,29 @@ async fn recursive_namespace_delete_in_soft_deletion_warehouse_needs_modify_soft
     assert!(!s.namespace_exists().await);
     assert_eq!(s.state(Kind::Table, "active").await, Found::Gone);
     assert_eq!(s.state(Kind::Table, "dropped").await, Found::Gone);
+
+    assert_eq!(listener.settled_counts(4, 2).await, (4, 2));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record(); 2]);
+    let delete = |force| {
+        vec![RecordedAction {
+            action_name: "delete".to_string(),
+            context: vec![
+                ActionContextKey::Force(force),
+                ActionContextKey::Purge(false),
+                ActionContextKey::Recursive(true),
+            ],
+        }]
+    };
+    assert_eq!(
+        sorted(succeeded),
+        sorted(vec![
+            delete(true),
+            delete(false),
+            delete(true),
+            skip_record()
+        ])
+    );
 }
 
 #[sqlx::test]
@@ -577,6 +612,7 @@ async fn running_a_soft_deletion_task_early_needs_modify_soft_deletion(pool: PgP
     let tasks = s.soft_deletion_tasks().await;
     assert_eq!(tasks.len(), 1);
     s.authz.block_action(MODIFY_SOFT_DELETION);
+    let listener = s.listen().await;
 
     // `ControlAllTasks` on the warehouse is allowed, and does not suffice.
     assert_needs_modify_soft_deletion(s.control(ControlTaskAction::RunNow, tasks.clone()).await);
@@ -594,6 +630,18 @@ async fn running_a_soft_deletion_task_early_needs_modify_soft_deletion(pool: PgP
 
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
     s.control(ControlTaskAction::RunNow, tasks).await.unwrap();
+
+    assert_eq!(listener.settled_counts(4, 2).await, (4, 2));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record(); 2]);
+    let control_tasks = vec![RecordedAction {
+        action_name: "control_tasks".to_string(),
+        context: vec![],
+    }];
+    assert_eq!(
+        sorted(succeeded),
+        sorted([vec![control_tasks; 3], vec![skip_record()]].concat())
+    );
 }
 
 #[sqlx::test]
@@ -647,16 +695,30 @@ async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_
             .await,
     );
     assert_eq!(s.table_id("t").await, table_id);
-    // The replaced table skips the window, so its drop is recorded as forced.
-    assert_eq!(listener.settled_counts(1, 1).await, (1, 1));
+    // Allowed: the register right, the create, and the drop of the replaced table, which skips
+    // the window and is recorded as forced. Refused: the skip check.
+    assert_eq!(listener.settled_counts(3, 1).await, (3, 1));
     let (_, failed) = listener.recorded_actions();
-    assert_eq!(failed, vec![vec![drop_action(true)]]);
+    assert_eq!(failed, vec![skip_record()]);
 
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
     s.register_overwrite_from("t", source_location)
         .await
         .unwrap();
     assert_eq!(s.table_id("t").await, source_id);
+    assert_eq!(listener.settled_counts(7, 1).await, (7, 1));
+    let (succeeded, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record()]);
+    let drops_and_skips = succeeded
+        .into_iter()
+        .filter(|actions| {
+            !["create_table", "register_table"].contains(&actions[0].action_name.as_str())
+        })
+        .collect();
+    assert_eq!(
+        sorted(drops_and_skips),
+        sorted([vec![vec![drop_action(true)]; 2], vec![skip_record()]].concat())
+    );
 }
 
 #[sqlx::test]
@@ -671,7 +733,7 @@ async fn register_overwrite_with_the_same_table_in_soft_deletion_warehouse_needs
     s.register_overwrite("t").await.unwrap();
     assert_eq!(s.table_id("t").await, table_id);
     // With the same table UUID, the drop is not recorded as forced.
-    assert_eq!(listener.settled_counts(2, 0).await, (2, 0));
+    assert_eq!(listener.settled_counts(3, 0).await, (3, 0));
     let (succeeded, failed) = listener.recorded_actions();
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(
@@ -703,7 +765,7 @@ async fn register_overwrite_of_a_staged_table_needs_no_extra_right(pool: PgPool)
         .await
         .unwrap();
     assert_eq!(s.state(Kind::Table, "staged").await, Found::Active);
-    assert_eq!(listener.settled_counts(2, 0).await, (2, 0));
+    assert_eq!(listener.settled_counts(3, 0).await, (3, 0));
     let (succeeded, failed) = listener.recorded_actions();
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(
@@ -788,8 +850,9 @@ async fn assert_registering_the_uuid_of_another_table_is_refused(
             );
         }
     }
-    // Each call is refused after the create is authorized and before any drop is authorized.
-    assert_eq!(listener.settled_counts(6, 0).await, (6, 0));
+    // Each call is refused after the register right and the create are authorized, and before
+    // any drop is authorized.
+    assert_eq!(listener.settled_counts(12, 0).await, (12, 0));
     let (succeeded, _) = listener.recorded_actions();
     assert!(
         succeeded
