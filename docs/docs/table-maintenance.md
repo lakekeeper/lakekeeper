@@ -1,5 +1,5 @@
 ---
-description: "How Lakekeeper maintains Iceberg tables: metadata file cleanup, delete-after-commit behaviour and retention of previous metadata versions."
+description: "How Lakekeeper maintains Iceberg tables: metadata file cleanup, and in Lakekeeper Plus expire snapshots, optimize and remove orphan files."
 ---
 
 # Table Maintenance
@@ -30,19 +30,28 @@ Configuration can be set via the Management UI or REST API endpoints:
 | Parameter                 | Type    | Default                          | Description |
 |---------------------------|---------|----------------------------------|-----|
 | `enable-expire-snapshots` | boolean | `false`                          | Enable automatic snapshot expiration for all tables in the warehouse. Can be overridden per table with `lakekeeper.history.expire.enabled` |
-| `max-snapshot-age-ms`     | integer | `432000000` (5 days)             | Maximum age of snapshots in milliseconds before expiration. Override per table with `history.expire.max-snapshot-age-ms` |
+| `max-snapshot-age-ms`     | integer | `432000000` (5 days)             | Maximum age of snapshots in milliseconds before expiration. Must be at least 24 hours, unless `disable-min-age-check` is `true` (see below). Override per table with `history.expire.max-snapshot-age-ms` |
 | `min-snapshots-to-keep`   | integer | `1`                              | Minimum snapshots to retain on each table branch. Override per table with `history.expire.min-snapshots-to-keep` |
 | `min-snapshots-to-expire` | integer | `20`                             | Minimum snapshots required before expiration job is scheduled (prevents expensive jobs for few snapshots). Override per table with `lakekeeper.history.expire.min-snapshots-to-expire` |
-| `max-ref-age-ms`          | integer | `9223372036854775807` (no limit) | Maximum age for snapshot references (except main branch). Main branch references never expire |
+| `max-ref-age-ms`          | integer | `9223372036854775807` (no limit) | Maximum age for snapshot references (except main branch). Main branch references never expire. Must be at least 24 hours, unless `disable-min-age-check` is `true`. Override per table with `history.expire.max-ref-age-ms` |
+| `disable-min-age-check`   | boolean | `false`                          | Allow a `max-snapshot-age-ms` or `max-ref-age-ms` below 24 hours. We recommend it only for development and test setups. It does not apply to values that a table sets in its properties or on its branches and tags. For those, see `lakekeeper.history.expire.disable-min-age-check` |
 
 ### Table-Level Overrides
 
 Individual tables can override warehouse settings using these Iceberg table properties:
 
 - `lakekeeper.history.expire.enabled` - Enable/disable for specific table
-- `history.expire.max-snapshot-age-ms` - Custom max age for table snapshots  
+- `history.expire.max-snapshot-age-ms` - Custom max age for table snapshots
+- `history.expire.max-ref-age-ms` - Custom max age for branches and tags of this table, except main
+- `lakekeeper.history.expire.disable-min-age-check` - `true` lets this table use ages below 24 hours in the two properties above and in the retention that a branch or tag sets for itself.
 - `history.expire.min-snapshots-to-keep` - Custom minimum retention for table
 - `lakekeeper.history.expire.min-snapshots-to-expire` - Custom threshold for table
+
+**24-hour minimum**:
+
+- Saving a queue config with `max-snapshot-age-ms` or `max-ref-age-ms` below 24 hours fails with `ExpireSnapshotsRetentionTooShort`, unless the same request sets `disable-min-age-check: true`. This stops a typo such as `max-snapshot-age-ms: 6000` (six seconds) from removing almost all snapshots.
+- A config with an age below 24 hours that was saved before Lakekeeper Plus 0.15 makes every run fail. Save it again with a larger value, or with `disable-min-age-check: true`.
+- A table value below 24 hours is raised to 24 hours, unless the table sets `lakekeeper.history.expire.disable-min-age-check=true`. Lakekeeper then logs a warning that names the property and its value, and the run result shows `retention-adjustment: raised-to-minimum`.
 
 !!! note
     Tables with `gc.enabled=false` are excluded from automatic expiration regardless of other settings.
@@ -60,6 +69,10 @@ For production workloads, we recommend running expire snapshots workers in dedic
 ### Task Scheduling
 
 Expire snapshots tasks are intelligently scheduled immediately after table commits when needed, eliminating the overhead of cron-based polling. This ensures timely cleanup while maintaining optimal performance.
+
+## Optimize { #optimize .lkp }
+
+Optimize keeps tables fast to read. After writes, it compacts small data files into larger ones, applies delete files and merges small manifests. It is off by default and can be turned on per warehouse or per table. See [Optimize](./optimize.md), and [Optimize Workers](./optimize-workers.md) for the workers that run it.
 
 ## Remove Orphan Files { #remove-orphan-files .lkp }
 
@@ -91,7 +104,7 @@ Configuration can be set via the Management UI or REST API endpoints:
 | `maximum-interval-seconds` | integer | `7776000` (90 days) | Upper bound on the adaptive next-run interval. Idle tables get a safety check at this cadence. Must be ≥ 86400 (1 day). |
 | `max-run-time-seconds` | integer | `3600` (1 hour) | Wall-clock timeout for a single task attempt. Must be ≥ 60. |
 | `dry-run` | boolean | `false` | Identify orphans but do not delete. Useful for previewing what a run would remove. |
-| `disable-min-older-than-check` | boolean | `false` | Allow a `default-older-than-ms` below 24 hours. Set it only for development and test setups. It does not apply to the table property `lakekeeper.remove-orphan-files.older-than-ms`. |
+| `disable-min-older-than-check` | boolean | `false` | Allow a `default-older-than-ms` below 24 hours. We recommend it only for development and test setups. It does not apply to the table property `lakekeeper.remove-orphan-files.older-than-ms`. |
 
 ### Table-Level Overrides
 

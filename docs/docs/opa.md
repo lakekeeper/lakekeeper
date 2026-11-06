@@ -72,7 +72,7 @@ Configure Trino as a [trusted engine](./configuration.md#trusted-engines) in Lak
 
 Trino runs a view as its owner by default (`SECURITY DEFINER` is the default for `CREATE VIEW`). Trino stores the owner in the view property `trino.run-as-owner`. When a user queries the view, Trino asks the OPA bridge about the tables behind the view as the owner, not as the user. So the owner's permissions decide which data the view can read. For this reason, Lakekeeper lets only a trusted engine write `trino.run-as-owner` or give a view that has it a new version. [Property Protection](./view-security.md#property-protection) describes the rules, how `CREATE OR REPLACE VIEW ... SECURITY INVOKER` behaves, and which statements fail without a trusted engine.
 
-Match the trusted engine to the service identity of the Trino catalog, for example the subject of its service account. A catalog with `iceberg.rest-catalog.session=USER` sends a token per user and cannot be the trusted engine; see [Property Protection](./view-security.md#property-protection).
+Match the trusted engine to the subject of the service account with which the Trino catalog authenticates at Lakekeeper. See [Setting Up Trusted Engines](./view-security.md#setting-up-trusted-engines).
 
 ```bash
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino

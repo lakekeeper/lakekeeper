@@ -10,13 +10,15 @@ Lakekeeper supports **DEFINER** and **INVOKER** security models for views, enabl
 
 When a query engine executes a query that references a view, the engine sends a `loadTable` (or `loadView`) request to the catalog with a `referenced-by` query parameter. This parameter contains the chain of views through which the table is being accessed. Lakekeeper uses this chain to decide **which user's permissions** to check at each step.
 
+Trino up to 484, and Spark with Iceberg up to 1.12.0, do not send this parameter. If such an engine sends each user's own token, Lakekeeper checks every table and view as that user, so a DEFINER view of another user works only if the user may also read what it references.
+
 This feature is based on the [Apache Iceberg referenced-by specification](https://github.com/apache/iceberg/pull/13810).
 
 ## INVOKER vs DEFINER
 
 ### INVOKER (default)
 
-With the INVOKER security model, the **calling user's** permissions are checked at every step in the view chain. This is the default behavior — if a view does not have an owner property set, it is treated as INVOKER.
+With the INVOKER security model, a view runs with the **calling user's** permissions: what the view references is checked as the calling user. This is the default behavior — if a view does not have an owner property set, it is treated as INVOKER.
 
 **Example:** User Alice queries a view that references a table.
 
@@ -101,14 +103,12 @@ Configure one or more trusted engines so that Lakekeeper knows which query engin
 ```bash
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino]
-```
-
-Matching is **scoped to the IdP** the token was issued by. Each engine's `IDENTITIES` block is keyed per IdP (e.g. `IDENTITIES__OIDC__...`), and a token is only tested against the block matching its own IdP. Within that block, a request is matched when **either** its audience appears in `AUDIENCES` **or** its subject appears in `SUBJECTS`. Use `SUBJECTS` when the IdP does not mint a distinguishing audience — for example, to trust a specific service-account's subject UUID directly:
-
-```bash
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
 ```
+
+Matching is **scoped to the IdP** the token was issued by. Each engine's `IDENTITIES` block is keyed per IdP (e.g. `IDENTITIES__OIDC__...`), and a token is only tested against the block matching its own IdP. Within that block, a request is matched when **either** its audience appears in `AUDIENCES` **or** its subject appears in `SUBJECTS`.
+
+Lakekeeper trusts the identity of the token, not the software that sends it. Anyone who can get a token that matches the engine's `AUDIENCES` or `SUBJECTS` is treated as the engine and can set the owner of any view they can create. Match the engine by the subject of its own service account. List an audience in `AUDIENCES` only if your identity provider guarantees that no user can obtain a token that carries it, for example an audience that only the engine can get by [token exchange](https://datatracker.ietf.org/doc/html/rfc8693). The audience that users receive when they log in to the engine itself does not qualify, because every user of the engine holds such a token.
 
 **What happens when a request is not matched as a trusted engine:**
 
@@ -119,7 +119,7 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-
 
     The [OPA bridge](./opa.md) authenticates to Lakekeeper with its own client credentials to evaluate permission checks. We recommend it runs under a **dedicated** Keycloak client with narrower privileges than the Trino catalog client — not a shared one.
 
-    Do **not** match the OPA bridge client as a trusted engine. The OPA bridge only sends permission checks. It does not load tables or views and does not write view properties. Trino itself sends `referenced-by` when it loads a table or view through a view chain.
+    Do **not** match the OPA bridge client as a trusted engine. The OPA bridge only sends permission checks. It does not load tables or views and does not write view properties. Match the client that Trino uses for the catalog instead: Trino creates the views and writes the owner property.
 
 ### Creating DEFINER Views
 
@@ -155,7 +155,7 @@ Lakekeeper protects views that an engine runs as their owner. It protects `trino
 - **View version:** on a view that has a protected owner property, only a request from a matched engine that owns this property can change the current view version, for example add a version with new SQL or go back to an older version. Other requests receive `403 ProtectedViewVersionChange`.
 - **New query:** if the matched engine changes the SQL, default catalog or default namespace of such a view, and the same commit leaves the owner property out, Lakekeeper removes the owner property in that commit. The view becomes an INVOKER view, so the new query never runs as the previous owner. `CREATE OR REPLACE VIEW ... SECURITY DEFINER` in Trino sends the owner property with the user who runs the statement as the new owner, and the view stays a DEFINER view.
 - **Same query:** a change that keeps the SQL, default catalog and default namespace keeps the owner, for example `COMMENT ON COLUMN` in Trino. Lakekeeper cannot tell such a change from `CREATE OR REPLACE VIEW ... SECURITY INVOKER` with the same query, so that statement also leaves the view a DEFINER view. To make it an INVOKER view, change the query in the same statement, or drop the view and create it again; dropping loses the grants on the view.
-- **Security mode:** whom a view runs as has its own permission, `change_security_mode` on the view, so a user who may change a view's query cannot also change whom it runs as. A commit that adds or removes the owner property switches the view between DEFINER and INVOKER. It needs `change_security_mode` for the identity that sends the commit and, when it adds the property, also for the user that the property names. Otherwise the commit fails with `403 SecurityModeChangeForbidden`. With OpenFGA, `modify` includes `change_security_mode` and `write` does not. A commit that keeps the security mode does not need this permission, even if it changes the owner. In Trino, `SECURITY DEFINER` is the default: `CREATE OR REPLACE VIEW` without a `SECURITY` clause makes an INVOKER view a DEFINER view.
+- **Security mode:** whom a view runs as has its own permission, `change_security_mode` on the view, so a user who may change a view's query cannot also change whom it runs as. A commit that adds or removes the owner property switches the view between DEFINER and INVOKER. It needs `change_security_mode` for the identity that sends the commit and, when it adds the property, also for the user that the property names. Otherwise the commit fails with `403 SecurityModeChangeForbidden`. With OpenFGA, `modify` includes `change_security_mode` and `write` does not. With Cedar, the action is `ChangeViewSecurityMode`: `manage` includes it and `write` does not. A commit that keeps the security mode does not need this permission, even if it changes the owner. In Trino, `SECURITY DEFINER` is the default: `CREATE OR REPLACE VIEW` without a `SECURITY` clause makes an INVOKER view a DEFINER view.
 
 If Trino connects with its own service account and uses its own access control, not the OPA bridge, Lakekeeper knows the Trino user only as the owner that Trino writes into the view. Lakekeeper checks this user as `<identity provider of Trino's token>~<Trino user>`, for example `oidc~alice`, and the error message names this id. To make an existing INVOKER view a DEFINER view in this setup, use one of these ways:
 
@@ -172,8 +172,6 @@ If no trusted engine is configured, no request can write `trino.run-as-owner`, a
 - Statements that send the owner fail with `403 ProtectedPropertyModification`: in Trino, `CREATE VIEW` and `CREATE OR REPLACE VIEW` with `SECURITY DEFINER`, and `ALTER VIEW ... REFRESH` of a DEFINER view.
 - Statements that change the version and leave the owner out fail with `403 ProtectedViewVersionChange`: in Trino, `CREATE OR REPLACE VIEW ... SECURITY INVOKER` and `COMMENT ON COLUMN`; in Spark, `CREATE OR REPLACE VIEW`.
 - Queries, `COMMENT ON VIEW`, rename and drop keep working. Configure the trusted engine to change these views again.
-
-Lakekeeper trusts the identity of the token, not the client software. Match the trusted engine to an identity that belongs to the engine alone, for example the subject of its service account. A Trino catalog that sends a token per user (`iceberg.rest-catalog.session=USER`) cannot be a trusted engine: Lakekeeper sees the token of the user, never Trino's own identity. Create and change DEFINER views through a catalog that authenticates with Trino's own service identity. Never match the engine by an audience that user tokens carry: then every user with such a token is trusted as the engine, even from other clients.
 
 Lakekeeper compares keys without regard to upper and lower case, and accepts only the exact key: a key that differs from an owner property only in upper and lower case (e.g. `Trino.Run-As-Owner` for `trino.run-as-owner`) is rejected, even from the trusted engine. Engines read the exact key, so such a key would not change whom the view runs as.
 

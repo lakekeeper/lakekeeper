@@ -16,6 +16,211 @@ For Lakekeeper+ releases, see the [Lakekeeper+ Release Notes](enterprise-release
 
 _[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
 
+## v0.15.0 (2026-11-06)
+
+### Highlights
+
+- **`write` privilege for OpenFGA.** A new privilege between `select` and `modify` lets users change what tables, views and generic tables contain, such as data, schema, properties and snapshots, without dropping, renaming, moving or protecting them. `modify` includes `write`, so existing grants keep working. See [Write](https://docs.lakekeeper.io/docs/0.15.x/authorization-openfga/#write) ([#2115](https://github.com/lakekeeper/lakekeeper/pull/2115), [#2228](https://github.com/lakekeeper/lakekeeper/pull/2228), [#2230](https://github.com/lakekeeper/lakekeeper/pull/2230), [#2233](https://github.com/lakekeeper/lakekeeper/pull/2233), [#2240](https://github.com/lakekeeper/lakekeeper/pull/2240)).
+- **Caches stay in sync across instances.** When several Lakekeeper instances share one database, a change made through one instance reaches the caches of all instances within about a second, instead of after the cache time-to-live. Make sure that `LAKEKEEPER__PG_DATABASE_URL_WRITE` always connects to the primary database. See [Cache Invalidation Across Instances](https://docs.lakekeeper.io/docs/0.15.x/configuration/#cache-invalidation) ([#2157](https://github.com/lakekeeper/lakekeeper/pull/2157)).
+
+### Features
+
+- **Task workers that start only while there is work.** The metrics port reports how many tasks of each queue wait or run at `/task-queue/<queue>/demand`. An autoscaler such as KEDA can use it to start worker Jobs only while tasks wait. These workers run without the HTTP API and stop on their own after they had no task for `LAKEKEEPER__TASK_IDLE_EXIT_AFTER`, or after `LAKEKEEPER__TASK_MAX_LIFETIME`. See [Task Workers on Kubernetes](https://docs.lakekeeper.io/docs/0.15.x/task-workers/) ([#2186](https://github.com/lakekeeper/lakekeeper/pull/2186), [#2187](https://github.com/lakekeeper/lakekeeper/pull/2187), [#2189](https://github.com/lakekeeper/lakekeeper/pull/2189)).
+- **Running tasks can finish when Lakekeeper stops.** After a stop signal, Lakekeeper takes no new tasks and lets running tasks finish for up to `LAKEKEEPER__TASK_DRAIN_TIMEOUT`. The default is 0 seconds. Set it where your nodes give pods time to stop, for example for node upgrades. See [Stopping Task Workers](https://docs.lakekeeper.io/docs/0.15.x/configuration/#stopping-task-workers) ([#2186](https://github.com/lakekeeper/lakekeeper/pull/2186)).
+- **Metrics for tasks that wait too long.** `lakekeeper_task_queue_oldest_due_age_seconds` shows how long the oldest due task of each queue has waited, and `lakekeeper_task_queue_timed_out_attempts_total` counts task attempts whose worker stopped responding. See [Task Queue Metrics](https://docs.lakekeeper.io/docs/0.15.x/monitoring/#task-queue-metrics) ([#2190](https://github.com/lakekeeper/lakekeeper/pull/2190), [#2206](https://github.com/lakekeeper/lakekeeper/pull/2206)).
+- **Failed tasks are retried after a growing delay.** A failed task is tried up to ten times. The wait between tries starts at about 30 seconds and doubles up to one hour, about three hours in total. A try whose worker stops responding counts as failed. Before, a task was tried up to five times without a wait ([#2147](https://github.com/lakekeeper/lakekeeper/pull/2147)).
+- **Task log cleanup runs on a schedule.** The task log cleanup of each project runs once every cleanup period, and never twice at once. After the upgrade, each project gets one extra cleanup. The task list endpoints also filter by `parent-task-id`, and they show the `resource-demand` of a task if its queue sets one ([#2147](https://github.com/lakekeeper/lakekeeper/pull/2147)).
+- **Commits that change nothing write no new metadata.** A table commit whose updates leave the table unchanged keeps the current metadata file. Spark sends such a commit before each write with `mergeSchema`. A multi-table commit request that lists no tables is rejected with `400` ([#2229](https://github.com/lakekeeper/lakekeeper/pull/2229)).
+- **OPA bridge: metadata checks per table and view.** In Trino, users who may list everything in a warehouse or namespace see all tables, views and their columns inside it. If your authorization policies allow `list_everything` without metadata access, set `LAKEKEEPER_LIST_EVERYTHING_GRANTS_TABULAR_METADATA=false`. The bridge then checks each table and view. The default behavior does not change. See [Shortcut for broad access](https://docs.lakekeeper.io/docs/0.15.x/opa/#shortcut-for-broad-access) ([#2153](https://github.com/lakekeeper/lakekeeper/pull/2153)).
+- **STS session policies with a principal.** The S3 profile option `sts-session-policy-principal` adds a principal to every statement of the STS session policy. S3-compatible storage such as Yandex Object Storage needs it for vended credentials (thanks @Mohil-Ahuja). See [S3 Configuration Parameters](https://docs.lakekeeper.io/docs/0.15.x/storage-s3/#configuration-parameters) ([#2139](https://github.com/lakekeeper/lakekeeper/pull/2139)).
+- **Google Cloud Storage uses Google's official Rust SDK.** Requests that fail for a temporary reason are retried, and every request has a time limit. If you use GCS, read the breaking changes below. See [GCS](https://docs.lakekeeper.io/docs/0.15.x/storage-gcs/) ([#2159](https://github.com/lakekeeper/lakekeeper/pull/2159)).
+- **Console v0.29.0.** With OpenFGA, the `write` privilege can be granted in the console. The navigation bar opens menus on hover with the page's tabs, pinned objects and recently opened ones, and a pinned table or view opens in LoQE. Tables, views and generic tables can be moved to another namespace from their actions menu. The S3 storage form can add a principal to the STS session policy, and STACKIT warehouses use the new credential type. Without authentication, namespaces can be deleted and moved again ([#2227](https://github.com/lakekeeper/lakekeeper/pull/2227), [#2258](https://github.com/lakekeeper/lakekeeper/pull/2258)).
+- **Audit records carry an `event_id`.** Every audit record has an ID of its own, which helps to remove duplicate records (thanks @raffael-dzikowski). See Audit log format below ([#2203](https://github.com/lakekeeper/lakekeeper/pull/2203)).
+- **Extension points.** Code that builds on Lakekeeper's crates can add authenticated routes to the management API, keep its own caches in sync across instances, and run task queues on a schedule with its own retry decisions and resource demand. Task queues can cancel their tasks when a warehouse is deleted, check a config when it is saved, and learn when Lakekeeper stops taking new tasks. Event listeners receive every audit operation record, such as admission rejections (thanks @raffael-dzikowski), and admission gates can test token claims. See [Customize](https://docs.lakekeeper.io/docs/0.15.x/customize/) ([#2130](https://github.com/lakekeeper/lakekeeper/pull/2130), [#2138](https://github.com/lakekeeper/lakekeeper/pull/2138), [#2147](https://github.com/lakekeeper/lakekeeper/pull/2147), [#2157](https://github.com/lakekeeper/lakekeeper/pull/2157), [#2161](https://github.com/lakekeeper/lakekeeper/pull/2161), [#2177](https://github.com/lakekeeper/lakekeeper/pull/2177), [#2179](https://github.com/lakekeeper/lakekeeper/pull/2179), [#2202](https://github.com/lakekeeper/lakekeeper/pull/2202), [#2225](https://github.com/lakekeeper/lakekeeper/pull/2225)).
+
+### Bug Fixes
+
+- **Concurrent writes to branches and staged (WAP) writes are retried.** When writers commit to different branches of one table, or a staged (WAP) write and another commit run at the same time, the writer that loses gets `409` and retries. Before, it got `400` and the write failed ([#2218](https://github.com/lakekeeper/lakekeeper/pull/2218)).
+- **A client with a wrong clock can no longer make a table unwritable or unloadable.** Lakekeeper records its own clock as the table's last-updated time, as Iceberg Java's REST catalog does since 1.11. Snapshot times still come from the query engine. A new `main` snapshot dated more than one minute ahead of Lakekeeper's clock is refused with `400`. Keep the clocks of Lakekeeper and your query engines in sync. See [Production](https://docs.lakekeeper.io/docs/0.15.x/production/) ([#2220](https://github.com/lakekeeper/lakekeeper/pull/2220)).
+- **Concurrent commits to one table no longer deadlock.** Commits to the same table now wait for each other, and the one that loses gets a conflict that clients retry. Before, they could deadlock until Postgres stopped one of them, and concurrent schema changes returned `503`. A commit to a table that was dropped in the meantime gets "table not found" instead of `503` (thanks @aiskakov28 and @aldusialn) ([#2219](https://github.com/lakekeeper/lakekeeper/pull/2219)).
+- **A commit to a table that is soft-deleted at the same time gets "table not found".** If a table is soft-deleted while a commit to it runs, the commit fails with `404`. Before, such a commit could succeed and change the deleted table ([#2251](https://github.com/lakekeeper/lakekeeper/pull/2251)).
+- **Commits when the database connection breaks.** If the connection fails while Lakekeeper commits a change, the change may still have been saved. Lakekeeper then answers `500 CommitStateUnknownException` and keeps the new metadata files, permissions and storage secret. Before, it could delete them although the change was saved ([#2176](https://github.com/lakekeeper/lakekeeper/pull/2176)).
+- **Snapshot expiry keeps new tags and branches.** If a tag or branch is created on an old snapshot while an expiry is running, Lakekeeper rejects the expiry's commit with `409`, and the client plans the expiry again. Before, that snapshot and its data files could be removed ([#2185](https://github.com/lakekeeper/lakekeeper/pull/2185)).
+- **Branches and tags of format-version 1 tables.** Loading a format-version 1 table returns all of its branches and tags. Before, Lakekeeper returned only `main`, so a client that expired snapshots could remove the snapshots that only these branches and tags kept ([#2182](https://github.com/lakekeeper/lakekeeper/pull/2182)).
+- **`main` cannot point to a tag.** Lakekeeper refuses a table commit that sets `main` to a tag with `400`, as Iceberg Java 1.12 does. Iceberg clients cannot write to a table whose `main` is a tag ([#2233](https://github.com/lakekeeper/lakekeeper/pull/2233)).
+- **Remote signing authorizes every read.** The S3 signer tells clients not to reuse a signature for a read. Clients on Iceberg 1.12 or later now ask Lakekeeper for each read, so Lakekeeper checks the permissions of every user. These clients send more sign requests ([#2232](https://github.com/lakekeeper/lakekeeper/pull/2232)).
+- **GCS token requests go only to Google.** Lakekeeper sends the token requests for a GCS service account key only to `oauth2.googleapis.com` and follows no redirects. Before, it sent them to the `token_uri` in the key ([#2159](https://github.com/lakekeeper/lakekeeper/pull/2159)).
+- **Bulk deletes share a limit per storage endpoint.** Purges and cleanups that run at the same time in one Lakekeeper process share a limit per bucket, storage account or OneLake workspace, so they no longer overload the storage. A long purge keeps its task and is no longer started twice. A commit waits at most 5 seconds for old metadata files to be deleted ([#2165](https://github.com/lakekeeper/lakekeeper/pull/2165)).
+- **Storage requests have time limits.** S3 and ADLS requests that hang are retried or fail. Temporary storage errors, such as timeouts, connection failures and throttling, return `503`, which clients may retry, instead of `412` or `500`. Storage clients that assume a role call STS less often ([#2165](https://github.com/lakekeeper/lakekeeper/pull/2165)).
+- **Views are created and moved only to empty locations.** Lakekeeper creates a view, or moves it in a commit, only to a location that holds no files, as for tables, and never into its own location or a parent of it. Before, files that were already in such a location were deleted when the view moved again or was dropped. Trino's `CREATE OR REPLACE VIEW` is not affected ([#2245](https://github.com/lakekeeper/lakekeeper/pull/2245)).
+- **Empty locations on S3 and ADLS.** Creating a table fails if its location holds only objects whose names Lakekeeper cannot read as a location, for example names that contain `#`. Before, such a location counted as empty ([#2246](https://github.com/lakekeeper/lakekeeper/pull/2246)).
+- **Recursive namespace delete purges generic tables.** A recursive namespace delete with `purge=true` also removes the files of the generic tables in the namespace. Before, their files stayed in storage ([#2243](https://github.com/lakekeeper/lakekeeper/pull/2243)).
+- **Dropping a table removes all of its snapshots.** This includes snapshots without a schema ID, so a table with the same table ID can be registered or created again ([#2244](https://github.com/lakekeeper/lakekeeper/pull/2244)).
+- **Task queues with a large backlog.** A worker picks the next task without sorting all due tasks of its queue, and listing the tasks of one table, view or generic table reads only its own tasks. Both were slow in warehouses with many tasks ([#2155](https://github.com/lakekeeper/lakekeeper/pull/2155), [#2172](https://github.com/lakekeeper/lakekeeper/pull/2172)).
+- **Tasks that run again or stop.** "Run now" on a task whose previous attempt is still finishing keeps the new run. A worker that stops while it picks a task finishes the pick, so the task no longer stays running until its heartbeat times out ([#2130](https://github.com/lakekeeper/lakekeeper/pull/2130), [#2147](https://github.com/lakekeeper/lakekeeper/pull/2147)).
+- **Deleting and protecting a warehouse at the same time.** An instance admin's warehouse delete that runs at the same time as a protection change fails with a conflict that can be retried, and nothing changes. Before, it could report success and remove the warehouse's permissions while the warehouse was kept ([#2130](https://github.com/lakekeeper/lakekeeper/pull/2130)).
+- **Endpoint statistics.** HEAD requests are counted under their GET endpoint. The `unmapped` warehouse filter returns the statistics of requests without a warehouse. Listing a short time window is fast, also for projects with a long history ([#2138](https://github.com/lakekeeper/lakekeeper/pull/2138)).
+- **Database connections after cancelled requests.** A request that was cancelled while it started a transaction, for example because the client disconnected, no longer leaves its connection inside that transaction, where later requests could lose writes ([#2209](https://github.com/lakekeeper/lakekeeper/pull/2209)).
+- **Azure workload identity on AKS.** Lakekeeper reads the token file again for every new access token, so it no longer sends an expired token to Entra ID ([#2193](https://github.com/lakekeeper/lakekeeper/pull/2193)).
+- **OPA bridge: comments on views.** `COMMENT ON VIEW` and `COMMENT ON COLUMN` on a view work through Trino for users who may change the view (`commit`). Before, the bridge refused them for everyone ([#2238](https://github.com/lakekeeper/lakekeeper/pull/2238)).
+- **Names that clients cannot address.** Lakekeeper refuses `+` and control characters in the names of new tables, views and generic tables and in rename targets, because it reads a `+` in a request path as a space. Permission checks by name in the management API use the live table or view; use the ID to check a dropped one ([#2215](https://github.com/lakekeeper/lakekeeper/pull/2215)).
+- **Clear error when the table UUID of a registered file is already used.** The message says that the UUID belongs to another table, possibly a dropped one. Before, it said that a table with the same name exists ([#2239](https://github.com/lakekeeper/lakekeeper/pull/2239)).
+- **Entity tags and forwarded ports.** An `If-None-Match` entity tag with commas inside its quotes is read as one tag. Behind a proxy that forwards an IPv6 host, Lakekeeper includes the forwarded port in the URLs it returns (thanks @fallintoplace) ([#2223](https://github.com/lakekeeper/lakekeeper/pull/2223), [#2224](https://github.com/lakekeeper/lakekeeper/pull/2224)).
+- **The migration check reads the configured schema.** With `LAKEKEEPER__PG_SCHEMA` set, `serve` and `wait-for-db` check the migrations of that schema only, also when `public` holds another installation ([#2257](https://github.com/lakekeeper/lakekeeper/pull/2257)).
+- **Security updates of dependencies.** Updated the AWS SDK, `libz-sys`, `zstd-sys` and `async-compression` to fix security advisories RUSTSEC-2026-0410, RUSTSEC-2026-0418 and RUSTSEC-2026-0441 ([#2188](https://github.com/lakekeeper/lakekeeper/pull/2188), [#2207](https://github.com/lakekeeper/lakekeeper/pull/2207), [#2250](https://github.com/lakekeeper/lakekeeper/pull/2250)).
+
+### Breaking Changes
+
+- **OpenFGA: `create` no longer shows what is already inside.** A user with only `create` still sees where they may create and what they created, but no longer the tables, views and generic tables of others. Grant `describe` too where users need to see them. With the OPA bridge and Trino's own credentials, tables and views belong to Trino's service account, so Trino users need `describe` next to `create` to see what they created ([#2240](https://github.com/lakekeeper/lakekeeper/pull/2240)).
+- **Skipping soft deletion needs `modify` on the warehouse.** In a warehouse with soft deletion, dropping with `force`, deleting a namespace with `recursive`, running a soft-deletion task early, and registering a table with `overwrite` over another table also need the right to change the soft-deletion settings of the warehouse. With OpenFGA, this is `modify` on the warehouse. Users with `modify` only on a namespace or table can still drop without `force` and delete empty namespaces. See [Skipping Soft Deletion](https://docs.lakekeeper.io/docs/0.15.x/concepts/#skipping-soft-deletion) ([#2239](https://github.com/lakekeeper/lakekeeper/pull/2239)).
+- **Registering a table needs `modify` on the warehouse.** Registering brings files that are already in storage into the catalog, for example orphaned files of a dropped table. It now needs the warehouse action `register_table` in addition to `create` on the namespace. With OpenFGA, `modify` on the warehouse includes it. Creating a generic table on a location that already holds files needs the same. A register answers as loading the table would: with the same storage credentials, or with a not-found error if the caller may not see the table ([#2249](https://github.com/lakekeeper/lakekeeper/pull/2249)).
+- **OpenFGA: `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` selects the model.** The server uses the configured model version and does not start if it cannot use it. If you use Lakekeeper's own models, remove this setting before you run `lakekeeper migrate`, so that `migrate` installs model v4.15. The server reads the model at startup, so its OpenFGA credentials need permission to read authorization models. See [OpenFGA](https://docs.lakekeeper.io/docs/0.15.x/configuration/#openfga) ([#2214](https://github.com/lakekeeper/lakekeeper/pull/2214)).
+- **OpenFGA with your own authorization model.** If `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX` names a model that you manage, the server checks at startup that the model defines every type and relation that the server uses. Otherwise it does not start, and the error lists the missing names ([#2214](https://github.com/lakekeeper/lakekeeper/pull/2214)). Add to your model:
+    - `write` and `can_grant_write` to `project`, `warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view` and `lakekeeper_generic_table`, and `can_revoke_write` to the five types below the project ([#2240](https://github.com/lakekeeper/lakekeeper/pull/2240)).
+    - `can_register_table` to `warehouse` ([#2249](https://github.com/lakekeeper/lakekeeper/pull/2249)).
+    - `can_change_security_mode` to `lakekeeper_view` ([#2254](https://github.com/lakekeeper/lakekeeper/pull/2254)).
+- **Trino DEFINER views are protected by default.** On servers with authentication, only a [trusted engine](https://docs.lakekeeper.io/docs/0.15.x/configuration/#trusted-engines) can set `trino.run-as-owner` or change the definition of a view that has it. Before, Lakekeeper protected this property only once Trino was configured as a trusted engine. Configure Trino as a trusted engine to keep creating `SECURITY DEFINER` views. Without it, Trino can create only `SECURITY INVOKER` views ([#2212](https://github.com/lakekeeper/lakekeeper/pull/2212)).
+- **INVOKER views inside DEFINER views.** An INVOKER view inside a DEFINER view now runs with the permissions of the calling user, not those of the DEFINER view's owner. With the OPA bridge, Trino allows a view inside another user's DEFINER view only if that view is a DEFINER view itself, so a DEFINER view that reads an INVOKER view works only for its owner. In view chains that trusted engines send in `referenced-by`, Lakekeeper checks what the INVOKER view reads as the calling user. Trino up to 484, and Spark with Iceberg up to 1.12.0, do not send `referenced-by`. [Chained Views](https://docs.lakekeeper.io/docs/0.15.x/view-security/#chained-views) explains how to keep such views working ([#2242](https://github.com/lakekeeper/lakekeeper/pull/2242)).
+- **OPA bridge: `TRINO_ALLOW_UNMANAGED_CATALOGS` and DEFINER views.** The setting no longer allows reads inside DEFINER views on catalogs that are not listed in `trino_catalog`, except Trino's `system` catalog. For a catalog that cannot hold Trino views, add an `allow_unmanaged` rule. See [Views inside DEFINER views](https://docs.lakekeeper.io/docs/0.15.x/opa/#views-inside-definer-views) ([#2242](https://github.com/lakekeeper/lakekeeper/pull/2242)).
+- **Switching a view between `SECURITY DEFINER` and `SECURITY INVOKER` needs `change_security_mode`.** `modify` includes this new view action, and `write` does not. In Trino, `SECURITY DEFINER` is the default, so `CREATE OR REPLACE VIEW` without a `SECURITY` clause on an INVOKER view is such a switch. With the OPA bridge, replacing another user's DEFINER view needs it too, for example when several users run the same dbt view models. Grant `modify` on the view where users need this. See [Property Protection](https://docs.lakekeeper.io/docs/0.15.x/view-security/#property-protection) ([#2254](https://github.com/lakekeeper/lakekeeper/pull/2254)).
+- **OPA bridge: Trino statements are checked on the objects they act on.** Give these permissions where users need them ([#2215](https://github.com/lakekeeper/lakekeeper/pull/2215), [#2238](https://github.com/lakekeeper/lakekeeper/pull/2238)):
+    - `CREATE OR REPLACE TABLE` and `CREATE OR REPLACE VIEW` on an existing table or view need `commit` on it, with OpenFGA `write`. This affects for example dbt models. See [Replacing Tables and Views](https://docs.lakekeeper.io/docs/0.15.x/opa/#replacing-tables-and-views).
+    - The metadata tables `$files`, `$entries`, `$all_entries`, `$manifests`, `$all_manifests`, `$partitions` and `$snapshots` need `read_data` on the table, because they show values from the data. `$history`, `$refs` and `$properties` keep working with metadata access. See [Metadata Tables](https://docs.lakekeeper.io/docs/0.15.x/opa/#metadata-tables).
+    - Schema, table and view names that Trino or Lakekeeper would read differently are refused and hidden, for example names with `+`, or with `$` or `@` outside metadata table names. Rename such objects if Trino users need them. See [Refused Schema and Table Names](https://docs.lakekeeper.io/docs/0.15.x/opa/#refused-schema-and-table-names).
+- **AWS system identity settings apply to all storage access.** Lakekeeper checks `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS` and `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` whenever a warehouse uses the AWS system identity: when it reads and writes data, signs requests and vends credentials. Before, only vending checked them. Under the default settings, a warehouse that uses the system identity without an `assume-role-arn`, or without an `external-id` when it assumes a role, stops working. Add the missing field to the warehouse, or relax the setting. Warehouses with other credentials are not affected ([#2174](https://github.com/lakekeeper/lakekeeper/pull/2174)).
+- **Google Cloud Storage.** If you use GCS, check these points before you upgrade ([#2159](https://github.com/lakekeeper/lakekeeper/pull/2159)):
+    - Lakekeeper reads object metadata, lists objects and deletes objects over gRPC, which does not use HTTP proxies (`HTTPS_PROXY`). If Lakekeeper reaches GCS only through a proxy, allow a direct connection to `storage.googleapis.com` on port 443. See [Network](https://docs.lakekeeper.io/docs/0.15.x/storage-gcs/#network).
+    - `GOOGLE_APPLICATION_CREDENTIALS_JSON` is no longer supported. Write the key to a file and set `GOOGLE_APPLICATION_CREDENTIALS` to its path.
+    - If `GOOGLE_APPLICATION_CREDENTIALS` names a file that does not exist, Lakekeeper reports an error and does not use the metadata server of Compute Engine or GKE. To use the metadata server, remove the variable.
+    - Lakekeeper accepts service account keys in the format in which Google creates them. Keys with a `universe_domain` other than `googleapis.com` do not work. Convert a private key in PKCS#1 format (`BEGIN RSA PRIVATE KEY`) with `openssl pkcs8 -topk8 -nocrypt`. Keys created in the Google Cloud console are not affected. See [Service Account Key](https://docs.lakekeeper.io/docs/0.15.x/storage-gcs/#service-account-key).
+- **Views return no storage credentials.** createView, loadView and view commits no longer return storage credentials or storage settings in `config`. Query engines read the tables behind a view with the access of each table, as before. Tools that show the whole view response, such as the raw view in the Lakekeeper UI or DuckDB's `iceberg_view_metadata()`, no longer show these keys ([#2247](https://github.com/lakekeeper/lakekeeper/pull/2247)).
+- **STACKIT credential type and new type names in the management API** ([#2194](https://github.com/lakekeeper/lakekeeper/pull/2194)):
+    - For STACKIT warehouses, the warehouse response reports `"credential-type": "stackit-access-key"` in `storage-credential-type`. Requests that send `"credential-type": "access-key"` for STACKIT still work. Clients generated from the 0.14 management API may reject the new value, so generate them again from this release.
+    - Clients generated from the management API get new type names, but the JSON does not change. For example, `StorageCredential` is now one list of ten credential types, such as `StorageCredentialStackitAccessKey`. Update code that uses these types when you generate a client again.
+- **Kafka: Kerberos (`GSSAPI`) is no longer supported.** Lakekeeper fails to start if the Kafka configuration sets `sasl.mechanisms=GSSAPI`. Use `SCRAM-SHA-512`, `OAUTHBEARER` (OIDC) or mutual TLS instead. This also lets Lakekeeper build on current Linux distributions with glibc 2.43 or GCC 15, such as Ubuntu 26.04. See [Kafka](https://docs.lakekeeper.io/docs/0.15.x/configuration/#kafka) ([#2108](https://github.com/lakekeeper/lakekeeper/pull/2108)).
+- **Code that builds on Lakekeeper's crates.** Many public traits and types changed, among them `CatalogStore`, the task queue API, `OperationRecord`, `AdmissionContext` and the GCS types of `lakekeeper-io`. Store methods that change cached entities take a `WriteTransaction`. Workspaces that depend on Lakekeeper need the same `[patch.crates-io]` entries for the `sqlx` crates as Lakekeeper's `Cargo.toml`. Update your own implementations. Prebuilt binaries and images are not affected.
+
+### Upgrade Notes
+
+- **Plan for the database migration.** `lakekeeper migrate` copies the endpoint statistics into a new table. This takes about 6 seconds per million rows and needs free disk space of about twice the size of that table. Older servers keep serving meanwhile. Requests that create, rename or delete a project wait until the migration finishes, and fail with a timeout after 30 seconds. Statistics recorded during the copy can be lost. At the end, the migration locks the task tables for a few seconds. If `pg_dump` or another long transaction uses the `project` or `endpoint_statistics` table, the migration stops after 5 seconds without changes: run it again when that transaction has finished. Until all servers are upgraded, older servers can return an error from the endpoint statistics API ([#2138](https://github.com/lakekeeper/lakekeeper/pull/2138), [#2147](https://github.com/lakekeeper/lakekeeper/pull/2147)).
+- **`lakekeeper migrate` takes longer on large catalogs.** After the migrations, it removes leftover snapshots of dropped tables and validates a new foreign key, while servers keep serving. With 20 million snapshots, this took between half a minute and two minutes ([#2244](https://github.com/lakekeeper/lakekeeper/pull/2244)).
+- **`serve` checks the database before it starts.** `lakekeeper serve` refuses to start if the database is not migrated for its version, if a newer Lakekeeper version already migrated it, or if the connection does not reach the schema set in `LAKEKEEPER__PG_SCHEMA`. Helm chart users are not affected. If you run `serve` in your own manifests, run `migrate` first, or add a `wait-for-db -dm` init container so that pods wait for the migration. To start anyway, run `serve --force-start` ([#2256](https://github.com/lakekeeper/lakekeeper/pull/2256)).
+- **OpenFGA model v4.15.** `lakekeeper migrate` installs model v4.15. It changes no stored grants. The changes to what existing grants allow are listed under Breaking Changes. Servers of earlier releases ignore `write` grants, so grant `write` after all servers run this release. The Terraform provider (v0.5.0) and `lkctl` do not know `write` yet: a Terraform assignment resource revokes `write` grants made outside Terraform at its next apply. Until a provider release supports `write`, do not grant `write` to a user or role on an object where a Terraform assignment resource manages that user or role ([#2240](https://github.com/lakekeeper/lakekeeper/pull/2240)).
+- **`write` and Trino's `add_files`.** With the OPA bridge, `write` lets users replace tables and views and run `add_files`, `expire_snapshots` and `remove_orphan_files`. If Trino uses its own storage credentials, read [Adding Files with `add_files`](https://docs.lakekeeper.io/docs/0.15.x/opa/#adding-files-with-add_files) before you grant `write` ([#2240](https://github.com/lakekeeper/lakekeeper/pull/2240)).
+- **Update the OPA bridge policies together with the server.** Use the bridge policies of this release with this server. Upgrade the server first, then the policies: the new policies ask the server for checks that older servers refuse. See [Deployment](https://docs.lakekeeper.io/docs/0.15.x/opa/#deployment) ([#2215](https://github.com/lakekeeper/lakekeeper/pull/2215), [#2238](https://github.com/lakekeeper/lakekeeper/pull/2238), [#2242](https://github.com/lakekeeper/lakekeeper/pull/2242)). Update the policies before you grant `write` on views ([#2254](https://github.com/lakekeeper/lakekeeper/pull/2254)).
+- **Trino as a trusted engine.** To create and change DEFINER views through Trino, configure the client that Trino uses for the catalog as a trusted engine with the owner property `trino.run-as-owner`. Do not add the OPA bridge client to the trusted engine. Check the existing views that carry `trino.run-as-owner`, and make sure that each owner is correct. See [Check Existing Views](https://docs.lakekeeper.io/docs/0.15.x/view-security/#check-existing-views) ([#2212](https://github.com/lakekeeper/lakekeeper/pull/2212)).
+- **Replacing a storage credential checks `update_storage_credential`.** Replacing a warehouse's storage credential checks `update_storage_credential`, and changing the storage profile checks it together with `update_storage`. With Lakekeeper's own OpenFGA model, nobody gains or loses access. In your own OpenFGA model, `can_update_storage_credential` on `warehouse` now decides who may replace a storage credential. To find out whether a user may replace the credential, batch-check `update_storage_credential` ([#2241](https://github.com/lakekeeper/lakekeeper/pull/2241)).
+- **Caches during a rolling upgrade.** Changes made through servers of 0.14 or earlier reach the caches of the other servers only when the cache entries expire ([#2157](https://github.com/lakekeeper/lakekeeper/pull/2157)).
+- **Own images need a CA bundle for GCS.** Google's libraries use the system CA certificates. The official images include them. If you build your own minimal image and use GCS, install `ca-certificates`. See [SSL Dependencies](https://docs.lakekeeper.io/docs/0.15.x/configuration/#ssl-dependencies) ([#2159](https://github.com/lakekeeper/lakekeeper/pull/2159)).
+- **Downgrade to 0.14 with STACKIT warehouses.** This release stores the credential type `stackit-access-key` when you create a STACKIT warehouse or change its credential, and 0.14 servers cannot read it. To go back to 0.14, restore the secrets from a backup taken before the upgrade: the database, or Vault if you store secrets there ([#2194](https://github.com/lakekeeper/lakekeeper/pull/2194)).
+
+### Audit log format
+
+**Additions** — an existing parser keeps working:
+
+- **Every audit record now carries an `event_id`, a UUID that is unique to that record.**
+
+    ```text
+    authorization, replay, operation   + event_id
+    ```
+
+    Records that share a `request_id`, such as those of a grant change, have different `event_id` values. A line delivered twice carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time.
+
+    **What to do:** Nothing. To remove duplicate records, use `event_id`.
+
+**Also worth knowing** — the format itself did not change:
+
+- **Registering files that are already in storage is authorized on the warehouse, with the new action `register_table`.**
+
+    ```text
+    POST /catalog/v1/{prefix}/namespaces/{namespace}/register
+      register_table (warehouse entity)   new, in addition to create_table (namespace entity)
+    POST /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables
+      register_table (warehouse entity)   new, in addition to create_generic_table (namespace entity), only when the location holds files
+    ```
+
+    A register now produces an authorization record for `register_table` on the warehouse, allowed or refused, in addition to the `create_table` record on the namespace. `register_table` is checked before the metadata file is read. If `register_table` is refused, the `create_table` record is also written, as refused. It names the table only by the requested name, because the metadata file is not read.
+
+    If the caller may register the table but may not see it, the table stays registered, and the register writes a refused `get_metadata` record on the table, as `loadTable` does.
+
+    Creating a generic table on a location that already holds files produces a `register_table` record on the warehouse in addition to the `create_generic_table` record. A refusal has error type `WarehouseActionForbidden`, and its message says that the location holds files. A location without files produces no `register_table` record.
+
+    **What to do:** Nothing. To find registers and generic tables created over existing files, match `register_table`.
+
+- **Switching a Lakekeeper process into or out of read-only maintenance mode at runtime is recorded with two new actions.**
+
+    ```text
+    POST /management/v1/server/maintenance-mode
+      mode read-only   set_maintenance_mode_read_only
+      mode off         set_maintenance_mode_off
+    ```
+
+    Both are recorded on the server entity, allowed or refused. Only instance admins are allowed.
+
+    **What to do:** Nothing.
+
+- **A call that skips the soft-deletion window of a warehouse also asks `modify_soft_deletion` on that warehouse, which has a record of its own. The call is refused when the caller may not change the soft-deletion settings of that warehouse.**
+
+    ```text
+    drop (table, view or generic table)                        force: true
+    delete (namespace)                                         recursive: true
+    control_tasks (warehouse)                                  run now or run at, when a soft-deletion task is among the tasks
+    drop (table), invoked_by: register_table_overwrite         force: true
+    ```
+
+    The `control_tasks` record does not say which control or which tasks were asked for. All four cases apply only in warehouses with soft deletion.
+
+    When the check of its own action allows such a call, the call writes its record with `decision: allowed`, and then a record of `modify_soft_deletion` on the warehouse. If the caller may not change the soft-deletion settings, this second record has `decision: denied`, `failure_reason: action_forbidden` and error type `WarehouseActionForbidden`, and the call is refused. A call that the check of its own action refuses writes no `modify_soft_deletion` record.
+
+    A change of the soft-deletion settings writes the same `modify_soft_deletion` record, and no other authorization record. The `modify_soft_deletion` record of a skip has the same `request_id` as the record of the call.
+
+    A register with `overwrite` that replaces an active table with another table (a different table UUID) in a warehouse with soft deletion records the drop of the replaced table with `force: true`, also when the call is allowed. Before, it recorded `force: false`.
+
+    **What to do:** To find calls that skip the soft-deletion window, match `modify_soft_deletion` records that share their `request_id` with a record of another action. If you filter or alert on drops with `force: true`, these now also include drops by a register with `overwrite`. You can tell them apart by `invoked_by: register_table_overwrite`.
+
+- **Replacing a warehouse's storage credential is recorded as `update_storage_credential`; a storage profile change records `update_storage` and `update_storage_credential`.**
+
+    ```text
+                                                      before            after
+    POST …/warehouse/{id}/storage-credential          update_storage    update_storage_credential
+    POST …/warehouse/{id}/storage/validate-credential update_storage    update_storage_credential
+    POST …/warehouse/{id}/storage                     update_storage    update_storage, update_storage_credential
+    POST …/warehouse/{id}/storage/validate-profile    update_storage    update_storage, update_storage_credential
+    POST …/warehouse/{id}/storage/validate-access     update_storage    update_storage
+    ```
+
+    A record with both actions has two entries in `actions` and one entry per action in `authorizations`. If the request is denied, both entries have `allowed: false`. If an error stopped the evaluation, neither entry has `allowed`.
+
+    **What to do:** If a rule finds credential replacements by `update_storage`, match `update_storage_credential` as well. If a rule reads only the first entry of `actions`, read all entries.
+
+- **A view create or view commit that the view owner property rules refuse is recorded as a denied authorization.**
+
+    ```text
+    create_view (namespace entity)  error type ProtectedPropertyModification
+    commit (view entity)            error type ProtectedPropertyModification or ProtectedViewVersionChange
+    ```
+
+    On a server with authentication, a `create_view` or `commit` that writes `trino.run-as-owner`, or the owner property of a configured trusted engine, is refused unless it comes from a trusted engine that owns that property. A `commit` that changes the current version of a view holding such a property is refused unless it comes from that engine. The records have `decision: denied` and `failure_reason: action_forbidden`. A `ProtectedViewVersionChange` record has the same `request_id` as an allowed `commit` record of the same request.
+
+    If that engine changes the query of such a view and does not send the owner property, the commit removes the property. The allowed `commit` record lists `updated_properties` and `removed_properties` as the engine sent them.
+
+    **What to do:** Nothing.
+
+- **A view commit that switches the view between running as its owner and running as the caller is recorded with the new view action `change_security_mode`, in records of its own.**
+
+    ```text
+    change_security_mode (view entity)              one record per checked principal, after the commit record
+    introspect_permissions, operation view-replace  recorded as commit (view entity)
+    ```
+
+    A view commit from a trusted engine that adds or removes `trino.run-as-owner`, or the owner property of another configured trusted engine, needs `change_security_mode` on the view. After the `commit` record of the request, Lakekeeper writes one `change_security_mode` record for the identity that sends the commit and, if the commit adds the property, one for the user that the property names, with that user in `for_principal`. Each record has its own decision and the same `request_id`. A refused switch has `decision: denied`, `failure_reason: action_forbidden` and error type `SecurityModeChangeForbidden`, and the view does not change. A commit that keeps the security mode writes no `change_security_mode` record.
+
+    The batch-check operation `view-replace` asks whether a user may replace a view. Its decision is recorded as `commit` on the view, even when `change_security_mode` decided it.
+
+    **What to do:** Nothing.
+
+Records from v0.15.0 carry `audit_format` **1.1** (was 1.0).
+
 ## v0.14.2 (2026-10-25)
 
 ### Features
