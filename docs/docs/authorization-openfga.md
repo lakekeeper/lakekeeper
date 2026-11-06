@@ -47,7 +47,7 @@ The `operator` has unrestricted access to all objects in Lakekeeper. It is desig
 
 ### Project: Security Admin
 
-A `security_admin` in a project can manage all security-related aspects, including grants and ownership for the project and all objects within it. However, they cannot modify or access the content of any object, except for listing and browsing purposes.
+A `security_admin` in a project can manage all security-related aspects, including grants and ownership for the project and all objects within it. The role itself gives no access to the content of objects beyond listing and browsing, but a `security_admin` can grant themselves every privilege in the project except `project_admin`, for example `select` or `data_admin`.
 
 ### Project: Data Admin
 

@@ -163,7 +163,7 @@ Without this option, which includes all Iceberg versions older than 1.12, Spark 
 
 Lakekeeper allows warehouses to enable soft deletion as a data protection mechanism. When enabled:
 
-* Tables and views aren't immediately removed from the catalog when dropped
+* Tables, views and generic tables aren't immediately removed from the catalog when dropped
 * Instead, they're marked as deleted and scheduled for cleanup
 * The data remains recoverable until the configured expiration period elapses
 * Recovery is only possible for warehouses with soft deletion enabled
@@ -228,9 +228,13 @@ spark.sql(f"USE {catalog_name}")
 
 ## What Lakekeeper Enforces
 
-Lakekeeper decides every request made to the catalog: creating, changing, dropping, renaming and protecting tables, and granting access.
+Lakekeeper decides every request made to the catalog: creating, changing, dropping, renaming and protecting tables, and granting access. With [Cedar](./authorization-cedar.md#what-a-table-commit-changes)<span class="lkp"></span>, a policy can also check what a change to a table does, for example allow only commits that change data.
 
 Reading and writing files in storage does not go through Lakekeeper. A user who may only read a table gets read-only access to its storage location. A user who may write gets access to write and delete files there, through vended credentials or remote signing. A writer can therefore overwrite or delete any file of the table, including the files of older versions, and Lakekeeper cannot see or prevent it. Snapshots, time travel, soft deletion and protection guard against changes made through the catalog, not against changes to the files themselves. Settings that ask clients not to delete files, such as `push-s3-delete-disabled`, are a request a client can ignore.
+
+Revoking access stops Lakekeeper from handing out new credentials. Credentials it already handed out stay valid until they expire. For S3, STACKIT, Azure and OneLake, the storage profile sets how long they stay valid, one hour by default (for S3, `sts-token-validity-seconds`). On GCS they expire with the Google access token that Lakekeeper gets from the warehouse's storage credential, usually within one hour. Remote signing checks access for every request it signs.
+
+A user who may write a table can commit metadata that points to files outside the table's location, for example to the files of another table. An engine that reads with its own storage credentials, such as Trino with static keys, then reads these files for everyone who may read the table. We recommend that engines read only through vended credentials or remote signing, which reach only the table's location.
 
 To recover, back up the table files in storage, not only the Lakekeeper database: a database backup restores the catalog, not the data. Versioning or soft delete on the bucket also helps.
 
@@ -242,7 +246,7 @@ Lakekeeper provides several complementary mechanisms for protecting data assets 
 
 Protection prevents accidental deletion of important entities in Lakekeeper. When an entity is protected, attempts to delete it through standard API calls will be rejected.
 
-Protection can be applied to Warehouses, Namespaces, Tables, and Views via the Management API.
+Protection can be applied to Warehouses, Namespaces, Tables, Views and Generic Tables via the Management API.
 
 ### Recursive Deletion on Namespaces
 
