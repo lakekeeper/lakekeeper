@@ -176,12 +176,12 @@ pub mod v1 {
          project is used when it is enabled; otherwise the request fails.";
 
     #[cfg(feature = "open-api")]
-    const CREATE_WAREHOUSE_PROJECT_ID_HEADER_DESCRIPTION: &str = "Project ID (optional). The \
+    const BODY_PROJECT_ID_HEADER_DESCRIPTION: &str = "Project ID (optional). The \
          deprecated `project-id` body field takes precedence over this header. If neither is set, \
          the default project is used when it is enabled; otherwise the request fails.";
 
     #[cfg(feature = "open-api")]
-    const LIST_WAREHOUSES_PROJECT_ID_HEADER_DESCRIPTION: &str = "Project ID (optional). The \
+    const QUERY_PROJECT_ID_HEADER_DESCRIPTION: &str = "Project ID (optional). The \
          deprecated `projectId` query parameter takes precedence over this header. If neither is \
          set, the default project is used when it is enabled; otherwise the request fails.";
 
@@ -519,7 +519,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::CreateRole.path(),
-        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
+        params(("x-project-id" = Option<String>, Header, description = BODY_PROJECT_ID_HEADER_DESCRIPTION),),
         request_body = CreateRoleRequest,
         responses(
             (status = 201, description = "Role successfully created", body = Role),
@@ -544,7 +544,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = ManagementV1Endpoint::SearchRole.path(),
-        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
+        params(("x-project-id" = Option<String>, Header, description = BODY_PROJECT_ID_HEADER_DESCRIPTION),),
         request_body = SearchRoleRequest,
         responses(
             (status = 200, description = "List of roles", body = SearchRoleResponse),
@@ -567,7 +567,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = ManagementV1Endpoint::ListRole.path(),
-        params(ListRolesQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListRolesQuery, ("x-project-id" = Option<String>, Header, description = QUERY_PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "List of roles", body = ListRolesResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -2545,7 +2545,7 @@ pub mod v1 {
         tag = "warehouse",
         path = ManagementV1Endpoint::CreateWarehouse.path(),
         request_body = CreateWarehouseRequest,
-        params(("x-project-id" = Option<String>, Header, description = CREATE_WAREHOUSE_PROJECT_ID_HEADER_DESCRIPTION)),
+        params(("x-project-id" = Option<String>, Header, description = BODY_PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 201, description = "Warehouse created successfully", body = CreateWarehouseResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -2772,7 +2772,7 @@ pub mod v1 {
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::ListWarehouses.path(),
-        params(ListWarehousesRequest, ("x-project-id" = Option<String>, Header, description = LIST_WAREHOUSES_PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListWarehousesRequest, ("x-project-id" = Option<String>, Header, description = QUERY_PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "List of warehouses", body = ListWarehousesResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -3082,7 +3082,7 @@ pub mod v1 {
         tag = "warehouse",
         path = ManagementV1Endpoint::ValidateWarehouse.path(),
         request_body = CreateWarehouseRequest,
-        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(("x-project-id" = Option<String>, Header, description = BODY_PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Validation ran; see `valid` and `checks` for the outcome", body = ValidateWarehouseResponse),
             (status = "4XX", body = IcebergErrorResponse),

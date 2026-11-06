@@ -2310,7 +2310,7 @@ paths:
               type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
+          description: Project ID (optional). The deprecated `projectId` query parameter takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2338,7 +2338,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
+          description: Project ID (optional). The deprecated `project-id` body field takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2968,7 +2968,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
+          description: Project ID (optional). The deprecated `project-id` body field takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4218,7 +4218,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
+          description: Project ID (optional). The deprecated `project-id` body field takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
