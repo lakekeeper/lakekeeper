@@ -59,6 +59,9 @@ Individual tables can override warehouse settings using these Iceberg table prop
 !!! note
     Tables using Iceberg native encryption (`encryption.key-id` set) are skipped. Expiration must read manifest lists and manifests to determine which files to remove, and Lakekeeper cannot decrypt them. Skipped tables are recorded as a successful (skipped) run, not a failure.
 
+!!! note
+    Tables that Apache Paimon 2.1 or later mirrors are skipped. Paimon can register such a table at its own storage path, and expiration would then delete data files that Paimon still needs. A table stays skipped while it keeps any snapshot that Paimon wrote.
+
 ### Production Deployment
 
 For production workloads, we recommend running expire snapshots workers in dedicated pods to avoid impacting REST API performance. This can be achieved by:
@@ -120,6 +123,7 @@ Individual tables can override warehouse settings using these Iceberg table prop
 - **`gc.enabled` check**: Tables with `gc.enabled=false` are excluded. Attempting to remove orphan files on such a table returns an error immediately.
 - **Encrypted tables skipped**: Tables using Iceberg native encryption (`encryption.key-id` set) are skipped. Identifying the referenced-file set requires reading manifests, which Lakekeeper cannot decrypt; running anyway risks deleting live data. Skipped tables are recorded as a successful (skipped) run; manually scheduling one returns an error immediately.
 - **24-hour minimum retention**: Saving a queue config with a `default-older-than-ms` below 24 hours fails with `RemoveOrphanFilesRetentionTooShort`, unless the same request sets `disable-min-older-than-check: true`. A typo like `default-older-than-ms: 6000` (six seconds) would otherwise delete files that writers uploaded more than six seconds ago but did not commit yet. A table value of `lakekeeper.remove-orphan-files.older-than-ms` below 24 hours is raised to 24 hours, unless the table sets `lakekeeper.remove-orphan-files.disable-min-older-than-check=true`. The run result shows the retention that the run used in `older-than-ms`.
+- **Paimon mirrors skipped**: Tables that Apache Paimon 2.1 or later mirrors are skipped. Paimon can register such a table at its own storage path, where Paimon's own files would look like orphans. A table stays skipped while it keeps any snapshot that Paimon wrote.
 - **Unknown age preservation**: Files where the storage backend does not report a last-modified timestamp are skipped (counted as `skipped-unknown-age-count` in the result).
 
 ### Recommended Usage
