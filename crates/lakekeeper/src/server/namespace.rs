@@ -818,9 +818,6 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
 
         if flags.purge {
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
-                if tabular_id.is_generic_table() {
-                    continue;
-                }
                 TabularPurgeTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
                         project_id: project_id.clone(),

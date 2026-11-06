@@ -325,7 +325,7 @@ paths:
             default: false
         - name: purge
           in: query
-          description: If true, also delete data. With `recursive=true`, the files of dropped tables and views are queued for deletion. On ADLS Gen2 and OneLake, empty directories of the dropped namespaces are removed.
+          description: If true, also delete data. With `recursive=true`, the files of dropped tables, views and generic tables are queued for deletion. On ADLS Gen2 and OneLake, empty directories of the dropped namespaces are removed.
           required: false
           schema:
             type: boolean

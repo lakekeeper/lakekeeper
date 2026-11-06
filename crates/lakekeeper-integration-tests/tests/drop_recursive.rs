@@ -655,3 +655,173 @@ async fn setup_drop_test(
         namespace_names: ns_names,
     }
 }
+
+mod recursive_purge {
+    use std::{collections::HashMap, time::Duration};
+
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use iceberg::NamespaceIdent;
+    use lakekeeper::{
+        api::{
+            data::v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
+            iceberg::{
+                types::Prefix,
+                v1::{NamespaceParameters, namespace::NamespaceDropFlags},
+            },
+            management::v1::warehouse::TabularDeleteProfile,
+        },
+        server::CatalogServer,
+        service::{GenericTableFormat, tasks::tabular_purge_queue},
+    };
+    use lakekeeper_integration_tests::{
+        create_table, drop_namespace, random_request_metadata, spawn_build_in_queues,
+    };
+    use lakekeeper_io::{LakekeeperStorage, Location, StorageBackend, memory::MemoryStorage};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::setup_drop_test;
+
+    async fn list_all(io: &StorageBackend, location: &Location) -> Vec<String> {
+        let mut entries = Vec::new();
+        let mut stream = io.list(location.as_str(), None).await.unwrap();
+        while let Some(page) = stream.next().await {
+            entries.extend(page.unwrap().iter().map(|f| f.location().to_string()));
+        }
+        entries
+    }
+
+    /// Locations of the purge tasks scheduled for `entity_id`, pending or finished.
+    async fn purge_locations(pool: &PgPool, entity_id: Uuid) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT task_data->>'tabular_location' FROM task WHERE queue_name = $1 AND entity_id = $2 \
+             UNION ALL \
+             SELECT task_data->>'tabular_location' FROM task_log WHERE queue_name = $1 AND entity_id = $2",
+        )
+        .bind(tabular_purge_queue::QUEUE_NAME.as_str())
+        .bind(entity_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn tabular_id(pool: &PgPool, name: &str) -> Uuid {
+        sqlx::query_scalar("SELECT tabular_id FROM tabular WHERE name = $1")
+            .bind(name)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// A recursive drop with `purge` removes the files of the tables and the generic tables in
+    /// the namespace.
+    async fn recursive_purge_removes_all_tabular_files(
+        pool: PgPool,
+        delete_profile: TabularDeleteProfile,
+        force: bool,
+    ) {
+        let setup = setup_drop_test(pool.clone(), 0, 0, 1, delete_profile).await;
+        let ctx = setup.ctx;
+        let prefix = setup.warehouse.warehouse_id.to_string();
+        let ns_name = setup.namespace_names[0].clone();
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new(ns_name.clone()),
+        };
+        let cancellation_token = lakekeeper::CancellationToken::new();
+        let _queues = spawn_build_in_queues(
+            &ctx,
+            Some(Duration::from_millis(100)),
+            cancellation_token.clone(),
+        )
+        .await;
+        let io = StorageBackend::Memory(MemoryStorage::new());
+
+        let table = create_table(ctx.clone(), &prefix, &ns_name, "tab", false)
+            .await
+            .unwrap();
+        let table_location: Location = table.metadata.location().parse().unwrap();
+        let generic_table = CatalogServer::create_generic_table(
+            ns_params.clone(),
+            CreateGenericTableRequest {
+                name: "gt".to_string(),
+                format: GenericTableFormat::Unknown("lance".to_string()),
+                base_location: None,
+                doc: None,
+                properties: HashMap::default(),
+                schema: None,
+                statistics: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        let generic_table_location: Location = generic_table.table.base_location.parse().unwrap();
+        for location in [&table_location, &generic_table_location] {
+            io.write(
+                location.cloning_push("data/file.bin").as_str(),
+                Bytes::from_static(b"data"),
+            )
+            .await
+            .unwrap();
+            assert!(!list_all(&io, location).await.is_empty(), "{location}");
+        }
+        let table_id = tabular_id(&pool, "tab").await;
+        let generic_table_id = tabular_id(&pool, "gt").await;
+
+        drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force,
+                purge: true,
+                recursive: true,
+            },
+            ns_params,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            purge_locations(&pool, table_id).await,
+            vec![table_location.to_string()]
+        );
+        assert_eq!(
+            purge_locations(&pool, generic_table_id).await,
+            vec![generic_table_location.to_string()]
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let table_files = list_all(&io, &table_location).await;
+            let generic_table_files = list_all(&io, &generic_table_location).await;
+            if table_files.is_empty() && generic_table_files.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "files left after the purge: {table_files:?} {generic_table_files:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        cancellation_token.cancel();
+    }
+
+    #[sqlx::test]
+    async fn test_recursive_purge_hard_deletion(pool: PgPool) {
+        recursive_purge_removes_all_tabular_files(pool, TabularDeleteProfile::Hard {}, false).await;
+    }
+
+    #[sqlx::test]
+    async fn test_recursive_purge_soft_deletion_force(pool: PgPool) {
+        recursive_purge_removes_all_tabular_files(
+            pool,
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(3600),
+            },
+            true,
+        )
+        .await;
+    }
+}
