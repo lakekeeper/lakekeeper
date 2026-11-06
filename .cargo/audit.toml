@@ -15,4 +15,5 @@ ignore = [
     "RUSTSEC-2026-0398", # zstd-safe <8.2.0 `Seekable::decompress` sets a `Vec` length past its capacity. Only with the `seekable` feature, which no dependency enables. The remaining 7.2.4 comes with zstd 0.13.3. Remove with RUSTSEC-2026-0391.
     "RUSTSEC-2026-0403", # zstd-safe <8.2.0 `DCtx::decompress_stream` exposes uninitialized memory when a legacy frame fails. Reached through `zstd::stream::write::Decoder`; the zstd 0.13.3 users decode with the read `Decoder` (apache-avro), `decode_all` (iceberg) and the bulk API (parquet), which the advisory lists as not affected. Remove with RUSTSEC-2026-0391.
     "RUSTSEC-2026-0429", # zip <9.0.0 `extract` aborts the process on a symlink entry with a large declared size. Only a build-dependency of utoipa-swagger-ui, whose build script never calls `extract`. Remove when utoipa-swagger-ui moves to zip ≥9.0.0.
+    "RUSTSEC-2026-0441", # pin-utils is unmaintained; the advisory names no vulnerability. Only aws-smithy-http 0.63 of the AWS SDK uses it. Remove when the AWS SDK moves past aws-smithy-http 0.63.
 ]

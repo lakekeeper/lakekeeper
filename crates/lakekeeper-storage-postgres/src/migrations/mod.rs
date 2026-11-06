@@ -254,6 +254,17 @@ where
         .await
 }
 
+async fn tracker_exists_in_schema<'e, E>(executor: E, schema: &PgSchema) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    sqlx::query_scalar("SELECT to_regclass(format('%I.%I', $1::text, $2::text)) IS NOT NULL")
+        .bind(schema.as_str())
+        .bind(CORE_MIGRATIONS_TABLE)
+        .fetch_one(executor)
+        .await
+}
+
 /// Fail unless this session resolves unqualified names to `schema`.
 ///
 /// `current_schema()` silently skips `search_path` entries that do not exist or
@@ -571,9 +582,9 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
 /// from the process configuration, so tests can drive it without touching the
 /// global [`CONFIG`].
 ///
-/// A configured schema that does not exist yet is reported as
-/// [`MigrationState::NoMigrationsTable`], not an error: that is the normal state
-/// before the first `migrate`.
+/// A configured schema that does not exist yet, or holds no migration tracker,
+/// is reported as [`MigrationState::NoMigrationsTable`], not an error: that is the
+/// normal state before the first `migrate`.
 async fn check_migration_status_in_schema(
     pool: &sqlx::PgPool,
     schema: Option<&PgSchema>,
@@ -598,6 +609,11 @@ async fn check_migration_status_in_schema(
         if current.as_deref() != Some(schema.as_str()) {
             tracing::warn!("{}", schema_mismatch_reason(schema, current.as_deref()));
             return Ok(MigrationState::SchemaMismatch);
+        }
+        // Unqualified, the tracker name falls back to `public` through the
+        // search_path when this schema has none.
+        if !tracker_exists_in_schema(&mut *conn, schema).await? {
+            return Ok(MigrationState::NoMigrationsTable);
         }
     }
 
@@ -1093,6 +1109,37 @@ mod tests {
             matches!(state, MigrationState::SchemaMismatch),
             "expected SchemaMismatch, got {state:?}"
         );
+    }
+
+    /// A schema reads its own tracker only, even when `public` holds another install
+    /// whose tracker the `search_path` would fall back to; upper case is quoted.
+    #[sqlx::test(migrations = false)]
+    async fn test_check_migration_status_ignores_tracker_in_public(admin_pool: PgPool) {
+        migrate_core_only(&admin_pool)
+            .await
+            .expect("baseline install into public");
+        let schema = create_schema(&admin_pool, "Lk_Empty").await;
+        let pool = app_pool(&admin_pool, Some(&schema)).await;
+
+        let state = check_migration_status_in_schema(&pool, Some(&schema))
+            .await
+            .unwrap();
+        assert!(
+            matches!(state, MigrationState::NoMigrationsTable),
+            "expected NoMigrationsTable, got {state:?}"
+        );
+
+        migrate_in_schema(&pool, Vec::new(), Some(&schema))
+            .await
+            .expect("migrations should run in the schema");
+        let state = check_migration_status_in_schema(&pool, Some(&schema))
+            .await
+            .unwrap();
+        assert!(
+            matches!(state, MigrationState::Complete),
+            "expected Complete, got {state:?}"
+        );
+        pool.close().await;
     }
 
     async fn table_exists(pool: &PgPool, name: &str) -> bool {
