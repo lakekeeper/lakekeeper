@@ -187,7 +187,7 @@ A variable that starts with `LAKEKEEPER__OPTIMIZE__` and that Lakekeeper does no
 
 #### Turning Optimize On and Off
 
-Optimize is off until `LAKEKEEPER__OPTIMIZE__AVAILABLE` is `true` on the API pods and on every optimize worker. To remove optimize from a deployment, remove the setting or set it to `false`. The server then runs no optimize task, and no warehouse setting or table property can turn it on. The management API answers that the `optimize` queue does not exist. Expire snapshots and remove orphan files keep working. A process with this setting and `LAKEKEEPER__TASK_OPTIMIZE_WORKERS` above 0 does not start.
+Optimize is off until `LAKEKEEPER__OPTIMIZE__AVAILABLE` is `true` on the API pods and on every optimize worker. To remove optimize from a deployment, remove the setting or set it to `false`. The server then runs no optimize task, and no warehouse setting or table property can turn it on. The management API answers that the `optimize` queue does not exist. Expire snapshots and remove orphan files keep working. A process with `LAKEKEEPER__TASK_OPTIMIZE_WORKERS` above 0 does not start unless `LAKEKEEPER__OPTIMIZE__AVAILABLE` is `true`.
 
 Optimize tasks that were scheduled before stay in the queue, and a warehouse with such tasks cannot be deleted. Cancel them with the task endpoints of the management API. When you set `LAKEKEEPER__OPTIMIZE__AVAILABLE` to `true` again, the optimize settings of each warehouse apply again.
 
