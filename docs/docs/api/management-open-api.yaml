@@ -41,7 +41,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). Used only for project checks whose body omits `project-id`; a `project-id` in the body takes precedence. In a batch check this applies to each item. If neither is set, the default project is used when it is enabled; otherwise the check fails.
           required: false
           schema:
             type:
@@ -142,7 +142,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -237,7 +237,7 @@ paths:
             format: int64
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -322,7 +322,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Optional project ID
+          description: Project ID (optional). Used only for project checks whose body omits `project-id`; a `project-id` in the body takes precedence. In a batch check this applies to each item. If neither is set, the default project is used when it is enabled; otherwise the check fails.
           required: false
           schema:
             type:
@@ -686,7 +686,7 @@ paths:
             format: uuid
         - name: project_id
           in: path
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: true
           schema:
             type:
@@ -718,7 +718,7 @@ paths:
               $ref: '#/components/schemas/ProjectRelation'
         - name: project_id
           in: path
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: true
           schema:
             type:
@@ -740,7 +740,7 @@ paths:
       parameters:
         - name: project_id
           in: path
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: true
           schema:
             type:
@@ -1652,7 +1652,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1704,7 +1704,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1765,7 +1765,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1841,7 +1841,7 @@ paths:
             format: int64
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1874,7 +1874,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1940,7 +1940,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1968,7 +1968,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1999,7 +1999,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2032,7 +2032,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2079,7 +2079,7 @@ paths:
             minimum: 0
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2108,7 +2108,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2138,7 +2138,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2310,7 +2310,7 @@ paths:
               type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2338,7 +2338,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2380,7 +2380,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2414,7 +2414,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2467,7 +2467,7 @@ paths:
             type: boolean
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2515,7 +2515,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2567,7 +2567,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2623,7 +2623,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2691,7 +2691,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2740,7 +2740,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2811,7 +2811,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2871,7 +2871,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2933,7 +2933,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2968,7 +2968,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3280,7 +3280,7 @@ paths:
               - 'null'
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3308,7 +3308,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3352,7 +3352,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3389,7 +3389,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3430,7 +3430,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3477,7 +3477,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3580,7 +3580,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3661,7 +3661,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3701,7 +3701,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3773,7 +3773,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4025,7 +4025,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4080,7 +4080,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4139,7 +4139,7 @@ paths:
               - 'null'
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). The deprecated `projectId` query parameter takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4170,7 +4170,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). The deprecated `project-id` body field takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4218,7 +4218,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4659,7 +4659,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4706,7 +4706,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4784,7 +4784,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4910,7 +4910,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4961,7 +4961,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5017,7 +5017,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5096,7 +5096,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5140,7 +5140,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5212,7 +5212,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5345,7 +5345,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5403,7 +5403,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5594,7 +5594,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5641,7 +5641,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5719,7 +5719,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5882,7 +5882,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5960,7 +5960,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6170,7 +6170,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6219,7 +6219,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6275,7 +6275,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6702,7 +6702,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6763,7 +6763,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6821,7 +6821,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6883,7 +6883,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6969,7 +6969,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7016,7 +7016,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7094,7 +7094,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7220,7 +7220,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7269,7 +7269,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7325,7 +7325,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7369,7 +7369,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7411,7 +7411,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7460,7 +7460,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7816,7 +7816,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7863,7 +7863,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7941,7 +7941,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -8067,7 +8067,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -8116,7 +8116,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -8172,7 +8172,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:

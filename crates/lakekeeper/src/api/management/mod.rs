@@ -172,8 +172,25 @@ pub mod v1 {
         },
     };
 
-    pub const PROJECT_ID_HEADER_DESCRIPTION: &str =
-        "Project ID (optional; falls back to the default project if not provided)";
+    pub const PROJECT_ID_HEADER_DESCRIPTION: &str = "Project ID (optional). If omitted, the default \
+         project is used when it is enabled; otherwise the request fails.";
+
+    #[cfg(feature = "open-api")]
+    const CREATE_WAREHOUSE_PROJECT_ID_HEADER_DESCRIPTION: &str = "Project ID (optional). The \
+         deprecated `project-id` body field takes precedence over this header. If neither is set, \
+         the default project is used when it is enabled; otherwise the request fails.";
+
+    #[cfg(feature = "open-api")]
+    const LIST_WAREHOUSES_PROJECT_ID_HEADER_DESCRIPTION: &str = "Project ID (optional). The \
+         deprecated `projectId` query parameter takes precedence over this header. If neither is \
+         set, the default project is used when it is enabled; otherwise the request fails.";
+
+    /// `x-project-id` description for permission-check endpoints, where a project check may
+    /// name its project in the body.
+    pub const CHECK_PROJECT_ID_HEADER_DESCRIPTION: &str = "Project ID (optional). Used only for \
+         project checks whose body omits `project-id`; a `project-id` in the body takes \
+         precedence. In a batch check this applies to each item. If neither is set, the default \
+         project is used when it is enabled; otherwise the check fails.";
 
     #[derive(Clone, Debug)]
     pub struct ApiServer<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> {
@@ -2528,7 +2545,7 @@ pub mod v1 {
         tag = "warehouse",
         path = ManagementV1Endpoint::CreateWarehouse.path(),
         request_body = CreateWarehouseRequest,
-        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(("x-project-id" = Option<String>, Header, description = CREATE_WAREHOUSE_PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 201, description = "Warehouse created successfully", body = CreateWarehouseResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -2755,7 +2772,7 @@ pub mod v1 {
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::ListWarehouses.path(),
-        params(ListWarehousesRequest, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListWarehousesRequest, ("x-project-id" = Option<String>, Header, description = LIST_WAREHOUSES_PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "List of warehouses", body = ListWarehousesResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -4502,7 +4519,7 @@ pub mod v1 {
         tag = "authorization",
         path = ManagementV1Endpoint::BatchCheckActions.path(),
         request_body = CatalogActionsBatchCheckRequest,
-        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(("x-project-id" = Option<String>, Header, description = CHECK_PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Batch check results, one per request item and in request order", body = CatalogActionsBatchCheckResponse),
             (status = "4XX", body = IcebergErrorResponse),
