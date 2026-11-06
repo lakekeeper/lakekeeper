@@ -12844,6 +12844,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetEndpointStatistics'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionRegisterTable'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionReadGrants'
@@ -12872,6 +12873,7 @@ components:
           modify_task_queue_config: '#/components/schemas/LakekeeperWarehouseActionModifyTaskQueueConfig'
           read_grants: '#/components/schemas/LakekeeperWarehouseActionReadGrants'
           read_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionReadSubtreeGrants'
+          register_table: '#/components/schemas/LakekeeperWarehouseActionRegisterTable'
           rename: '#/components/schemas/LakekeeperWarehouseActionRename'
           revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
@@ -12960,7 +12962,8 @@ components:
           type: boolean
           description: |-
             Whether protection is bypassed, so a warehouse marked protected can be deleted. The
-            warehouse must still be empty and have no unfinished tasks.
+            warehouse must still be empty, and unfinished tasks still block the delete, except
+            tasks of queues that are cancelled when their warehouse is deleted.
     LakekeeperWarehouseActionGetAllTasks:
       type: object
       required:
@@ -13039,6 +13042,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetEndpointStatistics'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindRegisterTable'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindReadGrants'
@@ -13067,6 +13071,7 @@ components:
           modify_task_queue_config: '#/components/schemas/LakekeeperWarehouseActionKindModifyTaskQueueConfig'
           read_grants: '#/components/schemas/LakekeeperWarehouseActionKindReadGrants'
           read_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionKindReadSubtreeGrants'
+          register_table: '#/components/schemas/LakekeeperWarehouseActionKindRegisterTable'
           rename: '#/components/schemas/LakekeeperWarehouseActionKindRename'
           revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionKindRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
@@ -13254,6 +13259,15 @@ components:
           type: string
           enum:
             - read_subtree_grants
+    LakekeeperWarehouseActionKindRegisterTable:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - register_table
     LakekeeperWarehouseActionKindRename:
       type: object
       required:
@@ -13409,6 +13423,21 @@ components:
           oneOf:
             - type: 'null'
             - $ref: '#/components/schemas/SubtreeGrantScope'
+    LakekeeperWarehouseActionRegisterTable:
+      type: object
+      description: |-
+        Register files that are already in the warehouse's storage, for example orphaned files
+        of a dropped table: register a table from an existing metadata file, or create a
+        generic table on a location that holds files.
+        Asked together with the create action on the namespace. The files may be anywhere in
+        the warehouse's storage, so it is a right on the warehouse.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - register_table
     LakekeeperWarehouseActionRename:
       type: object
       required:

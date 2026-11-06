@@ -22,7 +22,8 @@ use lakekeeper::{
         AuthZViewInfo as _, CatalogGenericTableOps as _, CatalogNamespaceOps as _, CatalogStore,
         CatalogTabularOps as _, State, TabularListFlags, Transaction as _, UserId,
         authz::{
-            AllowAllAuthorizer, AuthZCannotSeeGenericTable, Authorizer, UserOrRole,
+            AllowAllAuthorizer, AuthZCannotSeeGenericTable, Authorizer, CatalogGenericTableAction,
+            UserOrRole,
             tests::{HidingAuthorizer, RecordedTabularCheck},
         },
         events::AuthorizationFailureSource as _,
@@ -483,6 +484,29 @@ async fn test_load_generic_table_credentials_hidden_generic_table_denied(pool: P
         result.is_err(),
         "load_generic_table_credentials should fail when generic table is hidden"
     );
+}
+
+/// Write credentials can read, so a caller allowed to write but not to read gets none.
+#[sqlx::test]
+async fn test_load_generic_table_credentials_need_read_even_with_write(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    authz.block_action(&format!(
+        "generic_table:{:?}",
+        CatalogGenericTableAction::ReadData
+    ));
+
+    let err = load_credentials(&ctx, &wh, "my_gt", None, random_request_metadata())
+        .await
+        .expect_err("write without read must vend nothing");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchGenericTableException", "{err:?}");
 }
 
 // ---- DEFINER delegation ----

@@ -40,6 +40,10 @@ Generic tables are first-class citizens. Most of Lakekeeper's table-side machine
 
 The flow is the same for every format: create the table, load it with *vended* credentials, then read or write directly with the format's own library. Lakekeeper only brokers metadata and short-lived storage credentials — never the data itself — so the same credentials path works for any format and only the reader library changes.
 
+To catalog files that are already in storage, such as CSV, JSON or Parquet drops, create the generic table with their location as its `base-location`. The generic table then brings these files into the catalog, as registering an Iceberg table does. This needs the right to create generic tables in the namespace and the right to register tables on the warehouse: `modify` on the warehouse with OpenFGA, or `RegisterTable` with Cedar. A location without files needs only the right to create generic tables.
+
+By default, dropping a generic table also deletes all files under its location, shortly after the drop or, in a warehouse with [soft deletion](./concepts.md#soft-deletion), when the soft deletion expires. To remove only the catalog entry, for example of a landing zone, set `purgeRequested=false` on the drop request.
+
 You don't need to hand-roll these HTTP calls:
 
 - **Python** — the [Python client (`pylakekeeper`)](generic-tables-pylakekeeper.md) wraps create/load/list/drop and maps vended credentials into the keys Lance, `boto3`, and `fsspec` expect. See its [Lance example](generic-tables-pylakekeeper.md#lance).

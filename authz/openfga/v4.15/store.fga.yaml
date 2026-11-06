@@ -2800,3 +2800,62 @@ tests:
           can_read_data: true
           can_drop: false
           can_grant_write: false
+  - name: registering a table needs modify on the warehouse
+    check:
+      - user: user:warehouse_1_modify_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: true
+      - user: user:warehouse_1_owner
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: true
+      - user: user:project_1_data_admin
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: true
+      - user: user:project_1_project_admin
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: true
+      - user: user:warehouse_1_writer
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      - user: user:project_1_writer
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      - user: user:warehouse_1_create_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      - user: user:warehouse_1_select_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      - user: user:project_1_security_admin
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      - user: user:warehouse_1_grant_admin
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      # create on a namespace, and modify on a namespace or a namespace owner, are not enough.
+      - user: user:namespace_1_2_create_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      - user: user:namespace_1_modify_only
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      - user: user:namespace_1_1_owner
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false
+      - user: user:warehouse_2_owner
+        object: warehouse:warehouse_1
+        assertions:
+          can_register_table: false

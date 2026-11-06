@@ -11,7 +11,7 @@ MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Splits the privileges of `modify` into two tiers: a write tier between `select` and `modify`, for principals that change everything a table or view holds but cannot drop, rename or protect it, and `modify`, which keeps those lifecycle rights. Also stops `create` from implying `describe` on the objects beneath. No tuple is written, rewritten or backfilled: `modify` implies the write tier, so every `modify` grant from `v4.13` authorizes exactly what it did before.
+Splits the privileges of `modify` into two tiers: a write tier between `select` and `modify`, for principals that change everything a table or view holds but cannot drop, rename or protect it, and `modify`, which keeps those lifecycle rights. Also stops `create` from implying `describe` on the objects beneath, and adds a warehouse right for registering tables. No tuple is written, rewritten or backfilled: `modify` implies the write tier, so every `modify` grant from `v4.13` authorizes exactly what it did before.
 
 ### Write tier
 
@@ -47,11 +47,17 @@ Everything else stays on `modify`: drop, undrop, rename, protection, task contro
 
 Grant `describe` next to `create` where principals must see the objects already inside.
 
+### Registering tables needs `modify` on the warehouse
+
+`warehouse`:
+
+- Add `can_register_table` (from `modify_effective`). Registering a table adopts files that already exist, anywhere in the warehouse's storage. Lakekeeper asks it together with `can_create_table` on the namespace, so `create` alone no longer allows registering. Creating a generic table on a location that already holds files also adopts them, and Lakekeeper asks `can_register_table` together with `can_create_generic_table` for it.
+
 ### Stores provisioned from `main` builds
 
 Supersedes `v4.14` and the earlier builds of `v4.15`, neither of which reached a release. `v4.14` is not registered any more; stores on it migrate straight to `v4.15`.
 
-Stores built from `main` before this change may hold `write` tuples from `v4.14`, where `write` allowed data writes only, and `write_data` tuples from the earlier builds of `v4.15`. With this model, the `v4.14` `write` tuples take the new, wider meaning. A store on an earlier build of `v4.15` keeps that model: `migrate` finds `v4.15` applied and changes nothing, and Lakekeeper refuses to start on it because that model lacks relations this version checks, such as `write` or `can_change_security_mode`. Provision both kinds of development store again.
+Stores built from `main` before this change may hold `write` tuples from `v4.14`, where `write` allowed data writes only, and `write_data` tuples from the earlier builds of `v4.15`. With this model, the `v4.14` `write` tuples take the new, wider meaning. A store on an earlier build of `v4.15` keeps that model: `migrate` finds `v4.15` applied and changes nothing, and Lakekeeper refuses to start on it because that model lacks relations this version checks, such as `write`, `can_register_table` or `can_change_security_mode`. Provision both kinds of development store again.
 
 ## `v4.13`
 

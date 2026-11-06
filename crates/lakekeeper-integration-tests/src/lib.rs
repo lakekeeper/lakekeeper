@@ -341,6 +341,23 @@ impl CapturingAuthzListener {
             events.failed.iter().map(|e| recorded(&e.actions)).collect(),
         )
     }
+
+    /// The entity types each failed record names, in order — so a test can pin which
+    /// resource a refusal was recorded on.
+    ///
+    /// Does not settle on its own; call it after [`Self::settled_counts`].
+    #[must_use]
+    pub fn failed_entity_types(
+        &self,
+    ) -> Vec<Vec<lakekeeper::service::events::context::EntityType>> {
+        self.events
+            .lock()
+            .unwrap()
+            .failed
+            .iter()
+            .map(|e| e.entities.entities.iter().map(|d| d.entity_type).collect())
+            .collect()
+    }
 }
 
 impl CapturingAuthzListener {

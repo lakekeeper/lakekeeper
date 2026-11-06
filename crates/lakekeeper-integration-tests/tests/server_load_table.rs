@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use http::StatusCode;
 use iceberg::{
     NamespaceIdent, TableIdent, TableUpdate,
     spec::{
@@ -25,8 +26,8 @@ use lakekeeper::{
             NamespaceParameters, Prefix, TableParameters,
             namespace::NamespaceService as _,
             tables::{
-                DataAccess, DataAccessMode, LoadTableFilters, LoadTableRequest,
-                LoadTableResultOrNotModified, SnapshotsQuery, TablesService as _,
+                DataAccess, DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters,
+                LoadTableRequest, LoadTableResultOrNotModified, SnapshotsQuery, TablesService as _,
             },
         },
         management::v1::warehouse::TabularDeleteProfile,
@@ -372,6 +373,42 @@ async fn test_load_table_without_storage_access_still_advertises_planning(pool: 
         Some("client"),
         "the advertisement must not depend on storage access: {config:?}"
     );
+}
+
+/// Write credentials can read, so a caller allowed to write but not to read gets none.
+#[sqlx::test]
+async fn test_table_credentials_need_read_even_with_write(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .storage_profile(memory_io_profile())
+        .build()
+        .setup()
+        .await;
+
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "write_only_ns".to_string()).await;
+    create_table(ctx.clone(), &prefix, "write_only_ns", "t1", false)
+        .await
+        .unwrap();
+    authz.block_action(&format!("table:{:?}", CatalogTableAction::ReadData));
+    let table = TableParameters {
+        prefix: Some(Prefix(prefix)),
+        table: TableIdent::new(ns.namespace.clone(), "t1".to_string()),
+    };
+
+    let err = CatalogServer::load_table_credentials(
+        table,
+        LoadTableCredentialsRequest::default(),
+        DataAccess::not_specified(),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("write without read must vend nothing");
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "TableActionForbidden", "{err:?}");
 }
 
 /// The spec puts `scan-planning-mode` in the `loadTable` config map, and we serve

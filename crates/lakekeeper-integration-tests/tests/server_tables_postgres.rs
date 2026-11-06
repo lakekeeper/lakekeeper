@@ -44,7 +44,10 @@ use lakekeeper::{
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, NamespaceId, SecretStore, State,
         TableId, TabularListFlags, UserId, WriteTransaction,
-        authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
+        authz::{
+            AllowAllAuthorizer, CatalogTableAction, CatalogWarehouseAction,
+            tests::{HidingAuthorizer, RecordedTabularCheck},
+        },
     },
 };
 use lakekeeper_integration_tests::{
@@ -3809,6 +3812,360 @@ async fn test_register_table_checks_create_table_before_validating_the_file(pool
     let err = register().await.unwrap_err();
     assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
     assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+}
+
+/// Registering adopts existing files, so it needs the register right on the warehouse
+/// besides `create_table` on the namespace. It is checked before the metadata file is read. A
+/// refusal is recorded on the warehouse and, by the requested name, as a refused
+/// `create_table` on the namespace.
+#[sqlx::test]
+async fn test_register_table_requires_the_register_right(pool: PgPool) {
+    use lakekeeper::service::events::{
+        AuthorizationFailureReason, EventListener, context::ActionContextKey,
+    };
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, ns_params, existing_location, missing_location) =
+        register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterTable
+    ));
+    let listener = Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as Arc<dyn EventListener>)
+        .await;
+    let register = |metadata_location: String| {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("registered".to_string())
+                .metadata_location(metadata_location)
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    // Reading a missing file would fail with a storage error, not with a refusal.
+    let err = register(missing_location).await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    let err = register(existing_location).await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    // Each refusal writes two records, from separate tasks, so they may arrive in any order.
+    assert_eq!(listener.settled_counts(0, 4).await, (0, 4));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::ActionForbidden; 4]
+    );
+    let (succeeded, mut failed) = listener.recorded_actions();
+    failed.sort_by(|a, b| a[0].action_name.cmp(&b[0].action_name));
+    assert_eq!(succeeded, Vec::<Vec<RecordedAction>>::new());
+    let create_table = vec![RecordedAction {
+        action_name: "create_table".to_string(),
+        context: vec![
+            ActionContextKey::Name("registered".to_string()),
+            ActionContextKey::Properties(std::collections::BTreeMap::new()),
+        ],
+    }];
+    let register_table = vec![RecordedAction {
+        action_name: "register_table".to_string(),
+        context: vec![],
+    }];
+    assert_eq!(
+        failed,
+        vec![
+            create_table.clone(),
+            create_table,
+            register_table.clone(),
+            register_table
+        ]
+    );
+
+    let exists = CatalogServer::table_exists(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent::new(ns_params.namespace.clone(), "registered".to_string()),
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(exists.error.code, StatusCode::NOT_FOUND, "{exists:?}");
+}
+
+/// Drops `existing` without purging its files, registers its metadata file as `adopted`
+/// with `blocked` refused, and loads `adopted` as the same caller. Returns both responses
+/// and the checks the register made after it created the table.
+async fn adopt_dropped_table(
+    pool: PgPool,
+    blocked: &[CatalogTableAction],
+) -> (
+    LoadTableResult,
+    LoadTableResult,
+    Vec<RecordedTabularCheck>,
+    String,
+) {
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    for action in blocked {
+        authz.block_action(&format!("table:{action:?}"));
+    }
+
+    let registered = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("adopted".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the register right and create_table are allowed");
+    let register_checks = authz.tabular_checks().last().cloned().unwrap();
+    let table_object = format!("table:{}/{}", prefix.as_str(), registered.metadata.uuid());
+
+    let LoadTableResultOrNotModified::LoadTableResult(loaded) = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(prefix),
+            table: TableIdent::new(ns_params.namespace, "adopted".to_string()),
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    (registered, loaded, register_checks, table_object)
+}
+
+/// A register asks on the table it registered what `loadTable` asks, and vends what
+/// `loadTable` vends the same caller. Both responses are tagged with the storage access
+/// they carry, so equal tags mean equal access.
+async fn assert_register_vends_as_load(pool: PgPool, blocked: &[CatalogTableAction]) {
+    let (registered, loaded, register_checks, table_object) =
+        adopt_dropped_table(pool, blocked).await;
+
+    let check = |action: &str| RecordedTabularCheck {
+        object: table_object.clone(),
+        action: action.to_string(),
+        user: None,
+        is_delegated_execution: false,
+    };
+    assert_eq!(
+        register_checks,
+        vec![check("GetMetadata"), check("ReadData"), check("WriteData")],
+        "{blocked:?}"
+    );
+    assert!(registered.etag.is_some(), "{blocked:?}");
+    assert_eq!(registered.etag, loaded.etag, "{blocked:?}");
+}
+
+/// A caller who may register and create a table but not see it gets what `loadTable` gives
+/// them: not found, with neither metadata nor credentials. The table stays registered, and
+/// the refusal is recorded on the table.
+#[sqlx::test]
+async fn test_register_table_returns_not_found_to_a_caller_who_cannot_see_the_table(pool: PgPool) {
+    use lakekeeper::service::events::{
+        AuthorizationFailureReason, EventListener, context::EntityType,
+    };
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    authz.block_action(&format!("table:{:?}", CatalogTableAction::GetMetadata));
+    let listener = Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as Arc<dyn EventListener>)
+        .await;
+
+    let err = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("adopted".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("a caller who cannot see the table must get neither metadata nor credentials");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchTableException");
+
+    let warehouse_id = WarehouseId::from_str_or_internal(prefix.as_str()).unwrap();
+    assert!(table_exists(&ctx, warehouse_id, "reg_ns", "adopted").await);
+
+    // The register and the create were allowed and recorded; only seeing the table was refused.
+    assert_eq!(listener.settled_counts(2, 1).await, (2, 1));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::CannotSeeResource]
+    );
+    assert_eq!(
+        listener.recorded_actions().1,
+        vec![vec![RecordedAction {
+            action_name: "get_metadata".to_string(),
+            context: vec![],
+        }]]
+    );
+    assert_eq!(
+        listener.failed_entity_types(),
+        vec![vec![EntityType::Table]]
+    );
+
+    let load_err = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(prefix),
+            table: TableIdent::new(ns_params.namespace, "adopted".to_string()),
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(load_err.error.code, err.error.code);
+    assert_eq!(load_err.error.r#type, err.error.r#type);
+    assert_eq!(load_err.error.message, err.error.message);
+}
+
+/// A register that fails after its commit leaves the table registered. A replay with the same
+/// idempotency key returns what `loadTable` returns, and a retry without a key is a conflict.
+#[sqlx::test]
+async fn test_register_table_replay_after_a_failure_after_the_commit(pool: PgPool) {
+    use lakekeeper::service::idempotency::IdempotencyKey;
+
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    let get_metadata = format!("table:{:?}", CatalogTableAction::GetMetadata);
+    authz.block_action(&get_metadata);
+
+    let mut with_key = RequestMetadata::new_unauthenticated();
+    with_key.with_idempotency_key(IdempotencyKey::parse(&Uuid::now_v7().to_string()).unwrap());
+    let register = |request_metadata: RequestMetadata| {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("adopted".to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            request_metadata,
+        )
+    };
+    let load = || {
+        CatalogServer::load_table(
+            TableParameters {
+                prefix: Some(prefix.clone()),
+                table: TableIdent::new(ns_params.namespace.clone(), "adopted".to_string()),
+            },
+            LoadTableRequest::default(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let failed = register(with_key.clone()).await.unwrap_err();
+    assert_eq!(failed.error.code, StatusCode::NOT_FOUND, "{failed:?}");
+    assert_eq!(failed.error.r#type, "NoSuchTableException");
+
+    let replayed = register(with_key.clone()).await.unwrap_err();
+    let refused_load = load().await.unwrap_err();
+    assert_eq!(replayed.error.code, StatusCode::NOT_FOUND, "{replayed:?}");
+    assert_eq!(replayed.error.r#type, "NoSuchTableException");
+    assert_eq!(replayed.error.message, refused_load.error.message);
+
+    let retried = register(RequestMetadata::new_unauthenticated())
+        .await
+        .unwrap_err();
+    assert_eq!(retried.error.code, StatusCode::CONFLICT, "{retried:?}");
+    assert_eq!(retried.error.r#type, "AlreadyExistsException");
+
+    authz.unblock_action(&get_metadata);
+    let replayed = register(with_key)
+        .await
+        .expect("the replay loads the table once the caller may see it");
+    let LoadTableResultOrNotModified::LoadTableResult(loaded) = load().await.unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    assert_eq!(replayed.metadata_location, loaded.metadata_location);
+    assert!(replayed.etag.is_some());
+    assert_eq!(replayed.etag, loaded.etag);
+}
+
+#[sqlx::test]
+async fn test_register_table_vends_read_write_to_a_reader_and_writer(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[]).await;
+}
+
+#[sqlx::test]
+async fn test_register_table_vends_read_only_to_a_reader(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[CatalogTableAction::WriteData]).await;
+}
+
+/// Write credentials can read, so a caller who may write but not read gets none, as on load.
+#[sqlx::test]
+async fn test_register_table_vends_nothing_without_read(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[CatalogTableAction::ReadData]).await;
 }
 
 #[sqlx::test]

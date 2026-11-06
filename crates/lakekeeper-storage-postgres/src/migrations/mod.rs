@@ -37,6 +37,7 @@ mod normalize_fs_location;
 pub(crate) mod normalize_schema;
 mod patch_migration_hash;
 mod split_table_metadata;
+mod table_snapshot_key;
 
 const CORE_MIGRATIONS_TABLE: &str = "_sqlx_migrations";
 
@@ -320,6 +321,9 @@ fn schema_mismatch_reason(schema: &PgSchema, current: Option<&str>) -> String {
 /// Extensions must depend only on core upstream state — never on each
 /// other.
 ///
+/// After the commit, it completes the foreign key from `table_snapshot` to
+/// `"table"` in transactions of its own; if that fails, it only logs a warning.
+///
 /// # Errors
 /// Returns an error if any migration fails.
 pub async fn migrate(
@@ -491,6 +495,17 @@ async fn migrate_in_schema(
     // returned `Err` above) releases the transaction-scoped advisory
     // lock automatically.
     trx.commit().await.map_err(|e| anyhow::anyhow!(e.error))?;
+
+    // Adds, cleans and validates the snapshot key in short transactions of their own: inside the
+    // run, their locks would last until it commits. A failure must not stop the caller's next
+    // steps, such as the authorizer migration.
+    if let Err(error) = table_snapshot_key::complete(pool, migration_lock_id(&db_name)).await {
+        tracing::warn!(
+            "The migrations committed, but the step after them for `table_snapshot` did not \
+             finish: {error:#}. Run `migrate` again at a quieter time; until then, a dropped \
+             table can leave snapshots behind."
+        );
+    }
     Ok(server_id)
 }
 
