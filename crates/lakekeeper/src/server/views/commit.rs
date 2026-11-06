@@ -6,7 +6,10 @@ use std::{
 
 use http::StatusCode;
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
-use iceberg_ext::catalog::{ViewRequirement, rest::ViewUpdate};
+use iceberg_ext::catalog::{
+    ViewRequirement,
+    rest::{IcebergErrorResponse, ViewUpdate},
+};
 use lakekeeper_io::{LakekeeperStorage, Location};
 use uuid::Uuid;
 
@@ -19,6 +22,7 @@ use crate::{
             ViewParameters, views::LoadViewRequest,
         },
     },
+    config::MatchedEngines,
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
@@ -31,18 +35,23 @@ use crate::{
         tabular::require_empty_location,
         views::{
             owner_property::{self, PropertyWrites},
+            security_mode::{self, SecurityModeSwitches, SwitchRecords, SwitchTarget},
             validate_view_updates,
         },
     },
     service::{
-        AuthZViewInfo, CONCURRENT_UPDATE_ERROR_TYPE, CatalogIdempotencyOps, CatalogStore,
-        CatalogView, CatalogViewOps, InternalParseLocationError, State, TabularListFlags,
-        Transaction, ViewCommit, ViewId,
-        authz::{AuthZViewOps, Authorizer, CatalogViewAction},
+        ArcResolvedWarehouse, AuthZViewInfo, CONCURRENT_UPDATE_ERROR_TYPE, CatalogBackendError,
+        CatalogIdempotencyOps, CatalogStore, CatalogView, CatalogViewOps,
+        InternalParseLocationError, ReadTransaction, State, TabularListFlags, Transaction,
+        ViewCommit, ViewId, ViewInfo,
+        authz::{AuthZError, AuthZViewOps, Authorizer, CatalogViewAction, RequireViewActionError},
         contract_verification::ContractVerification,
         events::{
             APIEventContext, ViewEventTransition,
-            context::{AuthzChecked, Resolved, ResolvedView, UserProvidedView},
+            context::{
+                AuthzChecked, Resolved, ResolvedView, Unresolved, UserProvidedView,
+                authz_to_error_no_audit,
+            },
         },
         idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
@@ -65,6 +74,7 @@ pub async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     let view_ident = determine_table_ident(&parameters.view, request.identifier.as_ref())?;
     validate_table_or_view_ident(&view_ident)?;
     validate_view_updates(&request.updates)?;
+    let request = Arc::new(request);
 
     // ------------------- IDEMPOTENCY CHECK -------------------
     let idempotency_key = request_metadata.idempotency_key().copied();
@@ -106,32 +116,33 @@ pub async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             removed_properties: removed_properties.clone(),
         },
     );
-    let property_writes = PropertyWrites {
-        updated: &updated_properties,
-        removed: &removed_properties,
+    let request_metadata = event_ctx.request_metadata_arc();
+    let rules = OwnerPropertyRules {
+        property_writes: PropertyWrites {
+            updated: &updated_properties,
+            removed: &removed_properties,
+        },
+        protected_properties: owner_property::protected_properties(state.v1_state.authentication),
+        engines: request_metadata.engines(),
     };
-    let protected_properties = owner_property::protected_properties(state.v1_state.authentication);
 
     // Security: an engine owner property (e.g. `trino.run-as-owner`) names the user an engine
     // runs the view as. Only a trusted engine that owns the property may set or remove it.
     owner_property::check_property_writes(
-        property_writes.keys(),
-        protected_properties,
-        event_ctx.request_metadata().engines(),
+        rules.property_writes.keys(),
+        rules.protected_properties,
+        rules.engines,
     )
     .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
 
-    let authz_result = authorizer
-        .load_and_authorize_view_operation::<C>(
-            event_ctx.request_metadata(),
-            event_ctx.user_provided_entity(),
-            TabularListFlags::active(),
-            event_ctx.action().clone(),
-            state.v1_state.catalog.clone(),
-        )
-        .await;
-
-    let (event_ctx, (warehouse, _namespace, view_info)) = event_ctx.emit_authz(authz_result)?;
+    let (event_ctx, warehouse, view_info, security_mode_switches) = authorize_commit::<C, A>(
+        &authorizer,
+        event_ctx,
+        &request,
+        rules,
+        state.v1_state.catalog.clone(),
+    )
+    .await?;
 
     let view_id = view_info.view_id();
     let event_ctx = event_ctx.resolve(ResolvedView {
@@ -143,19 +154,71 @@ pub async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     // Verify assertions
     check_requirements(request.requirements.as_ref(), view_id)?;
 
-    let request = Arc::new(request);
     let ctx = CommitViewContext {
         event_ctx: &event_ctx,
         storage_profile: &warehouse.storage_profile,
         storage_secret_id: warehouse.storage_secret_id,
         request: &request,
-        property_writes,
-        protected_properties,
+        rules,
+        security_mode_switches: &security_mode_switches,
     };
     let (result, commit, committed_request) =
         commit_with_retries::<C, A, S>(&ctx, &state, idempotency_key.as_ref()).await?;
     event_ctx.emit_view_committed_async(Arc::new(commit), data_access, committed_request);
     Ok(result)
+}
+
+/// Authorizes the commit and, if it switches the view's security mode, the switch. Which
+/// further checks the commit needs depends on the switch, so it is decided on the stored view
+/// before the commit is recorded.
+async fn authorize_commit<C: CatalogStore, A: Authorizer>(
+    authorizer: &A,
+    event_ctx: APIEventContext<UserProvidedView, Unresolved, CatalogViewAction>,
+    request: &Arc<CommitViewRequest>,
+    rules: OwnerPropertyRules<'_>,
+    catalog_state: C::State,
+) -> Result<(
+    APIEventContext<UserProvidedView, Unresolved, CatalogViewAction, AuthzChecked>,
+    ArcResolvedWarehouse,
+    ViewInfo,
+    SecurityModeSwitches,
+)> {
+    let authz_result = authorizer
+        .load_and_authorize_view_operation::<C>(
+            event_ctx.request_metadata(),
+            event_ctx.user_provided_entity(),
+            TabularListFlags::active(),
+            event_ctx.action().clone(),
+            catalog_state.clone(),
+        )
+        .await;
+    let authz_result = match authz_result {
+        Ok((warehouse, namespace, view_info)) => {
+            decide_security_mode_switches::<C>(request, rules, &view_info, catalog_state)
+                .await
+                .map(|switches| (warehouse, namespace, view_info, switches))
+        }
+        Err(e) => Err(e),
+    };
+
+    let (event_ctx, (warehouse, namespace, view_info, switches)) =
+        event_ctx.emit_authz(authz_result)?;
+    security_mode::authorize_security_mode_switches(
+        authorizer,
+        SwitchRecords {
+            request_metadata: &event_ctx.request_metadata_arc(),
+            dispatcher: event_ctx.dispatcher(),
+            view: &event_ctx.user_provided_entity_arc(),
+        },
+        SwitchTarget {
+            warehouse: &warehouse,
+            namespace: &namespace,
+            view: &view_info,
+        },
+        &switches,
+    )
+    .await?;
+    Ok((event_ctx, warehouse, view_info, switches))
 }
 
 /// Runs [`try_commit_view`], and runs it again after a concurrent update.
@@ -191,10 +254,19 @@ struct CommitViewContext<'a> {
     storage_profile: &'a StorageProfile,
     storage_secret_id: Option<SecretId>,
     request: &'a Arc<CommitViewRequest>,
+    rules: OwnerPropertyRules<'a>,
+    /// The security mode switches decided and authorized before the commit transaction.
+    security_mode_switches: &'a SecurityModeSwitches,
+}
+
+/// What the owner property rules of a view commit depend on.
+#[derive(Clone, Copy)]
+struct OwnerPropertyRules<'a> {
     /// The properties the authorized commit sets and removes.
     property_writes: PropertyWrites<'a>,
     /// `None` if the owner property rules are off.
     protected_properties: Option<&'static HashSet<String>>,
+    engines: &'a MatchedEngines,
 }
 
 // Core commit logic that may be retried. Also returns the request the commit applied, which
@@ -348,31 +420,55 @@ struct CommittedMetadata {
     metadata: ViewMetadata,
 }
 
-/// Builds the metadata a commit produces from the stored view and applies the owner property
-/// rules of [`owner_property::check_version_change`]. A refusal follows the request's
-/// authorization record. If the rules remove owner properties, the metadata is built again from
-/// the stored view, with the removal appended to the request.
+/// Builds the metadata a commit produces from the stored view, applies the owner property rules
+/// and requires the security mode switches that were decided before the transaction. A
+/// refusal of the rules follows the request's authorization record.
 fn build_committed_metadata(
     ctx: &CommitViewContext<'_>,
     previous_metadata: &ViewMetadata,
 ) -> Result<CommittedMetadata> {
-    let metadata = build_new_metadata(&ctx.request.updates, previous_metadata.clone())?;
+    let committed = apply_owner_property_rules(ctx.request, previous_metadata, ctx.rules, |e| {
+        ctx.event_ctx.emit_late_authz_failure(e)
+    })?;
+    if let Some(protected_properties) = ctx.rules.protected_properties {
+        let switches = security_mode::security_mode_switches(
+            previous_metadata,
+            &committed.metadata,
+            protected_properties,
+        );
+        security_mode::require_decided_switches(ctx.security_mode_switches, &switches)
+            .map_err(ErrorModel::from)?;
+    }
+    Ok(committed)
+}
+
+/// Builds the metadata a commit produces from `previous_metadata` and applies the owner property
+/// rules of [`owner_property::check_version_change`]; `on_refusal` reports a refusal. If the
+/// rules remove owner properties, the metadata is built again from `previous_metadata`, with the
+/// removal appended to the request.
+fn apply_owner_property_rules(
+    request: &Arc<CommitViewRequest>,
+    previous_metadata: &ViewMetadata,
+    rules: OwnerPropertyRules<'_>,
+    on_refusal: impl FnOnce(owner_property::ProtectedViewVersionChange) -> ErrorModel,
+) -> Result<CommittedMetadata> {
+    let metadata = build_new_metadata(&request.updates, previous_metadata.clone())?;
     let stale_owner_properties = owner_property::check_version_change(
         previous_metadata,
         &metadata,
-        ctx.property_writes,
-        ctx.protected_properties,
-        ctx.event_ctx.request_metadata().engines(),
+        rules.property_writes,
+        rules.protected_properties,
+        rules.engines,
     )
-    .map_err(|e| ctx.event_ctx.emit_late_authz_failure(e))?;
+    .map_err(on_refusal)?;
     if stale_owner_properties.is_empty() {
         return Ok(CommittedMetadata {
-            request: ctx.request.clone(),
+            request: request.clone(),
             metadata,
         });
     }
 
-    let mut request = CommitViewRequest::clone(ctx.request);
+    let mut request = CommitViewRequest::clone(request);
     request.updates.push(ViewUpdate::RemoveProperties {
         removals: stale_owner_properties,
     });
@@ -381,6 +477,64 @@ fn build_committed_metadata(
         request: Arc::new(request),
         metadata,
     })
+}
+
+/// The security mode switches a commit makes, decided on the stored view. Only a trusted engine
+/// that owns an owner property can switch the mode, and only on a view or with a request that
+/// has one, so the stored view is read only then. A commit the owner property rules refuse
+/// switches nothing; the commit transaction reports the refusal. If the stored view changes
+/// before that transaction, it refuses a commit that then switches otherwise.
+async fn decide_security_mode_switches<C: CatalogStore>(
+    request: &Arc<CommitViewRequest>,
+    rules: OwnerPropertyRules<'_>,
+    view_info: &ViewInfo,
+    catalog_state: C::State,
+) -> std::result::Result<SecurityModeSwitches, AuthZError> {
+    let Some(protected_properties) = rules.protected_properties else {
+        return Ok(SecurityModeSwitches::new());
+    };
+    let engine_owns_one = protected_properties
+        .iter()
+        .any(|p| rules.engines.owns_property(p));
+    let view_or_request_has_one = protected_properties.iter().any(|p| {
+        view_info.properties.contains_key(p) || rules.property_writes.updated.contains_key(p)
+    });
+    if !engine_owns_one || !view_or_request_has_one {
+        return Ok(SecurityModeSwitches::new());
+    }
+
+    let mut t = ReadTransaction::<C>::begin(catalog_state)
+        .await
+        .map_err(catalog_error)?;
+    let stored = C::load_view(
+        view_info.warehouse_id,
+        view_info.tabular_id,
+        false,
+        t.transaction(),
+    )
+    .await
+    .map_err(catalog_error)?;
+    t.commit().await.map_err(catalog_error)?;
+
+    Ok(
+        apply_owner_property_rules(request, &stored.metadata, rules, authz_to_error_no_audit)
+            .map(|committed| {
+                security_mode::security_mode_switches(
+                    &stored.metadata,
+                    &committed.metadata,
+                    protected_properties,
+                )
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// A catalog error while deciding the authorization of a commit.
+fn catalog_error(e: impl Into<IcebergErrorResponse>) -> AuthZError {
+    RequireViewActionError::CatalogBackendError(CatalogBackendError::new_unexpected(
+        ErrorModel::from(e.into()),
+    ))
+    .into()
 }
 
 /// Checks the location a commit gives the view, and returns whether the view moves away from
@@ -546,7 +700,13 @@ pub(crate) fn parse_view_property_updates(
             ViewUpdate::RemoveProperties { removals } => {
                 property_removals.extend(removals.clone());
             }
-            _ => {}
+            // No `_` arm: a new kind of update is authorized here only once it is listed.
+            ViewUpdate::AssignUuid { .. }
+            | ViewUpdate::UpgradeFormatVersion { .. }
+            | ViewUpdate::AddSchema { .. }
+            | ViewUpdate::SetLocation { .. }
+            | ViewUpdate::AddViewVersion { .. }
+            | ViewUpdate::SetCurrentViewVersion { .. } => {}
         }
     }
 

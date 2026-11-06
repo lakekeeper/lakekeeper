@@ -59,9 +59,9 @@ Alice --> View1 (DEFINER, owner=Bob) --> View2 (INVOKER) --> View3 (DEFINER, own
 - **View3** is checked as Alice, because View2 is INVOKER and runs as Alice.
 - The **Table** is checked as Carol, because View3 is DEFINER and runs as Carol.
 
-This rule keeps whoever can change an INVOKER view from reading data with the owner's permissions. PostgreSQL uses the same rule.
+Where Lakekeeper sees the calling user, or with the OPA bridge, this rule keeps whoever can change an INVOKER view from reading data with the owner's permissions. PostgreSQL uses the same rule.
 
-The calling user is the identity of the request that Lakekeeper receives. If Trino sends a token for each user, this is the Trino user. If Trino authenticates with its own service account, Lakekeeper checks that account below an INVOKER view, and the [OPA bridge](./opa.md#views-inside-definer-views) decides for each Trino user.
+The calling user is the identity of the request that Lakekeeper receives. If Trino sends a token for each user, this is the Trino user. If Trino authenticates with its own service account, Lakekeeper checks that account below an INVOKER view, and the [OPA bridge](./opa.md#views-inside-definer-views) decides for each Trino user. If Trino uses its own access control instead of the bridge, we recommend that views which DEFINER views read are DEFINER views as well.
 
 Trino runs an INVOKER view inside a DEFINER view as the outer owner, so a query that Trino allows can fail. To keep such a query working, do one of these:
 
@@ -155,6 +155,13 @@ Lakekeeper protects views that an engine runs as their owner. It protects `trino
 - **View version:** on a view that has a protected owner property, only a request from a matched engine that owns this property can change the current view version, for example add a version with new SQL or go back to an older version. Other requests receive `403 ProtectedViewVersionChange`.
 - **New query:** if the matched engine changes the SQL, default catalog or default namespace of such a view, and the same commit leaves the owner property out, Lakekeeper removes the owner property in that commit. The view becomes an INVOKER view, so the new query never runs as the previous owner. `CREATE OR REPLACE VIEW ... SECURITY DEFINER` in Trino sends the owner property with the user who runs the statement as the new owner, and the view stays a DEFINER view.
 - **Same query:** a change that keeps the SQL, default catalog and default namespace keeps the owner, for example `COMMENT ON COLUMN` in Trino. Lakekeeper cannot tell such a change from `CREATE OR REPLACE VIEW ... SECURITY INVOKER` with the same query, so that statement also leaves the view a DEFINER view. To make it an INVOKER view, change the query in the same statement, or drop the view and create it again; dropping loses the grants on the view.
+- **Security mode:** whom a view runs as has its own permission, `change_security_mode` on the view, so a user who may change a view's query cannot also change whom it runs as. A commit that adds or removes the owner property switches the view between DEFINER and INVOKER. It needs `change_security_mode` for the identity that sends the commit and, when it adds the property, also for the user that the property names. Otherwise the commit fails with `403 SecurityModeChangeForbidden`. With OpenFGA, `modify` includes `change_security_mode` and `write` does not. A commit that keeps the security mode does not need this permission, even if it changes the owner. In Trino, `SECURITY DEFINER` is the default: `CREATE OR REPLACE VIEW` without a `SECURITY` clause makes an INVOKER view a DEFINER view.
+
+If Trino connects with its own service account and uses its own access control, not the OPA bridge, Lakekeeper knows the Trino user only as the owner that Trino writes into the view. Lakekeeper checks this user as `<identity provider of Trino's token>~<Trino user>`, for example `oidc~alice`, and the error message names this id. To make an existing INVOKER view a DEFINER view in this setup, use one of these ways:
+
+1. Grant `modify` on the view to this id, for example `oidc~alice`. The grant works even if this user never signed in to Lakekeeper.
+2. Keep the view INVOKER: write `SECURITY INVOKER` in the `CREATE OR REPLACE VIEW` statement.
+3. Drop the view and create it again. A new view can be a DEFINER view without this permission. The grants on the old view are lost.
 
 When Lakekeeper removes the owner property, the commit includes a `remove-properties` update for it. The stored view, the response, the view-committed event and the published CloudEvent show the removal. The authorization record in the audit log lists the properties as the engine sent them.
 
@@ -177,7 +184,7 @@ Views that already exist can carry a `trino.run-as-owner` value that a client ot
 - Trino's `information_schema.views` does not show view properties. List the views of each namespace and read the properties of each view, for example with the `list_views` and `load_view` functions of PyIceberg 0.12 or later.
 - If the [audit log](./logging.md) was enabled, search it for `create_view` records whose `properties` contain `trino.run-as-owner`, and for `commit` records on views whose `updated_properties` or `removed_properties` contain it. Check the records whose actor is not the service identity of Trino.
 
-To correct the owner of a view, run `CREATE OR REPLACE VIEW ... SECURITY DEFINER` in Trino as the user who should own it. The view keeps its id and the grants on it. Drop the view and create it again only if this is not possible: this loses the grants on the view.
+To correct the owner of a view, run `CREATE OR REPLACE VIEW ... SECURITY DEFINER` in Trino as the user who should own it. The view keeps its id and the grants on it. With the [OPA bridge](./opa.md#replacing-tables-and-views), this user needs `change_security_mode` on the view. Drop the view and create it again only if this is not possible: this loses the grants on the view.
 
 ## Security Considerations
 
@@ -185,7 +192,7 @@ To correct the owner of a view, run `CREATE OR REPLACE VIEW ... SECURITY DEFINER
 
 When a DEFINER view references a table, the table load happens with the **owner's** permissions. This is flagged as "delegated execution" in authorization checks. Authorization backends can use this flag to apply different policies — for example, skipping permission-inspection rights that would normally be required.
 
-A DEFINER view runs its own SQL with the owner's rights. A view that it references runs as that view's owner if it is DEFINER, and as the calling user if it is INVOKER, see [Chained Views](#chained-views). So whoever can change a referenced view cannot read data with the outer owner's rights, and checks below an INVOKER view are not delegated.
+A DEFINER view runs its own SQL with the owner's rights. A view that it references runs as that view's owner if it is DEFINER, and as the calling user if it is INVOKER, see [Chained Views](#chained-views). So, where Lakekeeper sees the calling user or with the OPA bridge, whoever can change a referenced view cannot read data with the outer owner's rights. Checks below an INVOKER view are not delegated.
 
 ### Metadata vs. execution: `get_metadata` and `select`
 
@@ -212,6 +219,7 @@ Every view in a referenced-by chain is checked for *both* actions. The target of
 The owner property on a view is critical for security. Lakekeeper ensures that:
 
 - Only matched trusted engines can **set or remove** the owner property, and change the current version of a view that has it.
+- Adding or removing the owner property needs the `change_security_mode` permission, see [Property Protection](#property-protection).
 - The owner string is resolved to a user in the engine's Identity Provider.
 - If the owner cannot be resolved, the request fails with a clear error.
 

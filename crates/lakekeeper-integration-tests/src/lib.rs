@@ -360,6 +360,50 @@ impl CapturingAuthzListener {
     }
 }
 
+impl CapturingAuthzListener {
+    /// The decisions of each succeeded and each failed record, in order: the action, whom it
+    /// was checked for and the verdict.
+    ///
+    /// Does not settle on its own; call it after [`Self::settled_counts`].
+    #[must_use]
+    pub fn recorded_decisions(&self) -> (Vec<Vec<RecordedDecision>>, Vec<Vec<RecordedDecision>>) {
+        fn recorded(
+            authorizations: &[lakekeeper::service::events::Authorization],
+        ) -> Vec<RecordedDecision> {
+            authorizations
+                .iter()
+                .map(|a| RecordedDecision {
+                    action_name: a.action.action_name.to_string(),
+                    for_principal: a.for_principal.clone(),
+                    allowed: a.allowed,
+                })
+                .collect()
+        }
+        let events = self.events.lock().unwrap();
+        (
+            events
+                .succeeded
+                .iter()
+                .map(|e| recorded(&e.authorizations))
+                .collect(),
+            events
+                .failed
+                .iter()
+                .map(|e| recorded(&e.authorizations))
+                .collect(),
+        )
+    }
+}
+
+/// One decision of a captured authorization record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedDecision {
+    pub action_name: String,
+    /// Whom the action was checked for; `None` for the request's principal.
+    pub for_principal: Option<lakekeeper::service::authz::UserOrRoleId>,
+    pub allowed: Option<bool>,
+}
+
 /// One action of a captured authorization record: its name and its context keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedAction {

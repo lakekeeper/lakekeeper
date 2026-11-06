@@ -61,7 +61,11 @@ use lakekeeper::{
             namespace::NamespaceService as _, tables::TablesService as _, views::ViewService as _,
         },
         management::v1::{
-            check::{RoleAssignee, UserOrRole},
+            check::{
+                CatalogActionCheckItem, CatalogActionCheckOperation,
+                CatalogActionsBatchCheckRequest, RoleAssignee, TabularIdentOrUuid, UserOrRole,
+                check_internal,
+            },
             grant::{ApplyGrantsRequest, GrantEntry, ListGrantsQuery, Service as _},
             role::Service as _,
             warehouse::{
@@ -89,7 +93,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 27;
+const EXPECTED_RECORDS: usize = 33;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -453,6 +457,51 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         ctx.clone(),
         DataAccess::not_specified(),
         user_request(),
+    )
+    .await;
+
+    // Replacing the view, as the OPA bridge asks for Trino, for a user other than its owner:
+    // one `introspect_permissions` record with one decision, recorded as `commit` (1). Then
+    // the trusted engine switches the view to run as the caller: the commit's record and the
+    // `change_security_mode` record of the identity that sends it (2). Switching it back to
+    // run as its owner adds the owner's own `change_security_mode` record (3).
+    let _ = check_internal(
+        ctx.clone(),
+        random_request_metadata(),
+        CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("replace".to_string()),
+                identity: Some(UserOrRole::User(UserId::new_unchecked("oidc", "bob"))),
+                operation: CatalogActionCheckOperation::ViewReplace {
+                    view: TabularIdentOrUuid::Name {
+                        namespace: namespace.clone(),
+                        table: "definer_view".to_string(),
+                        warehouse_id: warehouse_response.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        },
+    )
+    .await;
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {"action": "remove-properties", "removals": ["trino.run-as-owner"]}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        trino_engine_request(),
+    )
+    .await;
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {"action": "set-properties", "updates": {"trino.run-as-owner": "bob"}}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        trino_engine_request(),
     )
     .await;
 

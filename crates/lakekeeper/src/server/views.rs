@@ -6,6 +6,7 @@ pub mod list;
 pub mod load;
 pub(crate) mod owner_property;
 pub mod rename;
+pub(crate) mod security_mode;
 
 use iceberg_ext::catalog::rest::ViewUpdate;
 

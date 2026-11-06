@@ -2015,8 +2015,12 @@ pub enum CatalogViewAction {
     ManageTags,
     /// Can list the grants held on this view.
     ReadGrants,
+    /// Switch the view between running as its owner and running as the caller: a commit that
+    /// adds or removes an engine owner property such as `trino.run-as-owner`. A commit that adds
+    /// one also asks it for the user the property names.
+    ChangeSecurityMode,
 }
-static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 13]> = LazyLock::new(|| {
+static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 14]> = LazyLock::new(|| {
     [
         CatalogViewAction::Drop {
             force: false,
@@ -2039,11 +2043,12 @@ static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 13]> = LazyLock::new(|
         CatalogViewAction::SetProtection,
         CatalogViewAction::ManageTags,
         CatalogViewAction::ReadGrants,
+        CatalogViewAction::ChangeSecurityMode,
     ]
 });
 impl CatalogViewAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogViewAction; 13] {
+    pub fn variants() -> &'static [CatalogViewAction; 14] {
         &VIEW_ACTION_VARIANTS
     }
 }
@@ -2081,7 +2086,8 @@ impl EventAction for CatalogViewAction {
             | Self::ControlTasks { .. }
             | Self::SetProtection { .. }
             | Self::ManageTags { .. }
-            | Self::ReadGrants { .. } => {}
+            | Self::ReadGrants { .. }
+            | Self::ChangeSecurityMode { .. } => {}
         }
         b.build()
     }
@@ -2553,6 +2559,7 @@ pub enum CatalogViewActionKind {
     SetProtection,
     ManageTags,
     ReadGrants,
+    ChangeSecurityMode,
 }
 impl From<&CatalogViewAction> for CatalogViewActionKind {
     fn from(action: &CatalogViewAction) -> Self {
@@ -2570,6 +2577,7 @@ impl From<&CatalogViewAction> for CatalogViewActionKind {
             CatalogViewAction::SetProtection => Self::SetProtection,
             CatalogViewAction::ManageTags => Self::ManageTags,
             CatalogViewAction::ReadGrants => Self::ReadGrants,
+            CatalogViewAction::ChangeSecurityMode => Self::ChangeSecurityMode,
         }
     }
 }
@@ -3906,6 +3914,10 @@ pub mod tests {
             (
                 CatalogViewAction::SetProtection,
                 serde_json::json!({"action": "set_protection"}),
+            ),
+            (
+                CatalogViewAction::ChangeSecurityMode,
+                serde_json::json!({"action": "change_security_mode"}),
             ),
             (
                 CatalogViewAction::Commit {
