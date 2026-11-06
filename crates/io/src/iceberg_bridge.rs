@@ -127,7 +127,11 @@ impl Storage for IcebergStorageBridge {
     }
 
     async fn write(&self, path: &str, bs: bytes::Bytes) -> iceberg::Result<()> {
-        self.lakekeeper_io.write(path, bs).await.map_err(Into::into)
+        self.lakekeeper_io
+            .write(path, bs)
+            .await
+            .map(|_| ())
+            .map_err(Into::into)
     }
 
     async fn writer(&self, path: &str) -> iceberg::Result<Box<dyn iceberg::io::FileWrite>> {
