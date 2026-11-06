@@ -10,7 +10,7 @@ We recommend enabling [Remove Orphan Files](./table-maintenance.md#remove-orphan
 
 ## With the Helm Chart { #helm-chart }
 
-The [Lakekeeper Helm chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper) runs optimize workers as Kubernetes Jobs that [KEDA](https://keda.sh/) starts only while optimize tasks wait. [Install KEDA](https://keda.sh/docs/latest/deploy/) in the cluster first, then turn on `optimizeWorkers`:
+The [Lakekeeper Helm chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper) 0.14.0 or later runs optimize workers as Kubernetes Jobs that [KEDA](https://keda.sh/) starts only while optimize tasks wait. Older chart versions ignore `optimizeWorkers`. [Install KEDA](https://keda.sh/docs/latest/deploy/) in the cluster first, then turn on `optimizeWorkers`:
 
 ```yaml
 lakekeeper:
@@ -19,24 +19,24 @@ lakekeeper:
 optimizeWorkers:
   enabled: true
   sizeClasses:
-    - name: standard
+    - name: small
       resources:
         cpu: "2"
         memory: 8Gi
-      maxJobs: 4
-  spillSizeLimit: 50Gi
+      keda:
+        maxJobs: 4
 ```
 
-The chart creates one KEDA ScaledJob per size class. KEDA starts one Job for each optimize task of the class that waits or runs, up to `maxJobs`. Each Job runs one optimize worker without the HTTP API, with the `resources` of its class as CPU and memory request and limit. A Job ends after it ran no task for `idleExitAfter` (180 seconds by default), and takes no new task after `maxLifetime` (1 hour by default). Each Job opens 2 read and 2 write database connections (`databasePoolConnections`).
+The chart creates one KEDA ScaledJob per size class. KEDA starts one Job for each optimize task of the class that waits or runs, up to `keda.maxJobs` of the class. Each Job runs one optimize worker without the HTTP API, with the `resources` of its class as CPU and memory request and limit. A Job ends after it ran no task for `optimizeWorkers.keda.idleExitAfter` (180 seconds by default), and takes no new task after `optimizeWorkers.keda.maxLifetime` (1 hour by default). Each Job opens up to 2 read and 2 write database connections (`databasePoolConnections`).
 
 Choose these values:
 
-- **`sizeClasses`**: one class `standard` with 2 CPUs, 8 GiB and `maxJobs: 2` by default. `cpu` must be a whole number. See [Size Classes](#size-classes).
-- **`spillSizeLimit`**: the size of the `emptyDir` volume at `/tmp`, where compaction writes spill files. The chart sets the spill limit of Lakekeeper a little below it. We recommend setting it. Without it, compaction may use up to 100 GiB of the node's disk.
+- **`sizeClasses`**: one class `small` with 2 CPUs, 8 GiB and `keda.maxJobs: 2` by default. `cpu` must be a whole number. See [Size Classes](#size-classes).
+- **`spill`**: the disk at `/tmp` where compaction writes spill files. Each Job gets `spill.sizePerCpu` (4 GiB by default) for each CPU of its class. The chart sets the spill limit of Lakekeeper a little below this size. With `spill.type: local` (the default), the disk is an `emptyDir` on the node, and the Job requests its size as `ephemeral-storage`, so it starts only on a node with enough free disk. With `spill.type: pvc`, each Job gets its own PersistentVolumeClaim, which Kubernetes deletes when KEDA deletes the finished Job. We recommend `pvc` if your nodes have small disks, for example the 20 GiB default of EKS node groups and Karpenter, or GKE Autopilot. Set `spill.pvc.storageClassName` if your cluster has no default storage class. A size class can set its own `spill.type` and `spill.pvc`, and a fixed `spill.size` in place of the size per CPU.
 - **`drainTimeout`**: `0s` by default, see [Stopping a Worker](#stopping-a-worker). The chart refuses a `terminationGracePeriodSeconds` (60 by default) below the drain timeout plus 30 seconds.
 - **`nodeSelector`, `tolerations` and `affinity`**: place the Jobs, for all classes or per class. The chart also sets the annotations that keep Karpenter and the cluster autoscaler from removing the node of a running Job.
 
-The Jobs use `catalog.config`, `catalog.extraEnv`, `catalog.extraEnvFrom`, `catalog.extraVolumes` and `catalog.extraVolumeMounts` of the API pods, except the variables that the chart sets for workers, such as the task worker counts and the drain timeout. Variables in `optimizeWorkers.extraEnv` apply only to the workers and override `catalog.extraEnv`.
+The Jobs use `catalog.config`, `catalog.extraEnv`, `catalog.extraEnvFrom`, `catalog.extraVolumes` and `catalog.extraVolumeMounts` of the API pods, except the variables that the chart sets for workers, such as the task worker counts and the drain timeout. The worker container does not get a mount at `/tmp` from `catalog.extraVolumeMounts`, because its `/tmp` is the spill disk. Variables in `optimizeWorkers.extraEnv` apply only to the workers and override `catalog.extraEnv`.
 
 The workers have their own pod settings:
 
