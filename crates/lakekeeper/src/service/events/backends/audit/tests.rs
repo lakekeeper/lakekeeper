@@ -19,11 +19,11 @@ use crate::{
         },
         authn::{Actor, UserId},
         authz::{
-            ActionDescriptor, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
-            CatalogViewAction, CatalogWarehouseAction, DeterminingFactor, EventAction as _,
-            GrantResource, PolicyEffect, ResourceType, RoleSourceSystem, RootLevelGrants,
-            SubtreeGrantPrincipal, SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes,
-            UserOrRoleId,
+            ActionDescriptor, AuthZWarehouseActionForbidden, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, ResourceType,
+            RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges,
+            SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
         },
         events::{
             Authorization, EventDispatcher,
@@ -561,6 +561,9 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_context",
     "authz_failed_admission_gate",
     "authz_failed_tabular_move",
+    "authz_failed_register_table",
+    "authz_failed_cannot_see_registered_table",
+    "authz_failed_generic_table_location_with_files",
     "authz_failed_create_view_owner_property",
     "authz_failed_view_commit_owner_property",
     "authz_failed_view_version_change",
@@ -1309,6 +1312,75 @@ fn fixture_authz_failed_soft_deletion_skip() {
     );
 
     assert_matches_fixture("authz_failed_soft_deletion_skip", &contract_fields(record));
+}
+
+/// A register refused because the caller lacks the register right on the warehouse: the
+/// warehouse is the entity, as the register handler records it.
+#[test]
+fn fixture_authz_failed_register_table() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let action = CatalogWarehouseAction::RegisterTable;
+    let record = refusal_record(
+        warehouse_id.event_entities(),
+        action.event_actions(),
+        AuthZWarehouseActionForbidden::new(warehouse_id, &action),
+    );
+
+    assert_matches_fixture("authz_failed_register_table", &contract_fields(record));
+}
+
+/// A register whose caller may not see the table it registered: recorded as `loadTable`
+/// records it, `get_metadata` on the table by name, refused as not found.
+#[test]
+fn fixture_authz_failed_cannot_see_registered_table() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let table = TableIdent::new(
+        NamespaceIdent::new("sales".to_string()),
+        "orders".to_string(),
+    );
+    let record = refusal_record(
+        UserProvidedTable {
+            warehouse_id,
+            table: table.clone().into(),
+        }
+        .event_entities(),
+        CatalogTableAction::GetMetadata.event_actions(),
+        crate::service::authz::AuthZCannotSeeTable::new_forbidden(warehouse_id, table),
+    );
+
+    assert_matches_fixture(
+        "authz_failed_cannot_see_registered_table",
+        &contract_fields(record),
+    );
+}
+
+/// A generic table create refused because its location already holds files and the caller
+/// lacks the register right on the warehouse: recorded on the warehouse, as the handler does.
+#[test]
+fn fixture_authz_failed_generic_table_location_with_files() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let record = refusal_record(
+        warehouse_id.event_entities(),
+        CatalogWarehouseAction::RegisterTable.event_actions(),
+        crate::service::authz::file_takeover_forbidden(warehouse_id),
+    );
+
+    assert_matches_fixture(
+        "authz_failed_generic_table_location_with_files",
+        &contract_fields(record),
+    );
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`

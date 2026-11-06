@@ -1382,6 +1382,7 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `ActivateWarehouse` | `activate` | `WarehouseModifyActions` | Activate a deactivated warehouse |
 | `RenameWarehouse` | `rename` | `WarehouseModifyActions` | Change the warehouse's name |
 | `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseModifyActions` | Configure soft-deletion settings, and [skip soft deletion](./concepts.md#skipping-soft-deletion) |
+| `RegisterTable` | `register_table` | `WarehouseModifyActions` | Register a table from an existing metadata file, or create a generic table on a location that already holds files. Asked together with `CreateTable` or `CreateGenericTableInNamespace` on the namespace |
 | `ModifyTaskQueueConfig` | `modify_task_queue_config` | `WarehouseModifyActions` | Update task queue configuration |
 | `ControlAllTasks` | `control_all_tasks` | `WarehouseModifyActions` | Manage all background tasks |
 | `SetWarehouseProtection` | `set_protection` | `WarehouseModifyActions` | Enable or disable deletion protection |
@@ -1422,7 +1423,7 @@ A move changes which grants apply to what is moved, so `MoveNamespace`, `MoveTab
 | `IncludeTableInList` | `include_in_list` | `TableDescribeActions` | Include the table in table listings |
 | `GetTableTasks` | `get_tasks` | `TableDescribeActions` | List background tasks for the table |
 | `ReadTableData` | `read_data` | `TableSelectActions` | Read data from the table |
-| `WriteTableData` | `write_data` | `TableWriteActions` | Get write credentials for the table |
+| `WriteTableData` | `write_data` | `TableWriteActions` | Get write credentials for the table, together with `ReadTableData` |
 | `CommitTable` | `commit` | `TableWriteActions` | Commit table changes (data, schema, properties) |
 | `DropTable` | `drop` | `TableModifyActions` | Delete the table |
 | `RenameTable` | `rename` | `TableModifyActions` | Change the table's name |
@@ -1459,7 +1460,7 @@ A move changes which grants apply to what is moved, so `MoveNamespace`, `MoveTab
 | `IncludeGenericTableInList` | `include_in_list` | `GenericTableDescribeActions` | Include the generic table in listings |
 | `GetGenericTableTasks` | `get_tasks` | `GenericTableDescribeActions` | List background tasks for the generic table |
 | `ReadGenericTableData` | `read_data` | `GenericTableSelectActions` | Read data from the generic table |
-| `WriteGenericTableData` | `write_data` | `GenericTableWriteActions` | Get write credentials for the generic table |
+| `WriteGenericTableData` | `write_data` | `GenericTableWriteActions` | Get write credentials for the generic table, together with `ReadGenericTableData` |
 | `DropGenericTable` | `drop` | `GenericTableModifyActions` | Delete the generic table |
 | `RenameGenericTable` | `rename` | `GenericTableModifyActions` | Change the generic table's name |
 | `MoveGenericTable` | `move` | none | Move the generic table to another namespace: the source half of a move. Asked together with `RenameGenericTable` |

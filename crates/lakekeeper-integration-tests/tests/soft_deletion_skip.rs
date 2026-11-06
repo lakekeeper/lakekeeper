@@ -695,20 +695,25 @@ async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_
             .await,
     );
     assert_eq!(s.table_id("t").await, table_id);
-    // The replaced table skips the window, so its drop is recorded as forced.
-    assert_eq!(listener.settled_counts(2, 1).await, (2, 1));
+    // Allowed: the register right, the create, and the drop of the replaced table, which skips
+    // the window and is recorded as forced. Refused: the skip check.
+    assert_eq!(listener.settled_counts(3, 1).await, (3, 1));
+    let (_, failed) = listener.recorded_actions();
+    assert_eq!(failed, vec![skip_record()]);
 
     s.authz.unblock_action(MODIFY_SOFT_DELETION);
     s.register_overwrite_from("t", source_location)
         .await
         .unwrap();
     assert_eq!(s.table_id("t").await, source_id);
-    assert_eq!(listener.settled_counts(5, 1).await, (5, 1));
+    assert_eq!(listener.settled_counts(7, 1).await, (7, 1));
     let (succeeded, failed) = listener.recorded_actions();
     assert_eq!(failed, vec![skip_record()]);
     let drops_and_skips = succeeded
         .into_iter()
-        .filter(|actions| actions[0].action_name != "create_table")
+        .filter(|actions| {
+            !["create_table", "register_table"].contains(&actions[0].action_name.as_str())
+        })
         .collect();
     assert_eq!(
         sorted(drops_and_skips),
@@ -728,7 +733,7 @@ async fn register_overwrite_with_the_same_table_in_soft_deletion_warehouse_needs
     s.register_overwrite("t").await.unwrap();
     assert_eq!(s.table_id("t").await, table_id);
     // With the same table UUID, the drop is not recorded as forced.
-    assert_eq!(listener.settled_counts(2, 0).await, (2, 0));
+    assert_eq!(listener.settled_counts(3, 0).await, (3, 0));
     let (succeeded, failed) = listener.recorded_actions();
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(
@@ -760,7 +765,7 @@ async fn register_overwrite_of_a_staged_table_needs_no_extra_right(pool: PgPool)
         .await
         .unwrap();
     assert_eq!(s.state(Kind::Table, "staged").await, Found::Active);
-    assert_eq!(listener.settled_counts(2, 0).await, (2, 0));
+    assert_eq!(listener.settled_counts(3, 0).await, (3, 0));
     let (succeeded, failed) = listener.recorded_actions();
     assert!(failed.is_empty(), "{failed:?}");
     assert_eq!(
@@ -845,8 +850,9 @@ async fn assert_registering_the_uuid_of_another_table_is_refused(
             );
         }
     }
-    // Each call is refused after the create is authorized and before any drop is authorized.
-    assert_eq!(listener.settled_counts(6, 0).await, (6, 0));
+    // Each call is refused after the register right and the create are authorized, and before
+    // any drop is authorized.
+    assert_eq!(listener.settled_counts(12, 0).await, (12, 0));
     let (succeeded, _) = listener.recorded_actions();
     assert!(
         succeeded

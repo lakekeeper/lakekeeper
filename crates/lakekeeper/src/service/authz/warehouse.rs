@@ -438,3 +438,34 @@ pub(crate) fn soft_deletion_skip_forbidden(
             "This call would delete tables, views or generic tables before their soft-deletion period ends, and that needs this action.",
         )
 }
+
+/// Requires `RegisterTable` on `warehouse` for a new generic table at a location that already
+/// holds files: the generic table brings those files into the catalog, as registering a table does.
+pub(crate) async fn require_file_takeover<A: Authorizer>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    warehouse: &ResolvedWarehouse,
+) -> Result<(), RequireWarehouseActionError> {
+    let allowed = authorizer
+        .is_allowed_warehouse_action(
+            request_metadata,
+            None,
+            warehouse,
+            CatalogWarehouseAction::RegisterTable,
+        )
+        .await?
+        .into_inner();
+    if allowed {
+        Ok(())
+    } else {
+        Err(file_takeover_forbidden(warehouse.warehouse_id).into())
+    }
+}
+
+/// Refusal of [`require_file_takeover`].
+pub(crate) fn file_takeover_forbidden(warehouse_id: WarehouseId) -> AuthZWarehouseActionForbidden {
+    AuthZWarehouseActionForbidden::new(warehouse_id, &CatalogWarehouseAction::RegisterTable)
+        .with_reason(
+            "The location already holds files. Creating a generic table there brings them into the catalog, and that needs this action.",
+        )
+}

@@ -63,6 +63,8 @@ type warehouse
     define can_rename: modify_effective
     define can_list_deleted_tabulars: can_get_metadata
     define can_modify_soft_deletion: modify_effective
+    # Registering files that are already in the warehouse's storage, for example orphaned files of a dropped table: registering a table, or creating a generic table on a location that holds files. Asked with the create relation on the namespace.
+    define can_register_table: modify_effective
     define can_get_endpoint_statistics: describe_effective
     # Task permissions
     define can_get_all_tasks: describe_effective
