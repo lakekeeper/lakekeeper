@@ -4,7 +4,7 @@
   "$ref": "#/$defs/AuditRecord",
   "x-audit-emitter": {
     "name": "lakekeeper",
-    "format": "1.0"
+    "format": "1.1"
   },
   "$defs": {
     "ActionRecord": {
@@ -384,7 +384,7 @@
             "properties": {
               "force": {
                 "type": "boolean",
-                "description": "`true` when the client asked to force the operation."
+                "description": "`true` when the client asked to force the operation. Also `true` on the drop of an active\ntable that a register with `overwrite` replaces with another table (a different table\nUUID) in a warehouse with soft deletion."
               },
               "purge": {
                 "type": "boolean",
@@ -412,7 +412,7 @@
             "properties": {
               "force": {
                 "type": "boolean",
-                "description": "`true` when the client asked to force the operation."
+                "description": "`true` when the client asked to force the operation. Also `true` on the drop of an active\ntable that a register with `overwrite` replaces with another table (a different table\nUUID) in a warehouse with soft deletion."
               },
               "purge": {
                 "type": "boolean",
@@ -443,7 +443,7 @@
               },
               "force": {
                 "type": "boolean",
-                "description": "`true` when the client asked to force the operation."
+                "description": "`true` when the client asked to force the operation. Also `true` on the drop of an active\ntable that a register with `overwrite` replaces with another table (a different table\nUUID) in a warehouse with soft deletion."
               }
             }
           }
@@ -887,6 +887,11 @@
           },
           "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
+        "event_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "This record's id, unique to it: the same on every copy of the line, so it can be used\nto remove duplicates. A UUIDv7, so ids sort roughly by time."
+        },
         "request_id": {
           "$ref": "#/$defs/RequestId",
           "description": "The request this record belongs to: the `x-request-id` the caller sent, or the one\nLakekeeper generated and returned in that header."
@@ -957,6 +962,7 @@
       "required": [
         "record_type",
         "emitters",
+        "event_id",
         "request_id",
         "time",
         "actions",
@@ -1180,6 +1186,7 @@
       "type": "string",
       "description": "Values of `action_name`. A later release may add a value without a format change.",
       "x-audit-values": [
+        "change_security_mode",
         "commit",
         "control_tasks",
         "drop",
@@ -1197,6 +1204,7 @@
       "x-audit-kind": "enum",
       "x-audit-field": "action_name",
       "x-audit-descriptions": {
+        "change_security_mode": "Switch the view between running as its owner and running as the caller: a commit that\nadds or removes an engine owner property such as `trino.run-as-owner`. A commit that adds\none also asks it for the user the property names.",
         "manage_tags": "Attach/detach governance tags on this view.",
         "move": "Rename this view into another namespace. Asked in addition to `rename` when a\nrename changes the namespace.\n\nThe move changes which grants the view inherits, as moving a namespace does, so it\nis gated on grant authority in addition to write access. The destination is gated by\nthe matching `create_*` action plus `accept_moved_tabular`.",
         "read_grants": "Can list the grants held on this view."
@@ -1226,11 +1234,13 @@
         "modify_task_queue_config",
         "read_grants",
         "read_subtree_grants",
+        "register_table",
         "rename",
         "revoke_subtree_grants",
         "set_format_version_policy",
         "set_protection",
         "update_storage",
+        "update_storage_credential",
         "use"
       ],
       "x-audit-kind": "enum",
@@ -1240,7 +1250,10 @@
         "manage_tags": "Attach/detach governance tags on this warehouse.",
         "read_grants": "Can list the grants held on this warehouse.",
         "read_subtree_grants": "Can list and read every grant in the warehouse: the warehouse's own and those on\nevery namespace and tabular inside it. Strictly stronger than `read_grants`, which\ncovers this one resource; granted separately because it enumerates the subtree.\n\n`scope` states what the listing covers — the resource kinds it reaches, how far its\nrange extends, the privileges it covers, and the principal it is narrowed to — so a\npolicy can allow a narrow access review and still refuse a full enumeration.\n\nEvery enforced check carries it: Lakekeeper authorizes a real subtree listing or\nrevoke only with a scope. An absent scope is the base-capability question that\npermission introspection asks, so an authorizer may answer the two separately —\nrefusing the base question drops the action from\n`GET /{warehouse,namespace}/{id}/actions` and leaves real calls untouched.",
-        "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `read_subtree_grants`."
+        "register_table": "Register files that are already in the warehouse's storage, for example orphaned files\nof a dropped table: register a table from an existing metadata file, or create a\ngeneric table on a location that holds files.\nAsked together with the create action on the namespace. The files may be anywhere in\nthe warehouse's storage, so it is a right on the warehouse.",
+        "revoke_subtree_grants": "Can revoke any grant in the warehouse, asked once at the warehouse for the whole\nbatch. An authorizer must answer it as authority over everything beneath — or\nrefuse the subtree routes.\n\n`scope` states what the revoke covers, on the same terms as `read_subtree_grants`.",
+        "update_storage": "Change or validate the warehouse's storage profile, or validate the storage the warehouse\ncurrently runs with. Changing or validating a profile also requires\n`update_storage_credential`, because a profile change replaces or clears the credential.",
+        "update_storage_credential": "Replace or clear the warehouse's storage credential, or validate a replacement, leaving\nthe storage profile as it is."
       }
     },
     "Decision": {
@@ -1649,6 +1662,11 @@
           },
           "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
+        "event_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "This record's id, unique to it: the same on every copy of the line, so it can be used\nto remove duplicates. A UUIDv7, so ids sort roughly by time."
+        },
         "request_id": {
           "description": "The request this record belongs to. Absent for an operation no request triggered.",
           "$ref": "#/$defs/RequestId"
@@ -1679,6 +1697,7 @@
       "required": [
         "record_type",
         "emitters",
+        "event_id",
         "time",
         "operation",
         "actor",
@@ -1788,6 +1807,11 @@
           },
           "description": "Every product that contributed to this record, keyed by its name, with the version of\nwhat it contributes: the one that assembled it and any whose vocabulary it carries."
         },
+        "event_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "This record's id, unique to it: the same on every copy of the line, so it can be used\nto remove duplicates. A UUIDv7, so ids sort roughly by time."
+        },
         "request_id": {
           "$ref": "#/$defs/RequestId",
           "description": "The request this record belongs to: the `x-request-id` the caller sent, or the one\nLakekeeper generated and returned in that header."
@@ -1831,6 +1855,7 @@
       "required": [
         "record_type",
         "emitters",
+        "event_id",
         "request_id",
         "time",
         "actions",

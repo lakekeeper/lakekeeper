@@ -43,12 +43,16 @@ Lakekeeper gives query engines access to table data in one of two ways:
 - **Vended credentials**: Lakekeeper issues temporary credentials and returns them with the table. It downscopes them to the table's location and ensures that no two table locations in a Warehouse overlap.
 - **Remote signing** (S3 and STACKIT): the client sends the headers of each S3 request to Lakekeeper's sign endpoint. Lakekeeper checks that the request is allowed, signs it with its own credentials and returns the signature headers. The client then sends the request to the storage itself.
 
+Views get neither: Lakekeeper returns no storage credentials and no storage settings with a View. Query engines load each Table that a View uses and read it with the access that Lakekeeper gives for that Table.
+
 Clients choose with the `X-Iceberg-Access-Delegation` header, which takes the Iceberg REST values `vended-credentials` and `remote-signing`, plus Lakekeeper's `client-managed`:
 
 - `client-managed` returns neither credentials nor signing information, so the client uses its own credentials.
 - `vended-credentials` or `remote-signing` uses that method if the storage profile enables it.
 - With both values or no header, Lakekeeper vends credentials if the profile enables it, and falls back to remote signing otherwise.
 - A profile that disables both returns no credentials, whatever the header says.
+
+What a client may do with the files depends on its privileges on the table or generic table. A client that may read and write gets credentials for reading, writing and deleting. A client that may only read gets read-only credentials. A client that may not read gets no credentials, even if it may write, because write credentials can also read. Loading a table or generic table, their credentials endpoints and registering a table all follow this rule. With remote signing, Lakekeeper checks each request instead: reads need the read privilege, writes and deletes need the write privilege. Lakekeeper offers remote signing to clients that may read, so grant the write privilege together with the read privilege.
 
 If a client does not implement the method Lakekeeper offers — DuckDB, for example, does not support remote signing — it needs its own storage credentials. For S3, region, endpoint and path-style settings are still returned in the table `config`, but no `storage-credentials` entry is returned.
 

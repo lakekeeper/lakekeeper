@@ -156,7 +156,8 @@ where
     ///
     /// An attempt of the queue whose heartbeat timed out counts as failed, whatever its resource
     /// demand, and the retry policy decides whether and how it is retried. This includes an
-    /// attempt that was asked to stop.
+    /// attempt that was asked to stop. The backend counts each such attempt with
+    /// [`record_timed_out_attempt`](crate::service::tasks::record_timed_out_attempt).
     #[tracing::instrument(
         name = "catalog_pick_new_task",
         skip(request, state),

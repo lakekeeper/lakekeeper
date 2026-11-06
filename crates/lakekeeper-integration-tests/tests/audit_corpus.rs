@@ -16,14 +16,16 @@
 //! coverage is exactly the request sequences exercised here, and that set starts small.
 //! Widening it is the point: drive another call through `CatalogServer` and the existing
 //! rules apply to whatever it produces. Reached today: the authorization family in both its
-//! allowed and denied form, and the `idempotent_replay` family — which carries `action` and
+//! allowed and denied form; the `idempotent_replay` family — which carries `action` and
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
-//! `entity` would misread. Not yet reached, cheapest to add first: views and table commits;
-//! the plural `actions`/`entities` form, since every call here checks one action against one
-//! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
-//! the operational family, which grant changes emit; and a real authorizer with an
-//! authenticated actor (`AllowAllAuthorizer` and `random_request_metadata()` reach neither) —
-//! the OpenFGA authorizer is the cheap way in, because CI already provisions it.
+//! `entity` would misread; and the operational family, through the `grant_created` records
+//! of a grant change. Views are reached through the owner property rules, refused before
+//! and after authorization. A storage profile change records two actions on one warehouse.
+//! Not yet reached, cheapest to add first: table commits; several entities in one record;
+//! per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
+//! and a real authorizer with an authenticated actor (`AllowAllAuthorizer` and
+//! `random_request_metadata()` reach neither) — the OpenFGA authorizer is the cheap way in,
+//! because CI already provisions it.
 //!
 //! Keep every test here on a current-thread runtime. Capture is thread-local:
 //! `set_default` binds the subscriber to the calling thread, and the detached
@@ -53,24 +55,33 @@ use std::sync::Arc;
 use iceberg::NamespaceIdent;
 use lakekeeper::{
     api::{
-        RequestMetadataTestBuilder,
+        RequestMetadata, RequestMetadataTestBuilder,
         iceberg::v1::{
-            DataAccess, NamespaceParameters, namespace::NamespaceService as _,
-            tables::TablesService as _,
+            CommitViewRequest, DataAccess, NamespaceParameters, ViewParameters,
+            namespace::NamespaceService as _, tables::TablesService as _, views::ViewService as _,
         },
         management::v1::{
-            grant::{ListGrantsQuery, Service as _},
+            check::{
+                CatalogActionCheckItem, CatalogActionCheckOperation,
+                CatalogActionsBatchCheckRequest, RoleAssignee, TabularIdentOrUuid, UserOrRole,
+                check_internal,
+            },
+            grant::{ApplyGrantsRequest, GrantEntry, ListGrantsQuery, Service as _},
             role::Service as _,
+            warehouse::{
+                Service as _, UpdateWarehouseCredentialRequest, UpdateWarehouseStorageRequest,
+            },
         },
     },
     server::CatalogServer,
     service::{
-        UserId, authn::Actor, authz::AllowAllAuthorizer,
+        RoleId, UserId, authn::Actor, authz::AllowAllAuthorizer,
         events::backends::audit::AuditEventListener, idempotency::IdempotencyKey,
     },
 };
 use lakekeeper_integration_tests::{
-    SetupTestCatalog, create_table_request, memory_io_profile, random_request_metadata,
+    SetupTestCatalog, create_table_request, create_view_request, memory_io_profile,
+    random_request_metadata, trino_engine_request, user_request,
 };
 
 /// How many audit records the request sequence in the test below emits.
@@ -82,7 +93,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 17;
+const EXPECTED_RECORDS: usize = 33;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -351,26 +362,15 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             provider_id: provider.map(|p| p.parse().unwrap()),
             source_id: provider.map(|_| "audited".parse().unwrap()),
         };
-    let _ = lakekeeper::api::management::v1::ApiServer::create_role(
+    let native_role = lakekeeper::api::management::v1::ApiServer::create_role(
         role_request(None),
         ctx.clone(),
         random_request_metadata(),
     )
-    .await;
+    .await
+    .expect("creating a native role");
     let _ = lakekeeper::api::management::v1::ApiServer::create_role(
         role_request(Some("system")),
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await;
-
-    // A transaction commit with no table changes names nothing to check: its record
-    // carries empty `actions`, `entities` and `authorizations` lists.
-    let _ = CatalogServer::commit_transaction(
-        Some(warehouse.clone().into()),
-        iceberg_ext::catalog::rest::CommitTransactionRequest {
-            table_changes: Vec::new(),
-        },
         ctx.clone(),
         random_request_metadata(),
     )
@@ -392,6 +392,169 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             lakekeeper::api::iceberg::v1::PageToken::Empty,
             None,
         ),
+    )
+    .await;
+
+    // Views and the owner property rules. Only a trusted engine that owns
+    // `trino.run-as-owner` may write it: a create by another authenticated client is refused
+    // before authorization (1 denied record), the trusted engine's create is allowed (1). On
+    // the resulting view, a commit that sets the property is refused before authorization (1).
+    // A commit that changes the view's SQL is authorized, then refused once the stored view
+    // shows it holds the property (1 allowed, 1 denied).
+    let definer_view_request = || {
+        let mut request = create_view_request(Some("definer_view"), None);
+        request
+            .properties
+            .insert("trino.run-as-owner".to_string(), "alice".to_string());
+        request
+    };
+    for request_metadata in [user_request(), trino_engine_request()] {
+        let _ = CatalogServer::create_view(
+            namespace_params.clone(),
+            definer_view_request(),
+            ctx.clone(),
+            DataAccess::not_specified(),
+            request_metadata,
+        )
+        .await;
+    }
+    let definer_view = || ViewParameters {
+        prefix: Some(warehouse.clone().into()),
+        view: iceberg::TableIdent::new(namespace.clone(), "definer_view".to_string()),
+    };
+    let view_commit = |updates: serde_json::Value| -> CommitViewRequest {
+        serde_json::from_value(serde_json::json!({ "updates": updates }))
+            .expect("a valid view commit")
+    };
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {"action": "set-properties", "updates": {"trino.run-as-owner": "bob"}}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        user_request(),
+    )
+    .await;
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {
+                "action": "add-view-version",
+                "view-version": {
+                    "version-id": 2,
+                    "schema-id": 0,
+                    "timestamp-ms": chrono::Utc::now().timestamp_millis(),
+                    "summary": {"engine-name": "spark"},
+                    "representations": [
+                        {"type": "sql", "sql": "select 1", "dialect": "spark"}
+                    ],
+                    "default-namespace": []
+                }
+            },
+            {"action": "set-current-view-version", "view-version-id": -1}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        user_request(),
+    )
+    .await;
+
+    // Replacing the view, as the OPA bridge asks for Trino, for a user other than its owner:
+    // one `introspect_permissions` record with one decision, recorded as `commit` (1). Then
+    // the trusted engine switches the view to run as the caller: the commit's record and the
+    // `change_security_mode` record of the identity that sends it (2). Switching it back to
+    // run as its owner adds the owner's own `change_security_mode` record (3).
+    let _ = check_internal(
+        ctx.clone(),
+        random_request_metadata(),
+        CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("replace".to_string()),
+                identity: Some(UserOrRole::User(UserId::new_unchecked("oidc", "bob"))),
+                operation: CatalogActionCheckOperation::ViewReplace {
+                    view: TabularIdentOrUuid::Name {
+                        namespace: namespace.clone(),
+                        table: "definer_view".to_string(),
+                        warehouse_id: warehouse_response.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        },
+    )
+    .await;
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {"action": "remove-properties", "removals": ["trino.run-as-owner"]}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        trino_engine_request(),
+    )
+    .await;
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {"action": "set-properties", "updates": {"trino.run-as-owner": "bob"}}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        trino_engine_request(),
+    )
+    .await;
+
+    // A request that writes several records under one `request_id`: a grant change of two
+    // grants writes its `apply_grants` record plus one `grant_created` record per grant. The
+    // `event_id` rule below needs it.
+    let other_role = lakekeeper::api::management::v1::ApiServer::create_role(
+        lakekeeper::api::management::v1::role::CreateRoleRequest {
+            name: "audited-role-grantee".to_string(),
+            ..role_request(None)
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("creating a second native role");
+    let mut granting = RequestMetadata::test_user(UserId::new_unchecked("oidc", "alice"));
+    granting.with_project_id((*project_id).clone());
+    let grant = |role: RoleId| GrantEntry {
+        privilege: "get_metadata".to_string(),
+        principal: UserOrRole::Role(RoleAssignee::from_role(role)),
+    };
+    lakekeeper::api::management::v1::ApiServer::apply_warehouse_grants(
+        warehouse_response.warehouse_id,
+        ctx.clone(),
+        granting,
+        ApplyGrantsRequest {
+            writes: vec![grant(native_role.id), grant(other_role.id)],
+            deletes: Vec::new(),
+        },
+    )
+    .await
+    .expect("granting to both roles");
+
+    // Replacing the storage credential records `update_storage_credential`. Changing the
+    // storage profile also replaces the credential, so its record carries both actions.
+    let _ = lakekeeper::api::management::v1::ApiServer::update_storage_credential(
+        warehouse_response.warehouse_id,
+        UpdateWarehouseCredentialRequest {
+            new_storage_credential: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    let _ = lakekeeper::api::management::v1::ApiServer::update_storage(
+        warehouse_response.warehouse_id,
+        UpdateWarehouseStorageRequest {
+            storage_profile: memory_io_profile(),
+            storage_credential: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
     )
     .await;
 
@@ -465,18 +628,6 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         );
     }
 
-    let empty_commit = records
-        .iter()
-        .find(|record| record["actions"] == serde_json::json!([]))
-        .unwrap_or_else(|| {
-            panic!(
-                "no record from the empty transaction commit:\n{}",
-                describe(&records)
-            )
-        });
-    assert_eq!(empty_commit["entities"], serde_json::json!([]));
-    assert_eq!(empty_commit["authorizations"], serde_json::json!([]));
-
     // The two renames across namespaces, each a `move` naming its destination namespace.
     let mut moves = records
         .iter()
@@ -491,6 +642,75 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             serde_json::json!({"action_name": "move", "destination": ["audit_corpus_moves"]}),
         ],
         "move records:\n{}",
+        describe(&records)
+    );
+
+    // The owner property refusals: two property writes refused before authorization, one
+    // version change refused after it.
+    let mut owner_refusals = records
+        .iter()
+        .filter_map(|record| record["error"]["type"].as_str())
+        .filter(|error_type| error_type.starts_with("Protected"))
+        .collect::<Vec<_>>();
+    owner_refusals.sort_unstable();
+    assert_eq!(
+        owner_refusals,
+        vec![
+            "ProtectedPropertyModification",
+            "ProtectedPropertyModification",
+            "ProtectedViewVersionChange",
+        ],
+        "owner property refusals:\n{}",
+        describe(&records)
+    );
+
+    // The version change was refused after the request was authorized: its denial and the
+    // allowed record of the same request share one request id.
+    let version_refusal = records
+        .iter()
+        .find(|record| record["error"]["type"] == "ProtectedViewVersionChange")
+        .expect("the version change refusal is checked above");
+    let mut same_request = records
+        .iter()
+        .filter(|record| record["request_id"] == version_refusal["request_id"])
+        .map(|record| record["decision"].as_str().unwrap_or("-"))
+        .collect::<Vec<_>>();
+    same_request.sort_unstable();
+    assert_eq!(
+        same_request,
+        vec!["allowed", "denied"],
+        "records of the refused version change:\n{}",
+        describe(&records)
+    );
+
+    // Every record has its own `event_id`, records of one request included. A rule that
+    // holds trivially when no two records share a request proves nothing, so that case has
+    // to be in the corpus.
+    let mut event_ids = std::collections::HashSet::new();
+    for (index, record) in records.iter().enumerate() {
+        let event_id = record["event_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("record {index} has no `event_id`:\n{}", describe(&records)));
+        assert!(
+            event_ids.insert(event_id),
+            "record {index} repeats `event_id` {event_id}:\n{}",
+            describe(&records)
+        );
+    }
+    // The grant change: its `apply_grants` record and one `grant_created` record per grant,
+    // all under one `request_id`.
+    let grant_request_id = records
+        .iter()
+        .find(|record| record["actions"][0]["action_name"] == "apply_grants")
+        .and_then(|record| record["request_id"].as_str())
+        .unwrap_or_else(|| panic!("no `apply_grants` record:\n{}", describe(&records)));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["request_id"] == grant_request_id)
+            .count(),
+        3,
+        "records of the grant change, which the `event_id` rule above needs:\n{}",
         describe(&records)
     );
 

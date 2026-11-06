@@ -112,8 +112,8 @@ pub(crate) async fn commit_existing_view(
     // guarantees views always have non-NULL `metadata_location`, so the
     // unwrap-into-Some below cannot misfire on a staged row.
     // This is a deliberate pessimistic lock, held through the sub-metadata
-    // writes below — do not swap it for the table commit's optimistic CAS; the
-    // lock must precede those writes to keep lost updates impossible.
+    // writes below; the lock must precede those writes to keep lost updates
+    // impossible.
     let current_metadata_location: Option<String> = sqlx::query_scalar!(
         r#"
         SELECT metadata_location
@@ -403,8 +403,8 @@ async fn sync_view_schemas(
             continue;
         }
         sqlx::query!(
-            r#"INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
-               VALUES ($1, $2, $3, NULL)"#,
+            r#"INSERT INTO view_schema (warehouse_id, view_id, schema_id)
+               VALUES ($1, $2, $3)"#,
             *warehouse_id,
             view_id,
             s.schema_id(),

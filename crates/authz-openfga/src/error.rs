@@ -130,6 +130,35 @@ impl AuthorizationFailureSource for ParseOpenFgaEntityError {
     }
 }
 
+/// The server cannot use the authorization model it resolved at startup.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthModelError {
+    #[error(
+        "OpenFGA authorization model version {configured} is configured, but this Lakekeeper \
+         release uses its own model version {expected}. Remove \
+         `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` and run `lakekeeper migrate`, or set \
+         it to {expected}."
+    )]
+    OwnVersionMismatch {
+        configured: String,
+        expected: String,
+    },
+    #[error(
+        "OpenFGA authorization model version {version} lacks types or relations that this server \
+         checks or writes: {}. Add them to your model, or use the model that `lakekeeper \
+         migrate` of this release installs.",
+        missing.join(", ")
+    )]
+    MissingRelations {
+        version: String,
+        /// `<type>#<relation>` for a missing relation, `<type>` for a missing type
+        /// that the server uses without relations.
+        missing: Vec<String>,
+    },
+    #[error("OpenFGA returned no authorization model for version {version} (model id {model_id}).")]
+    NotReturned { version: String, model_id: String },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum OpenFGAError {
     #[error("OpenFGA client error: {0}")]
@@ -148,6 +177,8 @@ pub enum OpenFGAError {
         "Active authorization model with version {0} not found in OpenFGA. Make sure to run migration first!"
     )]
     ActiveAuthModelNotFound(String),
+    #[error(transparent)]
+    AuthModel(#[from] AuthModelError),
     #[error("OpenFGA Store not found: {0}. Make sure to run migration first!")]
     StoreNotFound(String),
     #[error(
@@ -236,6 +267,7 @@ impl AuthorizationFailureSource for OpenFGAError {
                 ErrorModel::bad_request(err_msg, "NotSupportedWithAssumedRole", None)
             }
             e @ (OpenFGAError::ActiveAuthModelNotFound(_)
+            | OpenFGAError::AuthModel(_)
             | OpenFGAError::StoreNotFound(_)
             | OpenFGAError::GrantBatchLimitTooSmall { .. }
             | OpenFGAError::InvalidQuery(_)) => {
@@ -254,6 +286,7 @@ impl AuthorizationFailureSource for OpenFGAError {
             | OpenFGAError::BatchCheckError(_)
             | OpenFGAError::MissingItemInBatchCheck(_)
             | OpenFGAError::ActiveAuthModelNotFound(_)
+            | OpenFGAError::AuthModel(_)
             | OpenFGAError::StoreNotFound(_)
             | OpenFGAError::GrantBatchLimitTooSmall { .. } => {
                 AuthorizationFailureReason::InternalAuthorizationError

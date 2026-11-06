@@ -157,6 +157,9 @@ pub trait ContractVerification: Debug {
         current_metadata: &TableMetadata,
     ) -> Result<ContractVerificationOutcome, ErrorModel>;
 
+    /// `view_updates` are the updates Lakekeeper commits. When the trusted engine that owns the
+    /// view's owner property changes the query without writing that property, the list ends with
+    /// a `remove-properties` of it that Lakekeeper adds.
     async fn check_view_updates(
         &self,
         _view_updates: &[ViewUpdate],

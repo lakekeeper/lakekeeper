@@ -751,7 +751,7 @@ async fn get_authorizer_server_actions<C: CatalogStore, S: SecretStore>(
     get,
     tag = "permissions-openfga",
     path = "/management/v1/permissions/project/access",
-    params(GetAccessQuery),
+    params(GetAccessQuery, ("x-project-id" = Option<String>, Header, description = "Optional project ID")),
     responses(
             (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
     )
@@ -1721,7 +1721,7 @@ async fn get_server_assignments<C: CatalogStore, S: SecretStore>(
     get,
     tag = "permissions-openfga",
     path = "/management/v1/permissions/project/assignments",
-    params(GetProjectAssignmentsQuery),
+    params(GetProjectAssignmentsQuery, ("x-project-id" = Option<String>, Header, description = "Optional project ID")),
     responses(
             (status = 200, body = GetProjectAssignmentsResponse),
     )
@@ -2073,6 +2073,7 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
     tag = "permissions-openfga",
     path = "/management/v1/permissions/project/assignments",
     request_body = UpdateProjectAssignmentsRequest,
+    params(("x-project-id" = Option<String>, Header, description = "Optional project ID")),
     responses(
             (status = 204, description = "Permissions updated successfully"),
     )

@@ -180,6 +180,15 @@ pub type TableInfo = TabularInfo<TableId>;
 pub type ViewInfo = TabularInfo<ViewId>;
 pub type GenericTabularInfo = TabularInfo<GenericTableId>;
 
+impl TableInfo {
+    /// Whether the table is staged: created with `stage-create` and not committed yet. A
+    /// staged table has no metadata location until its first commit.
+    #[must_use]
+    pub fn is_staged(&self) -> bool {
+        self.metadata_location.is_none()
+    }
+}
+
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("{source}")]
 pub struct InternalParseLocationError {

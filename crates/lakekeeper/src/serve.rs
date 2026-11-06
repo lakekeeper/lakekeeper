@@ -17,7 +17,8 @@ use crate::{
     },
     metrics::MetricsServer,
     service::{
-        CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
+        CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore,
+        ServerAuthentication, ServerInfo, State,
         admission::AdmissionGates,
         authz::{AllowAllAuthorizer, Authorizer, ConfiguredInstanceAdmins},
         contract_verification::ContractVerifiers,
@@ -520,6 +521,7 @@ async fn serve_inner<
             events: dispatcher,
             license_status,
             build_info,
+            authentication: ServerAuthentication::of(authenticator.as_ref()),
         },
     };
 

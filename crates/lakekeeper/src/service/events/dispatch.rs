@@ -478,6 +478,8 @@ pub trait EventListener: Send + Sync + Debug + Display {
     // ===== Table Events =====
 
     /// Invoked after a transaction with multiple table changes has been successfully committed
+    ///
+    /// Lakekeeper does not call `transaction_committed` for a table commit that changes nothing.
     async fn transaction_committed(
         &self,
         _event: types::CommitTransactionEvent,

@@ -7,7 +7,8 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
-    command: ["serve"]
+    # Restarted on purpose after the newer binary migrated the database.
+    command: ["serve", "--force-start"]
     healthcheck: &lakekeeper_healthcheck
       test: ["CMD", "${LAKEKEEPER_INITIAL_HEALTHCHECK_BIN}", "healthcheck"]
       interval: 1s

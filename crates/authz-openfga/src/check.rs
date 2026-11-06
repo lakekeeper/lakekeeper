@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use http::StatusCode;
+#[cfg(feature = "open-api")]
+use lakekeeper::api::management::v1::CHECK_PROJECT_ID_HEADER_DESCRIPTION;
 use lakekeeper::{
     ProjectId, WarehouseId,
     api::{
@@ -58,12 +60,23 @@ fn check_relation<R>(
     }
 }
 
+/// A name addresses the live tabular, as in batch-check. A dropped tabular that can be
+/// restored and a staged table are addressed by id.
+fn tabular_list_flags(by_name: bool) -> TabularListFlags {
+    if by_name {
+        TabularListFlags::active()
+    } else {
+        TabularListFlags::all()
+    }
+}
+
 /// Check if a specific action is allowed on the given object
 #[cfg_attr(feature = "open-api", utoipa::path(
     post,
     tag = "permissions-openfga",
     path = "/management/v1/permissions/check",
     request_body = CheckRequest,
+    params(("x-project-id" = Option<String>, Header, description = CHECK_PROJECT_ID_HEADER_DESCRIPTION)),
     responses(
             (status = 200, body = CheckResponse),
     )
@@ -416,10 +429,7 @@ async fn authorize_check_table<C: CatalogStore, S: SecretStore>(
         C::get_table_info(
             warehouse_id,
             table.clone(),
-            // Include deleted + staged so `/check` evaluates permissions
-            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
-            // tabulars. Matches the bulk /check endpoint.
-            TabularListFlags::all(),
+            tabular_list_flags(matches!(table, TableIdentOrId::Ident(_))),
             api_context.v1_state.catalog.clone(),
         )
     );
@@ -514,10 +524,7 @@ async fn authorize_check_view<C: CatalogStore, S: SecretStore>(
         C::get_view_info(
             warehouse_id,
             view.clone(),
-            // Include deleted + staged so `/check` evaluates permissions
-            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
-            // tabulars. Matches the bulk /check endpoint.
-            TabularListFlags::all(),
+            tabular_list_flags(matches!(view, ViewIdentOrId::Ident(_))),
             api_context.v1_state.catalog.clone(),
         )
     );
@@ -613,10 +620,7 @@ async fn authorize_check_generic_table<C: CatalogStore, S: SecretStore>(
         C::get_generic_table_info(
             warehouse_id,
             generic_table.clone(),
-            // Include deleted + staged so `/check` evaluates permissions
-            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
-            // tabulars. Matches the bulk /check endpoint.
-            TabularListFlags::all(),
+            tabular_list_flags(matches!(generic_table, GenericTableIdentOrId::Ident(_))),
             api_context.v1_state.catalog.clone(),
         )
     );
@@ -899,16 +903,22 @@ mod tests {
         use lakekeeper::{
             api::{
                 CreateNamespaceRequest,
-                iceberg::v1::{Prefix, namespace::NamespaceService},
+                iceberg::v1::{
+                    DataAccess, DropParams, NamespaceParameters, Prefix, TableParameters,
+                    namespace::NamespaceService, tables::TablesService,
+                },
                 management::v1::{
                     ApiServer,
                     role::{CreateRoleRequest, Service as RoleService},
+                    warehouse::TabularDeleteProfile,
                 },
             },
             server::{CatalogServer, NAMESPACE_ID_PROPERTY},
             service::{CreateNamespaceResponse, NamespaceId, NamespaceIdent, authn::UserId},
         };
-        use lakekeeper_integration_tests::{SetupTestCatalog, TestWarehouseResponse};
+        use lakekeeper_integration_tests::{
+            SetupTestCatalog, TestWarehouseResponse, create_table_request,
+        };
         use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
         use openfga_client::client::TupleKey;
         use strum::IntoEnumIterator;
@@ -920,6 +930,7 @@ mod tests {
         async fn setup(
             operator_id: UserId,
             pool: sqlx::PgPool,
+            delete_profile: TabularDeleteProfile,
         ) -> (
             ApiContext<State<OpenFGAAuthorizer, PostgresBackend, SecretsState>>,
             TestWarehouseResponse,
@@ -930,6 +941,7 @@ mod tests {
             let (ctx, warehouse) = SetupTestCatalog::builder()
                 .pool(pool.clone())
                 .authorizer(authorizer.clone())
+                .delete_profile(delete_profile)
                 .user_id(Some(operator_id.clone()))
                 .build()
                 .setup()
@@ -953,7 +965,8 @@ mod tests {
         #[sqlx::test]
         async fn test_check_assume_role(pool: sqlx::PgPool) {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let (ctx, _warehouse, _namespace) = setup(operator_id.clone(), pool).await;
+            let (ctx, _warehouse, _namespace) =
+                setup(operator_id.clone(), pool, TabularDeleteProfile::Hard {}).await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user_metadata = Arc::new(RequestMetadata::test_user(user_id.clone()));
             let operator_metadata = Arc::new(RequestMetadata::test_user(operator_id.clone()));
@@ -996,7 +1009,8 @@ mod tests {
         #[sqlx::test]
         async fn test_check(pool: sqlx::PgPool) {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-            let (ctx, warehouse, namespace) = setup(operator_id.clone(), pool).await;
+            let (ctx, warehouse, namespace) =
+                setup(operator_id.clone(), pool, TabularDeleteProfile::Hard {}).await;
             let namespace_id = NamespaceId::from_str_or_internal(
                 namespace
                     .properties
@@ -1149,6 +1163,83 @@ mod tests {
                 .await
                 .unwrap();
             }
+        }
+
+        /// A name addresses the live table. A dropped table that can be restored is addressed
+        /// by id.
+        #[sqlx::test]
+        async fn test_check_table_by_name_ignores_dropped_table(pool: sqlx::PgPool) {
+            let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let (ctx, warehouse, namespace) = setup(
+                operator_id.clone(),
+                pool,
+                TabularDeleteProfile::Soft {
+                    expiration_seconds: chrono::Duration::seconds(3600),
+                },
+            )
+            .await;
+            let operator_metadata = RequestMetadata::test_user(operator_id.clone());
+            let prefix = Some(Prefix::from(warehouse.warehouse_id.to_string()));
+            let table_id = CatalogServer::create_table(
+                NamespaceParameters {
+                    prefix: prefix.clone(),
+                    namespace: namespace.namespace.clone(),
+                },
+                create_table_request(Some("dropped_table".to_string()), None),
+                DataAccess::not_specified(),
+                ctx.clone(),
+                operator_metadata.clone(),
+            )
+            .await
+            .unwrap()
+            .metadata
+            .uuid();
+            CatalogServer::drop_table(
+                TableParameters {
+                    prefix,
+                    table: TableIdent::new(
+                        namespace.namespace.clone(),
+                        "dropped_table".to_string(),
+                    ),
+                },
+                DropParams {
+                    purge_requested: false,
+                    force: false,
+                },
+                ctx.clone(),
+                operator_metadata.clone(),
+            )
+            .await
+            .unwrap();
+
+            let check = |table| CheckRequest {
+                identity: None,
+                operation: CheckOperation::Table {
+                    action: TableAction::GetMetadata,
+                    table,
+                },
+            };
+            let by_name = check(TabularIdentOrUuid::Name {
+                namespace: namespace.namespace.clone(),
+                table: "dropped_table".to_string(),
+                warehouse_id: warehouse.warehouse_id,
+            });
+            let err = check_internal(ctx.clone(), Arc::new(operator_metadata.clone()), by_name)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                (err.error.code, err.error.r#type.as_str()),
+                (404, "NoSuchTableException")
+            );
+
+            let by_id = check(TabularIdentOrUuid::IdInWarehouse {
+                warehouse_id: warehouse.warehouse_id,
+                table_id,
+            });
+            let allowed = check_internal(ctx, Arc::new(operator_metadata), by_id)
+                .await
+                .unwrap();
+            assert!(allowed);
         }
     }
 }

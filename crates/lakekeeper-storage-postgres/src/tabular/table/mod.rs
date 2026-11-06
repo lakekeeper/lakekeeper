@@ -818,8 +818,8 @@ pub mod tests {
     use iceberg::{
         NamespaceIdent, TableIdent,
         spec::{
-            NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-            UnboundPartitionSpec,
+            NestedField, Operation, PartitionStatisticsFile, PrimitiveType, Schema, Snapshot,
+            SnapshotReference, StatisticsFile, UnboundPartitionSpec,
         },
     };
     use iceberg_ext::catalog::rest::CreateTableRequest;
@@ -827,7 +827,7 @@ pub mod tests {
         api::{
             iceberg::{
                 types::PageToken,
-                v1::{PaginationQuery, tables::LoadTableFilters},
+                v1::{PaginationQuery, namespace::NamespaceDropFlags, tables::LoadTableFilters},
             },
             management::v1::{DeleteKind, warehouse::WarehouseStatus},
         },
@@ -847,7 +847,7 @@ pub mod tests {
     use super::*;
     use crate::{
         CatalogState, PostgresBackend,
-        namespace::tests::initialize_namespace,
+        namespace::{drop_namespace, tests::initialize_namespace},
         tabular::{
             drop_tabular, get_tabular_infos_by_idents, get_tabular_infos_by_ids,
             get_tabular_infos_by_s3_location, list_tabulars, mark_tabular_as_deleted,
@@ -2209,6 +2209,81 @@ pub mod tests {
     }
 
     #[sqlx::test]
+    async fn test_by_ident_lookup_with_dropped_prefers_live_then_latest_dropped(
+        pool: sqlx::PgPool,
+    ) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let create = || {
+            initialize_table(
+                warehouse_id,
+                state.clone(),
+                false,
+                Some(namespace.clone()),
+                None,
+                Some("reused_name".to_string()),
+            )
+        };
+        let lookup = |ident: TableIdent| {
+            let state = state.clone();
+            async move {
+                get_tabular_infos_by_idents(
+                    warehouse_id,
+                    &[TabularIdentBorrowed::Table(&ident)],
+                    TabularListFlags::all(),
+                    &state.read_pool(),
+                )
+                .await
+                .unwrap()
+                .into_values()
+                .map(|info| info.tabular_id())
+                .collect::<Vec<_>>()
+            }
+        };
+
+        let drop = |table_id: TableId| {
+            let pool = pool.clone();
+            async move {
+                let mut transaction = pool.begin().await.unwrap();
+                mark_tabular_as_deleted(
+                    warehouse_id,
+                    table_id.into(),
+                    false,
+                    None,
+                    &mut transaction,
+                )
+                .await
+                .unwrap();
+                transaction.commit().await.unwrap();
+            }
+        };
+
+        let mut last_dropped = None;
+        for _ in 0..3 {
+            let table = create().await;
+            drop(table.table_id).await;
+            assert_eq!(
+                lookup(table.table_ident.clone()).await,
+                vec![table.table_id.into()]
+            );
+            last_dropped = Some(table.table_id);
+        }
+
+        let live = create().await;
+        assert_ne!(last_dropped, Some(live.table_id));
+        assert_eq!(
+            lookup(live.table_ident.clone()).await,
+            vec![live.table_id.into()]
+        );
+
+        drop(live.table_id).await;
+        assert_eq!(lookup(live.table_ident).await, vec![live.table_id.into()]);
+    }
+
+    #[sqlx::test]
     async fn test_list_tables(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -3101,6 +3176,360 @@ pub mod tests {
 
         assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 0);
         assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 0);
+    }
+
+    /// A table whose snapshot 1 has no schema id, as Iceberg Java 0.11 and older wrote, snapshot 2
+    /// with schema id 0 on `main`, and both statistics files for snapshot 1. Each table has its
+    /// own namespace.
+    struct SchemalessSnapshotTable {
+        pool: sqlx::PgPool,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_ident: TableIdent,
+        table_id: TableId,
+        metadata: TableMetadata,
+    }
+
+    impl SchemalessSnapshotTable {
+        /// Two such tables in one new warehouse.
+        async fn pair(pool: sqlx::PgPool) -> (Self, Self) {
+            let state = CatalogState::from_pools(pool.clone(), pool.clone());
+            let (_, warehouse_id) = initialize_warehouse(state, None, None, None, true).await;
+            (
+                Self::create(pool.clone(), warehouse_id).await,
+                Self::create(pool, warehouse_id).await,
+            )
+        }
+
+        async fn create(pool: sqlx::PgPool, warehouse_id: WarehouseId) -> Self {
+            let state = CatalogState::from_pools(pool.clone(), pool.clone());
+            let namespace =
+                NamespaceIdent::from_vec(vec![format!("ns_{}", Uuid::now_v7())]).unwrap();
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+            let namespace_id = get_namespace_id(state, warehouse_id, &namespace).await;
+            let table_id: TableId = Uuid::now_v7().into();
+            let location = format!("s3://my_bucket/{}", Uuid::now_v7());
+            let base = create_table_request_into_table_metadata(
+                table_id,
+                CreateTableRequest {
+                    name: "t".to_string(),
+                    location: Some(location.clone()),
+                    schema: two_col(),
+                    partition_spec: Some(UnboundPartitionSpec::builder().build()),
+                    write_order: None,
+                    stage_create: Some(false),
+                    properties: None,
+                },
+                &AllowedFormatVersions::default(),
+                None,
+            )
+            .unwrap();
+            let summary = Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            };
+            let without_schema_id = Snapshot::builder()
+                .with_snapshot_id(1)
+                .with_parent_snapshot_id(None)
+                .with_sequence_number(1)
+                .with_manifest_list(format!("{location}/metadata/snap-1.avro"))
+                .with_summary(summary.clone())
+                .with_timestamp_ms(base.last_updated_ms() + 1)
+                .build();
+            let with_schema_id = Snapshot::builder()
+                .with_snapshot_id(2)
+                .with_parent_snapshot_id(Some(1))
+                .with_sequence_number(2)
+                .with_schema_id(0)
+                .with_manifest_list(format!("{location}/metadata/snap-2.avro"))
+                .with_summary(summary)
+                .with_timestamp_ms(base.last_updated_ms() + 2)
+                .build();
+            let metadata = base
+                .into_builder(None)
+                .set_branch_snapshot(without_schema_id, MAIN_BRANCH)
+                .unwrap()
+                .set_branch_snapshot(with_schema_id, MAIN_BRANCH)
+                .unwrap()
+                .set_statistics(StatisticsFile {
+                    snapshot_id: 1,
+                    statistics_path: format!("{location}/metadata/stats-1.puffin"),
+                    file_size_in_bytes: 100,
+                    file_footer_size_in_bytes: 10,
+                    key_metadata: None,
+                    blob_metadata: vec![BlobMetadata {
+                        r#type: "apache-datasketches-theta-v1".to_string(),
+                        snapshot_id: 1,
+                        sequence_number: 1,
+                        fields: vec![1],
+                        properties: HashMap::new(),
+                    }],
+                })
+                .set_partition_statistics(PartitionStatisticsFile {
+                    snapshot_id: 1,
+                    statistics_path: format!("{location}/metadata/partition-stats-1.parquet"),
+                    file_size_in_bytes: 100,
+                })
+                .build()
+                .unwrap()
+                .metadata;
+            assert_eq!(metadata.snapshot_by_id(1).unwrap().schema_id(), None);
+
+            let table = Self {
+                pool,
+                warehouse_id,
+                namespace_id,
+                table_ident: TableIdent::new(namespace, "t".to_string()),
+                table_id,
+                metadata,
+            };
+            table.create_from(&table.metadata, "00000").await;
+            assert_eq!(table.load().await, table.metadata);
+            table
+        }
+
+        /// Creates the table from `metadata` under the same ident and table id.
+        async fn create_from(&self, metadata: &TableMetadata, metadata_file: &str) {
+            let metadata_location: Location = format!(
+                "{}/metadata/{metadata_file}.metadata.json",
+                metadata.location()
+            )
+            .parse()
+            .unwrap();
+            let mut transaction = self.pool.begin().await.unwrap();
+            create_table(
+                TableCreation {
+                    warehouse_id: self.warehouse_id,
+                    namespace_id: self.namespace_id,
+                    table_ident: &self.table_ident,
+                    table_metadata: metadata,
+                    metadata_location: Some(&metadata_location),
+                },
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+        }
+
+        async fn load(&self) -> TableMetadata {
+            let mut loaded = load_tables(
+                self.warehouse_id,
+                [self.table_id],
+                false,
+                &LoadTableFilters::default(),
+                &mut self.pool.begin().await.unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(loaded.len(), 1);
+            loaded.remove(0).table_metadata
+        }
+
+        /// Rows of this table in `table_snapshot`, `table_statistics`, `partition_statistics`
+        /// and `table_refs`.
+        async fn snapshot_rows(&self) -> (i64, i64, i64, i64) {
+            sqlx::query_as(
+                r#"SELECT
+                    (SELECT count(*) FROM table_snapshot WHERE warehouse_id = $1 AND table_id = $2),
+                    (SELECT count(*) FROM table_statistics WHERE warehouse_id = $1 AND table_id = $2),
+                    (SELECT count(*) FROM partition_statistics WHERE warehouse_id = $1 AND table_id = $2),
+                    (SELECT count(*) FROM table_refs WHERE warehouse_id = $1 AND table_id = $2)"#,
+            )
+            .bind(*self.warehouse_id)
+            .bind(*self.table_id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+        }
+    }
+
+    async fn hard_drop(table: &SchemalessSnapshotTable) {
+        let mut transaction = table.pool.begin().await.unwrap();
+        drop_tabular(
+            table.warehouse_id,
+            table.table_id.into(),
+            false,
+            None,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    /// Dropping a table removes all of its snapshots, also those without a schema id, and their
+    /// statistics. The other table keeps all of its rows, and the same file registers again
+    /// under the same table id.
+    #[sqlx::test]
+    async fn hard_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
+        let (table, other) = SchemalessSnapshotTable::pair(pool).await;
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+
+        hard_drop(&table).await;
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.load().await, other.metadata);
+
+        table.create_from(&table.metadata, "00001").await;
+        assert_eq!(table.load().await, table.metadata);
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+    }
+
+    /// `convalidated` of the key from `table_snapshot` to `"table"`, `None` if it is missing.
+    async fn snapshot_table_key(pool: &sqlx::PgPool) -> Option<bool> {
+        sqlx::query_scalar(
+            "SELECT convalidated FROM pg_constraint \
+             WHERE conrelid = 'table_snapshot'::regclass AND conname = 'table_snapshot_table_id_fkey'",
+        )
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The migration that adds the key from `table_snapshot` to `"table"`.
+    const KEY_MIGRATION: i64 = 20_261_105_120_000;
+
+    /// Applies the migrations whose version `include` accepts, with sqlx's migrator, which runs
+    /// no step after the commit.
+    async fn apply_migrations(pool: &sqlx::PgPool, include: impl Fn(i64) -> bool) {
+        use sqlx::migrate::Migrate as _;
+
+        let migrator = sqlx::migrate!();
+        assert!(migrator.iter().any(|m| m.version == KEY_MIGRATION));
+        let mut conn = pool.acquire().await.unwrap();
+        conn.ensure_migrations_table("_sqlx_migrations")
+            .await
+            .unwrap();
+        for migration in migrator.iter().filter(|m| include(m.version)) {
+            conn.apply("_sqlx_migrations", migration).await.unwrap();
+        }
+    }
+
+    async fn migrate_to_before_the_key(pool: &sqlx::PgPool) {
+        apply_migrations(pool, |version| version < KEY_MIGRATION).await;
+    }
+
+    /// A new install: in the empty catalog the migration adds the key without validating it, and
+    /// the same `migrate` validates it after the commit.
+    #[sqlx::test(migrations = false)]
+    async fn migrate_validates_the_key_the_migration_added(pool: sqlx::PgPool) {
+        crate::migrations::migrate_core_only(&pool).await.unwrap();
+        assert_eq!(snapshot_table_key(&pool).await, Some(true));
+    }
+
+    /// The migration leaves the key out of a catalog with tables. The next `migrate` adds it after
+    /// the commit, although no migration is left to apply, removes what drops left behind and
+    /// validates it. The same file then registers again under the same table id.
+    #[sqlx::test(migrations = false)]
+    async fn migrate_adds_the_key_the_migration_left_out(pool: sqlx::PgPool) {
+        migrate_to_before_the_key(&pool).await;
+        let (table, other) = SchemalessSnapshotTable::pair(pool.clone()).await;
+        hard_drop(&table).await;
+        assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
+
+        apply_migrations(&pool, |version| version >= KEY_MIGRATION).await;
+        assert_eq!(snapshot_table_key(&pool).await, None);
+
+        crate::migrations::migrate_core_only(&pool).await.unwrap();
+        assert_eq!(snapshot_table_key(&pool).await, Some(true));
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.load().await, other.metadata);
+
+        table.create_from(&table.metadata, "00001").await;
+        assert_eq!(table.load().await, table.metadata);
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+    }
+
+    /// Returns once a session of this test's database waits for `mode` on `table_snapshot`.
+    async fn wait_for_snapshot_lock_request(pool: &sqlx::PgPool, mode: &str) {
+        let waiting = async {
+            loop {
+                let waiting: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_locks \
+                     WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+                     AND relation = 'table_snapshot'::regclass AND mode = $1 AND NOT granted)",
+                )
+                .bind(mode)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                if waiting {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .unwrap_or_else(|_| panic!("no session waits for {mode} on table_snapshot"));
+    }
+
+    /// Other sessions keep both tables busy. While a writer holds `ROW EXCLUSIVE`, `migrate` gives
+    /// up on the key after its bounded retries and succeeds without it. Then another session also
+    /// holds `SHARE UPDATE EXCLUSIVE`, as a vacuum does. The next `migrate` waits for both
+    /// sessions, adds the key, removes what drops left behind and validates the key.
+    #[sqlx::test(migrations = false)]
+    async fn migrate_succeeds_while_other_sessions_keep_both_tables_busy(pool: sqlx::PgPool) {
+        migrate_to_before_the_key(&pool).await;
+        let (table, other) = SchemalessSnapshotTable::pair(pool.clone()).await;
+        hard_drop(&table).await;
+        assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
+
+        let mut writer = pool.begin().await.unwrap();
+        sqlx::query(r#"LOCK TABLE table_snapshot, "table" IN ROW EXCLUSIVE MODE"#)
+            .execute(&mut *writer)
+            .await
+            .unwrap();
+        crate::migrations::migrate_core_only(&pool).await.unwrap();
+        assert_eq!(snapshot_table_key(&pool).await, None);
+        assert_eq!(table.snapshot_rows().await, (1, 1, 0, 0));
+
+        let mut vacuum = pool.begin().await.unwrap();
+        sqlx::query(r#"LOCK TABLE table_snapshot, "table" IN SHARE UPDATE EXCLUSIVE MODE"#)
+            .execute(&mut *vacuum)
+            .await
+            .unwrap();
+        let migrate = tokio::spawn({
+            let pool = pool.clone();
+            async move { crate::migrations::migrate_core_only(&pool).await }
+        });
+        wait_for_snapshot_lock_request(&pool, "ShareUpdateExclusiveLock").await;
+        vacuum.commit().await.unwrap();
+        wait_for_snapshot_lock_request(&pool, "ShareRowExclusiveLock").await;
+        writer.commit().await.unwrap();
+        migrate.await.unwrap().unwrap();
+        assert_eq!(snapshot_table_key(&pool).await, Some(true));
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
+        assert_eq!(other.load().await, other.metadata);
+    }
+
+    /// A recursive namespace drop deletes its tabulars in bulk. It removes the snapshots without
+    /// schema id and their statistics. The table in the other namespace keeps all of its rows.
+    #[sqlx::test]
+    async fn recursive_namespace_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
+        let (table, other) = SchemalessSnapshotTable::pair(pool).await;
+        assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
+
+        let mut transaction = table.pool.begin().await.unwrap();
+        drop_namespace(
+            table.warehouse_id,
+            table.namespace_id,
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(table.snapshot_rows().await, (0, 0, 0, 0));
+        assert_eq!(other.snapshot_rows().await, (2, 1, 1, 1));
     }
 
     /// Create-side invariant: the schema_field -> tabular_field FK rejects a field row with no

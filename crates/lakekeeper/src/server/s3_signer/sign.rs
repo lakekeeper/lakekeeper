@@ -69,11 +69,11 @@ fn sends_unsigned_trailer(headers: &HashMap<String, Vec<String>>) -> bool {
 }
 
 const HOST_HEADER: &str = "host";
-const CACHEABLE_METHODS: &[http::Method] = &[http::Method::GET, http::Method::HEAD];
-// The two values the Iceberg REST spec defines for a sign response: `private` lets the
-// client reuse the signature for the same method, region and URI; `no-cache` does not.
+// The Iceberg REST spec's value for a signature the client must not reuse. Iceberg's
+// signer client caches a `private` signature per process, keyed on method, region and URI
+// only, and hands it to every principal in that process. A signature is authorized for one
+// principal, so every response carries `no-cache`.
 static CACHE_CONTROL_NO_CACHE: HeaderValue = HeaderValue::from_static("no-cache");
-static CACHE_CONTROL_PRIVATE: HeaderValue = HeaderValue::from_static("private");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
@@ -488,14 +488,7 @@ async fn sign(
     }
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CACHE_CONTROL,
-        if CACHEABLE_METHODS.contains(request_method) {
-            CACHE_CONTROL_PRIVATE.clone()
-        } else {
-            CACHE_CONTROL_NO_CACHE.clone()
-        },
-    );
+    headers.insert(header::CACHE_CONTROL, CACHE_CONTROL_NO_CACHE.clone());
 
     let sign_response = S3SignResponse {
         uri: output_uri,
@@ -1594,11 +1587,6 @@ mod test {
         s3::{S3AccessKeyCredential, S3UrlStyleDetectionMode},
     };
 
-    /// A sign response says in its HTTP `Cache-Control` whether the client may reuse the
-    /// signature: Iceberg caches it per method, region and URI when the header is exactly
-    /// `private`. Every batch delete of a bucket goes to the same URI with another body, so
-    /// only reads may be reused. The JSON headers are copied onto the S3 request, so the
-    /// caching decision must not appear among them.
     /// Signs a PUT of `data/x.parquet` with the given client headers and returns the headers
     /// of the response body.
     async fn sign_put(headers: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
@@ -1697,8 +1685,13 @@ mod test {
         }
     }
 
+    /// A sign response says in its HTTP `Cache-Control` whether the client may reuse the
+    /// signature. Iceberg keeps one cache per process, keyed on method, region and URI only,
+    /// and serves a signature from a `private` response to every principal in the process.
+    /// So no signature may be reused, for reads and writes alike. The JSON headers are copied
+    /// onto the S3 request, so the caching decision must not appear among them.
     #[tokio::test]
-    async fn test_cache_control_is_an_http_header_set_by_method() {
+    async fn test_cache_control_forbids_reuse_for_every_method() {
         let profile = S3Profile::builder()
             .region("local".to_string())
             .flavor(S3Flavor::S3Compat)
@@ -1713,12 +1706,12 @@ mod test {
         let uri =
             url::Url::parse("http://s3.example.com:8333/bucket/wh/tbl/data/x.parquet").unwrap();
 
-        for (method, expected) in [
-            (http::Method::GET, "private"),
-            (http::Method::HEAD, "private"),
-            (http::Method::PUT, "no-cache"),
-            (http::Method::POST, "no-cache"),
-            (http::Method::DELETE, "no-cache"),
+        for method in [
+            http::Method::GET,
+            http::Method::HEAD,
+            http::Method::PUT,
+            http::Method::POST,
+            http::Method::DELETE,
         ] {
             let (http_headers, body) = sign(
                 &profile,
@@ -1739,7 +1732,7 @@ mod test {
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.to_str().unwrap()))
                 .collect();
-            assert_eq!(http_headers, [("cache-control", expected)], "{method}");
+            assert_eq!(http_headers, [("cache-control", "no-cache")], "{method}");
             assert!(
                 !body
                     .headers

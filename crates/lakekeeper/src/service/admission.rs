@@ -15,7 +15,9 @@
 //! Keeping it separate means a gate can return the right HTTP semantics (a
 //! denial is not an authentication failure, and "permission service
 //! unreachable" is not a `401`). A gate decides about a user: it sees the
-//! [`UserId`] it admits, never the project, warehouse or token of the request.
+//! [`UserId`] it admits and can test the request's token against a
+//! [`ClaimRule`](limes::ClaimRule), never a claim value, nor the project or
+//! warehouse of the request.
 //!
 //! Gates are composed as a list ([`AdmissionGates`]) and evaluated in
 //! registration order; the first rejection wins and short-circuits the rest.
@@ -355,11 +357,11 @@ impl From<Admission> for GateDecision {
     }
 }
 
-/// What an [`AdmissionGate`] decides from: the user being admitted, and who
-/// triggered the evaluation.
+/// What an [`AdmissionGate`] decides from: the user being admitted, the claims
+/// of their token, and who triggered the evaluation.
 ///
-/// A gate sees no project, warehouse or token, so its answer is about the user
-/// alone. The roles it grants hold in every project.
+/// A gate sees no project or warehouse, so the roles it grants hold in every
+/// project.
 ///
 /// Non-exhaustive so further inputs can be added without a breaking change.
 /// Construct with [`AdmissionContext::new`]; gates read the fields they need.
@@ -368,6 +370,9 @@ impl From<Admission> for GateDecision {
 pub struct AdmissionContext<'a> {
     /// The user being admitted.
     pub user_id: &'a UserId,
+    /// The claims of the request's token, which a gate can test but not read.
+    /// Empty unless set with [`with_token_claims`](Self::with_token_claims).
+    pub token_claims: TokenClaims<'a>,
     /// Who triggered the evaluation, for audit records and logs. Not an input
     /// to the decision.
     pub triggered_by: AdmissionTrigger<'a>,
@@ -388,9 +393,54 @@ impl<'a> AdmissionContext<'a> {
     ) -> Self {
         Self {
             user_id,
+            token_claims: TokenClaims::default(),
             triggered_by,
             events,
         }
+    }
+
+    /// Let gates test `token_claims`.
+    #[must_use]
+    pub fn with_token_claims(mut self, token_claims: TokenClaims<'a>) -> Self {
+        self.token_claims = token_claims;
+        self
+    }
+}
+
+/// The claims of a request's token, which a gate can test against a
+/// [`ClaimRule`](limes::ClaimRule) but never read, so no claim value reaches a
+/// gate's caches, logs or records.
+#[derive(Clone, Copy, Default)]
+pub struct TokenClaims<'a> {
+    claims: Option<&'a serde_json::Value>,
+}
+
+// Claim values stay out of every rendering of the context.
+impl std::fmt::Debug for TokenClaims<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenClaims")
+            .field("present", &self.claims.is_some())
+            .finish()
+    }
+}
+
+impl<'a> TokenClaims<'a> {
+    /// The claims of `metadata`'s token. Empty when the request carries none.
+    #[must_use]
+    pub fn from_request(metadata: &'a RequestMetadata) -> Self {
+        Self {
+            claims: metadata
+                .authentication()
+                .map(limes::Authentication::all_claims),
+        }
+    }
+
+    /// Whether the token satisfies `rule`.
+    ///
+    /// Without a token no rule holds, not even one that asks for a claim to be absent.
+    #[must_use]
+    pub fn satisfy(&self, rule: &limes::ClaimRule) -> bool {
+        self.claims.is_some_and(|claims| rule.matches(claims))
     }
 }
 
@@ -448,7 +498,8 @@ impl<'a> AdmissionTrigger<'a> {
 /// A single post-authentication admission check.
 ///
 /// Implementations are expected to be cheap and to cache aggressively: `admit`
-/// runs on the hot path of every authenticated request.
+/// runs on the hot path of every authenticated request. Never cache the outcome
+/// of a claim test by user: it belongs to the request's token.
 #[async_trait]
 pub trait AdmissionGate: std::fmt::Debug + Send + Sync {
     /// Short, stable name used in logs and metrics.
@@ -456,8 +507,9 @@ pub trait AdmissionGate: std::fmt::Debug + Send + Sync {
 
     /// Decide whether the (already authenticated) request may proceed.
     ///
-    /// [`AdmissionContext`] carries the user being admitted and who triggered
-    /// the evaluation. Return [`GateDecision::admit`] for a plain allow, or
+    /// [`AdmissionContext`] carries the user being admitted, the claims of
+    /// their token and who triggered the evaluation. Return
+    /// [`GateDecision::admit`] for a plain allow, or
     /// [`GateDecision::with_roles`] to also contribute roles resolved in the
     /// same call. A gate that governs only some principals must return
     /// [`GateDecision::not_applicable`] for the rest.
@@ -1021,6 +1073,56 @@ mod tests {
         assert!(rendered.contains("Role"), "{rendered}");
         assert!(
             rendered.contains(&md.request_id().to_string()),
+            "{rendered}"
+        );
+    }
+
+    fn data_team_member() -> RequestMetadata {
+        RequestMetadata::test_user_with_claims(
+            TEST_USER.clone(),
+            serde_json::json!({ "groups": ["data-team"] }),
+        )
+    }
+
+    #[test]
+    fn a_context_holds_the_claims_it_is_given() {
+        let md = data_team_member();
+        let rule = limes::ClaimRule::any_of("groups", ["data-team"]).unwrap();
+        assert!(!context_for(&md).token_claims.satisfy(&rule));
+        assert!(
+            context_for(&md)
+                .with_token_claims(TokenClaims::from_request(&md))
+                .token_claims
+                .satisfy(&rule)
+        );
+    }
+
+    /// A rule that asks for a missing claim holds on a token without it, but never on a
+    /// request with no token at all.
+    #[test]
+    fn without_a_token_no_rule_holds() {
+        let absent = limes::ClaimRule::exists("groups", false).unwrap();
+        let unauthenticated = RequestMetadata::new_unauthenticated();
+        assert!(!TokenClaims::from_request(&unauthenticated).satisfy(&absent));
+        assert!(!TokenClaims::default().satisfy(&absent));
+
+        let no_groups = RequestMetadata::test_user_with_claims(
+            TEST_USER.clone(),
+            serde_json::json!({ "sub": "u" }),
+        );
+        assert!(TokenClaims::from_request(&no_groups).satisfy(&absent));
+    }
+
+    #[test]
+    fn the_context_debug_names_no_claim_value() {
+        let md = data_team_member();
+        let rendered = format!(
+            "{:?}",
+            context_for(&md).with_token_claims(TokenClaims::from_request(&md))
+        );
+        assert!(!rendered.contains("data-team"), "{rendered}");
+        assert!(
+            rendered.contains("TokenClaims { present: true }"),
             "{rendered}"
         );
     }

@@ -66,6 +66,12 @@ services:
       - LAKEKEEPER__OPENFGA__CLIENT_SECRET=xqE1vUrifVDKAZdLuz6JAnDxMYLdGu5z
       - LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
       - LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES=true
+      # Required for Trino SECURITY DEFINER views: only a trusted engine may write the "trino.run-as-owner" property.
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
+      # The "trino" Keycloak service principal that Trino's catalog uses in the Trino notebook.
+      # The notebook connects to Trino as user "trino", so Trino names that user as the owner of DEFINER views; use SECURITY INVOKER to run a view as the querying user.
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["94eb1d88-7854-43a0-b517-a75f92c533a5"]
       - RUST_LOG=info,lakekeeper=trace,middle=trace
     command: ["serve"]
     healthcheck:

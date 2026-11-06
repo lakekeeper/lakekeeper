@@ -430,8 +430,10 @@ namespace Lakekeeper {
     // the protection cleared first, or `force` set on the request.
     protected: Bool,
     // Whether this warehouse has soft-deletion configured. When true, a `force`
-    // drop bypasses the configured grace period and is irreversible immediately;
-    // when false, drops are already hard deletes and `force` changes nothing.
+    // drop bypasses the configured grace period and is irreversible immediately.
+    // When false, drops are already hard deletes, and `force` only skips the
+    // protection against deletion. A call that bypasses the grace period also
+    // needs `ModifySoftDeletion` on this warehouse; see there.
     soft_delete_enabled: Bool,
     // What the principal being authorized holds here and above; see `Grants`.
     principal_privileges: WarehousePrincipalPrivileges,
@@ -625,18 +627,33 @@ namespace Lakekeeper {
   //                              or data-access credentials. It has no ladder and
   //                              no per-level parts.
   //
+  // One concrete action is also a group: `UpdateStorage` contains
+  // `UpdateStorageCredential`, see there.
+  //
   // A `<Level>Actions` group covers what may be done to the object. Deciding who
   // else may act takes a grant-administration or a policy-administration group;
   // see "Grant Administration Actions" and "Cedar Policy Actions" near the end
   // of this file.
   //
   // Each level has a ladder that runs from the narrowest step to the widest.
-  // Every ladder starts at Describe and ends at Modify:
+  // Every ladder starts at Describe and ends at Manage:
   //
-  //   Server, Project, Warehouse, Namespace   Describe < Create < Modify
-  //   Table, View, GenericTable               Describe < Select < Write < Modify
-  //   Tag                                     Describe < Apply < Modify
+  //   Server, Project, Warehouse, Namespace   Describe < Create < Manage
+  //   Table, View, GenericTable               Describe < Select < Write < Manage
+  //   Tag                                     Describe < Apply < Manage
   //   Role                                    no ladder — name the actions
+  //
+  // The predefined `create` policies permit `<Level>CreateActions` without the
+  // actions that show what is inside a container: `ListEverythingInWarehouse`,
+  // `ListEverythingInNamespace`, the tasks and the endpoint statistics.
+  //
+  // `<Level>Actions` holds the whole ladder plus the level's tag action:
+  // `ManageWarehouseTags`, `ManageNamespaceTags`, `ManageTableTags`,
+  // `ManageViewTags`, `ManageGenericTableTags`, and `CreateTag` on a project.
+  // No group below `<Level>Actions` holds a tag action, because tags can decide
+  // access.
+  // On the server and on a tag, `<Level>Actions` holds the same as
+  // `<Level>ManageActions`.
   //
   // Read the nesting from the policy side rather than from the `in [...]` list.
   // The declaration
@@ -645,16 +662,23 @@ namespace Lakekeeper {
   //
   // puts describing inside creating. So a policy on the wider group
   //
-  //   permit (principal, action in Lakekeeper::Action::"ProjectModifyActions", resource)
+  //   permit (principal, action in Lakekeeper::Action::"ProjectManageActions", resource)
   //
   // also allows every create action and every describe action. Permit the
   // narrowest group that covers what you mean to allow. A forbid works the same
   // way: forbidding `ProjectActions` forbids everything below it.
   //
   // Each block below names its own ladder in one line and points back here.
+  //
+  // Every level also has the deprecated `<Level>ModifyActions`, which holds exactly
+  // what `<Level>Actions` holds. The server logs a warning for every loaded policy
+  // that names one, and the policy API refuses a new or changed policy that names
+  // one. Write `<Level>Actions` to include tagging, or `<Level>ManageActions` to
+  // leave tagging out.
 
   // ---------- Server Actions ----------
-  // Actions on the server: Describe < Create < Modify < ServerActions.
+  // Actions on the server: Describe < Create < Manage. `ServerActions` holds
+  // the same as `ServerManageActions`.
   // See "How action groups are named and nested" above for how to read this.
   //
   // At a server action a user carries their groups; see "USER ROLES" at `User`.
@@ -679,7 +703,7 @@ namespace Lakekeeper {
   //   permit (principal, action in Lakekeeper::Action::"ServerCreateActions", resource is Lakekeeper::Server)
   //   when { resource.principal_privileges.direct.create };
   //
-  //   permit (principal, action in Lakekeeper::Action::"ServerModifyActions", resource is Lakekeeper::Server)
+  //   permit (principal, action in Lakekeeper::Action::"ServerManageActions", resource is Lakekeeper::Server)
   //   when { resource.principal_privileges.direct.manage };
   //
   //   permit (principal, action in Lakekeeper::Action::"ServerGrantActions", resource is Lakekeeper::Server)
@@ -723,8 +747,10 @@ namespace Lakekeeper {
   // users who are not signed in, use a role provider (LDAP, Entra ID, Okta).
   // Admission groups come only with the user's own requests.
   action "ServerActions";
-  action "ServerDescribeActions" in ["ServerActions", "ServerCreateActions", "ServerModifyActions"];
-  action "ServerCreateActions" in ["ServerActions", "ServerModifyActions"];
+  action "ServerDescribeActions" in ["ServerActions", "ServerCreateActions", "ServerManageActions"];
+  action "ServerCreateActions" in ["ServerActions", "ServerManageActions"];
+  action "ServerManageActions" in ["ServerActions", "ServerModifyActions"];
+  // Deprecated; see "How action groups are named and nested".
   action "ServerModifyActions" in ["ServerActions"];
   // Read-only actions on the server itself.
   //
@@ -747,7 +773,7 @@ namespace Lakekeeper {
   // Every user can update and delete their own user record. The server allows
   // that before any policy is evaluated, so it needs no policy and holds under
   // a `forbid` on `UpdateUsers` or `DeleteUsers`.
-  action UpdateUsers, DeleteUsers, ProvisionUsers in ["ServerModifyActions"]
+  action UpdateUsers, DeleteUsers, ProvisionUsers in ["ServerManageActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Server]
@@ -767,11 +793,14 @@ namespace Lakekeeper {
     };
 
   // ---------- Project Actions ----------
-  // Actions on a project: Describe < Create < Modify < ProjectActions.
+  // Actions on a project: Describe < Create < Manage < ProjectActions, which
+  // adds `CreateTag`.
   // See "How action groups are named and nested" above for how to read this.
   action "ProjectActions";
-  action "ProjectDescribeActions" in ["ProjectActions", "ProjectCreateActions", "ProjectModifyActions"];
-  action "ProjectCreateActions" in ["ProjectActions", "ProjectModifyActions"];
+  action "ProjectDescribeActions" in ["ProjectActions", "ProjectCreateActions", "ProjectManageActions"];
+  action "ProjectCreateActions" in ["ProjectActions", "ProjectManageActions"];
+  action "ProjectManageActions" in ["ProjectActions", "ProjectModifyActions"];
+  // Deprecated; see "How action groups are named and nested".
   action "ProjectModifyActions" in ["ProjectActions"];
   // `IncludeProjectInList` is asked once for every project a list request
   // found, and decides whether that project shows up in the answer. Forbid it
@@ -807,7 +836,7 @@ namespace Lakekeeper {
     };
   action DeleteProject, RenameProject,
          ModifyProjectTaskQueueConfig,
-         ControlProjectTasks in ["ProjectModifyActions"]
+         ControlProjectTasks in ["ProjectManageActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Project]
@@ -825,11 +854,12 @@ namespace Lakekeeper {
   // `ProjectCreateActions` is about creating places to put data: warehouses
   // here, and namespaces, tables and views further down. Creating tag
   // definitions is not part of it — they shape how the project is governed
-  // rather than what it stores, so they live in `ProjectModifyActions` with the
-  // other administrative actions. Creating roles lives in `ProjectGrantActions`:
-  // a role exists to hold grants and hand them to its members.
+  // rather than what it stores, and tags can decide access, so `CreateTag` is
+  // in `ProjectActions` but in no group below it. Creating roles lives in
+  // `ProjectGrantActions`: a role exists to hold grants and hand them to its
+  // members.
   //
-  // To let someone create tags or roles without handing them the whole group,
+  // To let someone create tags or roles without handing them a whole group,
   // permit `CreateTag` or `CreateRole` by name.
   action CreateRole in ["ProjectGrantActions"]
     appliesTo {
@@ -847,7 +877,7 @@ namespace Lakekeeper {
         requested_source_id?: String,
       }
     };
-  action CreateTag in ["ProjectModifyActions"]
+  action CreateTag in ["ProjectActions", "ProjectModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Project],
@@ -917,17 +947,23 @@ namespace Lakekeeper {
   // Actions on a governance-tag definition.
   //   ReadTag            — read a tag definition (name, value kind, allowed values).
   //   UpdateTag          — update a tag definition (rename, widen scope, add values).
+  //                        A rename changes the key that policies read, on every
+  //                        object the tag is on.
   //   DeleteTag          — delete a tag definition.
-  //   ApplyTag           — attach this tag to a target; see the note below.
-  //   RemoveTag          — detach this tag from a target; see the note below.
+  //   ApplyTag           — attach this tag to a target, or set a new value on a
+  //                        target it is already on; see the note below.
+  //   RemoveTag          — take this tag off a target; see the note below.
   //   ReadTagAttachments      — list every target a tag definition is attached to (reverse lookup).
   //   IntrospectTagAuthorization — inspect another principal's access to this tag.
   //
-  // Actions on a tag definition: Describe < Apply < Modify < TagActions.
+  // Actions on a tag definition: Describe < Apply < Manage. `TagActions` holds
+  // the same as `TagManageActions`.
   // See "How action groups are named and nested" above for how to read this.
   action "TagActions";
-  action "TagDescribeActions" in ["TagActions", "TagApplyActions", "TagModifyActions"];
-  action "TagApplyActions" in ["TagActions", "TagModifyActions"];
+  action "TagDescribeActions" in ["TagActions", "TagApplyActions", "TagManageActions"];
+  action "TagApplyActions" in ["TagActions", "TagManageActions"];
+  action "TagManageActions" in ["TagActions", "TagModifyActions"];
+  // Deprecated; see "How action groups are named and nested".
   action "TagModifyActions" in ["TagActions"];
   action ReadTag in ["TagDescribeActions"]
     appliesTo {
@@ -959,18 +995,21 @@ namespace Lakekeeper {
   // `ReadTagAttachments` sits here rather than with the read actions because it
   // lists every object a tag is attached to. That says a good deal more about
   // what is in the catalog than reading the tag's own definition does.
-  action UpdateTag, DeleteTag, ReadTagAttachments in ["TagModifyActions"]
+  action UpdateTag, DeleteTag, ReadTagAttachments in ["TagManageActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Tag]
     };
 
   // ---------- Warehouse Actions ----------
-  // Actions on a warehouse: Describe < Create < Modify < WarehouseActions.
+  // Actions on a warehouse: Describe < Create < Manage < WarehouseActions,
+  // which adds `ManageWarehouseTags`.
   // See "How action groups are named and nested" above for how to read this.
   action "WarehouseActions";
-  action "WarehouseDescribeActions" in ["WarehouseActions", "WarehouseCreateActions", "WarehouseModifyActions"];
-  action "WarehouseCreateActions" in ["WarehouseActions", "WarehouseModifyActions"];
+  action "WarehouseDescribeActions" in ["WarehouseActions", "WarehouseCreateActions", "WarehouseManageActions"];
+  action "WarehouseCreateActions" in ["WarehouseActions", "WarehouseManageActions"];
+  action "WarehouseManageActions" in ["WarehouseActions", "WarehouseModifyActions"];
+  // Deprecated; see "How action groups are named and nested".
   action "WarehouseModifyActions" in ["WarehouseActions"];
   //   UseWarehouse — reach the warehouse at all. Every request against the
   //     warehouse is checked for this first, so forbidding it hides the
@@ -991,11 +1030,51 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Warehouse]
     };
-  action DeleteWarehouse, UpdateStorage, UpdateStorageCredential,
+  // `UpdateStorage` changes or validates the storage profile, or validates the
+  // storage the warehouse runs with. A profile change also replaces or clears
+  // the storage credential, so it and its validation ask
+  // `UpdateStorageCredential` too.
+  //
+  // `ModifySoftDeletion` changes the soft-deletion settings. Where soft-deletion
+  // is configured, every call that deletes before the grace period ends asks
+  // it too, in addition to the call's own action: a `force` drop of a table,
+  // view or generic table, a `recursive` namespace delete, running a
+  // soft-deletion task now or at a set time, and a register with `overwrite`
+  // that replaces another table.
+  action DeleteWarehouse, UpdateStorage,
          DeactivateWarehouse, ActivateWarehouse,
          RenameWarehouse, ModifySoftDeletion,
          ModifyTaskQueueConfig, ControlAllTasks, SetWarehouseProtection,
-         SetWarehouseFormatVersionPolicy, ManageWarehouseTags in ["WarehouseModifyActions"]
+         SetWarehouseFormatVersionPolicy in ["WarehouseManageActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  // Attaching and removing tags on the warehouse. In no group below
+  // `WarehouseActions`: tags can decide access, so a `manage` grant does not
+  // tag.
+  action ManageWarehouseTags in ["WarehouseActions", "WarehouseModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  // Replacing or clearing the storage credential, or validating a replacement,
+  // with the storage profile left as it is. It sits inside `UpdateStorage`:
+  // `action in [UpdateStorage]` covers both. `action == UpdateStorage` matches
+  // only `UpdateStorage`: such a permit allows no profile change, and such a
+  // forbid does not stop credential replacement.
+  action UpdateStorageCredential in ["UpdateStorage", "WarehouseManageActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  // Registering files that are already in the warehouse's storage: a table
+  // from an existing metadata file, or a generic table on a location that
+  // holds files. Asked together with `CreateTable` or
+  // `CreateGenericTableInNamespace` on the namespace. The files may lie
+  // anywhere in the warehouse's storage, for example orphaned files of a
+  // dropped table, so it is a right on the warehouse.
+  action RegisterTable in ["WarehouseManageActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Warehouse]
@@ -1034,11 +1113,14 @@ namespace Lakekeeper {
     };
 
   // ---------- Namespace Actions ----------
-  // Actions on a namespace: Describe < Create < Modify < NamespaceActions.
+  // Actions on a namespace: Describe < Create < Manage < NamespaceActions,
+  // which adds `ManageNamespaceTags`.
   // See "How action groups are named and nested" above for how to read this.
   action "NamespaceActions";
-  action "NamespaceDescribeActions" in ["NamespaceActions", "NamespaceCreateActions", "NamespaceModifyActions"];
-  action "NamespaceCreateActions" in ["NamespaceActions", "NamespaceModifyActions"];
+  action "NamespaceDescribeActions" in ["NamespaceActions", "NamespaceCreateActions", "NamespaceManageActions"];
+  action "NamespaceCreateActions" in ["NamespaceActions", "NamespaceManageActions"];
+  action "NamespaceManageActions" in ["NamespaceActions", "NamespaceModifyActions"];
+  // Deprecated; see "How action groups are named and nested".
   action "NamespaceModifyActions" in ["NamespaceActions"];
 
   //   ListEverythingInNamespace — list everything directly in the namespace
@@ -1053,7 +1135,15 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace]
     };
-  action SetNamespaceProtection, ManageNamespaceTags in ["NamespaceModifyActions"]
+  action SetNamespaceProtection in ["NamespaceManageActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace]
+    };
+  // Attaching and removing tags on the namespace. In no group below
+  // `NamespaceActions`: tags can decide access, so a `manage` grant does not
+  // tag.
+  action ManageNamespaceTags in ["NamespaceActions", "NamespaceModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Namespace]
@@ -1086,7 +1176,7 @@ namespace Lakekeeper {
     };
   // The destination half; see `AcceptMovedNamespaceInWarehouse`. Outside
   // `NamespaceCreateActions` for the reason `MoveNamespace` is outside
-  // `NamespaceModifyActions`: accepting a subtree changes what it inherits.
+  // `NamespaceManageActions`: accepting a subtree changes what it inherits.
   action AcceptMovedNamespaceInNamespace
     appliesTo {
       principal: [User, Role],
@@ -1111,20 +1201,23 @@ namespace Lakekeeper {
         source: String,
       }
     };
-  action DeleteNamespace in ["NamespaceModifyActions"]
+  action DeleteNamespace in ["NamespaceManageActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Namespace],
       context: {
-        // Two effects at once. It deletes even though this namespace, a child
-        // namespace, or a table or view inside it is protected against
-        // deletion. And where the warehouse has soft-deletion configured, the
-        // deletion is immediate and permanent.
+        // It deletes even though this namespace, a child namespace, or a table,
+        // view or generic table inside it is protected against deletion. A
+        // namespace itself is never soft-deleted. Where the warehouse has
+        // soft-deletion configured, a `recursive` delete needs `force`, and
+        // then deletes everything inside at once and permanently, including
+        // what was dropped earlier and is still waiting for its grace period.
+        // Such a delete also needs `ModifySoftDeletion` on the warehouse.
         force: Bool,
         // Whether the underlying data/metadata files are physically purged.
         purge: Bool,
-        // Whether the drop recurses into child namespaces, tables and views,
-        // deleting the entire subtree rooted at this namespace.
+        // Whether the drop recurses into child namespaces, tables, views and
+        // generic tables, deleting the entire subtree rooted at this namespace.
         recursive: Bool,
       }
     };
@@ -1188,7 +1281,7 @@ namespace Lakekeeper {
         initial_namespace_properties: ResourceProperties,
       }
     };
-  action UpdateNamespaceProperties in ["NamespaceModifyActions"]
+  action UpdateNamespaceProperties in ["NamespaceManageActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Namespace],
@@ -1201,12 +1294,15 @@ namespace Lakekeeper {
     };
 
   // ---------- Table Actions ----------
-  // Actions on a table: Describe < Select < Write < Modify < TableActions.
+  // Actions on a table: Describe < Select < Write < Manage < TableActions,
+  // which adds `ManageTableTags`.
   // See "How action groups are named and nested" above for how to read this.
   action "TableActions";
-  action "TableDescribeActions" in ["TableActions", "TableSelectActions", "TableWriteActions", "TableModifyActions"];
-  action "TableSelectActions" in ["TableActions", "TableWriteActions", "TableModifyActions"];
-  action "TableWriteActions" in ["TableActions", "TableModifyActions"];
+  action "TableDescribeActions" in ["TableActions", "TableSelectActions", "TableWriteActions", "TableManageActions"];
+  action "TableSelectActions" in ["TableActions", "TableWriteActions", "TableManageActions"];
+  action "TableWriteActions" in ["TableActions", "TableManageActions"];
+  action "TableManageActions" in ["TableActions", "TableModifyActions"];
+  // Deprecated; see "How action groups are named and nested".
   action "TableModifyActions" in ["TableActions"];
   // An action is in `DataPlaneActions` exactly when it vends data access or
   // data-access credentials: reading or writing table data, selecting a view.
@@ -1225,13 +1321,13 @@ namespace Lakekeeper {
       resource: [Table]
     };
   // Writing to the table: getting write credentials, and committing the change.
-  // These are kept apart from `TableModifyActions` so you can let a loading job
+  // These are kept apart from `TableManageActions` so you can let a loading job
   // write data without also letting it drop, rename or unprotect the table.
   //
-  // Committing covers schema changes too — a writer that adds a column is doing
-  // its ordinary job. Policies cannot tell the two apart, so if you need to
-  // stop schema changes in particular, stop them in the query engine that
-  // sends the commit — this schema cannot express it.
+  // `CommitTable` covers every commit, schema changes included. Its context
+  // says what a commit changes: `context.data_commit` is true for a commit that
+  // changes only the table's data, and `context.update_kinds` names each kind
+  // of update in it.
   //
   // `WriteTableData` is also in `DataPlaneActions`: it vends data-access
   // credentials. `CommitTable` is not — a commit is a metadata write and never
@@ -1243,7 +1339,14 @@ namespace Lakekeeper {
     };
   action RenameTable,
          UndropTable, ControlTableTasks,
-         SetTableProtection, ManageTableTags in ["TableModifyActions"]
+         SetTableProtection in ["TableManageActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  // Attaching and removing tags on the table and its columns. In no group below
+  // `TableActions`: tags can decide access, so a `manage` grant does not tag.
+  action ManageTableTags in ["TableActions", "TableModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
@@ -1265,14 +1368,17 @@ namespace Lakekeeper {
         destination: String,
       }
     };
-  action DropTable in ["TableModifyActions"]
+  action DropTable in ["TableManageActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table],
       context: {
         // Two effects at once. It drops the table even though it is protected
         // against deletion. And where the warehouse has soft-deletion
-        // configured, the drop is immediate and permanent.
+        // configured, the drop is immediate and permanent, which also needs
+        // `ModifySoftDeletion` on the warehouse. In such a warehouse, a register
+        // with `overwrite` that replaces another table drops it with `force`
+        // too; that drop keeps the protection.
         force: Bool,
         // Whether the underlying data files are physically purged from storage.
         purge: Bool,
@@ -1287,16 +1393,48 @@ namespace Lakekeeper {
         table_properties_updates: ResourceProperties,
         // Property keys to be removed from this table.
         table_properties_removal: Set<String>,
+        // True when the commit changes only the table's data: it adds
+        // snapshots, creates and moves branches and tags, turns a branch into
+        // a tag and back, sets their retention, and records or removes
+        // statistics, and it changes no property. A commit request without
+        // updates counts too. So it can roll `main` back, and snapshot expiry
+        // follows the retention it sets.
+        //
+        // False for every other commit, for a permission check that names no
+        // update kinds, and for a commit that finishes a staged create.
+        data_commit: Bool,
+        // The kinds of update in the commit, by their Iceberg action name.
+        // Empty when the question names none.
+        //
+        //   when { context.update_kinds.contains(Lakekeeper::TableUpdateKind::"add-schema") }
+        update_kinds: Set<TableUpdateKind>,
+        // The branches and tags the commit creates, moves or removes. Empty
+        // when it names none. Updates that change the whole table, such as
+        // `add-schema`, name no branch.
+        target_refs: Set<String>,
       }
     };
+  // A kind of update in a table commit, spelled as the Iceberg REST API spells
+  // its `action`.
+  entity TableUpdateKind enum
+    ["upgrade-format-version", "assign-uuid", "add-schema", "set-current-schema",
+     "add-spec", "set-default-spec", "add-sort-order", "set-default-sort-order",
+     "add-snapshot", "set-snapshot-ref", "remove-snapshots", "remove-snapshot-ref",
+     "set-location", "set-properties", "remove-properties",
+     "remove-partition-specs", "set-statistics", "remove-statistics",
+     "set-partition-statistics", "remove-partition-statistics",
+     "remove-schemas", "add-encryption-key", "remove-encryption-key"];
 
   // ---------- View Actions ----------
-  // Actions on a view: Describe < Select < Write < Modify < ViewActions.
+  // Actions on a view: Describe < Select < Write < Manage < ViewActions, which
+  // adds `ManageViewTags`.
   // See "How action groups are named and nested" above for how to read this.
   action "ViewActions";
-  action "ViewDescribeActions" in ["ViewActions", "ViewSelectActions", "ViewWriteActions", "ViewModifyActions"];
-  action "ViewSelectActions" in ["ViewActions", "ViewWriteActions", "ViewModifyActions"];
-  action "ViewWriteActions" in ["ViewActions", "ViewModifyActions"];
+  action "ViewDescribeActions" in ["ViewActions", "ViewSelectActions", "ViewWriteActions", "ViewManageActions"];
+  action "ViewSelectActions" in ["ViewActions", "ViewWriteActions", "ViewManageActions"];
+  action "ViewWriteActions" in ["ViewActions", "ViewManageActions"];
+  action "ViewManageActions" in ["ViewActions", "ViewModifyActions"];
+  // Deprecated; see "How action groups are named and nested".
   action "ViewModifyActions" in ["ViewActions"];
   action GetViewMetadata, IncludeViewInList, GetViewTasks in ["ViewDescribeActions"]
     appliesTo {
@@ -1309,7 +1447,14 @@ namespace Lakekeeper {
       resource: [View]
     };
   action RenameView, UndropView,
-         ControlViewTasks, SetViewProtection, ManageViewTags in ["ViewModifyActions"]
+         ControlViewTasks, SetViewProtection in ["ViewManageActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+  // Attaching and removing tags on the view. In no group below `ViewActions`:
+  // tags can decide access, so a `manage` grant does not tag.
+  action ManageViewTags in ["ViewActions", "ViewModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View]
@@ -1331,21 +1476,33 @@ namespace Lakekeeper {
         destination: String,
       }
     };
-  action DropView in ["ViewModifyActions"]
+  action DropView in ["ViewManageActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View],
       context: {
         // Two effects at once. It drops the view even though it is protected
         // against deletion. And where the warehouse has soft-deletion
-        // configured, the drop is immediate and permanent.
+        // configured, the drop is immediate and permanent, which also needs
+        // `ModifySoftDeletion` on the warehouse.
         force: Bool,
         // Whether the underlying metadata files are physically purged from storage.
         purge: Bool,
       }
     };
+  // Switching the view between running as its owner (DEFINER) and running as
+  // the caller (INVOKER): a commit that adds or removes an engine owner
+  // property such as `trino.run-as-owner`. Asked for the identity that sends
+  // the commit and, when the view starts to run as its owner, for that owner.
+  // Kept out of `ViewWriteActions`, so a user who may replace the view's query
+  // cannot change whom it runs as.
+  action ChangeViewSecurityMode in ["ViewManageActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
   // Committing a new version of the view's definition. Kept apart from
-  // `ViewModifyActions` so someone can maintain the view's query without also
+  // `ViewManageActions` so someone can maintain the view's query without also
   // being able to drop, rename or unprotect it.
   action CommitView in ["ViewWriteActions"]
     appliesTo {
@@ -1361,12 +1518,15 @@ namespace Lakekeeper {
 
   // ---------- Generic Table Actions ----------
   // Actions on a generic table:
-  // Describe < Select < Write < Modify < GenericTableActions.
+  // Describe < Select < Write < Manage < GenericTableActions, which adds
+  // `ManageGenericTableTags`.
   // See "How action groups are named and nested" above for how to read this.
   action "GenericTableActions";
-  action "GenericTableDescribeActions" in ["GenericTableActions", "GenericTableSelectActions", "GenericTableWriteActions", "GenericTableModifyActions"];
-  action "GenericTableSelectActions" in ["GenericTableActions", "GenericTableWriteActions", "GenericTableModifyActions"];
-  action "GenericTableWriteActions" in ["GenericTableActions", "GenericTableModifyActions"];
+  action "GenericTableDescribeActions" in ["GenericTableActions", "GenericTableSelectActions", "GenericTableWriteActions", "GenericTableManageActions"];
+  action "GenericTableSelectActions" in ["GenericTableActions", "GenericTableWriteActions", "GenericTableManageActions"];
+  action "GenericTableWriteActions" in ["GenericTableActions", "GenericTableManageActions"];
+  action "GenericTableManageActions" in ["GenericTableActions", "GenericTableModifyActions"];
+  // Deprecated; see "How action groups are named and nested".
   action "GenericTableModifyActions" in ["GenericTableActions"];
   action GetGenericTableMetadata, IncludeGenericTableInList,
          GetGenericTableTasks in ["GenericTableDescribeActions"]
@@ -1380,7 +1540,7 @@ namespace Lakekeeper {
       resource: [GenericTable]
     };
   // Getting write credentials for the generic table. Kept apart from
-  // `GenericTableModifyActions` so a loading job can write data without also
+  // `GenericTableManageActions` so a loading job can write data without also
   // being able to drop, rename or unprotect it. Also in `DataPlaneActions`:
   // it vends data-access credentials.
   action WriteGenericTableData in ["GenericTableWriteActions", "DataPlaneActions"]
@@ -1388,9 +1548,30 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [GenericTable]
     };
-  action DropGenericTable,
-         RenameGenericTable, UndropGenericTable, ControlGenericTableTasks,
-         SetGenericTableProtection, ManageGenericTableTags in ["GenericTableModifyActions"]
+  action RenameGenericTable, UndropGenericTable, ControlGenericTableTasks,
+         SetGenericTableProtection in ["GenericTableManageActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
+    };
+  action DropGenericTable in ["GenericTableManageActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable],
+      context: {
+        // Two effects at once. It drops the generic table even though it is
+        // protected against deletion. And where the warehouse has
+        // soft-deletion configured, the drop is immediate and permanent, which
+        // also needs `ModifySoftDeletion` on the warehouse.
+        force: Bool,
+        // Whether the underlying data files are physically purged from storage.
+        purge: Bool,
+      }
+    };
+  // Attaching and removing tags on the generic table. In no group below
+  // `GenericTableActions`: tags can decide access, so a `manage` grant does not
+  // tag.
+  action ManageGenericTableTags in ["GenericTableActions", "GenericTableModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [GenericTable]
@@ -1427,8 +1608,8 @@ namespace Lakekeeper {
   // "Subtree Grant Administration" at the end of this section.
   //
   // Each level's grant group belongs to `GrantActions` alone — not to that level's
-  // `XActions` umbrella, nor to its `XModifyActions` group. So neither
-  // `action in "WarehouseActions"` nor `action in "WarehouseModifyActions"` includes
+  // `XActions` umbrella, nor to its `XManageActions` group. So neither
+  // `action in "WarehouseActions"` nor `action in "WarehouseManageActions"` includes
   // grant administration; name a grant group or a single action. The note just
   // above the `GrantActions` declaration below explains why.
   //

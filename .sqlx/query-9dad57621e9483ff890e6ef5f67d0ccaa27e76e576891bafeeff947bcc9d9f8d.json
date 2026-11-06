@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT tabular_id, metadata_location\n        FROM tabular\n        WHERE warehouse_id = $1 AND tabular_id = ANY($2::uuid[]) AND typ = 'table'\n            AND deleted_at IS NULL\n        ORDER BY tabular_id\n        FOR NO KEY UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "metadata_location",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "metadata_location"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "9dad57621e9483ff890e6ef5f67d0ccaa27e76e576891bafeeff947bcc9d9f8d"
+}

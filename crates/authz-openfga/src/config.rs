@@ -64,12 +64,12 @@ pub struct OpenFGAConfig {
     /// `authorization_model_version`
     #[serde(default = "default_openfga_model_prefix")]
     pub authorization_model_prefix: String,
-    /// Version of the model to use. If specified, the specified
-    /// model version must already exist.
-    /// This can be used to roll-back to previously applied model versions
-    /// or to connect to externally managed models.
+    /// Version of the model to use, in the format `<major>.<minor>`.
+    /// If specified, the model version must already exist. Under the default prefix
+    /// it must be the version this release installs. Under another prefix (externally
+    /// managed models) it must contain every type and relation that the server checks
+    /// or writes; only the names are compared. Otherwise the server does not start.
     /// Migration is disabled if the model version is set.
-    /// Version should have the format <major>.<minor>.
     pub authorization_model_version: Option<String>,
     /// The maximum number of checks than can be handled by a batch check
     /// request. This is a [configuration option] of the `OpenFGA` server
@@ -228,7 +228,7 @@ fn default_openfga_store_name() -> String {
 }
 
 fn default_openfga_model_prefix() -> String {
-    "collaboration".to_string()
+    crate::migration::OWN_MODEL_PREFIX.to_string()
 }
 
 fn default_openfga_max_batch_check_size() -> usize {

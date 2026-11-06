@@ -138,7 +138,7 @@ A task that fails is tried up to ten times in total; a try whose worker stops re
 
 Some jobs run on a fixed cadence, such as the cleanup of old task logs. Every Lakekeeper instance queues these jobs when they are due, including instances that run no task-queue workers. A job never runs twice at the same time: if its previous run has not finished when the next one is due, the next one starts once the previous run has finished. Runs that fall due in the meantime are combined into that one run.
 
-To stop an instance from running a queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. To dedicate task processing entirely to headless workers, set all built-in worker counts to `0` on your API pods: `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`, `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`, and `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS`.
+To stop an instance from running a queue's workers, set the corresponding `LAKEKEEPER__TASK_*_WORKERS` to `0`. To dedicate task processing entirely to headless workers, set all built-in worker counts to `0` on your API pods: `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`, `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` and `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS`, and in Lakekeeper Plus also `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`, `LAKEKEEPER__TASK_REMOVE_ORPHAN_FILES_WORKERS` and `LAKEKEEPER__TASK_OPTIMIZE_WORKERS` (0 by default).
 
 The following global configuration options are available:
 
@@ -148,7 +148,9 @@ The following global configuration options are available:
 | `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS` | 2 | `2` | Number of workers spawned to finalize soft-deleted tables and views once their expiration elapses. |
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` | 2 | `2` | Number of workers spawned to purge table files after dropping a table with the purge option. |
 | `LAKEKEEPER__TASK_LOG_CLEANUP_WORKERS` | 2 | `2` | Number of workers spawned to delete task-log entries once they exceed their retention period. |
-| `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | — | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
+| `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`<span class="lkp"></span> | 2 | `2` | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
+| `LAKEKEEPER__TASK_REMOVE_ORPHAN_FILES_WORKERS`<span class="lkp"></span> | 2 | `2` | Number of workers spawned that work on remove orphan files tasks. See [Remove Orphan Files](./table-maintenance.md#remove-orphan-files). |
+| `LAKEKEEPER__TASK_OPTIMIZE_WORKERS`<span class="lkp"></span> | 1 | `0` | Number of workers that run optimize tasks. With `0`, this process runs none. The workers of a process share its memory, cores and spill disk equally. See [Optimize Workers](./optimize-workers.md). |
 | `LAKEKEEPER__TASK_DRAIN_TIMEOUT` | 300s | 0s | How long running tasks may continue after a stop signal (SIGTERM or SIGINT) before Lakekeeper stops the workers. `0s` does not wait. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
 | `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` | 180s | — | Stop the process after it ran no task for this long. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. The value must be greater than 0. Leave it unset to turn it off. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
 | `LAKEKEEPER__TASK_MAX_LIFETIME` | 3600s | — | Stop the process this long after it started. Only for headless workers (`LAKEKEEPER__SERVE_HTTP_API=false`) that run as Jobs. The value must be greater than 0. Leave it unset to turn it off. Supported units: ms (milliseconds) and s (seconds). See [Stopping Task Workers](#stopping-task-workers). |
@@ -167,6 +169,27 @@ Headless workers can also stop on their own, for example when an autoscaler star
 These two wait for running tasks without a time limit. A stop signal during this wait limits it to `LAKEKEEPER__TASK_DRAIN_TIMEOUT` from the signal. Lakekeeper refuses to start if either is set on a process that serves the HTTP API, because the API would stop with the workers.
 
 Use these two settings only for workers that run as Jobs, for example from a KEDA ScaledJob. Kubernetes restarts the container of a Deployment even when it exits with code 0, so a Deployment would restart the worker again and again. The idle time counts the tasks of every queue the worker runs. Each built-in queue runs 2 workers by default, so on autoscaled workers set the `LAKEKEEPER__TASK_*_WORKERS` of all other queues to 0.
+
+### Optimize Settings { #optimize-settings .lkp }
+
+These settings control [optimize](./optimize.md) in Lakekeeper Plus. The memory, CPU and spill disk limits are totals for all optimize workers of one process. See [Optimize Workers](./optimize-workers.md).
+
+| Variable | Example | Default | Description |
+|---|---|---|---|
+| `LAKEKEEPER__OPTIMIZE__AVAILABLE` | `true` | `false` | Whether this server offers optimize. Set it to `true` on the API pods and on every optimize worker; the Helm chart does this when `optimizeWorkers` is enabled. See [Turning Optimize On and Off](#turning-optimize-on-and-off). |
+| `LAKEKEEPER__OPTIMIZE__MEMORY_LIMIT_BYTES` | `8589934592` | detected | Memory of all optimize runs of this process. If it is not set, Lakekeeper uses the memory limit of the container. A value above the detected memory is lowered with a warning. |
+| `LAKEKEEPER__OPTIMIZE__CPU_LIMIT` | `4` | detected | Cores of all optimize runs of this process. If it is not set, Lakekeeper uses the CPU limit of the container, and each run gets at most one core per 4 GiB of its memory. A value above the detected cores is lowered with a warning. |
+| `LAKEKEEPER__OPTIMIZE__SPILL_DISK_LIMIT_BYTES` | `53687091200` | 100 GiB | Disk space for the spill files of all optimize runs of this process. Spill files go to the temporary directory: `TMPDIR`, or `/tmp` if it is not set. Set this a little below the size of the volume there. A run that needs more fails. |
+| `LAKEKEEPER__OPTIMIZE__SIZE_CLASSES` | `{"small": {"cpu": "2", "memory": "8Gi"}, "large": {"cpu": "8", "memory": "32Gi"}}` | — | The [size classes](./optimize-workers.md#size-classes) as JSON, with CPU and memory written as in Kubernetes. Class names use lower case letters, digits and `-`. Set the same value on the API pods and on every worker. Invalid classes stop the process at startup. |
+| `LAKEKEEPER__OPTIMIZE__SIZE_CLASS` | `small` | — | The size class of this process's optimize workers. They take only the tasks of this class. If it is not set, they take every task. A name that is not in `LAKEKEEPER__OPTIMIZE__SIZE_CLASSES` stops the process at startup. |
+
+A variable that starts with `LAKEKEEPER__OPTIMIZE__` and that Lakekeeper does not know stops the process at startup, so that a typo does not go unnoticed.
+
+#### Turning Optimize On and Off
+
+Optimize is off until `LAKEKEEPER__OPTIMIZE__AVAILABLE` is `true` on the API pods and on every optimize worker. To remove optimize from a deployment, remove the setting or set it to `false`. The server then runs no optimize task, and no warehouse setting or table property can turn it on. The management API answers that the `optimize` queue does not exist. Expire snapshots and remove orphan files keep working. A process with this setting and `LAKEKEEPER__TASK_OPTIMIZE_WORKERS` above 0 does not start.
+
+Optimize tasks that were scheduled before stay in the queue, and a warehouse with such tasks cannot be deleted. Cancel them with the task endpoints of the management API. When you set `LAKEKEEPER__OPTIMIZE__AVAILABLE` to `true` again, the optimize settings of each warehouse apply again.
 
 ### NATS
 
@@ -425,9 +448,9 @@ We strongly recommend bootstrapping new deployments with authorization already e
 | `LAKEKEEPER__OPENFGA__CLIENT_SECRET` | `abcd` | — | Client Secret for the Client ID. |
 | `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT` | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | — | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
 | `LAKEKEEPER__OPENFGA__SCOPE` | `openfga` | — | Additional scopes to request in the Client Credential flow. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX` | `collaboration` | — | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `3.1` | — | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
-| `LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE` | `50` | — | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX` | `collaboration` | — | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION`. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `<major>.<minor>` | — | Version of the OpenFGA authorization model that the server uses. If it is not set, the server uses the model version that `lakekeeper migrate` of the same release installs. If it is set, `lakekeeper migrate` does not change OpenFGA, and the server uses the model with this version. With the default model prefix `collaboration`, this is one of Lakekeeper's own models, and the version must be the one that your Lakekeeper release installs. To use a model that you manage outside of Lakekeeper, also set `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. Such a model must contain every type and relation that the server checks or writes, with the names of the model version that your release installs. It can contain more. The server compares only the names, not the definitions. The model must already exist in the store. If any of this is not true, the server does not start, and the error says what is wrong. |
+| `LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE` | `50` | — | The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
 
 #### Cedar { .lkp }
 
@@ -497,10 +520,10 @@ If an instance cannot read the change records for a while, for example while it 
 
 | Configuration Key | Type | Default | Description |
 |-------------------|------|---------|-------------|
-| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__ENABLED`</nobr> | boolean | `true` | Read the change records and remove the entries that other instances changed. If `false`, this instance keeps entries that other instances changed until their time-to-live ends. |
-| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__RECORDING_ENABLED`</nobr> | boolean | `true` | Write a change record for every write that changes a cached entry. If `false`, other instances keep the entries this instance changed until their time-to-live ends. Set it to `false` only if writing the change records causes problems in the database. |
-| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL`</nobr> | ISO-8601 duration | `PT1S` | How often each instance reads the change records. A value outside 100 ms to 60 s is changed to the nearest limit, with a warning at startup. |
-| <nobr>`LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE`</nobr> | ISO-8601 duration | `PT10S` | Time between the first and the second removal of a changed entry. Set it higher than the delay of your read replicas. A value above 60 s is lowered to 60 s, with a warning at startup. |
+| `LAKEKEEPER__CACHE__INVALIDATION__ENABLED` | boolean | `true` | Read the change records and remove the entries that other instances changed. If `false`, this instance keeps entries that other instances changed until their time-to-live ends. |
+| `LAKEKEEPER__CACHE__INVALIDATION__RECORDING_ENABLED` | boolean | `true` | Write a change record for every write that changes a cached entry. If `false`, other instances keep the entries this instance changed until their time-to-live ends. Set it to `false` only if writing the change records causes problems in the database. |
+| `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL` | ISO-8601 duration | `PT1S` | How often each instance reads the change records. A value outside 100 ms to 60 s is changed to the nearest limit, with a warning at startup. |
+| `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE` | ISO-8601 duration | `PT10S` | Time between the first and the second removal of a changed entry. Set it higher than the delay of your read replicas. A value above 60 s is lowered to 60 s, with a warning at startup. |
 
 See [Monitoring](./monitoring.md#cache-invalidation-metrics) for the metrics and [Production](./production.md) for database recommendations.
 
@@ -636,9 +659,9 @@ Only authorizers that resolve role nesting from Lakekeeper's own role store use 
 
 | Configuration Key                                                  | Type    | Default | Description |
 |--------------------------------------------------------------------|---------|---------|-----|
-| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable role-ancestors caching. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`<nobr>          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
-| <nobr>`LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. A value above `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` is lowered to it, with a warning at startup. Default: `120` (2 minutes) |
+| `LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED`           | boolean | `true`  | Enable/disable role-ancestors caching. Default: `true` |
+| `LAKEKEEPER__CACHE__ROLE_ANCESTORS__CAPACITY`          | integer | `10000` | Maximum number of roles whose ancestor sets are held in memory. Default: `10000` |
+| `LAKEKEEPER__CACHE__ROLE_ANCESTORS__TIME_TO_LIVE_SECS` | integer | `120`   | Time-to-live for cache entries in seconds. A value above `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS` is lowered to it, with a warning at startup. Default: `120` (2 minutes) |
 
 Adding or removing a member role, deleting a role, or rebinding a role's source system empties this cache on all instances within one poll interval (default 1 second), see [Cache Invalidation Across Instances](#cache-invalidation). It empties every entry, not only the role named, since one membership change changes the ancestors of every role nested below it. To read from the database every time, set `LAKEKEEPER__CACHE__ROLE_ANCESTORS__ENABLED=false`.
 
@@ -698,8 +721,8 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 
 | Variable                                         | Example   | Description   |
 |--------------------------------------------------|-----------|---------------|
-| <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `33554432` | Maximum request body size in bytes. Default: `33554432` (32 MB) |
-| <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
+| `LAKEKEEPER__MAX_REQUEST_BODY_SIZE` | `33554432` | Maximum request body size in bytes. Default: `33554432` (32 MB) |
+| `LAKEKEEPER__MAX_REQUEST_TIME`      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
 
 ### Roles
 
@@ -723,7 +746,7 @@ The bound is applied to the raw list the client sent, before Lakekeeper decides 
 
 | Variable                                                    | Example | Description |
 |-------------------------------------------------------------|---------|-------------|
-| <nobr>`LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH`</nobr> | `10`    | Maximum number of views accepted in a `referenced-by` chain. Default: `10` |
+| `LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH` | `10`    | Maximum number of views accepted in a `referenced-by` chain. Default: `10` |
 
 ### Maintenance Mode
 
@@ -768,10 +791,12 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 
 ### Trusted Engines
 
-Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). When configured, Lakekeeper:
+Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). A trusted engine:
 
-1. **Protects the owner property** — only requests from a matched engine can set or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`).
-2. **Evaluates `referenced-by` chains** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+1. **Can write its owner property** — only requests from a matched engine can set, change or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`), or change the current version of a view that has this property.
+2. **Has `referenced-by` chains evaluated** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+
+The protection applies only if [authentication](./authentication.md) is enabled; Lakekeeper logs a warning at startup if trusted engines are configured without authentication. Lakekeeper reserves `trino.run-as-owner` for a trusted engine even if no trusted engine is configured. If no trusted engine is configured, no request can write it, and Trino can create views only with `SECURITY INVOKER`: a `CREATE VIEW` with `SECURITY DEFINER`, which is Trino's default, fails with `403 ProtectedPropertyModification`. Views that already have the property cannot get a new view version. Configure Trino as a trusted engine for any Trino that creates or changes `SECURITY DEFINER` views. See [Property Protection](./view-security.md#property-protection) for all rules.
 
 For a detailed explanation of DEFINER vs INVOKER views, see the [View Security](./view-security.md) guide.
 
@@ -782,30 +807,30 @@ Trusted engines are configured as a map under `LAKEKEEPER__TRUSTED_ENGINES`. Eac
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | — | Engine type. Currently only `trino` is supported. |
-| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property that identifies the owner for delegated execution. |
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property in which the engine stores the owner of a DEFINER view. For `trino`, set `trino.run-as-owner`: Trino always stores the owner there, and only an engine with exactly this owner property can write it. Lakekeeper logs a warning at startup for a `trino` engine with another value. |
 
 Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches AND (any audience matches OR any subject matches). Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
-| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__AUDIENCES` | `[trino_dev, trino_prod]` | — | List of JWT audiences. A token matches if any of its audiences appears in this list. |
-| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__SUBJECTS` | `[trino-sa]` | — | List of JWT subjects. A token matches if its subject appears in this list. Useful for service accounts. |
+| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__SUBJECTS` | `[<engine-service-account-subject>]` | — | List of JWT subjects. A token matches if its subject appears in this list. Use the subject of the service account with which the engine authenticates. |
+| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__AUDIENCES` | `[lakekeeper-engine]` | — | List of JWT audiences. A token matches if any of its audiences appears in this list, so every token that carries a listed audience is treated as the engine. List an audience only if your identity provider guarantees that no user can obtain a token with it, for example an audience that only the engine can get by token exchange. |
 
-**Example:** Trust a Trino engine whose tokens come from the `oidc` provider with audience `trino`:
+**Example:** Trust a Trino engine that authenticates with its service account at the `oidc` provider:
 
 ```bash
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino]
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
 ```
 
-**Example with multiple IdPs:** Trust Trino from both an OIDC provider and a Kubernetes service account:
+**Example with multiple IdPs:** Trust Trino from both an OIDC service account and a Kubernetes service account (the Kubernetes subject is shown for `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username`):
 
 ```bash
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino_dev, trino_prod]
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=[trino-sa]
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=["system:serviceaccount:<namespace>:trino"]
 ```
 
 ### Role Provider { .lkp }

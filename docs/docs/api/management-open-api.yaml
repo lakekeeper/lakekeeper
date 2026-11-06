@@ -38,6 +38,15 @@ paths:
         Each check in the request can optionally override the identity being checked.
         If no identity is specified, the current user's identity is used.
       operationId: batch_check_actions
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional). Used only for project checks whose body omits `project-id`; a `project-id` in the body takes precedence. In a batch check this applies to each item. If neither is set, the default project is used when it is enabled; otherwise the check fails.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -130,6 +139,15 @@ paths:
         - 01:00:36: table deleted:
             - `timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},{"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],[{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]`
       operationId: get_endpoint_statistics
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -219,7 +237,7 @@ paths:
             format: int64
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -301,6 +319,15 @@ paths:
         - permissions-openfga
       summary: Check if a specific action is allowed on the given object
       operationId: check
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional). Used only for project checks whose body omits `project-id`; a `project-id` in the body takes precedence. In a batch check this applies to each item. If neither is set, the default project is used when it is enabled; otherwise the check fails.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -519,6 +546,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: Server Relations
@@ -542,6 +577,14 @@ paths:
             type: array
             items:
               $ref: '#/components/schemas/ProjectRelation'
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -554,6 +597,15 @@ paths:
         - permissions-openfga
       summary: Update permissions for the default project
       operationId: update_project_assignments
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -634,7 +686,7 @@ paths:
             format: uuid
         - name: project_id
           in: path
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: true
           schema:
             type:
@@ -666,7 +718,7 @@ paths:
               $ref: '#/components/schemas/ProjectRelation'
         - name: project_id
           in: path
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: true
           schema:
             type:
@@ -688,7 +740,7 @@ paths:
       parameters:
         - name: project_id
           in: path
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: true
           schema:
             type:
@@ -1600,7 +1652,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1652,7 +1704,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1713,7 +1765,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1789,7 +1841,7 @@ paths:
             format: int64
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1822,7 +1874,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1888,7 +1940,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1916,7 +1968,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1947,7 +1999,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -1980,7 +2032,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2027,7 +2079,7 @@ paths:
             minimum: 0
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2056,7 +2108,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2086,7 +2138,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2258,7 +2310,7 @@ paths:
               type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). The deprecated `projectId` query parameter takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2286,7 +2338,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). The deprecated `project-id` body field takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2328,7 +2380,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2362,7 +2414,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2415,7 +2467,7 @@ paths:
             type: boolean
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2463,7 +2515,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2515,7 +2567,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2571,7 +2623,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2639,7 +2691,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2688,7 +2740,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2759,7 +2811,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2819,7 +2871,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2881,7 +2933,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -2916,7 +2968,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). The deprecated `project-id` body field takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3228,7 +3280,7 @@ paths:
               - 'null'
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3256,7 +3308,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3300,7 +3352,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3337,7 +3389,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3378,7 +3430,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3423,6 +3475,14 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: ''
@@ -3520,7 +3580,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3601,7 +3661,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3641,7 +3701,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3713,7 +3773,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -3965,7 +4025,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4020,7 +4080,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4077,6 +4137,14 @@ paths:
             type:
               - string
               - 'null'
+        - name: x-project-id
+          in: header
+          description: Project ID (optional). The deprecated `projectId` query parameter takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       responses:
         '200':
           description: List of warehouses
@@ -4099,6 +4167,15 @@ paths:
         The project of a warehouse cannot be changed after creation.
         This operation validates the storage configuration.
       operationId: create_warehouse
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional). The deprecated `project-id` body field takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
       requestBody:
         content:
           application/json:
@@ -4141,7 +4218,7 @@ paths:
       parameters:
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). The deprecated `project-id` body field takes precedence over this header. If neither is set, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4198,8 +4275,9 @@ paths:
         - warehouse
       summary: Delete Warehouse
       description: |-
-        Permanently removes a warehouse and all its associated resources.
-        Use the `force` parameter to delete protected warehouses.
+        Deletes an empty warehouse. Unfinished tasks block the delete, except tasks of queues that
+        are cancelled when their warehouse is deleted; those are cancelled, running ones included.
+        Use the `force` parameter to delete a protected warehouse.
       operationId: delete_warehouse
       parameters:
         - name: warehouse_id
@@ -4208,6 +4286,12 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: force
+          in: query
+          description: Delete the warehouse also if it is protected.
+          required: false
+          schema:
+            type: boolean
       responses:
         '204':
           description: Warehouse deleted successfully
@@ -4575,7 +4659,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4622,7 +4706,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4700,7 +4784,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4826,7 +4910,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4877,7 +4961,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -4933,7 +5017,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5012,7 +5096,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5056,7 +5140,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5128,7 +5212,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5261,7 +5345,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5319,7 +5403,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5510,7 +5594,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5557,7 +5641,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5635,7 +5719,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5798,7 +5882,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -5876,7 +5960,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6086,7 +6170,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6135,7 +6219,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6191,7 +6275,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6618,7 +6702,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6679,7 +6763,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6737,7 +6821,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6799,7 +6883,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6885,7 +6969,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -6932,7 +7016,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7010,7 +7094,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7136,7 +7220,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7185,7 +7269,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7241,7 +7325,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7285,7 +7369,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7327,7 +7411,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7376,7 +7460,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7732,7 +7816,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7779,7 +7863,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7857,7 +7941,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -7983,7 +8067,7 @@ paths:
             format: uuid
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -8032,7 +8116,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -8088,7 +8172,7 @@ paths:
             type: string
         - name: x-project-id
           in: header
-          description: Project ID (optional; falls back to the default project if not provided)
+          description: Project ID (optional). If omitted, the default project is used when it is enabled; otherwise the request fails.
           required: false
           schema:
             type:
@@ -8470,6 +8554,56 @@ components:
                   properties:
                     action:
                       $ref: '#/components/schemas/LakekeeperViewAction'
+        - type: object
+          title: CatalogActionCheckOperationViewInDefinerView
+          description: |-
+            May the identity, as the owner of a DEFINER view (one an engine runs as its
+            owner), read this view inside the DEFINER view's query?
+
+            Allowed only if this view has the `trino.run-as-owner` property, which Trino reads, and
+            the identity may `select` it. Trino runs a view without this property in the session of
+            the outer view's owner, and anyone who may change that view would read with the owner's
+            rights. The audit log records this check as `select` on the view.
+          required:
+            - view-in-definer-view
+          properties:
+            view-in-definer-view:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+              description: |-
+                May the identity, as the owner of a DEFINER view (one an engine runs as its
+                owner), read this view inside the DEFINER view's query?
+
+                Allowed only if this view has the `trino.run-as-owner` property, which Trino reads, and
+                the identity may `select` it. Trino runs a view without this property in the session of
+                the outer view's owner, and anyone who may change that view would read with the owner's
+                rights. The audit log records this check as `select` on the view.
+        - type: object
+          title: CatalogActionCheckOperationViewReplace
+          description: |-
+            May the identity replace this view, as Trino's `CREATE OR REPLACE VIEW` does?
+
+            Such a check cannot say whether the replacement keeps the view's security mode. So it
+            needs `commit` on the view, and `change_security_mode` too if the view runs as another
+            user: its `trino.run-as-owner` property names someone other than the identity, compared
+            with the identity's user id within its identity provider. Lakekeeper checks a replacement
+            that makes a view run as its owner when the engine commits it. The audit log records
+            this check as `commit` on the view.
+          required:
+            - view-replace
+          properties:
+            view-replace:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+              description: |-
+                May the identity replace this view, as Trino's `CREATE OR REPLACE VIEW` does?
+
+                Such a check cannot say whether the replacement keeps the view's security mode. So it
+                needs `commit` on the view, and `change_security_mode` too if the view runs as another
+                user: its `trino.run-as-owner` property names someone other than the identity, compared
+                with the identity's user id within its identity provider. Lakekeeper checks a replacement
+                that makes a view run as its owner when the engine commits it. The audit log records
+                this check as `commit` on the view.
         - type: object
           title: CatalogActionCheckOperationGenericTable
           required:
@@ -9493,6 +9627,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write
         - grant_modify
         - change_ownership
     GenericTableAssignment:
@@ -9502,6 +9637,7 @@ components:
         - $ref: '#/components/schemas/GenericTableAssignmentManageGrants'
         - $ref: '#/components/schemas/GenericTableAssignmentDescribe'
         - $ref: '#/components/schemas/GenericTableAssignmentSelect'
+        - $ref: '#/components/schemas/GenericTableAssignmentWrite'
         - $ref: '#/components/schemas/GenericTableAssignmentModify'
         - $ref: '#/components/schemas/GenericTableAssignmentManageTags'
       discriminator:
@@ -9514,6 +9650,7 @@ components:
           ownership: '#/components/schemas/GenericTableAssignmentOwnership'
           pass_grants: '#/components/schemas/GenericTableAssignmentPassGrants'
           select: '#/components/schemas/GenericTableAssignmentSelect'
+          write: '#/components/schemas/GenericTableAssignmentWrite'
     GenericTableAssignmentDescribe:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -9591,6 +9728,17 @@ components:
               type: string
               enum:
                 - select
+    GenericTableAssignmentWrite:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write
     GenericTableRelation:
       type: string
       enum:
@@ -9599,6 +9747,7 @@ components:
         - manage_grants
         - describe
         - select
+        - write
         - modify
         - manage_tags
     GetEndpointStatisticsRequest:
@@ -10449,9 +10598,8 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed: the generic table is
-            hard-deleted at once, not kept for the configured grace period. Extra destructive —
-            irreversible right away.
+            Whether the drop skips the generic table's protection and, in a warehouse with
+            soft deletion, the soft-deletion window: the generic table is hard-deleted at once.
         purge:
           type: boolean
           description: Whether the underlying data files are physically purged from storage.
@@ -10773,8 +10921,10 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed: contained tabulars are
-            hard-deleted at once, not kept for the configured grace period.
+            Whether protection is skipped: of the namespace, and with `recursive` of everything
+            below it. A recursive delete in a warehouse with soft deletion requires it: namespaces
+            have no soft-deleted state, so every table, view and generic table below is
+            hard-deleted at once, dropped ones included.
         purge:
           type: boolean
           description: Whether the underlying data/metadata files are physically purged.
@@ -11951,7 +12101,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableUpdateKind'
-          description: The kinds of metadata updates this commit contains.
+          description: |-
+            The kinds of metadata updates this commit contains. A check that names none
+            asks about a commit of any kind.
           uniqueItems: true
         updated_properties:
           type: object
@@ -11980,9 +12132,11 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed: the table is hard-deleted at
-            once, not kept for the configured grace period. Extra destructive — irreversible right
-            away.
+            Whether the drop skips the table's protection and, in a warehouse with soft deletion,
+            the soft-deletion window: the table is hard-deleted at once. Also set for the drop of
+            an active table that a register with `overwrite` replaces with another table (a
+            different table UUID) in a warehouse with soft deletion. That drop skips only the
+            window; protection holds.
         purge:
           type: boolean
           description: Whether the underlying data files are physically purged from storage.
@@ -12404,9 +12558,11 @@ components:
         - $ref: '#/components/schemas/LakekeeperViewActionSetProtection'
         - $ref: '#/components/schemas/LakekeeperViewActionManageTags'
         - $ref: '#/components/schemas/LakekeeperViewActionReadGrants'
+        - $ref: '#/components/schemas/LakekeeperViewActionChangeSecurityMode'
       discriminator:
         propertyName: action
         mapping:
+          change_security_mode: '#/components/schemas/LakekeeperViewActionChangeSecurityMode'
           commit: '#/components/schemas/LakekeeperViewActionCommit'
           control_tasks: '#/components/schemas/LakekeeperViewActionControlTasks'
           drop: '#/components/schemas/LakekeeperViewActionDrop'
@@ -12420,6 +12576,19 @@ components:
           select: '#/components/schemas/LakekeeperViewActionSelect'
           set_protection: '#/components/schemas/LakekeeperViewActionSetProtection'
           undrop: '#/components/schemas/LakekeeperViewActionUndrop'
+    LakekeeperViewActionChangeSecurityMode:
+      type: object
+      description: |-
+        Switch the view between running as its owner and running as the caller: a commit that
+        adds or removes an engine owner property such as `trino.run-as-owner`. A commit that adds
+        one also asks it for the user the property names.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - change_security_mode
     LakekeeperViewActionCommit:
       type: object
       required:
@@ -12460,9 +12629,8 @@ components:
         force:
           type: boolean
           description: |-
-            Whether the warehouse-configured soft-deletion is bypassed: the view is hard-deleted at
-            once, not kept for the configured grace period. Extra destructive — irreversible right
-            away.
+            Whether the drop skips the view's protection and, in a warehouse with soft deletion,
+            the soft-deletion window: the view is hard-deleted at once.
         purge:
           type: boolean
           description: Whether the underlying metadata files are physically purged from storage.
@@ -12508,9 +12676,11 @@ components:
         - $ref: '#/components/schemas/LakekeeperViewActionKindSetProtection'
         - $ref: '#/components/schemas/LakekeeperViewActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperViewActionKindReadGrants'
+        - $ref: '#/components/schemas/LakekeeperViewActionKindChangeSecurityMode'
       discriminator:
         propertyName: action
         mapping:
+          change_security_mode: '#/components/schemas/LakekeeperViewActionKindChangeSecurityMode'
           commit: '#/components/schemas/LakekeeperViewActionKindCommit'
           control_tasks: '#/components/schemas/LakekeeperViewActionKindControlTasks'
           drop: '#/components/schemas/LakekeeperViewActionKindDrop'
@@ -12524,6 +12694,15 @@ components:
           select: '#/components/schemas/LakekeeperViewActionKindSelect'
           set_protection: '#/components/schemas/LakekeeperViewActionKindSetProtection'
           undrop: '#/components/schemas/LakekeeperViewActionKindUndrop'
+    LakekeeperViewActionKindChangeSecurityMode:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - change_security_mode
     LakekeeperViewActionKindCommit:
       type: object
       required:
@@ -12723,6 +12902,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionCreateNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionDelete'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionUpdateStorageCredential'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetMetadata'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetConfig'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionListNamespaces'
@@ -12741,6 +12921,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetEndpointStatistics'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionRegisterTable'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionReadGrants'
@@ -12769,11 +12950,13 @@ components:
           modify_task_queue_config: '#/components/schemas/LakekeeperWarehouseActionModifyTaskQueueConfig'
           read_grants: '#/components/schemas/LakekeeperWarehouseActionReadGrants'
           read_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionReadSubtreeGrants'
+          register_table: '#/components/schemas/LakekeeperWarehouseActionRegisterTable'
           rename: '#/components/schemas/LakekeeperWarehouseActionRename'
           revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
+          update_storage_credential: '#/components/schemas/LakekeeperWarehouseActionUpdateStorageCredential'
           use: '#/components/schemas/LakekeeperWarehouseActionUse'
     LakekeeperWarehouseActionAcceptMovedNamespace:
       type: object
@@ -12855,8 +13038,9 @@ components:
         force:
           type: boolean
           description: |-
-            Whether protection is bypassed, so a warehouse marked protected is deleted with
-            everything in it.
+            Whether protection is bypassed, so a warehouse marked protected can be deleted. The
+            warehouse must still be empty, and unfinished tasks still block the delete, except
+            tasks of queues that are cancelled when their warehouse is deleted.
     LakekeeperWarehouseActionGetAllTasks:
       type: object
       required:
@@ -12916,6 +13100,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindCreateNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindDelete'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorageCredential'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetMetadata'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetConfig'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindListNamespaces'
@@ -12934,6 +13119,7 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetEndpointStatistics'
+        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindRegisterTable'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindManageTags'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindAcceptMovedNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindReadGrants'
@@ -12962,11 +13148,13 @@ components:
           modify_task_queue_config: '#/components/schemas/LakekeeperWarehouseActionKindModifyTaskQueueConfig'
           read_grants: '#/components/schemas/LakekeeperWarehouseActionKindReadGrants'
           read_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionKindReadSubtreeGrants'
+          register_table: '#/components/schemas/LakekeeperWarehouseActionKindRegisterTable'
           rename: '#/components/schemas/LakekeeperWarehouseActionKindRename'
           revoke_subtree_grants: '#/components/schemas/LakekeeperWarehouseActionKindRevokeSubtreeGrants'
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
+          update_storage_credential: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorageCredential'
           use: '#/components/schemas/LakekeeperWarehouseActionKindUse'
     LakekeeperWarehouseActionKindAcceptMovedNamespace:
       type: object
@@ -13148,6 +13336,15 @@ components:
           type: string
           enum:
             - read_subtree_grants
+    LakekeeperWarehouseActionKindRegisterTable:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - register_table
     LakekeeperWarehouseActionKindRename:
       type: object
       required:
@@ -13193,6 +13390,15 @@ components:
           type: string
           enum:
             - update_storage
+    LakekeeperWarehouseActionKindUpdateStorageCredential:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - update_storage_credential
     LakekeeperWarehouseActionKindUse:
       type: object
       required:
@@ -13294,6 +13500,21 @@ components:
           oneOf:
             - type: 'null'
             - $ref: '#/components/schemas/SubtreeGrantScope'
+    LakekeeperWarehouseActionRegisterTable:
+      type: object
+      description: |-
+        Register files that are already in the warehouse's storage, for example orphaned files
+        of a dropped table: register a table from an existing metadata file, or create a
+        generic table on a location that holds files.
+        Asked together with the create action on the namespace. The files may be anywhere in
+        the warehouse's storage, so it is a right on the warehouse.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - register_table
     LakekeeperWarehouseActionRename:
       type: object
       required:
@@ -13342,6 +13563,10 @@ components:
             - set_protection
     LakekeeperWarehouseActionUpdateStorage:
       type: object
+      description: |-
+        Change or validate the warehouse's storage profile, or validate the storage the warehouse
+        currently runs with. Changing or validating a profile also requires
+        `update_storage_credential`, because a profile change replaces or clears the credential.
       required:
         - action
       properties:
@@ -13349,6 +13574,18 @@ components:
           type: string
           enum:
             - update_storage
+    LakekeeperWarehouseActionUpdateStorageCredential:
+      type: object
+      description: |-
+        Replace or clear the warehouse's storage credential, or validate a replacement, leaving
+        the storage profile as it is.
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - update_storage_credential
     LakekeeperWarehouseActionUse:
       type: object
       required:
@@ -13861,6 +14098,7 @@ components:
         - read_assignments
         - grant_create
         - grant_describe
+        - grant_write
         - grant_modify
         - grant_select
         - grant_pass_grants
@@ -13875,6 +14113,7 @@ components:
         - $ref: '#/components/schemas/NamespaceAssignmentDescribe'
         - $ref: '#/components/schemas/NamespaceAssignmentSelect'
         - $ref: '#/components/schemas/NamespaceAssignmentCreate'
+        - $ref: '#/components/schemas/NamespaceAssignmentWrite'
         - $ref: '#/components/schemas/NamespaceAssignmentModify'
         - $ref: '#/components/schemas/NamespaceAssignmentManageTags'
       discriminator:
@@ -13888,6 +14127,7 @@ components:
           ownership: '#/components/schemas/NamespaceAssignmentOwnership'
           pass_grants: '#/components/schemas/NamespaceAssignmentPassGrants'
           select: '#/components/schemas/NamespaceAssignmentSelect'
+          write: '#/components/schemas/NamespaceAssignmentWrite'
     NamespaceAssignmentCreate:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -13976,6 +14216,17 @@ components:
               type: string
               enum:
                 - select
+    NamespaceAssignmentWrite:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write
     NamespaceIdentOrUuid:
       oneOf:
         - type: object
@@ -14013,6 +14264,7 @@ components:
         - describe
         - select
         - create
+        - write
         - modify
         - manage_tags
     OneLakeProfile:
@@ -14081,6 +14333,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write
         - grant_modify
         - change_ownership
     OpenFGANamespaceAction:
@@ -14089,6 +14342,7 @@ components:
         - read_assignments
         - grant_create
         - grant_describe
+        - grant_write
         - grant_modify
         - grant_select
         - grant_pass_grants
@@ -14102,6 +14356,7 @@ components:
         - grant_tag_creator
         - grant_create
         - grant_describe
+        - grant_write
         - grant_modify
         - grant_select
         - grant_project_admin
@@ -14128,6 +14383,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write
         - grant_modify
         - change_ownership
     OpenFGAViewAction:
@@ -14139,6 +14395,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write
         - grant_modify
         - change_ownership
     OpenFGAWarehouseAction:
@@ -14147,6 +14404,7 @@ components:
         - read_assignments
         - grant_create
         - grant_describe
+        - grant_write
         - grant_modify
         - grant_select
         - grant_pass_grants
@@ -14211,6 +14469,7 @@ components:
         - grant_tag_creator
         - grant_create
         - grant_describe
+        - grant_write
         - grant_modify
         - grant_select
         - grant_project_admin
@@ -14227,6 +14486,7 @@ components:
         - $ref: '#/components/schemas/ProjectAssignmentDescribe'
         - $ref: '#/components/schemas/ProjectAssignmentSelect'
         - $ref: '#/components/schemas/ProjectAssignmentCreate'
+        - $ref: '#/components/schemas/ProjectAssignmentWrite'
         - $ref: '#/components/schemas/ProjectAssignmentModify'
       discriminator:
         propertyName: type
@@ -14240,6 +14500,7 @@ components:
           security_admin: '#/components/schemas/ProjectAssignmentSecurityAdmin'
           select: '#/components/schemas/ProjectAssignmentSelect'
           tag_creator: '#/components/schemas/ProjectAssignmentTagCreator'
+          write: '#/components/schemas/ProjectAssignmentWrite'
     ProjectAssignmentCreate:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -14339,6 +14600,17 @@ components:
               type: string
               enum:
                 - tag_creator
+    ProjectAssignmentWrite:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write
     ProjectRelation:
       type: string
       enum:
@@ -14350,6 +14622,7 @@ components:
         - describe
         - select
         - create
+        - write
         - modify
     ProjectTaskInfo:
       type: object
@@ -16319,6 +16592,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write
         - grant_modify
         - change_ownership
         - get_tasks
@@ -16331,6 +16605,7 @@ components:
         - $ref: '#/components/schemas/TableAssignmentManageGrants'
         - $ref: '#/components/schemas/TableAssignmentDescribe'
         - $ref: '#/components/schemas/TableAssignmentSelect'
+        - $ref: '#/components/schemas/TableAssignmentWrite'
         - $ref: '#/components/schemas/TableAssignmentModify'
         - $ref: '#/components/schemas/TableAssignmentManageTags'
       discriminator:
@@ -16343,6 +16618,7 @@ components:
           ownership: '#/components/schemas/TableAssignmentOwnership'
           pass_grants: '#/components/schemas/TableAssignmentPassGrants'
           select: '#/components/schemas/TableAssignmentSelect'
+          write: '#/components/schemas/TableAssignmentWrite'
     TableAssignmentDescribe:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -16420,6 +16696,17 @@ components:
               type: string
               enum:
                 - select
+    TableAssignmentWrite:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write
     TableRelation:
       type: string
       enum:
@@ -16428,6 +16715,7 @@ components:
         - manage_grants
         - describe
         - select
+        - write
         - modify
         - manage_tags
     TableUpdateKind:
@@ -16525,7 +16813,9 @@ components:
         Identifier for a tabular (table, view, or generic table) — either a UUID
         or its name and namespace. Wire format primary names are `table-id` and
         `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
-        accepted as input aliases for client ergonomics.
+        accepted as input aliases for client ergonomics. A name addresses the live
+        tabular. A dropped tabular that can still be restored and a staged table that
+        was not committed yet are addressed by their UUID.
     TabularIdentUuid:
       oneOf:
         - $ref: '#/components/schemas/TabularIdentUuidTable'
@@ -17546,6 +17836,7 @@ components:
         - grant_manage_tags
         - grant_describe
         - grant_select
+        - grant_write
         - grant_modify
         - change_ownership
         - get_tasks
@@ -17558,6 +17849,7 @@ components:
         - $ref: '#/components/schemas/ViewAssignmentManageGrants'
         - $ref: '#/components/schemas/ViewAssignmentDescribe'
         - $ref: '#/components/schemas/ViewAssignmentSelect'
+        - $ref: '#/components/schemas/ViewAssignmentWrite'
         - $ref: '#/components/schemas/ViewAssignmentModify'
         - $ref: '#/components/schemas/ViewAssignmentManageTags'
       discriminator:
@@ -17570,6 +17862,7 @@ components:
           ownership: '#/components/schemas/ViewAssignmentOwnership'
           pass_grants: '#/components/schemas/ViewAssignmentPassGrants'
           select: '#/components/schemas/ViewAssignmentSelect'
+          write: '#/components/schemas/ViewAssignmentWrite'
     ViewAssignmentDescribe:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -17647,6 +17940,17 @@ components:
               type: string
               enum:
                 - select
+    ViewAssignmentWrite:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write
     ViewRelation:
       type: string
       enum:
@@ -17655,6 +17959,7 @@ components:
         - manage_grants
         - describe
         - select
+        - write
         - modify
         - manage_tags
     WarehouseAction:
@@ -17676,6 +17981,7 @@ components:
         - read_assignments
         - grant_create
         - grant_describe
+        - grant_write
         - grant_modify
         - grant_select
         - grant_pass_grants
@@ -17695,6 +18001,7 @@ components:
         - $ref: '#/components/schemas/WarehouseAssignmentDescribe'
         - $ref: '#/components/schemas/WarehouseAssignmentSelect'
         - $ref: '#/components/schemas/WarehouseAssignmentCreate'
+        - $ref: '#/components/schemas/WarehouseAssignmentWrite'
         - $ref: '#/components/schemas/WarehouseAssignmentModify'
         - $ref: '#/components/schemas/WarehouseAssignmentManageTags'
       discriminator:
@@ -17708,6 +18015,7 @@ components:
           ownership: '#/components/schemas/WarehouseAssignmentOwnership'
           pass_grants: '#/components/schemas/WarehouseAssignmentPassGrants'
           select: '#/components/schemas/WarehouseAssignmentSelect'
+          write: '#/components/schemas/WarehouseAssignmentWrite'
     WarehouseAssignmentCreate:
       allOf:
         - $ref: '#/components/schemas/UserOrRole'
@@ -17796,6 +18104,17 @@ components:
               type: string
               enum:
                 - select
+    WarehouseAssignmentWrite:
+      allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - write
     WarehouseFilter:
       oneOf:
         - $ref: '#/components/schemas/WarehouseFilterWarehouseId'
@@ -17850,6 +18169,7 @@ components:
         - describe
         - select
         - create
+        - write
         - modify
         - manage_tags
     WarehouseStatistics:

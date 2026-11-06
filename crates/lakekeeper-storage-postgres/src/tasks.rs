@@ -18,7 +18,7 @@ use lakekeeper::{
             TASK_ATTEMPT_ALREADY_FAILED_ERROR_TYPE, Task, TaskAttemptId, TaskCheckState,
             TaskEntity, TaskId, TaskInput, TaskIntermediateStatus, TaskMetadata, TaskOutcome,
             TaskQueueDemand, TaskQueueDemandRequest, TaskQueueName, TaskResourceDemandRange,
-            TaskScheduleId, WarehouseTaskEntityId, given_up_message,
+            TaskScheduleId, WarehouseTaskEntityId, given_up_message, record_timed_out_attempt,
         },
     },
 };
@@ -620,8 +620,7 @@ pub(crate) async fn pick_task_with_retry_policy(
     resource_demand: TaskResourceDemandRange,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
     let (above, at_most) = demand_bounds(resource_demand);
-    let queue_name = queue_name.as_str();
-    let queue_names = all_queue_names(queue_name, legacy_queue_names);
+    let queue_names = all_queue_names(queue_name.as_str(), legacy_queue_names);
     if let Err(e) = fail_timed_out_attempt(
         pool,
         &queue_names,
@@ -633,6 +632,7 @@ pub(crate) async fn pick_task_with_retry_policy(
     {
         tracing::error!(?e, "Failed to record a timed-out attempt of '{queue_name}'");
     }
+    let queue_name = queue_name.as_str();
     if resource_demand.is_empty() {
         return Ok(None);
     }
@@ -911,7 +911,7 @@ pub(crate) async fn task_queue_oldest_due(
 async fn fail_timed_out_attempt(
     pool: &PgPool,
     queue_names: &[String],
-    queue_name: &str,
+    queue_name: &TaskQueueName,
     default_max_time_since_last_heartbeat: chrono::Duration,
     retry_policy: RetryPolicy,
 ) -> Result<(), IcebergErrorResponse> {
@@ -925,8 +925,10 @@ async fn fail_timed_out_attempt(
         SELECT
             t.task_id,
             t.attempt,
+            t.warehouse_id,
             t.entity_type as "entity_type: TaskEntityTypeDB",
             t.entity_id,
+            t.entity_name,
             t.resource_demand,
             t.execution_details
         FROM task t
@@ -948,7 +950,7 @@ async fn fail_timed_out_attempt(
         "#,
         queue_names,
         max_time_since_last_heartbeat,
-        queue_name
+        queue_name.as_str()
     )
     .fetch_optional(&mut *transaction)
     .await
@@ -971,10 +973,11 @@ async fn fail_timed_out_attempt(
         resource_demand: timed_out.resource_demand,
         execution_details: timed_out.execution_details.as_ref(),
     };
+    let decision = retry_policy.decide(&failed);
     record_failure(
         id,
         retry_policy.max_retries,
-        &retry_policy.decide(&failed),
+        &decision,
         details,
         &mut transaction,
     )
@@ -983,6 +986,23 @@ async fn fail_timed_out_attempt(
         .commit()
         .await
         .map_err(|e| e.into_error_model("Failed to commit timed-out task attempt"))?;
+    // The row lock and the conflict check of `record_failure` let only one pick fail an attempt,
+    // so each is counted once.
+    record_timed_out_attempt(queue_name);
+    // As in `record_failure`, a retry after `max_retries` attempts is ignored.
+    let retried =
+        matches!(decision, RetryDecision::Retry { .. }) && id.attempt < retry_policy.max_retries;
+    tracing::warn!(
+        queue_name = %queue_name,
+        task_id = %id.task_id,
+        attempt = id.attempt,
+        warehouse_id = timed_out.warehouse_id.map(tracing::field::display),
+        entity_type = ?timed_out.entity_type,
+        entity_id = timed_out.entity_id.map(tracing::field::display),
+        entity_name = timed_out.entity_name.map(|name| name.join(".")),
+        retried,
+        "Task attempt timed out: its worker stopped sending heartbeats"
+    );
     Ok(())
 }
 
@@ -2953,6 +2973,52 @@ mod test {
             .await
             .unwrap();
         assert_eq!(active, 0);
+        assert_eq!(
+            attempt_log(&pool, task.task_id()).await,
+            vec![(
+                1,
+                TaskOutcome::Failed,
+                Some("Attempt timed out.".to_string())
+            )]
+        );
+    }
+
+    /// Two picks race for one timed-out attempt: one fails it, and it is counted once.
+    #[sqlx::test]
+    async fn test_timed_out_attempt_is_counted_once_for_its_queue(pool: PgPool) {
+        let recorder =
+            axum_prometheus::metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let _local_recorder = metrics::set_default_local_recorder(&recorder);
+        let (tq_name, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
+        expire_heartbeat(&pool, task.task_id()).await;
+
+        let pick = || {
+            pick_task_with_retry_policy(
+                &pool,
+                &tq_name,
+                &[],
+                chrono::Duration::milliseconds(500),
+                TEST_RETRY_POLICY,
+                TaskResourceDemandRange::default(),
+            )
+        };
+        let (first, second) = tokio::join!(pick(), pick());
+        first.unwrap();
+        second.unwrap();
+
+        let counted: Vec<_> = recorder
+            .handle()
+            .render()
+            .lines()
+            .filter(|line| line.starts_with("lakekeeper_task_queue_timed_out_attempts_total"))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            counted,
+            vec![format!(
+                r#"lakekeeper_task_queue_timed_out_attempts_total{{queue_name="{tq_name}"}} 1"#
+            )]
+        );
         assert_eq!(
             attempt_log(&pool, task.task_id()).await,
             vec![(

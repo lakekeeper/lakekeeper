@@ -132,8 +132,8 @@ struct PrivilegeDocumentation {
 
 /// Documentation for one privilege, for a picker that has to group and explain itself.
 ///
-/// Keyed by name rather than by level: the same fourteen names cover all forty-odd
-/// entries, because a privilege means the same thing wherever the model defines it.
+/// Keyed by name, not by level: a few names cover every level's entries,
+/// because a privilege means the same thing wherever the model defines it.
 /// Anything not listed reports nothing rather than a guess — a wrong explanation of a
 /// permission is worse than none.
 fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
@@ -184,17 +184,30 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         }),
         "manage_tags" => ("metadata", {
             "Attach and detach governance tags on this object, its columns, and everything \
-             beneath it. Independent of `modify`, so a steward can classify objects without \
-             the right to change them. Attaching a specific tag additionally requires the \
-             right to apply that tag."
+             beneath it. Independent of `write` and `modify`, so a steward can classify \
+             objects without the right to change them. Attaching a specific tag \
+             additionally requires the right to apply that tag."
         }),
         "describe" => ("metadata", "Read the object's metadata."),
         "select" => ("read", "Read the object's data."),
-        "create" => ("create", "Create new objects inside this one."),
-        "modify" => (
-            "write",
-            "Change the object and its contents, including schema changes.",
-        ),
+        "create" => ("create", {
+            "Create new objects inside this one. Does not show the tables, views and generic \
+             tables already inside; grant `describe` for that."
+        }),
+        "write" => ("write", {
+            "Change the contents of tables, views and generic tables. On a table, commit \
+             data, schema, partitioning, sort order and properties, manage branches and \
+             snapshot tags, and expire snapshots. On a view, replace its definition and \
+             change its properties. Gives write and delete access to the files of tables and \
+             generic tables. Includes `select`. Does not drop, rename, move or protect \
+             anything."
+        }),
+        "modify" => ("write", {
+            "Everything `write` allows, plus dropping, undropping, renaming and protecting \
+             objects, and controlling their tasks. On a namespace, warehouse \
+             or project, also deleting it and changing its properties and settings. Does \
+             not include `create`."
+        }),
         // Tag definitions.
         "apply" => ("metadata", {
             "Attach and detach this tag. Attaching it to an object additionally requires \
@@ -245,8 +258,8 @@ fn authority_relation(resource_type: ResourceType, privilege: &str, op: GrantOp)
 /// this level — a structural relation (`parent`, `project`, `child`) or one this
 /// version does not know.
 ///
-/// Resolved by search rather than by assuming the API name and the model relation
-/// share a spelling, which is true today at every level but is not a rule.
+/// Resolved by search through `to_openfga`: the API name and the stored relation share a
+/// spelling at every level, but nothing enforces it.
 fn privilege_of_relation(resource_type: ResourceType, relation: &str) -> Option<String> {
     for_level!(resource_type, |R| R::iter()
         .find(|candidate| candidate.to_openfga().to_string() == relation)
@@ -805,6 +818,7 @@ mod tests {
                 "describe",
                 "select",
                 "create",
+                "write",
                 "modify",
                 "manage_tags"
             ]
@@ -828,6 +842,48 @@ mod tests {
         );
     }
 
+    /// The write tier is granted, listed and stored as `write` at every level that has it.
+    #[test]
+    fn write_is_stored_as_write() {
+        for resource_type in [
+            ResourceType::Project,
+            ResourceType::Warehouse,
+            ResourceType::Namespace,
+            ResourceType::Table,
+            ResourceType::View,
+            ResourceType::GenericTable,
+        ] {
+            assert_eq!(
+                assignment_relation(resource_type, "write"),
+                Some("write".to_string()),
+                "{resource_type:?}"
+            );
+            assert_eq!(
+                privilege_of_relation(resource_type, "write"),
+                Some("write".to_string()),
+                "{resource_type:?}"
+            );
+            assert_eq!(
+                authority_relation(resource_type, "write", GrantOp::Grant),
+                Some("can_grant_write".to_string()),
+                "{resource_type:?}"
+            );
+            for unknown in ["write_data", "write_content"] {
+                assert!(
+                    !is_known_privilege(resource_type, unknown),
+                    "{unknown} on {resource_type:?}"
+                );
+            }
+        }
+        for resource_type in [ResourceType::Table, ResourceType::View] {
+            assert_eq!(
+                authority_relation(resource_type, "write", GrantOp::Revoke),
+                Some("can_revoke_write".to_string()),
+                "{resource_type:?}"
+            );
+        }
+    }
+
     /// Only the privileges `pass_grants` can delegate have an asymmetric rule. For the
     /// rest, granting is already `manage_grants`-only, so both directions name one
     /// relation and the model needs no second action.
@@ -840,7 +896,7 @@ mod tests {
                 "{privilege} is not delegable, so its two directions share a relation"
             );
         }
-        for privilege in ["describe", "select", "create", "modify"] {
+        for privilege in ["describe", "select", "create", "write", "modify"] {
             assert_ne!(
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Grant),
                 authority_relation(ResourceType::Warehouse, privilege, GrantOp::Revoke),

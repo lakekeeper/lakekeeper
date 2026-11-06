@@ -44,13 +44,17 @@ use lakekeeper::{
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, NamespaceId, SecretStore, State,
         TableId, TabularListFlags, UserId, WriteTransaction,
-        authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
+        authz::{
+            AllowAllAuthorizer, CatalogTableAction, CatalogWarehouseAction,
+            tests::{HidingAuthorizer, RecordedTabularCheck},
+        },
     },
 };
 use lakekeeper_integration_tests::{
-    assert_advertises_client_planning, create_ns, create_table as create_table_helper,
-    create_table_request as create_request, create_view, drop_table as drop_table_helper,
-    impl_pagination_tests, memory_io_profile, setup_simple, tabular_test_multi_warehouse_setup,
+    REFUSED_NEW_TABULAR_NAMES, assert_advertises_client_planning, create_ns,
+    create_table as create_table_helper, create_table_request as create_request, create_view,
+    drop_table as drop_table_helper, impl_pagination_tests, memory_io_profile, setup_simple,
+    tabular_test_multi_warehouse_setup,
 };
 use lakekeeper_io::LakekeeperStorage as _;
 use lakekeeper_storage_postgres::{
@@ -304,6 +308,17 @@ fn schema() -> Schema {
         ])
         .build()
         .unwrap()
+}
+
+/// `expected` with the `last-updated-ms` the server stamped on `stored`.
+fn with_server_time(expected: &TableMetadata, stored: &TableMetadata) -> TableMetadata {
+    expected
+        .clone()
+        .into_builder(None)
+        .set_last_updated_ms(stored.last_updated_ms())
+        .build()
+        .unwrap()
+        .metadata
 }
 
 fn assert_table_metadata_are_equal(expected: &TableMetadata, actual: &TableMetadata) {
@@ -619,7 +634,10 @@ async fn test_set_ref(pool: PgPool) {
         panic!("Expected LoadTableResult, got NotModified");
     };
 
-    assert_eq!(&*tab.metadata, &builder.metadata);
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
 }
 
 #[sqlx::test]
@@ -1038,9 +1056,13 @@ async fn test_table_v3(pg_pool: PgPool) {
     )
     .await;
 
-    // Assert that the commit fails
-    assert!(invalid_commit_result.is_err());
-    let err_string = invalid_commit_result.as_ref().unwrap_err().to_string();
+    // Assert that the commit fails as a conflict the client can retry
+    let err = invalid_commit_result.as_ref().unwrap_err();
+    assert_eq!(
+        (err.error.code, err.error.r#type.as_str()),
+        (StatusCode::CONFLICT.as_u16(), "CommitFailedException")
+    );
+    let err_string = err.to_string();
     assert!(
         err_string.contains("first-row-id is behind table next-row-id"),
         "The error message `{err_string}` did not contain the expected text",
@@ -1393,16 +1415,17 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         panic!("Expected LoadTableResult, got NotModified");
     };
 
-    assert_eq!(tab.metadata.history(), builder.metadata.history());
-    assert_eq!(&*tab.metadata, &builder.metadata);
+    let expected = with_server_time(&builder.metadata, &tab.metadata);
+    assert_eq!(tab.metadata.history(), expected.history());
+    assert_eq!(&*tab.metadata, &expected);
 
     assert_json_diff::assert_json_eq!(
         serde_json::to_value(tab.metadata.clone()).unwrap(),
-        serde_json::to_value(builder.metadata.clone()).unwrap()
+        serde_json::to_value(expected).unwrap()
     );
 
     let last_updated = tab.metadata.last_updated_ms();
-    let builder = builder.metadata.into_builder(tab.metadata_location);
+    let builder = (*tab.metadata).clone().into_builder(tab.metadata_location);
 
     let snap = Snapshot::builder()
         .with_snapshot_id(2)
@@ -1461,10 +1484,13 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         panic!("Expected LoadTableResult, got NotModified");
     };
 
-    assert_eq!(&*tab.metadata, &builder.metadata);
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
 
     let last_updated = tab.metadata.last_updated_ms();
-    let builder = builder.metadata.into_builder(tab.metadata_location);
+    let builder = (*tab.metadata).clone().into_builder(tab.metadata_location);
 
     let snap = Snapshot::builder()
         .with_snapshot_id(3)
@@ -1523,10 +1549,13 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         panic!("Expected LoadTableResult, got NotModified");
     };
 
-    assert_eq!(&*tab.metadata, &builder.metadata);
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
 
-    let builder = builder
-        .metadata
+    let builder = (*tab.metadata)
+        .clone()
         .into_builder(tab.metadata_location)
         .remove_snapshots(&[2])
         .build()
@@ -1701,6 +1730,509 @@ async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_poo
         expired.snapshots().map(|s| s.snapshot_id()).collect_vec(),
         vec![2]
     );
+}
+
+// ------------------- Commit times -------------------
+
+const HOUR_MS: i64 = 60 * 60 * 1000;
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn snapshot_at(
+    snapshot_id: i64,
+    parent: Option<i64>,
+    sequence_number: i64,
+    timestamp_ms: i64,
+) -> Snapshot {
+    Snapshot::builder()
+        .with_snapshot_id(snapshot_id)
+        .with_parent_snapshot_id(parent)
+        .with_timestamp_ms(timestamp_ms)
+        .with_sequence_number(sequence_number)
+        .with_schema_id(0)
+        .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::new(),
+        })
+        .build()
+}
+
+fn set_ref(ref_name: &str, snapshot_id: i64) -> TableUpdate {
+    TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: create_snapshot_reference(snapshot_id),
+    }
+}
+
+fn set_property(value: &str) -> TableUpdate {
+    TableUpdate::SetProperties {
+        updates: HashMap::from([("k".to_string(), value.to_string())]),
+    }
+}
+
+/// Commit the updates of the named tables in one transaction; the error's code and type.
+async fn try_commit_named(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    changes: Vec<(&str, Vec<TableUpdate>)>,
+) -> Result<(), (u16, String)> {
+    commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: changes
+                .into_iter()
+                .map(|(name, updates)| CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns_params.namespace.clone(),
+                        name: name.to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                })
+                .collect(),
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| (e.error.code, e.error.r#type))
+}
+
+async fn try_commit_tab_1(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    updates: Vec<TableUpdate>,
+) -> Result<(), (u16, String)> {
+    try_commit_named(ctx, ns_params, vec![("tab-1", updates)]).await
+}
+
+/// A table as an Iceberg client parses it.
+async fn load_as_client(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    name: &str,
+) -> TableMetadata {
+    let loaded = load_table(ctx, ns_params, name).await;
+    serde_json::from_value(serde_json::to_value(&*loaded.metadata).unwrap())
+        .expect("clients must be able to load the table")
+}
+
+/// Every table of a commit gets the server clock as `last-updated-ms`; snapshot times and
+/// snapshot-log entries keep the client's time.
+#[sqlx::test]
+async fn test_commit_stamps_last_updated_ms_with_the_server_clock(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("tab-2".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let before = now_ms();
+    let client_ms = before - 5;
+    try_commit_named(
+        &ctx,
+        &ns_params,
+        vec![
+            (
+                "tab-1",
+                vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot_at(1, None, 1, client_ms),
+                    },
+                    set_ref(MAIN_BRANCH, 1),
+                ],
+            ),
+            ("tab-2", vec![set_property("v")]),
+        ],
+    )
+    .await
+    .unwrap();
+    let after = now_ms();
+
+    let tab_1 = load_as_client(&ctx, &ns_params, "tab-1").await;
+    let tab_2 = load_as_client(&ctx, &ns_params, "tab-2").await;
+    assert!(
+        (before..=after).contains(&tab_1.last_updated_ms()),
+        "{before} <= {} <= {after}",
+        tab_1.last_updated_ms()
+    );
+    assert_eq!(tab_2.last_updated_ms(), tab_1.last_updated_ms());
+    assert_eq!(tab_1.snapshot_by_id(1).unwrap().timestamp_ms(), client_ms);
+    assert_eq!(tab_1.history().last().unwrap().timestamp_ms, client_ms);
+}
+
+/// A client clock two hours ahead on a branch or a staged (WAP) snapshot leaves every stored
+/// metadata file loadable, and a client with a correct clock commits next.
+#[sqlx::test]
+async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadable(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let fast = now_ms() + 2 * HOUR_MS;
+    let before = now_ms();
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, fast),
+            },
+            set_ref("b", 2),
+        ],
+    )
+    .await
+    .unwrap();
+    let after = now_ms();
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.snapshot_by_id(2).unwrap().timestamp_ms(), fast);
+    assert!((before..=after).contains(&metadata.last_updated_ms()));
+
+    let commits = [
+        vec![set_property("after-branch")],
+        vec![
+            TableUpdate::RemoveSnapshotRef {
+                ref_name: "b".to_string(),
+            },
+            TableUpdate::RemoveSnapshots {
+                snapshot_ids: vec![2],
+            },
+        ],
+        vec![TableUpdate::AddSnapshot {
+            snapshot: snapshot_at(3, Some(1), 3, fast),
+        }],
+        vec![set_property("after-stage")],
+        vec![set_ref(MAIN_BRANCH, 3)],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(4, Some(3), 4, now_ms() + 1000),
+            },
+            set_ref(MAIN_BRANCH, 4),
+        ],
+    ];
+    for (i, updates) in commits.into_iter().enumerate() {
+        try_commit_tab_1(&ctx, &ns_params, updates)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e:?}"));
+        load_as_client(&ctx, &ns_params, "tab-1").await;
+    }
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.current_snapshot_id(), Some(4));
+    assert_eq!(metadata.snapshot_by_id(3).unwrap().timestamp_ms(), fast);
+}
+
+/// A writer whose clock is two minutes behind the server commits back to back on `main` and
+/// on a branch, as with Iceberg Java's REST catalog, and every stored file loads.
+#[sqlx::test]
+async fn test_slow_writer_commits(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let slow_ms = || now_ms() - 2 * 60 * 1000;
+    let commits = vec![
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, slow_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, slow_ms() + 1),
+            },
+            set_ref(MAIN_BRANCH, 2),
+        ],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(3, Some(2), 3, slow_ms() + 2),
+            },
+            set_ref("b", 3),
+        ],
+    ];
+    for (i, updates) in commits.into_iter().enumerate() {
+        try_commit_tab_1(&ctx, &ns_params, updates)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e:?}"));
+        load_as_client(&ctx, &ns_params, "tab-1").await;
+    }
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.current_snapshot_id(), Some(2));
+    assert_eq!(metadata.snapshot_for_ref("b").unwrap().snapshot_id(), 3);
+}
+
+/// A new `main` snapshot more than a minute ahead of the server clock is refused with 400, as
+/// Iceberg Java refuses it, and the table does not change.
+#[sqlx::test]
+async fn test_fast_client_on_main_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+    let before = load_table(&ctx, &ns_params, "tab-1").await;
+
+    let result = try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, now_ms() + 2 * HOUR_MS),
+            },
+            set_ref(MAIN_BRANCH, 2),
+        ],
+    )
+    .await;
+    assert_eq!(
+        result,
+        Err((400, "TimestampAheadOfServerClock".to_string()))
+    );
+    let after = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(after.metadata_location, before.metadata_location);
+    assert_eq!(after.metadata, before.metadata);
+}
+
+/// Setting `main` to a tag is refused with 400, as Iceberg Java refuses it, and the table does
+/// not change. Clients cannot append to a table whose `main` is a tag.
+#[sqlx::test]
+async fn test_main_as_tag_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+    let before = load_table(&ctx, &ns_params, "tab-1").await;
+    let tag = |ref_name: &str, snapshot_id: i64| TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: SnapshotReference {
+            snapshot_id,
+            retention: SnapshotRetention::Tag {
+                max_ref_age_ms: None,
+            },
+        },
+    };
+
+    let commits = [
+        vec![tag(MAIN_BRANCH, 1)],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, now_ms()),
+            },
+            tag(MAIN_BRANCH, 2),
+        ],
+    ];
+    for updates in commits {
+        assert_eq!(
+            try_commit_tab_1(&ctx, &ns_params, updates).await,
+            Err((400, "SetMainToTagNotAllowed".to_string()))
+        );
+    }
+    let after = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(after.metadata_location, before.metadata_location);
+    assert_eq!(after.metadata, before.metadata);
+
+    try_commit_tab_1(&ctx, &ns_params, vec![tag("t", 1)])
+        .await
+        .unwrap();
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert!(metadata.refs()[MAIN_BRANCH].is_branch());
+    assert!(!metadata.refs()["t"].is_branch());
+}
+
+/// Registered metadata whose `last-updated-ms` is two hours ahead of the server clock: a
+/// commit is refused with 400, and the stored metadata stays loadable.
+#[sqlx::test]
+async fn test_commit_to_registered_metadata_ahead_of_the_server_clock_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let created = load_table(&ctx, &ns_params, "tab-1").await;
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent {
+                namespace: ns_params.namespace.clone(),
+                name: "tab-1".to_string(),
+            },
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let ahead = now_ms() + 2 * HOUR_MS;
+    let mut metadata = serde_json::to_value(&*created.metadata).unwrap();
+    metadata["last-updated-ms"] = serde_json::json!(ahead);
+    let metadata_location = format!(
+        "{}/metadata/00001-registered.metadata.json",
+        created.metadata.location()
+    );
+    let io = memory_io_profile().file_io(None).await.unwrap();
+    io.write(
+        &metadata_location,
+        serde_json::to_vec(&metadata).unwrap().into(),
+    )
+    .await
+    .unwrap();
+    CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("tab-1".to_string())
+            .metadata_location(metadata_location.clone())
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let result = try_commit_tab_1(&ctx, &ns_params, vec![set_property("v")]).await;
+    assert_eq!(
+        result,
+        Err((400, "TimestampAheadOfServerClock".to_string()))
+    );
+    let loaded = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(loaded.metadata_location, Some(metadata_location));
+    assert_eq!(
+        load_as_client(&ctx, &ns_params, "tab-1")
+            .await
+            .last_updated_ms(),
+        ahead
+    );
+}
+
+/// A snapshot for `main` computed before another branch's commit carries an outdated
+/// sequence number: the commit is a conflict, and the client's retry from the reloaded
+/// table commits.
+#[sqlx::test]
+async fn test_stale_snapshot_after_a_branch_commit_is_a_conflict(pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let ts = table.metadata.last_updated_ms();
+    let snapshot = |snapshot_id: i64, parent: Option<i64>, sequence_number: i64| {
+        Snapshot::builder()
+            .with_snapshot_id(snapshot_id)
+            .with_parent_snapshot_id(parent)
+            .with_timestamp_ms(ts + snapshot_id)
+            .with_sequence_number(sequence_number)
+            .with_schema_id(0)
+            .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            })
+            .build()
+    };
+    let set_ref = |ref_name: &str, snapshot_id: i64| TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: create_snapshot_reference(snapshot_id),
+    };
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(1, None, 1),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await;
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(2, Some(1), 2),
+            },
+            set_ref("audit", 2),
+        ],
+    )
+    .await;
+
+    let stale = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot(3, Some(1), 2),
+                    },
+                    set_ref(MAIN_BRANCH, 3),
+                ],
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        (stale.error.code, stale.error.r#type.as_str()),
+        (StatusCode::CONFLICT.as_u16(), "CommitFailedException")
+    );
+
+    let reloaded = load_table(&ctx, &ns_params, "tab-1").await;
+    let next_sequence_number = reloaded.metadata.last_sequence_number() + 1;
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(3, Some(1), next_sequence_number),
+            },
+            set_ref(MAIN_BRANCH, 3),
+        ],
+    )
+    .await;
+    let committed = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(committed.metadata.current_snapshot_id(), Some(3));
+    assert_eq!(committed.metadata.last_sequence_number(), 3);
 }
 
 async fn commit_test_setup(
@@ -3178,6 +3710,28 @@ async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: 
     assert_eq!(err.error.r#type, "NoSuchNamespaceException");
 }
 
+#[sqlx::test]
+async fn test_register_table_refuses_invalid_names(pool: PgPool) {
+    let (ctx, _, ns_params, existing_location, _) = register_table_setup(pool).await;
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name(name.to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+}
+
 /// `create_table` is checked after the metadata file is read: a caller who can see the
 /// namespace but may not create tables in it is refused.
 #[sqlx::test]
@@ -3258,6 +3812,360 @@ async fn test_register_table_checks_create_table_before_validating_the_file(pool
     let err = register().await.unwrap_err();
     assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
     assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+}
+
+/// Registering adopts existing files, so it needs the register right on the warehouse
+/// besides `create_table` on the namespace. It is checked before the metadata file is read. A
+/// refusal is recorded on the warehouse and, by the requested name, as a refused
+/// `create_table` on the namespace.
+#[sqlx::test]
+async fn test_register_table_requires_the_register_right(pool: PgPool) {
+    use lakekeeper::service::events::{
+        AuthorizationFailureReason, EventListener, context::ActionContextKey,
+    };
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, ns_params, existing_location, missing_location) =
+        register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterTable
+    ));
+    let listener = Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as Arc<dyn EventListener>)
+        .await;
+    let register = |metadata_location: String| {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("registered".to_string())
+                .metadata_location(metadata_location)
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    // Reading a missing file would fail with a storage error, not with a refusal.
+    let err = register(missing_location).await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    let err = register(existing_location).await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    // Each refusal writes two records, from separate tasks, so they may arrive in any order.
+    assert_eq!(listener.settled_counts(0, 4).await, (0, 4));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::ActionForbidden; 4]
+    );
+    let (succeeded, mut failed) = listener.recorded_actions();
+    failed.sort_by(|a, b| a[0].action_name.cmp(&b[0].action_name));
+    assert_eq!(succeeded, Vec::<Vec<RecordedAction>>::new());
+    let create_table = vec![RecordedAction {
+        action_name: "create_table".to_string(),
+        context: vec![
+            ActionContextKey::Name("registered".to_string()),
+            ActionContextKey::Properties(std::collections::BTreeMap::new()),
+        ],
+    }];
+    let register_table = vec![RecordedAction {
+        action_name: "register_table".to_string(),
+        context: vec![],
+    }];
+    assert_eq!(
+        failed,
+        vec![
+            create_table.clone(),
+            create_table,
+            register_table.clone(),
+            register_table
+        ]
+    );
+
+    let exists = CatalogServer::table_exists(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent::new(ns_params.namespace.clone(), "registered".to_string()),
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(exists.error.code, StatusCode::NOT_FOUND, "{exists:?}");
+}
+
+/// Drops `existing` without purging its files, registers its metadata file as `adopted`
+/// with `blocked` refused, and loads `adopted` as the same caller. Returns both responses
+/// and the checks the register made after it created the table.
+async fn adopt_dropped_table(
+    pool: PgPool,
+    blocked: &[CatalogTableAction],
+) -> (
+    LoadTableResult,
+    LoadTableResult,
+    Vec<RecordedTabularCheck>,
+    String,
+) {
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    for action in blocked {
+        authz.block_action(&format!("table:{action:?}"));
+    }
+
+    let registered = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("adopted".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the register right and create_table are allowed");
+    let register_checks = authz.tabular_checks().last().cloned().unwrap();
+    let table_object = format!("table:{}/{}", prefix.as_str(), registered.metadata.uuid());
+
+    let LoadTableResultOrNotModified::LoadTableResult(loaded) = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(prefix),
+            table: TableIdent::new(ns_params.namespace, "adopted".to_string()),
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    (registered, loaded, register_checks, table_object)
+}
+
+/// A register asks on the table it registered what `loadTable` asks, and vends what
+/// `loadTable` vends the same caller. Both responses are tagged with the storage access
+/// they carry, so equal tags mean equal access.
+async fn assert_register_vends_as_load(pool: PgPool, blocked: &[CatalogTableAction]) {
+    let (registered, loaded, register_checks, table_object) =
+        adopt_dropped_table(pool, blocked).await;
+
+    let check = |action: &str| RecordedTabularCheck {
+        object: table_object.clone(),
+        action: action.to_string(),
+        user: None,
+        is_delegated_execution: false,
+    };
+    assert_eq!(
+        register_checks,
+        vec![check("GetMetadata"), check("ReadData"), check("WriteData")],
+        "{blocked:?}"
+    );
+    assert!(registered.etag.is_some(), "{blocked:?}");
+    assert_eq!(registered.etag, loaded.etag, "{blocked:?}");
+}
+
+/// A caller who may register and create a table but not see it gets what `loadTable` gives
+/// them: not found, with neither metadata nor credentials. The table stays registered, and
+/// the refusal is recorded on the table.
+#[sqlx::test]
+async fn test_register_table_returns_not_found_to_a_caller_who_cannot_see_the_table(pool: PgPool) {
+    use lakekeeper::service::events::{
+        AuthorizationFailureReason, EventListener, context::EntityType,
+    };
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    authz.block_action(&format!("table:{:?}", CatalogTableAction::GetMetadata));
+    let listener = Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as Arc<dyn EventListener>)
+        .await;
+
+    let err = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("adopted".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("a caller who cannot see the table must get neither metadata nor credentials");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchTableException");
+
+    let warehouse_id = WarehouseId::from_str_or_internal(prefix.as_str()).unwrap();
+    assert!(table_exists(&ctx, warehouse_id, "reg_ns", "adopted").await);
+
+    // The register and the create were allowed and recorded; only seeing the table was refused.
+    assert_eq!(listener.settled_counts(2, 1).await, (2, 1));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::CannotSeeResource]
+    );
+    assert_eq!(
+        listener.recorded_actions().1,
+        vec![vec![RecordedAction {
+            action_name: "get_metadata".to_string(),
+            context: vec![],
+        }]]
+    );
+    assert_eq!(
+        listener.failed_entity_types(),
+        vec![vec![EntityType::Table]]
+    );
+
+    let load_err = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(prefix),
+            table: TableIdent::new(ns_params.namespace, "adopted".to_string()),
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(load_err.error.code, err.error.code);
+    assert_eq!(load_err.error.r#type, err.error.r#type);
+    assert_eq!(load_err.error.message, err.error.message);
+}
+
+/// A register that fails after its commit leaves the table registered. A replay with the same
+/// idempotency key returns what `loadTable` returns, and a retry without a key is a conflict.
+#[sqlx::test]
+async fn test_register_table_replay_after_a_failure_after_the_commit(pool: PgPool) {
+    use lakekeeper::service::idempotency::IdempotencyKey;
+
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    let get_metadata = format!("table:{:?}", CatalogTableAction::GetMetadata);
+    authz.block_action(&get_metadata);
+
+    let mut with_key = RequestMetadata::new_unauthenticated();
+    with_key.with_idempotency_key(IdempotencyKey::parse(&Uuid::now_v7().to_string()).unwrap());
+    let register = |request_metadata: RequestMetadata| {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("adopted".to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            request_metadata,
+        )
+    };
+    let load = || {
+        CatalogServer::load_table(
+            TableParameters {
+                prefix: Some(prefix.clone()),
+                table: TableIdent::new(ns_params.namespace.clone(), "adopted".to_string()),
+            },
+            LoadTableRequest::default(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let failed = register(with_key.clone()).await.unwrap_err();
+    assert_eq!(failed.error.code, StatusCode::NOT_FOUND, "{failed:?}");
+    assert_eq!(failed.error.r#type, "NoSuchTableException");
+
+    let replayed = register(with_key.clone()).await.unwrap_err();
+    let refused_load = load().await.unwrap_err();
+    assert_eq!(replayed.error.code, StatusCode::NOT_FOUND, "{replayed:?}");
+    assert_eq!(replayed.error.r#type, "NoSuchTableException");
+    assert_eq!(replayed.error.message, refused_load.error.message);
+
+    let retried = register(RequestMetadata::new_unauthenticated())
+        .await
+        .unwrap_err();
+    assert_eq!(retried.error.code, StatusCode::CONFLICT, "{retried:?}");
+    assert_eq!(retried.error.r#type, "AlreadyExistsException");
+
+    authz.unblock_action(&get_metadata);
+    let replayed = register(with_key)
+        .await
+        .expect("the replay loads the table once the caller may see it");
+    let LoadTableResultOrNotModified::LoadTableResult(loaded) = load().await.unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    assert_eq!(replayed.metadata_location, loaded.metadata_location);
+    assert!(replayed.etag.is_some());
+    assert_eq!(replayed.etag, loaded.etag);
+}
+
+#[sqlx::test]
+async fn test_register_table_vends_read_write_to_a_reader_and_writer(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[]).await;
+}
+
+#[sqlx::test]
+async fn test_register_table_vends_read_only_to_a_reader(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[CatalogTableAction::WriteData]).await;
+}
+
+/// Write credentials can read, so a caller who may write but not read gets none, as on load.
+#[sqlx::test]
+async fn test_register_table_vends_nothing_without_read(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[CatalogTableAction::ReadData]).await;
 }
 
 #[sqlx::test]
@@ -3815,4 +4723,71 @@ mod register_data_access {
             );
         }
     }
+}
+
+#[sqlx::test]
+async fn test_rename_table_refuses_invalid_destination_names(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let namespace = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "sales".to_string(),
+    )
+    .await
+    .namespace;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: namespace.clone(),
+    };
+    let table_id = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("daily_sales".to_string()), None),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap()
+    .metadata
+    .uuid();
+    let source = TableIdent::new(namespace.clone(), "daily_sales".to_string());
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::rename_table(
+            ns_params.prefix.clone(),
+            RenameTableRequest {
+                source: source.clone(),
+                destination: TableIdent::new(namespace.clone(), name.to_string()),
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+
+        let err = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some(name.to_string()), None),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+
+    let loaded = load_table(&ctx, &ns_params, "daily_sales").await;
+    assert_eq!(loaded.metadata.uuid(), table_id);
 }

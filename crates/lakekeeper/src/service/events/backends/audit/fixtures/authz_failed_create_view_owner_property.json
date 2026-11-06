@@ -1,0 +1,60 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.1",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.1"
+  },
+  "event_id": "019b76da-a800-7000-8000-000000000000",
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "create_view",
+      "name": "orders_by_day",
+      "properties": {
+        "trino.run-as-owner": "bob"
+      }
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "namespace",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "namespace": "sales"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "create_view",
+        "name": "orders_by_day",
+        "properties": {
+          "trino.run-as-owner": "bob"
+        }
+      },
+      "entity": {
+        "entity_type": "namespace",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace": "sales"
+      },
+      "allowed": false,
+      "determined_by": []
+    }
+  ],
+  "decision": "denied",
+  "failure_reason": "action_forbidden",
+  "error": {
+    "type": "ProtectedPropertyModification",
+    "code": 403,
+    "message": "View property 'trino.run-as-owner' names the user that query engines run this view as. Only a trusted engine whose owner property is exactly 'trino.run-as-owner' may set, change or remove it. Send the request without this property. Trino writes it for SECURITY DEFINER views: to create them, configure Trino as a trusted engine in Lakekeeper (see \"Trusted Engines\" in the configuration documentation), or create the view with SECURITY INVOKER.",
+    "stack": [],
+    "error_id": "019684ff-0000-7000-8000-000000000006"
+  }
+}

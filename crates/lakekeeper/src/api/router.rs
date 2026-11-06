@@ -46,7 +46,7 @@ use crate::{
     },
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
     service::{
-        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
+        CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerAuthentication, State,
         admission::AdmissionGates,
         authn::{AuthMiddlewareState, auth_middleware_fn},
         authz::{Authorizer, InstanceAdminMembership},
@@ -80,9 +80,8 @@ static VARY_ON_REQUEST_IDENTITY: HeaderValue =
 /// principal-specific.
 ///
 /// `Cache-Control` is set `if_not_present` so that a route that decides its
-/// own caching keeps its directive: the S3 signer sends `private` or
-/// `no-cache` depending on the signed request's method, as the Iceberg REST
-/// spec defines.
+/// own caching keeps its directive: the S3 signer sends `no-cache`, so that
+/// clients do not cache its signatures.
 /// `Vary` is *appended*: it is a list-valued header, so a route that names a
 /// further request header must not lose the fields below. Caches combine the
 /// field lines, which is also how `CompressionLayer` adds `accept-encoding`.
@@ -188,7 +187,7 @@ pub async fn new_full_router<
 >(
     RouterArgs {
         authenticator,
-        state,
+        mut state,
         service_health_provider,
         cors_origins,
         metrics_layer,
@@ -198,6 +197,10 @@ pub async fn new_full_router<
         management_api_extensions,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
+    let authentication = ServerAuthentication::of(authenticator.as_ref());
+    set_authentication(&mut state.v1_state, authentication);
+    warn_about_trusted_engines_without_authentication(authentication);
+
     let v1_routes = new_v1_full_router::<crate::server::CatalogServer<C, A, S>, State<A, C, S>>();
 
     let generic_table_routes = crate::api::data::v1::generic_tables::router::<
@@ -306,6 +309,36 @@ pub async fn new_full_router<
     } else {
         router
     })
+}
+
+/// Sets [`State::authentication`] from the router's authenticator, which decides it for every
+/// request through this router. Warns if the state said otherwise.
+fn set_authentication<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>(
+    state: &mut State<A, C, S>,
+    authentication: ServerAuthentication,
+) {
+    if state.authentication != authentication {
+        tracing::warn!(
+            state_value = ?state.authentication,
+            router_value = ?authentication,
+            "State::authentication differs from the authenticator of the router. The router sets \
+             it from its authenticator."
+        );
+    }
+    state.authentication = authentication;
+}
+
+/// Warns if trusted engines are configured on a server without authentication: trusted engines
+/// are matched during authentication only.
+fn warn_about_trusted_engines_without_authentication(authentication: ServerAuthentication) {
+    if !authentication.is_enabled() && !CONFIG.trusted_engines.is_empty() {
+        tracing::warn!(
+            "Trusted engines are configured, but authentication is not enabled. Without \
+             authentication Lakekeeper cannot recognize a trusted engine, and it does not protect \
+             view owner properties such as 'trino.run-as-owner'. Enable authentication to use \
+             trusted engines."
+        );
+    }
 }
 
 /// The unauthenticated `/health` handler, shared by the full router and the
@@ -891,8 +924,8 @@ mod test {
         assert!(!cache_control.contains("no-store"), "{cache_control}");
     }
 
-    /// The S3 signer relies on this: a sign response for a write carries
-    /// `no-cache`, which the layer must not replace with `private`.
+    /// The S3 signer relies on this: a sign response carries `no-cache`,
+    /// which the layer must not replace with `private`.
     #[tokio::test]
     async fn a_route_keeps_its_own_cache_directives() {
         let headers = cache_directive_headers(&[(header::CACHE_CONTROL, "no-cache")]).await;

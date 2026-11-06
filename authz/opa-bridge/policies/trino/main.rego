@@ -13,10 +13,23 @@ default allow_unmanaged := false
 # Blanket allow for unmanaged catalogs when enabled via env var or configuration.
 # This is useful when Trino has multiple authorizers and this OPA bridge
 # should not block access to catalogs managed by other authorizers.
+# It leaves out reads inside a DEFINER view (`CreateViewWithSelectFromColumns`):
+# the bridge cannot find out whether such an object is a view without an owner,
+# which Trino would run with the DEFINER view owner's rights.
 allow_unmanaged if {
 	configuration.trino_allow_unmanaged_catalogs == true
+	_blanket_allowed_operation
 	_resource_catalog_name
 	not _resource_catalog_name in _managed_catalog_names
+}
+
+_blanket_allowed_operation if {
+	input.action.operation != "CreateViewWithSelectFromColumns"
+}
+
+# Trino's built-in `system` catalog cannot hold views.
+_blanket_allowed_operation if {
+	input.action.resource.table.catalogName == "system"
 }
 
 # Extract catalog name from the current resource (works for all resource types)
@@ -90,10 +103,10 @@ _batch_unmanaged_catalogs contains name if {
 }
 
 # Catalogs blanket-allowed via allow_unmanaged, evaluated once per unique
-# catalog (not per resource). allow_unmanaged's decision is catalog-level
-# (depends on configuration.trino_allow_unmanaged_catalogs + catalog name),
-# so one evaluation per catalog suffices — avoids re-running the rule for
-# every filterResource in a large batch.
+# catalog (not per resource). allow_unmanaged's decision depends on
+# configuration.trino_allow_unmanaged_catalogs, the catalog name and the
+# operation, which all resources of a batch share, so one evaluation per catalog
+# suffices — avoids re-running the rule for every filterResource in a large batch.
 _allowed_unmanaged_batch_catalogs contains catalog_name if {
 	some catalog_name in _batch_unmanaged_catalogs
 	representative := [r |
@@ -137,8 +150,8 @@ batch contains i if {
 	allow with input.action.resource as raw_resource
 }
 
-# Metadata tables in managed catalogs need per-resource evaluation
-# (excluded from Lakekeeper batch since they resolve to base table permissions)
+# Metadata tables in managed catalogs are decided one by one: reading one is
+# checked on its base table and, on Trino before 484, on a view with its name.
 batch contains i if {
 	input.action.operation in {"FilterTables", "FilterColumns", "SelectFromColumns"}
 	some i, raw_resource in input.action.filterResources

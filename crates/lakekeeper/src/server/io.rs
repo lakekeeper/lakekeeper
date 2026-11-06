@@ -1,6 +1,5 @@
 use std::sync::{Arc, LazyLock};
 
-use futures::{StreamExt, stream::BoxStream};
 use iceberg::spec::TableMetadata;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use lakekeeper_io::{
@@ -216,26 +215,6 @@ pub(crate) async fn remove_all(
     io.remove_all(location.as_str()).await.map_err(Into::into)
 }
 
-pub(crate) async fn list_location<'a>(
-    io: &'a impl LakekeeperStorage,
-    location: &'a Location,
-    page_size: Option<usize>,
-) -> Result<BoxStream<'a, std::result::Result<Vec<Location>, IOError>>, InvalidLocationError> {
-    tracing::debug!("Listing location: {}", location);
-    let entries = io.list(location.as_str(), page_size).await?;
-    let entries = entries
-        .map(|entry| {
-            entry.map(|file_infos| {
-                file_infos
-                    .into_iter()
-                    .map(|file_info| file_info.location().clone())
-                    .collect::<Vec<_>>()
-            })
-        })
-        .boxed();
-    Ok(entries)
-}
-
 #[derive(thiserror::Error, Debug, strum::IntoStaticStr)]
 pub enum IOErrorExt {
     #[error("Failed to serialize data: {0}")]
@@ -425,7 +404,7 @@ mod tests {
 
     async fn test_list_and_remove_all(cred: StorageCredential, profile: StorageProfile) {
         async fn list_simple(io: &impl LakekeeperStorage, location: &Location) -> Vec<Location> {
-            let list = list_location(io, location, Some(10)).await.unwrap();
+            let list = io.list(location.as_str(), Some(10)).await.unwrap();
 
             list.collect::<Vec<_>>()
                 .await
@@ -433,6 +412,9 @@ mod tests {
                 .map(Result::unwrap)
                 .next()
                 .unwrap_or_default()
+                .into_iter()
+                .map(|file_info| file_info.location().clone())
+                .collect()
         }
 
         let mut location = profile.base_location().unwrap();

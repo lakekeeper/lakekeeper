@@ -1,14 +1,26 @@
 // Extracted from crates/lakekeeper/src/api/management/v1/check.rs.
 // VAK-437 split.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
+use iceberg::TableUpdate;
+use iceberg_ext::catalog::rest::{CommitTableRequest, ErrorModel};
 use lakekeeper::{
+    MatchedEngines, TrinoEngineConfig, TrustedEngine, WarehouseId,
     api::{
-        RequestMetadata,
+        ApiContext, RequestMetadata,
+        data::v1::generic_tables::{
+            GenericTableParameters, GenericTableService as _, ListGenericTablesQuery,
+        },
         iceberg::{
             types::Prefix,
-            v1::{DataAccess, NamespaceParameters, tables::TablesService},
+            v1::{
+                DataAccess, DropParams, NamespaceParameters, TableParameters, ViewParameters,
+                tables::TablesService, views::ViewService,
+            },
         },
         management::v1::{
             check::{
@@ -21,15 +33,18 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{
-        CatalogNamespaceOps, NamespaceIdent, UserId,
+        CatalogNamespaceOps, NamespaceIdent, State, UserId,
         authz::{
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogServerAction,
-            CatalogTableAction, CatalogWarehouseAction, tests::HidingAuthorizer,
+            self, CatalogGenericTableAction, CatalogNamespaceAction, CatalogServerAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, TableUpdateKind,
+            tests::HidingAuthorizer,
         },
     },
 };
-use lakekeeper_integration_tests::{create_generic_table, create_table_request};
-use lakekeeper_storage_postgres::{CatalogState, PostgresBackend};
+use lakekeeper_integration_tests::{
+    create_generic_table, create_table_request, create_view_request,
+};
+use lakekeeper_storage_postgres::{CatalogState, PostgresBackend, SecretsState};
 
 #[sqlx::test]
 async fn test_check_internal_basic_permissions(pool: sqlx::PgPool) {
@@ -940,6 +955,7 @@ fn test_table_action_update_property_serde() {
         }),
         target_refs: Arc::default(),
         update_kinds: Arc::default(),
+        commit_facts: authz::CommitFacts::default(),
     };
     let item = CatalogActionCheckItem {
         id: None,
@@ -1211,4 +1227,858 @@ async fn test_check_internal_generic_table_operation(pool: sqlx::PgPool) {
     assert!(response.results.iter().all(|r| r.allowed));
     assert_eq!(response.results[0].id, Some("by-name".to_string()));
     assert_eq!(response.results[1].id, Some("by-id".to_string()));
+}
+
+type HidingContext = ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>;
+
+#[derive(Debug, Clone, Copy)]
+enum TabularKind {
+    Table,
+    View,
+    GenericTable,
+}
+
+/// A warehouse with soft deletion and one namespace, in which `name` was created and
+/// dropped three times as `kind`.
+struct DroppedTabulars {
+    api_context: HidingContext,
+    authz: HidingAuthorizer,
+    warehouse_id: WarehouseId,
+    namespace: NamespaceIdent,
+    kind: TabularKind,
+    name: &'static str,
+    dropped_ids: Vec<uuid::Uuid>,
+}
+
+impl DroppedTabulars {
+    async fn new(pool: sqlx::PgPool, kind: TabularKind, name: &'static str) -> Self {
+        let authz = HidingAuthorizer::new();
+        let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+            pool,
+            lakekeeper_integration_tests::memory_io_profile(),
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(3600),
+            },
+            None,
+        )
+        .await;
+        let warehouse_id = test_warehouse.warehouse_id;
+        let namespace = lakekeeper_integration_tests::create_ns(
+            api_context.clone(),
+            warehouse_id.to_string(),
+            "test_namespace".to_string(),
+        )
+        .await
+        .namespace;
+
+        let mut setup = Self {
+            api_context,
+            authz,
+            warehouse_id,
+            namespace,
+            kind,
+            name,
+            dropped_ids: Vec::new(),
+        };
+        for _ in 0..3 {
+            let id = setup.create().await;
+            setup.drop().await;
+            setup.dropped_ids.push(id);
+        }
+        setup
+    }
+
+    fn prefix(&self) -> Option<Prefix> {
+        Some(Prefix(self.warehouse_id.to_string()))
+    }
+
+    fn ident(&self) -> iceberg::TableIdent {
+        iceberg::TableIdent::new(self.namespace.clone(), self.name.to_string())
+    }
+
+    async fn create(&self) -> uuid::Uuid {
+        let parameters = NamespaceParameters {
+            prefix: self.prefix(),
+            namespace: self.namespace.clone(),
+        };
+        let metadata = RequestMetadata::new_unauthenticated();
+        match self.kind {
+            TabularKind::Table => CatalogServer::create_table(
+                parameters,
+                create_table_request(Some(self.name.to_string()), None),
+                DataAccess::not_specified(),
+                self.api_context.clone(),
+                metadata,
+            )
+            .await
+            .unwrap()
+            .metadata
+            .uuid(),
+            TabularKind::View => CatalogServer::create_view(
+                parameters,
+                create_view_request(Some(self.name), None),
+                self.api_context.clone(),
+                DataAccess::not_specified(),
+                metadata,
+            )
+            .await
+            .unwrap()
+            .metadata
+            .uuid(),
+            TabularKind::GenericTable => {
+                create_generic_table(
+                    self.api_context.clone(),
+                    self.warehouse_id.to_string(),
+                    self.namespace_name(),
+                    self.name,
+                )
+                .await
+                .unwrap();
+                self.live_generic_table_id().await
+            }
+        }
+    }
+
+    fn namespace_name(&self) -> String {
+        self.namespace.as_ref()[0].clone()
+    }
+
+    /// Generic-table responses carry no id; the listing names the live generic table.
+    async fn live_generic_table_id(&self) -> uuid::Uuid {
+        let listed = CatalogServer::list_generic_tables(
+            NamespaceParameters {
+                prefix: self.prefix(),
+                namespace: self.namespace.clone(),
+            },
+            ListGenericTablesQuery::default(),
+            self.api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        let ids = listed
+            .identifiers
+            .iter()
+            .filter(|ident| ident.name == self.name)
+            .map(|ident| ident.id.expect("generic table id"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 1);
+        *ids[0]
+    }
+
+    async fn drop(&self) {
+        let drop_params = DropParams {
+            purge_requested: false,
+            force: false,
+        };
+        let metadata = RequestMetadata::new_unauthenticated();
+        match self.kind {
+            TabularKind::Table => CatalogServer::drop_table(
+                TableParameters {
+                    prefix: self.prefix(),
+                    table: self.ident(),
+                },
+                drop_params,
+                self.api_context.clone(),
+                metadata,
+            )
+            .await
+            .unwrap(),
+            TabularKind::View => CatalogServer::drop_view(
+                ViewParameters {
+                    prefix: self.prefix(),
+                    view: self.ident(),
+                },
+                drop_params,
+                self.api_context.clone(),
+                metadata,
+            )
+            .await
+            .unwrap(),
+            TabularKind::GenericTable => CatalogServer::drop_generic_table(
+                GenericTableParameters {
+                    prefix: self.prefix(),
+                    namespace: self.namespace.clone(),
+                    table_name: self.name.to_string(),
+                },
+                drop_params,
+                self.api_context.clone(),
+                metadata,
+            )
+            .await
+            .unwrap(),
+        }
+    }
+
+    fn authz_object(&self, id: uuid::Uuid) -> String {
+        match self.kind {
+            TabularKind::Table => format!("table:{}/{id}", self.warehouse_id),
+            TabularKind::View => format!("view:{}/{id}", self.warehouse_id),
+            TabularKind::GenericTable => format!("generic_table:{}/{id}", self.warehouse_id),
+        }
+    }
+
+    fn check_by_name(&self, identity: Option<UserOrRole>) -> CatalogActionCheckItem {
+        self.check_by_other_name(self.name, identity)
+    }
+
+    fn check_by_other_name(
+        &self,
+        name: &str,
+        identity: Option<UserOrRole>,
+    ) -> CatalogActionCheckItem {
+        let tabular = TabularIdentOrUuid::Name {
+            namespace: self.namespace.clone(),
+            table: name.to_string(),
+            warehouse_id: self.warehouse_id,
+        };
+        let operation = match self.kind {
+            TabularKind::Table => CatalogActionCheckOperation::Table {
+                action: CatalogTableAction::ReadData,
+                table: tabular,
+            },
+            TabularKind::View => CatalogActionCheckOperation::View {
+                action: CatalogViewAction::Select,
+                view: tabular,
+            },
+            TabularKind::GenericTable => CatalogActionCheckOperation::GenericTable {
+                action: CatalogGenericTableAction::ReadData,
+                generic_table: tabular,
+            },
+        };
+        CatalogActionCheckItem {
+            id: None,
+            identity,
+            operation,
+        }
+    }
+
+    async fn check(
+        &self,
+        checks: Vec<CatalogActionCheckItem>,
+        error_on_not_found: bool,
+    ) -> Result<Vec<bool>, ErrorModel> {
+        check_internal(
+            self.api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+            CatalogActionsBatchCheckRequest {
+                checks,
+                error_on_not_found,
+            },
+        )
+        .await
+        .map(|response| response.results.iter().map(|r| r.allowed).collect())
+    }
+}
+
+/// A by-name check is decided on the live tabular only. Each user is blind to one side:
+/// a check decided on a dropped tabular would allow the first user and deny the second.
+async fn assert_by_name_check_decides_on_live(pool: sqlx::PgPool, kind: TabularKind) {
+    let setup = DroppedTabulars::new(pool, kind, "shared_name").await;
+    let live_id = setup.create().await;
+    assert!(!setup.dropped_ids.contains(&live_id));
+
+    let blind_to_live = UserId::new_unchecked("oidc", "blind-to-live");
+    let blind_to_dropped = UserId::new_unchecked("oidc", "blind-to-dropped");
+    setup.authz.hide_for_user(
+        &authz::UserOrRole::User(blind_to_live.clone()),
+        &setup.authz_object(live_id),
+    );
+    for id in &setup.dropped_ids {
+        setup.authz.hide_for_user(
+            &authz::UserOrRole::User(blind_to_dropped.clone()),
+            &setup.authz_object(*id),
+        );
+    }
+
+    let allowed = setup
+        .check(
+            vec![
+                setup.check_by_name(Some(UserOrRole::User(blind_to_live))),
+                setup.check_by_name(Some(UserOrRole::User(blind_to_dropped))),
+            ],
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed, vec![false, true]);
+}
+
+/// A name whose tabulars were all dropped addresses nothing.
+async fn assert_by_name_check_ignores_dropped(
+    pool: sqlx::PgPool,
+    kind: TabularKind,
+    not_found_type: &str,
+) {
+    let setup = DroppedTabulars::new(pool, kind, "dropped_name").await;
+
+    let err = setup
+        .check(vec![setup.check_by_name(None)], true)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, 404);
+    assert_eq!(err.r#type, not_found_type);
+
+    let allowed = setup
+        .check(vec![setup.check_by_name(None)], false)
+        .await
+        .unwrap();
+    assert_eq!(allowed, vec![false]);
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_decides_on_live_table(pool: sqlx::PgPool) {
+    assert_by_name_check_decides_on_live(pool, TabularKind::Table).await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_decides_on_live_view(pool: sqlx::PgPool) {
+    assert_by_name_check_decides_on_live(pool, TabularKind::View).await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_ignores_dropped_table(pool: sqlx::PgPool) {
+    assert_by_name_check_ignores_dropped(pool, TabularKind::Table, "NoSuchTableException").await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_ignores_dropped_view(pool: sqlx::PgPool) {
+    assert_by_name_check_ignores_dropped(pool, TabularKind::View, "NoSuchViewException").await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_decides_on_live_generic_table(pool: sqlx::PgPool) {
+    assert_by_name_check_decides_on_live(pool, TabularKind::GenericTable).await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_ignores_dropped_generic_table(pool: sqlx::PgPool) {
+    assert_by_name_check_ignores_dropped(
+        pool,
+        TabularKind::GenericTable,
+        "NoSuchGenericTableException",
+    )
+    .await;
+}
+
+/// With `error_on_not_found`, a by-name check tells every caller whether the name is
+/// taken, before any authorization. The Trino bridge relies on it to tell a free name
+/// apart from a denied check.
+async fn assert_by_name_check_reports_free_names(
+    pool: sqlx::PgPool,
+    kind: TabularKind,
+    not_found_type: &str,
+    read_grants: &str,
+) {
+    let setup = DroppedTabulars::new(pool, kind, "taken_name").await;
+    setup.create().await;
+    let other_user = UserOrRole::User(UserId::new_unchecked("oidc", "other-user"));
+    let free_name = || setup.check_by_other_name("free_name", Some(other_user.clone()));
+    let taken_name = || setup.check_by_name(Some(other_user.clone()));
+
+    let err = setup.check(vec![free_name()], true).await.unwrap_err();
+    assert_eq!((err.code, err.r#type.as_str()), (404, not_found_type));
+    assert_eq!(
+        setup.check(vec![taken_name()], true).await.unwrap(),
+        vec![true]
+    );
+
+    // From here on, the caller may not inspect the permissions of other principals.
+    setup.authz.block_action(read_grants);
+    let err = setup.check(vec![taken_name()], true).await.unwrap_err();
+    assert_eq!(
+        (err.code, err.r#type.as_str()),
+        (403, "CannotInspectPermissions")
+    );
+    let err = setup.check(vec![free_name()], true).await.unwrap_err();
+    assert_eq!((err.code, err.r#type.as_str()), (404, not_found_type));
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_table_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::Table,
+        "NoSuchTableException",
+        "table:ReadGrants",
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_view_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::View,
+        "NoSuchViewException",
+        "view:ReadGrants",
+    )
+    .await;
+}
+
+#[sqlx::test]
+async fn test_check_internal_by_name_reports_free_generic_table_names(pool: sqlx::PgPool) {
+    assert_by_name_check_reports_free_names(
+        pool,
+        TabularKind::GenericTable,
+        "NoSuchGenericTableException",
+        "generic_table:ReadGrants",
+    )
+    .await;
+}
+
+/// A staged table that was not committed yet is addressed by its id only.
+#[sqlx::test]
+async fn test_check_internal_by_name_ignores_staged_table(pool: sqlx::PgPool) {
+    let setup = DroppedTabulars::new(pool, TabularKind::Table, "staged_name").await;
+    let mut request = create_table_request(Some(setup.name.to_string()), None);
+    request.stage_create = Some(true);
+    let staged_id = CatalogServer::create_table(
+        NamespaceParameters {
+            prefix: setup.prefix(),
+            namespace: setup.namespace.clone(),
+        },
+        request,
+        DataAccess::not_specified(),
+        setup.api_context.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap()
+    .metadata
+    .uuid();
+
+    let err = setup
+        .check(vec![setup.check_by_name(None)], true)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, 404);
+    assert_eq!(err.r#type, "NoSuchTableException");
+
+    let by_id = CatalogActionCheckItem {
+        id: None,
+        identity: None,
+        operation: CatalogActionCheckOperation::Table {
+            action: CatalogTableAction::ReadData,
+            table: TabularIdentOrUuid::IdInWarehouse {
+                warehouse_id: setup.warehouse_id,
+                table_id: staged_id,
+            },
+        },
+    };
+    assert_eq!(setup.check(vec![by_id], true).await.unwrap(), vec![true]);
+}
+
+/// A namespace with a live table `live` and a staged table `staged`, and an authorizer that
+/// allows everything until a test blocks something.
+struct StagedAndLive {
+    api_context: HidingContext,
+    authz: HidingAuthorizer,
+    warehouse_id: WarehouseId,
+    namespace: NamespaceIdent,
+    ids: HashMap<&'static str, uuid::Uuid>,
+}
+
+impl StagedAndLive {
+    async fn new(pool: sqlx::PgPool) -> Self {
+        let authz = HidingAuthorizer::new();
+        let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+            pool,
+            lakekeeper_integration_tests::memory_io_profile(),
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+        let warehouse_id = test_warehouse.warehouse_id;
+        let namespace = lakekeeper_integration_tests::create_ns(
+            api_context.clone(),
+            warehouse_id.to_string(),
+            "test_namespace".to_string(),
+        )
+        .await
+        .namespace;
+        let mut ids = HashMap::new();
+        for (name, stage_create) in [("live", false), ("staged", true)] {
+            let mut request = create_table_request(Some(name.to_string()), None);
+            request.stage_create = Some(stage_create);
+            let id = CatalogServer::create_table(
+                NamespaceParameters {
+                    prefix: Some(Prefix(warehouse_id.to_string())),
+                    namespace: namespace.clone(),
+                },
+                request,
+                DataAccess::not_specified(),
+                api_context.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap()
+            .metadata
+            .uuid();
+            ids.insert(name, id);
+        }
+        Self {
+            api_context,
+            authz,
+            warehouse_id,
+            namespace,
+            ids,
+        }
+    }
+
+    /// Batch-check of a commit check on `table`, addressed by id.
+    async fn check(&self, table: &str, updates: &[TableUpdate]) -> bool {
+        let updated_properties = updates
+            .iter()
+            .filter_map(|u| match u {
+                TableUpdate::SetProperties { updates } => Some(updates.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let action = CatalogTableAction::Commit {
+            updated_properties: Arc::new(updated_properties),
+            removed_properties: Arc::default(),
+            target_refs: Arc::default(),
+            update_kinds: Arc::new(updates.iter().map(TableUpdateKind::from).collect()),
+            commit_facts: authz::CommitFacts::default(),
+        };
+        let results = check_internal(
+            self.api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+            CatalogActionsBatchCheckRequest {
+                checks: vec![CatalogActionCheckItem {
+                    id: None,
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Table {
+                        action,
+                        table: TabularIdentOrUuid::IdInWarehouse {
+                            warehouse_id: self.warehouse_id,
+                            table_id: self.ids[table],
+                        },
+                    },
+                }],
+                error_on_not_found: true,
+            },
+        )
+        .await
+        .unwrap()
+        .results;
+        assert_eq!(results.len(), 1);
+        results[0].allowed
+    }
+
+    /// The server's answer to a commit request with `updates` to `table`: allowed, or the
+    /// HTTP status of the refusal.
+    async fn commit(&self, table: &str, updates: Vec<TableUpdate>) -> Result<(), u16> {
+        let ident = iceberg::TableIdent::new(self.namespace.clone(), table.to_string());
+        CatalogServer::commit_table(
+            TableParameters {
+                prefix: Some(Prefix(self.warehouse_id.to_string())),
+                table: ident.clone(),
+            },
+            CommitTableRequest {
+                identifier: Some(ident),
+                requirements: vec![],
+                updates,
+            },
+            self.api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.error.code)
+    }
+}
+
+fn set_owner() -> TableUpdate {
+    TableUpdate::SetProperties {
+        updates: HashMap::from([("owner".to_string(), "team".to_string())]),
+    }
+}
+
+/// A commit check on a staged table asks the authorizer what the server asks for a commit
+/// request with the same content. This authorizer allows a commit only if it sets a property.
+#[sqlx::test]
+async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: sqlx::PgPool) {
+    let setup = StagedAndLive::new(pool).await;
+    setup
+        .authz
+        .block_action("table:Commit { updated_properties: {}");
+    let remove = TableUpdate::RemoveProperties {
+        removals: vec!["owner".to_string()],
+    };
+
+    assert!(!setup.check("staged", std::slice::from_ref(&remove)).await);
+    assert_eq!(setup.commit("staged", vec![remove]).await, Err(403));
+
+    assert!(setup.check("staged", &[set_owner()]).await);
+    assert_eq!(setup.commit("staged", vec![set_owner()]).await, Ok(()));
+}
+
+/// With an authorizer that allows data commits only, as a policy on the data-commit context
+/// can, batch-check and the server agree: a data commit to a live table is allowed, and the
+/// same commit to a staged table is refused, because it finishes the table's creation.
+#[sqlx::test]
+async fn test_check_internal_data_commit_decides_as_the_server(pool: sqlx::PgPool) {
+    let setup = StagedAndLive::new(pool).await;
+    setup.authz.block_structural_commits();
+    // A data commit that changes nothing on a live table.
+    let data_commit = [TableUpdate::RemoveStatistics { snapshot_id: 1 }];
+
+    assert!(setup.check("live", &data_commit).await);
+    assert_eq!(setup.commit("live", data_commit.to_vec()).await, Ok(()));
+
+    assert!(!setup.check("staged", &data_commit).await);
+    assert_eq!(setup.commit("staged", data_commit.to_vec()).await, Err(403));
+
+    assert!(!setup.check("live", &[set_owner()]).await);
+    assert_eq!(setup.commit("live", vec![set_owner()]).await, Err(403));
+}
+
+/// `view-in-definer-view` allows a view only if it has an engine owner property and the
+/// identity may select it. The authorizer is asked about `Select`, outside delegated
+/// execution, and never about a view without an owner.
+#[sqlx::test]
+async fn test_check_internal_view_in_definer_view_needs_an_owner(pool: sqlx::PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool,
+        lakekeeper_integration_tests::memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+    let namespace = lakekeeper_integration_tests::create_ns(
+        api_context.clone(),
+        warehouse_id.to_string(),
+        "ns".to_string(),
+    )
+    .await
+    .namespace;
+    // Only a trusted engine may write the owner property.
+    let mut engine = RequestMetadata::test_user(UserId::new_unchecked("oidc", "trino"));
+    engine.set_engines(MatchedEngines::single(TrustedEngine::Trino(
+        TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        },
+    )));
+    let mut view_ids = HashMap::new();
+    for (name, owner) in [("definer", Some("bob")), ("invoker", None)] {
+        let mut request = create_view_request(Some(name), None);
+        if let Some(owner) = owner {
+            request
+                .properties
+                .insert("trino.run-as-owner".to_string(), owner.to_string());
+        }
+        let view_id = CatalogServer::create_view(
+            NamespaceParameters {
+                prefix: Some(Prefix(warehouse_id.to_string())),
+                namespace: namespace.clone(),
+            },
+            request,
+            api_context.clone(),
+            DataAccess::not_specified(),
+            engine.clone(),
+        )
+        .await
+        .unwrap()
+        .metadata
+        .uuid();
+        view_ids.insert(name, view_id);
+    }
+    let bob = UserOrRole::User(UserId::new_unchecked("oidc", "bob"));
+    let check = |name: &str| CatalogActionCheckItem {
+        id: None,
+        identity: Some(bob.clone()),
+        operation: CatalogActionCheckOperation::ViewInDefinerView {
+            view: TabularIdentOrUuid::Name {
+                namespace: namespace.clone(),
+                table: name.to_string(),
+                warehouse_id,
+            },
+        },
+    };
+    let decide = |checks: Vec<CatalogActionCheckItem>| {
+        check_internal(
+            api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+            CatalogActionsBatchCheckRequest {
+                checks,
+                error_on_not_found: false,
+            },
+        )
+    };
+
+    let since = authz.tabular_checks().len();
+    let response = decide(vec![check("definer"), check("invoker")])
+        .await
+        .unwrap();
+    assert_eq!(
+        response
+            .results
+            .iter()
+            .map(|r| r.allowed)
+            .collect::<Vec<_>>(),
+        vec![true, false]
+    );
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![vec![authz::tests::RecordedTabularCheck {
+            object: format!("view:{warehouse_id}/{}", view_ids["definer"]),
+            action: "Select".to_string(),
+            user: Some(authz::UserOrRole::User(UserId::new_unchecked(
+                "oidc", "bob"
+            ))),
+            is_delegated_execution: false,
+        }]]
+    );
+
+    // The owner property is necessary, not sufficient.
+    authz.hide(&format!("view:{warehouse_id}/{}", view_ids["definer"]));
+    let response = decide(vec![check("definer")]).await.unwrap();
+    assert!(!response.results[0].allowed);
+}
+
+/// `view-replace` asks `commit`, and `change_security_mode` too for a view that runs as a user
+/// other than the identity. A free name is reported as not found.
+#[sqlx::test]
+async fn test_check_internal_view_replace_of_another_users_definer_view(pool: sqlx::PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool,
+        lakekeeper_integration_tests::memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+    let namespace = lakekeeper_integration_tests::create_ns(
+        api_context.clone(),
+        warehouse_id.to_string(),
+        "ns".to_string(),
+    )
+    .await
+    .namespace;
+    let mut view_ids = HashMap::new();
+    for (name, owner) in [
+        ("bobs", Some("bob")),
+        ("alices", Some("alice")),
+        ("invoker", None),
+    ] {
+        let mut request = create_view_request(Some(name), None);
+        if let Some(owner) = owner {
+            request
+                .properties
+                .insert("trino.run-as-owner".to_string(), owner.to_string());
+        }
+        let view_id = CatalogServer::create_view(
+            NamespaceParameters {
+                prefix: Some(Prefix(warehouse_id.to_string())),
+                namespace: namespace.clone(),
+            },
+            request,
+            api_context.clone(),
+            DataAccess::not_specified(),
+            lakekeeper_integration_tests::trino_engine_request(),
+        )
+        .await
+        .unwrap()
+        .metadata
+        .uuid();
+        view_ids.insert(name, view_id);
+    }
+    let alice = UserId::new_unchecked("oidc", "alice");
+    let check = |name: &str| CatalogActionCheckItem {
+        id: None,
+        identity: Some(UserOrRole::User(alice.clone())),
+        operation: CatalogActionCheckOperation::ViewReplace {
+            view: TabularIdentOrUuid::Name {
+                namespace: namespace.clone(),
+                table: name.to_string(),
+                warehouse_id,
+            },
+        },
+    };
+    let decide = |checks: Vec<CatalogActionCheckItem>, error_on_not_found: bool| {
+        check_internal(
+            api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+            CatalogActionsBatchCheckRequest {
+                checks,
+                error_on_not_found,
+            },
+        )
+    };
+    let allowed =
+        |response: lakekeeper::api::management::v1::check::CatalogActionsBatchCheckResponse| {
+            response
+                .results
+                .iter()
+                .map(|r| r.allowed)
+                .collect::<Vec<_>>()
+        };
+    let recorded = |name: &str, action: &str| authz::tests::RecordedTabularCheck {
+        object: format!("view:{warehouse_id}/{}", view_ids[name]),
+        action: action.to_string(),
+        user: Some(authz::UserOrRole::User(alice.clone())),
+        is_delegated_execution: false,
+    };
+    let commit = "Commit { updated_properties: {}, removed_properties: [] }";
+    let all = || vec![check("bobs"), check("alices"), check("invoker")];
+
+    let since = authz.tabular_checks().len();
+    assert_eq!(allowed(decide(all(), false).await.unwrap()), vec![true; 3]);
+    let mut asked: Vec<_> = authz.tabular_checks()[since..]
+        .iter()
+        .flatten()
+        .cloned()
+        .collect();
+    asked.sort_by(|a, b| (&a.object, &a.action).cmp(&(&b.object, &b.action)));
+    let mut expected = vec![
+        recorded("bobs", "ChangeSecurityMode"),
+        recorded("bobs", commit),
+        recorded("alices", commit),
+        recorded("invoker", commit),
+    ];
+    expected.sort_by(|a, b| (&a.object, &a.action).cmp(&(&b.object, &b.action)));
+    assert_eq!(asked, expected);
+
+    // Both actions must be allowed: a denied `commit` denies, whatever the other decides.
+    authz.block_action("view:Commit");
+    assert_eq!(
+        allowed(decide(vec![check("bobs")], false).await.unwrap()),
+        vec![false]
+    );
+    authz.unblock_action("view:Commit");
+
+    authz.block_action("view:ChangeSecurityMode");
+    assert_eq!(
+        allowed(decide(all(), false).await.unwrap()),
+        vec![false, true, true]
+    );
+
+    // `commit` decides as well.
+    authz.hide(&format!("view:{warehouse_id}/{}", view_ids["alices"]));
+    assert_eq!(
+        allowed(decide(vec![check("alices")], false).await.unwrap()),
+        vec![false]
+    );
+
+    // A free name: the bridge treats it as a create.
+    let error = decide(vec![check("free")], true)
+        .await
+        .expect_err("a free name is not found");
+    assert_eq!(error.code, 404);
+    assert_eq!(error.r#type, "NoSuchViewException");
 }

@@ -4,7 +4,7 @@ description: "Run Lakekeeper task workers as Kubernetes Jobs that KEDA starts on
 
 # Task Workers on Kubernetes
 
-Lakekeeper runs background work in task-queue workers, for example purging the files of dropped tables and, in Lakekeeper Plus, expiring snapshots and removing orphan files. By default every Lakekeeper pod runs these workers next to the HTTP API. On Kubernetes you can move this work to worker pods that [KEDA](https://keda.sh/) starts only while tasks wait. The API pods then stay free of heavy work, and the cluster can remove nodes when there is nothing to do.
+Lakekeeper runs background work in task-queue workers, for example purging the files of dropped tables and, in Lakekeeper Plus, expiring snapshots, removing orphan files and optimizing tables. By default every Lakekeeper pod runs these workers next to the HTTP API. Optimize workers run only where you turn them on, see [Optimize Workers](./optimize-workers.md). On Kubernetes you can move this work to worker pods that [KEDA](https://keda.sh/) starts only while tasks wait. The API pods then stay free of heavy work, and the cluster can remove nodes when there is nothing to do.
 
 ## How It Works
 
@@ -34,6 +34,12 @@ spec:
     template:
       spec:
         restartPolicy: Never
+        initContainers:
+          - name: check-db
+            image: quay.io/lakekeeper/catalog:<version>
+            args: ["wait-for-db", "-dm", "-r", "100", "-b", "2"]
+            env:
+              # The database settings of the worker.
         containers:
           - name: worker
             image: quay.io/lakekeeper/catalog:<version>
@@ -64,13 +70,15 @@ spec:
 
 `targetValue` is the number of tasks one worker pod runs at the same time, here `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`. With `restartPolicy: Never` and `backoffLimit: 0`, Kubernetes does not restart a worker that failed. The task queue tries the task again, and KEDA starts a new Job while tasks wait. [Task Queue Demand](./monitoring.md#task-queue-demand) lists the queue names and further recommended settings.
 
-We recommend leaving `LAKEKEEPER__TASK_MAX_LIFETIME` unset on these workers. A worker that reached it takes no new tasks while it finishes a long task, but KEDA still counts it, so other due tasks can wait for that task.
+`serve` refuses to start while the database is not migrated for its version. The `check-db` init container waits up to 200 seconds for that migration, like the Helm chart does for the API pods, so a worker of the new version that starts before the migration finished waits for it.
+
+On workers that run more than one task at a time, as in this example, we recommend leaving `LAKEKEEPER__TASK_MAX_LIFETIME` unset. A worker that reached it takes no new tasks while it finishes a long task, but KEDA still counts it, so other due tasks can wait for that task.
 
 ## Size Classes { .lkp }
 
 The demand endpoint also accepts `?class=<name>`. It then counts only the tasks of one size class of the queue, so that each class can have its own ScaledJob with pods of a matching size. For a class that the queue does not have, the endpoint answers `404`.
 
-<!-- TODO: describe the Lakekeeper Plus size-class settings and which queues use them once they are merged. -->
+In Lakekeeper Plus, the `optimize` queue has [size classes](./optimize-workers.md#size-classes). The Lakekeeper Helm chart creates one ScaledJob per class for you, see [Optimize Workers with the Helm Chart](./optimize-workers.md#helm-chart).
 
 ## Database Connections
 
@@ -89,10 +97,25 @@ A task waits as long as no worker takes it, for example when KEDA does not run, 
 
 ```sql
 SELECT queue_name,
-    EXTRACT(EPOCH FROM now() - MIN(CASE WHEN status = 'scheduled' THEN scheduled_for ELSE last_heartbeat_at END)) AS oldest_due_seconds
+    EXTRACT(EPOCH FROM now() - MIN(
+        CASE WHEN status = 'scheduled' THEN scheduled_for
+             ELSE last_heartbeat_at END
+    )) AS oldest_due_seconds
 FROM task
-WHERE (status = 'scheduled' AND scheduled_for <= now()) OR status IN ('running', 'should-stop')
+WHERE (status = 'scheduled' AND scheduled_for <= now())
+    OR status IN ('running', 'should-stop')
 GROUP BY queue_name;
 ```
 
 If you set `LAKEKEEPER__PG_SCHEMA`, write the schema in double quotes before the table name, for example `"lakekeeper".task`.
+
+A worker that is killed during a task, for example because it ran out of memory or used more disk than its limit, fails its Job, because the ScaledJob above does not restart it. We recommend alerts on failed Jobs with [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics). If you use kube-prometheus, it already includes the first rule as `KubeJobFailed`.
+
+```yaml
+- alert: LakekeeperWorkerJobFailed
+  expr: kube_job_failed{namespace="<namespace>"} > 0
+- alert: LakekeeperWorkerOutOfMemory
+  expr: kube_pod_container_status_terminated_reason{namespace="<namespace>", container="worker", reason="OOMKilled"} > 0
+```
+
+The first rule fires for every failed Job in the namespace, the second only for workers that ran out of memory. `container` is the container name of the ScaledJob above. The optimize workers of the Helm chart use the container name `optimize-worker`. Both alerts stay until the failed Job is deleted. The ScaledJob keeps the last `failedJobsHistoryLimit` failed Jobs, so delete the failed Job after the investigation. To find the task of the killed worker, look for the log line "Task attempt timed out" in the logs of the other workers of the queue (see [Task Queue Metrics](./monitoring.md#task-queue-metrics)). The killed worker cannot write it: the next worker of the queue writes it after the heartbeat timeout.

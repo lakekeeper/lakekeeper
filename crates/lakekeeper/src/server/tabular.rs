@@ -14,39 +14,27 @@ use crate::{
         idempotency::{IdempotencyInfo, IdempotencyKey},
         is_same_namespace_path_ignoring_ascii_case,
         storage::{
-            StorageProfile,
+            StorageCredential, StorageProfile, ValidationError, is_empty,
             storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
         },
     },
 };
 
-/// Claim the request's idempotency key inside the rename transaction.
+/// Claim the request's idempotency key in `transaction`.
 ///
 /// Returns the transaction so the caller can go on to commit it. A key another in-flight
 /// request already holds is not an error the caller can recover from, so the transaction is
-/// rolled back here and the request fails; `None` is a no-op. Every rename endpoint answers
-/// 204, which is the status recorded against the key.
-pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
+/// rolled back here and the request fails; `None` is a no-op.
+pub(crate) async fn claim_idempotency_key<C: CatalogStore>(
     mut transaction: C::Transaction,
     warehouse_id: WarehouseId,
-    key: Option<IdempotencyKey>,
-    endpoint: EndpointFlat,
+    idempotency: Option<&IdempotencyInfo>,
 ) -> Result<C::Transaction> {
-    let Some(key) = key else {
+    let Some(info) = idempotency else {
         return Ok(transaction);
     };
 
-    let claimed = C::try_insert_idempotency_key(
-        warehouse_id,
-        &IdempotencyInfo::builder()
-            .key(key)
-            .endpoint(endpoint)
-            .http_status(StatusCode::NO_CONTENT)
-            .build(),
-        transaction.transaction(),
-    )
-    .await?;
-    if claimed {
+    if C::try_insert_idempotency_key(warehouse_id, info, transaction.transaction()).await? {
         return Ok(transaction);
     }
 
@@ -58,6 +46,24 @@ pub(crate) async fn claim_rename_idempotency_key<C: CatalogStore>(
         })
         .ok();
     Err(ErrorModel::request_in_progress().into())
+}
+
+/// Claim the request's idempotency key, as [`claim_idempotency_key`] does, for an endpoint
+/// that answers 204, such as a rename or a drop. 204 is the status recorded against the key.
+pub(crate) async fn claim_no_content_idempotency_key<C: CatalogStore>(
+    transaction: C::Transaction,
+    warehouse_id: WarehouseId,
+    key: Option<IdempotencyKey>,
+    endpoint: EndpointFlat,
+) -> Result<C::Transaction> {
+    let idempotency = key.map(|key| {
+        IdempotencyInfo::builder()
+            .key(key)
+            .endpoint(endpoint)
+            .http_status(StatusCode::NO_CONTENT)
+            .build()
+    });
+    claim_idempotency_key::<C>(transaction, warehouse_id, idempotency.as_ref()).await
 }
 
 /// Fail a rename whose row landed in a different namespace than authorization was
@@ -350,6 +356,61 @@ pub(super) fn determine_tabular_location(
     Ok(location)
 }
 
+/// Storage access to `warehouse` for a new tabular at `location`, which must be empty: see
+/// [`require_empty_location`].
+pub(super) async fn file_io_if_empty(
+    warehouse: &ResolvedWarehouse,
+    storage_secret: Option<&StorageCredential>,
+    location: &Location,
+) -> Result<StorageBackend> {
+    let file_io = warehouse.storage_profile.file_io(storage_secret).await?;
+    require_empty_location(&file_io, location).await?;
+    Ok(file_io)
+}
+
+/// Fails if `location` holds files. A purge, and a view that moves away, remove the whole
+/// location with all files in it, so a tabular takes only an empty location.
+pub(super) async fn require_empty_location(
+    file_io: &impl LakekeeperStorage,
+    location: &Location,
+) -> Result<()> {
+    if location_is_empty(file_io, location).await? {
+        return Ok(());
+    }
+    Err(ValidationError::from(InvalidLocationError::new(
+        location.to_string(),
+        "Unexpected files in location, tabular locations have to be empty",
+    ))
+    .into())
+}
+
+/// Whether `location` holds no files. A temporary storage error returns 503, so that the
+/// client retries.
+pub(super) async fn location_is_empty(
+    file_io: &impl LakekeeperStorage,
+    location: &Location,
+) -> Result<bool> {
+    Ok(is_empty(file_io, location)
+        .await
+        .map_err(location_check_error)?)
+}
+
+/// Error of the check that a tabular location is empty. A temporary storage error returns 503,
+/// so that the client retries. Other errors are a bad request.
+fn location_check_error(error: ValidationError) -> ErrorModel {
+    match error {
+        ValidationError::IoOperationFailed(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::RequestTimeout | ErrorKind::ServiceUnavailable | ErrorKind::RateLimited
+            ) =>
+        {
+            ErrorModel::from_io_error(*e, "Failed to check that the tabular location is empty.")
+        }
+        error => error.into(),
+    }
+}
+
 /// Reads a page of tabulars, with their namespaces unless `$can_list_everything`.
 macro_rules! fetch_entities {
     ($list_fn:ident, $namespace_response:ident, $can_list_everything:ident) => {
@@ -479,11 +540,26 @@ pub(crate) use fetch_entities;
 use http::StatusCode;
 use iceberg::TableIdent;
 use iceberg_ext::{catalog::rest::ErrorModel, configs::namespace::NamespaceProperties};
-use lakekeeper_io::Location;
+use lakekeeper_io::{ErrorKind, InvalidLocationError, LakekeeperStorage, Location, StorageBackend};
 
 #[cfg(test)]
 mod tests {
+    use lakekeeper_io::IOError;
+
     use super::*;
+
+    #[test]
+    fn a_temporary_error_while_checking_the_location_returns_503() {
+        let code = |kind| {
+            let error = IOError::new(kind, "listing failed", "s3://bucket/table".to_string());
+            location_check_error(ValidationError::from(Box::new(error))).code
+        };
+        assert_eq!(code(ErrorKind::RequestTimeout), 503);
+        assert_eq!(code(ErrorKind::ServiceUnavailable), 503);
+        assert_eq!(code(ErrorKind::RateLimited), 503);
+        assert_eq!(code(ErrorKind::PermissionDenied), 400);
+        assert_eq!(code(ErrorKind::Unexpected), 400);
+    }
 
     /// The whole point is to fail closed, so the two directions are pinned separately.
     #[test]

@@ -16,6 +16,174 @@ For Lakekeeper+ releases, see the [Lakekeeper+ Release Notes](enterprise-release
 
 _[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
 
+## v0.15.0 (2026-11-06)
+
+Lakekeeper 0.15 is here, and it is a big one! The new `write` privilege lets pipelines and dbt change tables without being able to drop them, Lakekeeper instances keep their caches in sync, and task workers scale up and down with the work. Views run more safely, and concurrent commits and busy storage are handled more gracefully. Several security improvements change existing behavior, so please read the Breaking Changes and Upgrade Notes before you upgrade.
+
+### Highlights
+
+- **`write`: change tables, keep them safe.** With OpenFGA, the new `write` privilege lets users and pipelines change the data, schema, properties and snapshots of tables, views and generic tables, including `CREATE OR REPLACE` and dbt models. Dropping, renaming and protecting stay with `modify`, which includes `write`, so existing grants keep working. See [Write](https://docs.lakekeeper.io/docs/0.15.x/authorization-openfga/#write) ([#2240](https://github.com/lakekeeper/lakekeeper/pull/2240)).
+- **All instances stay in sync.** When several Lakekeeper instances share one database, a change made through one of them reaches the caches of all others, usually within a second. See [Cache Invalidation Across Instances](https://docs.lakekeeper.io/docs/0.15.x/configuration/#cache-invalidation) ([#2157](https://github.com/lakekeeper/lakekeeper/pull/2157)).
+- **Task workers that scale with the work.** An autoscaler such as KEDA can start task workers only while there is work, and idle workers stop on their own. Running tasks can finish before Lakekeeper stops, failed tasks are retried with a growing wait, and large queues stay fast. See [Task Workers on Kubernetes](https://docs.lakekeeper.io/docs/0.15.x/task-workers/) ([#2147](https://github.com/lakekeeper/lakekeeper/pull/2147), [#2155](https://github.com/lakekeeper/lakekeeper/pull/2155), [#2172](https://github.com/lakekeeper/lakekeeper/pull/2172), [#2186](https://github.com/lakekeeper/lakekeeper/pull/2186), [#2187](https://github.com/lakekeeper/lakekeeper/pull/2187), [#2189](https://github.com/lakekeeper/lakekeeper/pull/2189), [#2190](https://github.com/lakekeeper/lakekeeper/pull/2190), [#2206](https://github.com/lakekeeper/lakekeeper/pull/2206)).
+
+### Features
+
+- **Console v0.29.0.** Grant `write` right in the console, and get around faster: the navigation bar shows each page's tabs, your pinned objects and the ones you opened recently, and a pinned table or view opens in LoQE. Tables, views and generic tables move to another namespace from their menu, and S3 storage that needs an STS principal is easy to set up ([#2227](https://github.com/lakekeeper/lakekeeper/pull/2227), [#2258](https://github.com/lakekeeper/lakekeeper/pull/2258)).
+- **Google Cloud Storage on Google's official Rust SDK.** Requests that fail for a temporary reason are retried, and every request has a time limit. Please check the GCS points under Breaking Changes before you upgrade. See [GCS](https://docs.lakekeeper.io/docs/0.15.x/storage-gcs/) ([#2159](https://github.com/lakekeeper/lakekeeper/pull/2159)).
+- **S3-compatible storage whose STS needs a principal**, such as Yandex Object Storage (thanks @Mohil-Ahuja). See [S3](https://docs.lakekeeper.io/docs/0.15.x/storage-s3/#configuration-parameters) ([#2139](https://github.com/lakekeeper/lakekeeper/pull/2139)).
+- **Fewer metadata files.** A commit that changes nothing, like the one Spark sends before each `mergeSchema` write, keeps the current metadata file ([#2229](https://github.com/lakekeeper/lakekeeper/pull/2229)).
+- **OPA bridge: metadata checks per table.** The bridge can check the columns of every table and view on its own, also for users who may list everything in a namespace. See [Shortcut for broad access](https://docs.lakekeeper.io/docs/0.15.x/opa/#shortcut-for-broad-access) ([#2153](https://github.com/lakekeeper/lakekeeper/pull/2153)).
+- **Generated API clients** can choose the project with `x-project-id` on every project-scoped management endpoint (thanks @baptistegh) ([#2252](https://github.com/lakekeeper/lakekeeper/pull/2252)).
+- **More ways to extend Lakekeeper.** Code that builds on Lakekeeper's crates can add management routes, keep its own caches in sync, run its own task queues and receive every audit record (thanks @raffael-dzikowski). See [Customize](https://docs.lakekeeper.io/docs/0.15.x/customize/) ([#2130](https://github.com/lakekeeper/lakekeeper/pull/2130), [#2138](https://github.com/lakekeeper/lakekeeper/pull/2138), [#2161](https://github.com/lakekeeper/lakekeeper/pull/2161), [#2177](https://github.com/lakekeeper/lakekeeper/pull/2177), [#2179](https://github.com/lakekeeper/lakekeeper/pull/2179), [#2202](https://github.com/lakekeeper/lakekeeper/pull/2202), [#2225](https://github.com/lakekeeper/lakekeeper/pull/2225)).
+
+### Bug Fixes
+
+- **Concurrent commits.** Writers that race on different branches of one table, or a staged (WAP) write and another commit, get a conflict that clients retry. A commit to a table that is deleted meanwhile gets "not found", and `main` cannot be turned into a tag ([#2218](https://github.com/lakekeeper/lakekeeper/pull/2218), [#2233](https://github.com/lakekeeper/lakekeeper/pull/2233), [#2251](https://github.com/lakekeeper/lakekeeper/pull/2251)).
+- **A client with a wrong clock cannot make a table unusable.** Lakekeeper records its own clock as a table's last-updated time ([#2220](https://github.com/lakekeeper/lakekeeper/pull/2220)).
+- **Format-version 1 tables** load with all their branches and tags, so snapshot expiry keeps every snapshot they use ([#2182](https://github.com/lakekeeper/lakekeeper/pull/2182)).
+- **Busy storage.** Purges share a limit per bucket or storage account, storage requests have time limits, and timeouts or throttling return `503`, which clients retry ([#2165](https://github.com/lakekeeper/lakekeeper/pull/2165)).
+- **Storage stays tidy.** Views are created and moved only to empty locations, as tables are. A recursive namespace delete with purge removes the files of generic tables too, and a dropped table leaves no snapshots behind ([#2243](https://github.com/lakekeeper/lakekeeper/pull/2243), [#2244](https://github.com/lakekeeper/lakekeeper/pull/2244), [#2245](https://github.com/lakekeeper/lakekeeper/pull/2245), [#2246](https://github.com/lakekeeper/lakekeeper/pull/2246)).
+- **Tasks, warehouses and statistics.** "Run now" on a task that is still finishing keeps the new run, deleting a warehouse while its protection changes fails safely, and endpoint statistics count HEAD requests and list short time windows fast ([#2130](https://github.com/lakekeeper/lakekeeper/pull/2130), [#2138](https://github.com/lakekeeper/lakekeeper/pull/2138), [#2147](https://github.com/lakekeeper/lakekeeper/pull/2147)).
+- **OPA bridge: comments on views** work through Trino for users who may change the view ([#2238](https://github.com/lakekeeper/lakekeeper/pull/2238)).
+- **Smaller fixes.** Permission checks by name look at the live table or view, the migration check honors `LAKEKEEPER__PG_SCHEMA`, and registering a table with a UUID that is already used says so ([#2215](https://github.com/lakekeeper/lakekeeper/pull/2215), [#2239](https://github.com/lakekeeper/lakekeeper/pull/2239), [#2257](https://github.com/lakekeeper/lakekeeper/pull/2257)).
+- **Proxies, entity tags and locations.** IPv6 hosts behind a proxy get the right URLs, entity tags with commas are read correctly, and locations are joined with a single slash (thanks @fallintoplace) ([#2221](https://github.com/lakekeeper/lakekeeper/pull/2221), [#2223](https://github.com/lakekeeper/lakekeeper/pull/2223), [#2224](https://github.com/lakekeeper/lakekeeper/pull/2224)).
+- **Dependencies.** The AWS SDK update drops the unmaintained `pin-utils` crate (RUSTSEC-2026-0441) ([#2250](https://github.com/lakekeeper/lakekeeper/pull/2250)).
+
+### Breaking Changes
+
+- **OpenFGA: `create` shows only what you create.** Grant `describe` too where users need to see the tables and views of others. See [Create](https://docs.lakekeeper.io/docs/0.15.x/authorization-openfga/#create) ([#2240](https://github.com/lakekeeper/lakekeeper/pull/2240)).
+- **Some actions need `modify` on the warehouse:** registering a table, creating a generic table on a location that already holds files, and anything that skips soft deletion, such as a `force` drop. Grant it to the users and pipelines that do this. See [Modify](https://docs.lakekeeper.io/docs/0.15.x/authorization-openfga/#modify) and [Skipping Soft Deletion](https://docs.lakekeeper.io/docs/0.15.x/concepts/#skipping-soft-deletion) ([#2239](https://github.com/lakekeeper/lakekeeper/pull/2239), [#2249](https://github.com/lakekeeper/lakekeeper/pull/2249)).
+- **Views run more safely by default.** See [View Security](https://docs.lakekeeper.io/docs/0.15.x/view-security/) ([#2212](https://github.com/lakekeeper/lakekeeper/pull/2212), [#2242](https://github.com/lakekeeper/lakekeeper/pull/2242), [#2247](https://github.com/lakekeeper/lakekeeper/pull/2247), [#2254](https://github.com/lakekeeper/lakekeeper/pull/2254)).
+    - To create `SECURITY DEFINER` views through Trino, configure Trino as a [trusted engine](https://docs.lakekeeper.io/docs/0.15.x/configuration/#trusted-engines), and [check the owners of existing views](https://docs.lakekeeper.io/docs/0.15.x/view-security/#check-existing-views).
+    - An INVOKER view inside a DEFINER view runs as the caller. See [Chained Views](https://docs.lakekeeper.io/docs/0.15.x/view-security/#chained-views) to keep such views working.
+    - Switching a view between `SECURITY DEFINER` and `SECURITY INVOKER` needs `modify`, which matters for `CREATE OR REPLACE VIEW` in Trino and dbt. See [Property Protection](https://docs.lakekeeper.io/docs/0.15.x/view-security/#property-protection).
+    - Views return no storage credentials. Query engines read the tables behind a view with each table's own access.
+- **OPA bridge: Trino statements are checked on the objects they act on.** `CREATE OR REPLACE` needs `write`, metadata tables that show data need `read_data`, and names that Trino would read differently are hidden. Deploy the bridge policies of this release with the server. See [OPA](https://docs.lakekeeper.io/docs/0.15.x/opa/#replacing-tables-and-views) ([#2215](https://github.com/lakekeeper/lakekeeper/pull/2215), [#2238](https://github.com/lakekeeper/lakekeeper/pull/2238), [#2242](https://github.com/lakekeeper/lakekeeper/pull/2242), [#2254](https://github.com/lakekeeper/lakekeeper/pull/2254)).
+- **New names cannot contain `+` or control characters.** Existing tables and views keep their names ([#2215](https://github.com/lakekeeper/lakekeeper/pull/2215)).
+- **`serve` starts only on a migrated database.** Helm chart users are not affected. In your own manifests, run `migrate` first or let the pods wait with `wait-for-db -dm`. See [Upgrades & Migration](https://docs.lakekeeper.io/docs/0.15.x/concepts/#upgrades-migration) ([#2256](https://github.com/lakekeeper/lakekeeper/pull/2256)).
+- **S3: the AWS system identity rules apply to all storage access.** A warehouse that uses the system identity without an `assume-role-arn`, or assumes a role without an `external-id`, needs the missing field. See [AWS System Identity](https://docs.lakekeeper.io/docs/0.15.x/storage-s3/#aws-system-identity) ([#2174](https://github.com/lakekeeper/lakekeeper/pull/2174)).
+- **Google Cloud Storage.** If you use GCS, check these points before you upgrade. See [GCS](https://docs.lakekeeper.io/docs/0.15.x/storage-gcs/#network) ([#2159](https://github.com/lakekeeper/lakekeeper/pull/2159)).
+    - Behind an HTTP proxy, allow direct connections to `storage.googleapis.com` on port 443.
+    - Write a key from `GOOGLE_APPLICATION_CREDENTIALS_JSON` to a file and set `GOOGLE_APPLICATION_CREDENTIALS` to its path.
+    - Convert keys in the PKCS#1 format (`BEGIN RSA PRIVATE KEY`) with `openssl pkcs8 -topk8 -nocrypt`. Keys created in the Google Cloud console are fine.
+    - If you build your own minimal image, install `ca-certificates`. The official images include them.
+- **STACKIT credentials.** Regenerate clients built from the management API: STACKIT warehouses report the new credential type `stackit-access-key` ([#2194](https://github.com/lakekeeper/lakekeeper/pull/2194)).
+- **Kafka: Kerberos (`GSSAPI`) is not supported.** Switch to `SCRAM-SHA-512`, `OAUTHBEARER` or mutual TLS before you upgrade. See [Kafka](https://docs.lakekeeper.io/docs/0.15.x/configuration/#kafka) ([#2108](https://github.com/lakekeeper/lakekeeper/pull/2108)).
+- **Code that builds on Lakekeeper's crates.** Many public traits and types changed, and workspaces need the same `sqlx` patch entries as Lakekeeper's `Cargo.toml`. Prebuilt binaries and images are not affected ([#2138](https://github.com/lakekeeper/lakekeeper/pull/2138), [#2147](https://github.com/lakekeeper/lakekeeper/pull/2147), [#2157](https://github.com/lakekeeper/lakekeeper/pull/2157), [#2177](https://github.com/lakekeeper/lakekeeper/pull/2177), [#2186](https://github.com/lakekeeper/lakekeeper/pull/2186)).
+
+### Upgrade Notes
+
+- **Plan for the database migration.** `lakekeeper migrate` copies the endpoint statistics, which takes about 6 seconds per million rows on a typical setup and needs free disk space of about twice that table's size. If `pg_dump` or another long transaction is running, the migration stops without changes; just run it again ([#2138](https://github.com/lakekeeper/lakekeeper/pull/2138), [#2147](https://github.com/lakekeeper/lakekeeper/pull/2147), [#2244](https://github.com/lakekeeper/lakekeeper/pull/2244)).
+- **Terraform and `write`.** If the community Terraform provider manages a user's or role's grants, wait for a provider release that knows `write`: v0.5.0 and earlier revoke `write` grants made outside Terraform ([#2240](https://github.com/lakekeeper/lakekeeper/pull/2240)).
+- **Keep clocks in sync.** Lakekeeper refuses a new snapshot on `main` that is dated more than a minute ahead of its own clock. See [Production](https://docs.lakekeeper.io/docs/0.15.x/production/) ([#2220](https://github.com/lakekeeper/lakekeeper/pull/2220)).
+
+### Audit log format
+
+**Additions** — an existing parser keeps working:
+
+- **Every audit record now carries an `event_id`, a UUID that is unique to that record.**
+
+    ```text
+    authorization, replay, operation   + event_id
+    ```
+
+    Records that share a `request_id`, such as those of a grant change, have different `event_id` values. A line delivered twice carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time.
+
+    **What to do:** Nothing. To remove duplicate records, use `event_id`.
+
+**Also worth knowing** — the format itself did not change:
+
+- **Registering files that are already in storage is authorized on the warehouse, with the new action `register_table`.**
+
+    ```text
+    POST /catalog/v1/{prefix}/namespaces/{namespace}/register
+      register_table (warehouse entity)   new, in addition to create_table (namespace entity)
+    POST /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables
+      register_table (warehouse entity)   new, in addition to create_generic_table (namespace entity), only when the location holds files
+    ```
+
+    A register now produces an authorization record for `register_table` on the warehouse, allowed or refused, in addition to the `create_table` record on the namespace. `register_table` is checked before the metadata file is read. If `register_table` is refused, the `create_table` record is also written, as refused. It names the table only by the requested name, because the metadata file is not read.
+
+    If the caller may register the table but may not see it, the table stays registered, and the register writes a refused `get_metadata` record on the table, as `loadTable` does.
+
+    Creating a generic table on a location that already holds files produces a `register_table` record on the warehouse in addition to the `create_generic_table` record. A refusal has error type `WarehouseActionForbidden`, and its message says that the location holds files. A location without files produces no `register_table` record.
+
+    **What to do:** Nothing. To find registers and generic tables created over existing files, match `register_table`.
+
+- **Switching a Lakekeeper process into or out of read-only maintenance mode at runtime is recorded with two new actions.**
+
+    ```text
+    POST /management/v1/server/maintenance-mode
+      mode read-only   set_maintenance_mode_read_only
+      mode off         set_maintenance_mode_off
+    ```
+
+    Both are recorded on the server entity, allowed or refused. Only instance admins are allowed.
+
+    **What to do:** Nothing.
+
+- **A call that skips the soft-deletion window of a warehouse also asks `modify_soft_deletion` on that warehouse, which has a record of its own. The call is refused when the caller may not change the soft-deletion settings of that warehouse.**
+
+    ```text
+    drop (table, view or generic table)                        force: true
+    delete (namespace)                                         recursive: true
+    control_tasks (warehouse)                                  run now or run at, when a soft-deletion task is among the tasks
+    drop (table), invoked_by: register_table_overwrite         force: true
+    ```
+
+    The `control_tasks` record does not say which control or which tasks were asked for. All four cases apply only in warehouses with soft deletion.
+
+    When the check of its own action allows such a call, the call writes its record with `decision: allowed`, and then a record of `modify_soft_deletion` on the warehouse. If the caller may not change the soft-deletion settings, this second record has `decision: denied`, `failure_reason: action_forbidden` and error type `WarehouseActionForbidden`, and the call is refused. A call that the check of its own action refuses writes no `modify_soft_deletion` record.
+
+    A change of the soft-deletion settings writes the same `modify_soft_deletion` record, and no other authorization record. The `modify_soft_deletion` record of a skip has the same `request_id` as the record of the call.
+
+    A register with `overwrite` that replaces an active table with another table (a different table UUID) in a warehouse with soft deletion records the drop of the replaced table with `force: true`, also when the call is allowed. Before, it recorded `force: false`.
+
+    **What to do:** To find calls that skip the soft-deletion window, match `modify_soft_deletion` records that share their `request_id` with a record of another action. If you filter or alert on drops with `force: true`, these now also include drops by a register with `overwrite`. You can tell them apart by `invoked_by: register_table_overwrite`.
+
+- **Replacing a warehouse's storage credential is recorded as `update_storage_credential`; a storage profile change records `update_storage` and `update_storage_credential`.**
+
+    ```text
+                                                      before            after
+    POST …/warehouse/{id}/storage-credential          update_storage    update_storage_credential
+    POST …/warehouse/{id}/storage/validate-credential update_storage    update_storage_credential
+    POST …/warehouse/{id}/storage                     update_storage    update_storage, update_storage_credential
+    POST …/warehouse/{id}/storage/validate-profile    update_storage    update_storage, update_storage_credential
+    POST …/warehouse/{id}/storage/validate-access     update_storage    update_storage
+    ```
+
+    A record with both actions has two entries in `actions` and one entry per action in `authorizations`. If the request is denied, both entries have `allowed: false`. If an error stopped the evaluation, neither entry has `allowed`.
+
+    **What to do:** If a rule finds credential replacements by `update_storage`, match `update_storage_credential` as well. If a rule reads only the first entry of `actions`, read all entries.
+
+- **A view create or view commit that the view owner property rules refuse is recorded as a denied authorization.**
+
+    ```text
+    create_view (namespace entity)  error type ProtectedPropertyModification
+    commit (view entity)            error type ProtectedPropertyModification or ProtectedViewVersionChange
+    ```
+
+    On a server with authentication, a `create_view` or `commit` that writes `trino.run-as-owner`, or the owner property of a configured trusted engine, is refused unless it comes from a trusted engine that owns that property. A `commit` that changes the current version of a view holding such a property is refused unless it comes from that engine. The records have `decision: denied` and `failure_reason: action_forbidden`. A `ProtectedViewVersionChange` record has the same `request_id` as an allowed `commit` record of the same request.
+
+    If that engine changes the query of such a view and does not send the owner property, the commit removes the property. The allowed `commit` record lists `updated_properties` and `removed_properties` as the engine sent them.
+
+    **What to do:** Nothing.
+
+- **A view commit that switches the view between running as its owner and running as the caller is recorded with the new view action `change_security_mode`, in records of its own.**
+
+    ```text
+    change_security_mode (view entity)              one record per checked principal, after the commit record
+    introspect_permissions, operation view-replace  recorded as commit (view entity)
+    ```
+
+    A view commit from a trusted engine that adds or removes `trino.run-as-owner`, or the owner property of another configured trusted engine, needs `change_security_mode` on the view. After the `commit` record of the request, Lakekeeper writes one `change_security_mode` record for the identity that sends the commit and, if the commit adds the property, one for the user that the property names, with that user in `for_principal`. Each record has its own decision and the same `request_id`. A refused switch has `decision: denied`, `failure_reason: action_forbidden` and error type `SecurityModeChangeForbidden`, and the view does not change. A commit that keeps the security mode writes no `change_security_mode` record.
+
+    The batch-check operation `view-replace` asks whether a user may replace a view. Its decision is recorded as `commit` on the view, even when `change_security_mode` decided it.
+
+    **What to do:** Nothing.
+
+Records from v0.15.0 carry `audit_format` **1.1** (was 1.0).
+
 ## v0.14.2 (2026-10-25)
 
 ### Features

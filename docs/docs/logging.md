@@ -136,11 +136,12 @@ Every record carries two kinds of version, and they answer different questions.
 ```json
 {
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "2.1"
   },
+  "event_id": "019c61ac-f4c6-7021-8452-4b42caf46fee",
   "time": "2026-02-15T14:20:50.758690Z",
   "operation": "ldap_resolve_roles",
   "actor": {
@@ -157,7 +158,7 @@ Every record carries two kinds of version, and they answer different questions.
 ```
 
 - `audit_format` governs **the shape of the whole record**: which top-level fields exist, how they nest, and the objects and value sets Lakekeeper defines. Every record carries it, whoever produced the record.
-- `emitters` names **every product that contributed to the record**, with a version for what each one contributed. It is an object with one key per product. The key is the product name in `lower_snake_case`: `lakekeeper`, `lakekeeper_plus`. The value is that product's own format version, a `MAJOR.MINOR` string such as `{"lakekeeper": "1.0"}`. It governs that product's names, its `context` keys, and any record shape it defines, and it follows that product's release cycle.
+- `emitters` names **every product that contributed to the record**, with a version for what each one contributed. It is an object with one key per product. The key is the product name in `lower_snake_case`: `lakekeeper`, `lakekeeper_plus`. The value is that product's own format version, a `MAJOR.MINOR` string such as `{"lakekeeper": "1.1"}`. It governs that product's names, its `context` keys, and any record shape it defines, and it follows that product's release cycle.
 
 In the example above, the record's shape (`record_type`, `actor`, `outcome`, `context`) is governed by `audit_format`. The values of `operation` and `outcome` and the keys in `context` come from Lakekeeper+, so `emitters.lakekeeper_plus` governs them.
 
@@ -233,7 +234,8 @@ Written for every authorization check. Every one carries `actions`, `entities`, 
 | `event_source`         | String          | Always `"audit"`                  |
 | `audit_format`         | String          | Version of the record's shape, `MAJOR.MINOR`. See [Format version and stability](#audit-format). |
 | `record_type`          | String          | Always `"authorization"` for this shape. Route on this field. |
-| `emitters`             | Object          | Every product that contributed to the record, with the version of its contribution: `{"lakekeeper": "1.0"}`. See [Two version numbers](#audit-emitter). |
+| `emitters`             | Object          | Every product that contributed to the record, with the version of its contribution: `{"lakekeeper": "1.1"}`. See [Two version numbers](#audit-emitter). |
+| `event_id`             | String          | This record's id, unique to it. Every copy of the line carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time. |
 | `request_id`           | String          | The request this record belongs to: the `x-request-id` the caller sent, in whatever form, or the id Lakekeeper generated and returned in that response header. The same value is on the request's other log lines and on the CloudEvents it publishes. |
 | `time`                 | String          | When the request was decided, in UTC, RFC 3339 with microseconds: `2026-02-15T14:20:50.758690Z`. It can be earlier than the subscriber's `timestamp`, which is when the line was written. |
 | `actions`              | Array           | The operations attempted. Always an array, even with one entry. Each entry has an `action_name` (e.g. `"read_data"`, `"drop"`, `"create_namespace"`) and optional fields describing what the caller asked for. See [Action Format](#action-format). |
@@ -259,7 +261,7 @@ The header is recorded as sent, not parsed into a client name. Values are free-f
 
 **What counts as a denial.** A request can be refused by the authorizer, or by a rule outside the authorizer. Both are recorded the same way when the refusal is a *decision about this action on this resource*:
 
-- **Refusals by rule are denials.** For example: a catalog-managed (`system`) or provider-managed role that cannot be changed, a reserved tag definition, or a warehouse whose spec is locked. These are recorded as `decision: "denied"` with `failure_reason: action_forbidden`, like a missing permission. Some of these can never be allowed for anyone; `action_forbidden` still applies, because it means "not permitted", not "missing grant". The role and tag-definition rules are checked together with the authorizer, so the request gets one record. The warehouse spec lock can only be checked later, so the request gets an `"allowed"` record followed by a `"denied"` one.
+- **Refusals by rule are denials.** For example: a catalog-managed (`system`) or provider-managed role that cannot be changed, a reserved tag definition, or a warehouse whose spec is locked. These are recorded as `decision: "denied"` with `failure_reason: action_forbidden`, like a missing permission. Some of these can never be allowed for anyone; `action_forbidden` still applies, because it means "not permitted", not "missing grant". The role and tag-definition rules are checked together with the authorizer, so the request gets one record. The warehouse spec lock can only be checked later, so the request gets an `"allowed"` record followed by a `"denied"` one. The same holds for a view commit that changes the version of a view with a protected owner property, such as `trino.run-as-owner`, and does not come from the owning trusted engine: an `"allowed"` `commit` record, then a `"denied"` one with error type `ProtectedViewVersionChange` (see [Property Protection](./view-security.md#property-protection)). A call that [skips the soft-deletion window](./concepts.md#skipping-soft-deletion) of a warehouse, such as a drop with `force`, gets an `"allowed"` record for its own action, then a record of its own for `modify_soft_deletion` on the warehouse. That record is `"denied"` if the caller may not change the soft-deletion settings of the warehouse. Both records have the same `request_id`.
 - **Write failures are not denials.** A duplicate name, a tag definition still in use, a backend error: these happen *after* authorization succeeded. The `"allowed"` record stays, and no second authorization record is written. The missing operation record for the change shows that it did not happen.
 
 `decision` alone does not separate refusals from outages. Every failed authorization is marked `"denied"`, including when no verdict was reached; for example, an outage of the catalog or authorizer during the check gives `decision: "denied"` with a `5xx` code. To select real refusals, also filter on the reason:
@@ -269,7 +271,7 @@ select(.decision == "denied" and .failure_reason as $r
        | $r == "action_forbidden" or $r == "resource_not_found" or $r == "cannot_see_resource")
 ```
 
-The same set is selected by `authorizations[].allowed == false`. Because one request can produce both an `"allowed"` and a `"denied"` record (see the warehouse spec lock above), count denials per request, not per record.
+The same set is selected by `authorizations[].allowed == false`. Because one request can produce both an `"allowed"` and a `"denied"` record (see the warehouse spec lock, the view version change and the soft-deletion window above), count denials per request, not per record.
 
 **Actor Types** {#actor-types}
 
@@ -376,7 +378,7 @@ When a field appears:
 | `format`                | String | The requested table format                              |
 | `base_location`         | String | The requested storage location                          |
 | `project_id`            | String | The project id the client asked for                     |
-| `force`                 | Boolean | `true` when the client asked to force the operation     |
+| `force`                 | Boolean | `true` when the client asked to force the operation. Also `true` on the drop of an active table that a register with `overwrite` replaces with another table (a different table UUID) in a warehouse with soft deletion |
 | `purge`                 | Boolean | `true` when the client asked to purge the data          |
 | `recursive`             | Boolean | `true` when the client asked for a recursive delete     |
 | `target_refs`           | Array  | Commit only. The branch or tag references the commit targets; `[]` when it names none |
@@ -491,7 +493,7 @@ Each `determined_by` element is a flat object. Its `type` names the kind:
 
 A field with no value is left out, never written as `null`. This holds everywhere in a record.
 
-**Caller and checked principal.** The top-level `actor` is always the *caller* (the bearer token holder). `authorizations[].for_principal` is *whose permissions were checked*. Usually they are the same and `for_principal` is left out. For a call like `GET /lakekeeper/v1/permissions/...?for-user=X`, the actor is the caller and every entry's `for_principal` is `X`.
+**Caller and checked principal.** The top-level `actor` is always the *caller* (the bearer token holder). `authorizations[].for_principal` is *whose permissions were checked*. Usually they are the same and `for_principal` is left out. For a call like `GET /lakekeeper/v1/permissions/...?for-user=X`, the actor is the caller and every entry's `for_principal` is `X`. A view commit that switches the view between DEFINER and INVOKER writes, after its `commit` record, a `change_security_mode` record for the caller and, when the view starts to run as its owner, one whose `for_principal` is that owner (see [Property Protection](./view-security.md#property-protection)).
 
 **Examples:**
 
@@ -505,11 +507,12 @@ A field with no value is left out, never written as `null`. This holds everywher
   "message": "Authorization succeeded event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.0"
+    "lakekeeper": "1.1"
   },
+  "event_id": "019c61ac-f4c6-76a7-b37a-334c101c2825",
   "request_id": "019684ff-0000-7000-8000-000000000005",
   "time": "2026-02-15T14:20:50.758690Z",
   "actions": [
@@ -560,11 +563,12 @@ A field with no value is left out, never written as `null`. This holds everywher
   "message": "Authorization failed event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.0"
+    "lakekeeper": "1.1"
   },
+  "event_id": "019c61ad-406b-7bbc-8c47-af4ede86fefd",
   "request_id": "019684ff-0000-7000-8000-000000000005",
   "time": "2026-02-15T14:21:10.123456Z",
   "actions": [
@@ -627,11 +631,12 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "message": "Authorization succeeded event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.0"
+    "lakekeeper": "1.1"
   },
+  "event_id": "019d6918-9e76-7ed5-9de7-410622de6b76",
   "request_id": "019684ff-0000-7000-8000-000000000005",
   "time": "2026-04-07T17:58:34.358975Z",
   "actions": [
@@ -709,6 +714,7 @@ A replay record also carries `actions`, `entities`, `privilege_source` and `user
 | `audit_format`    | Version of the record's shape, `MAJOR.MINOR`                                |
 | `record_type`     | Always `"replay"` for this shape                                            |
 | `emitters`        | Every product that contributed to the record, as on authorization records   |
+| `event_id`        | This record's id, unique to it. Every copy of the line carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time. |
 | `request_id`      | The request that was answered from the stored result                        |
 | `time`            | When the request was answered, in UTC                                       |
 | `idempotency_key` | The key whose stored result answered the request                            |
@@ -740,7 +746,8 @@ Written for things the system does for a user that involve no authorization deci
 | `event_source` | String | Always `"audit"`                                   |
 | `audit_format` | String | Version of the record's shape, `MAJOR.MINOR`       |
 | `record_type`  | String | Always `"operation"` for this shape                |
-| `emitters`     | Object | The product that wrote the record, with the version of its contribution. `{"lakekeeper": "1.0"}` for grant and `admission_decided` records; `{"lakekeeper_plus": "1.0"}` for records written by Lakekeeper+, such as role resolution |
+| `emitters`     | Object | The product that wrote the record, with the version of its contribution. `{"lakekeeper": "1.1"}` for grant and `admission_decided` records; `{"lakekeeper_plus": "1.0"}` for records written by Lakekeeper+, such as role resolution |
+| `event_id`     | String | This record's id, unique to it. Every copy of the line carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time. |
 | `request_id`   | String | The request the operation belongs to, as on authorization records. Absent when no request caused the operation, such as a background role sync |
 | `time`         | String | When the operation happened, in UTC, as on authorization records |
 | `operation`    | String | Name of the operation (e.g. `"ldap_resolve_roles"`) |
@@ -850,11 +857,12 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP role resolution complete",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
   },
+  "event_id": "019cbd45-2fd0-77c3-9c46-5743cf8b6e91",
   "time": "2026-03-05T09:12:34.000000Z",
   "operation": "ldap_resolve_roles",
   "actor": {
@@ -882,11 +890,12 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP user not found; returning empty role list",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
   },
+  "event_id": "019cbd45-2fd0-7848-92f9-8490ab71843d",
   "time": "2026-03-05T09:12:34.000000Z",
   "operation": "ldap_resolve_roles",
   "actor": {
@@ -914,11 +923,12 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP search matched multiple entries; cannot resolve principal unambiguously",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
   },
+  "event_id": "019cbd45-2fd0-7a1d-8790-6a724a7b7434",
   "time": "2026-03-05T09:12:34.000000Z",
   "operation": "ldap_resolve_roles",
   "actor": {
@@ -947,11 +957,12 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "branching DN regex did not match; explicit no-roles outcome",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
   },
+  "event_id": "019cbd45-2fd0-7492-871e-4dd9db299b71",
   "time": "2026-03-05T09:12:34.000000Z",
   "operation": "ldap_resolve_roles",
   "actor": {
@@ -994,11 +1005,12 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "No role provider handled user; user will have no provider-assigned roles",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
   },
+  "event_id": "019cc7bd-5500-7cb4-90fb-e9e5a8919063",
   "time": "2026-03-07T10:00:00.000000Z",
   "operation": "resolve_roles",
   "actor": {
@@ -1026,11 +1038,12 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "Resolved role assignments for user",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
   },
+  "event_id": "019cc7bd-58e8-752d-8022-b0a8ba0b53d5",
   "time": "2026-03-07T10:00:01.000000Z",
   "operation": "resolve_roles",
   "actor": {
@@ -1078,11 +1091,12 @@ Many records for one `provider_id` usually mean that the subject claim does not 
   "message": "the directory has no entry for the user; they get none of its groups",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.1"
   },
+  "event_id": "019b76da-a800-7c3e-9a41-6d2f8b1e5c07",
   "time": "2026-01-01T00:00:00.000000Z",
   "operation": "directory_resolve_roles",
   "actor": {
@@ -1116,11 +1130,12 @@ A `WARN` line without PII is also written to the general log. This outcome point
   "message": "stale provider(s) failed to refresh; serving cached roles",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.0",
+  "audit_format": "1.1",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
   },
+  "event_id": "019cc80f-bac0-7d3f-8553-5e6cae9a97e4",
   "time": "2026-03-07T11:30:00.000000Z",
   "operation": "cached_role_provider",
   "actor": {
@@ -1298,7 +1313,7 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.act
 4. **Log Aggregation**: In production, use a centralized logging system (ELK, Loki, Splunk) to collect and analyze logs from all Lakekeeper instances.
 
 5. **Alerts**: Set up alerts for:
-   - Multiple `decision=denied` events from the same principal
+   - Multiple `decision=denied` events from the same principal. When the Trino [OPA bridge](./opa.md#replacing-tables-and-views) checks a name that is not in use, for example the name of a new table or view, Lakekeeper writes a denied `introspect_permissions` record with `resource_not_found`. Leave these records out for the bridge's identity
    - High rates of `event_source=error_response` with 5xx codes. Admission rejections are not in this log; they appear only as `admission_decided` audit records. For gates failing closed, alert on `lakekeeper_admission_gate_duration_seconds{outcome="unavailable"}` or on the `WARN` line the gate writes
    - Access to sensitive resources outside business hours
 

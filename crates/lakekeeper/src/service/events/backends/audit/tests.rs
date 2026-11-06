@@ -11,6 +11,10 @@ use crate::{
     },
     audit::validate::contract_fields,
     request_metadata::{RequestMetadata, RequestMetadataTestBuilder, UserAgent},
+    server::views::{
+        owner_property::{ProtectedPropertyModification, ProtectedViewVersionChange},
+        security_mode::{RefusedIdentity, SecurityModeChangeForbidden, SecurityModeSwitch},
+    },
     service::{
         admission::{
             AdmissionContext, AdmissionGate, AdmissionGates, AdmissionRejection, AdmissionTrigger,
@@ -18,7 +22,8 @@ use crate::{
         },
         authn::{Actor, UserId},
         authz::{
-            ActionDescriptor, CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction,
+            ActionDescriptor, AuthZWarehouseActionForbidden, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
             DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, ResourceType,
             RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges,
             SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
@@ -29,7 +34,8 @@ use crate::{
                 APIEventActions as _, EntityDescriptor, EntityType, EventEntities,
                 FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
                 FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID, HandlerContextKey,
-                UserProvidedEntity as _, UserProvidedTable, synthesise_authorizations,
+                UserProvidedEntity as _, UserProvidedNamespace, UserProvidedTable,
+                UserProvidedView, synthesise_authorizations,
             },
         },
         idempotency::IdempotencyKey,
@@ -169,6 +175,7 @@ fn assert_matches_fixture(name: &str, emitted: &serde_json::Value) {
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
     crate::audit::validate::assert_valid_record(&schema, emitted, name);
     let mut emitted = emitted.clone();
+    crate::audit::validate::pin_event_id(&mut emitted, name);
     crate::audit::validate::pin_time(&mut emitted, name);
     let emitted = &emitted;
     let path = fixture_path(name);
@@ -357,18 +364,12 @@ fn fixture_drop_action() -> ActionDescriptor {
     .action_descriptor()
 }
 
-/// A commit whose every collection is empty, built from the action's own descriptor.
+/// A commit request without updates, built by the handler's own constructor.
 ///
 /// A commit that changed no properties, targeted no refs and carried no update kinds still
 /// names all four keys: "nothing" is an empty value, not a missing key.
 fn fixture_empty_collections_action() -> ActionDescriptor {
-    CatalogTableAction::Commit {
-        updated_properties: Arc::new(std::collections::BTreeMap::new()),
-        removed_properties: Arc::new(Vec::new()),
-        target_refs: Arc::new(std::collections::BTreeSet::new()),
-        update_kinds: Arc::new(std::collections::BTreeSet::new()),
-    }
-    .action_descriptor()
+    crate::server::commit_tables::commit_action(&[]).action_descriptor()
 }
 
 /// A grant apply, built by the handler's own `event_actions()`, so it matches the running
@@ -563,11 +564,20 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_context",
     "authz_failed_admission_gate",
     "authz_failed_tabular_move",
+    "authz_failed_register_table",
+    "authz_failed_cannot_see_registered_table",
+    "authz_failed_generic_table_location_with_files",
+    "authz_failed_create_view_owner_property",
+    "authz_failed_view_commit_owner_property",
+    "authz_failed_view_version_change",
+    "authz_failed_soft_deletion_skip",
+    "authz_failed_view_security_mode_change",
     "authz_succeeded_rich_action_context",
     "authz_succeeded_create_role_source_system",
     "authz_succeeded_revoke_subtree_grants",
     "authz_succeeded_project_subtree_grants",
     "authz_succeeded_apply_grants",
+    "authz_succeeded_update_storage",
     "authz_succeeded_empty_collections",
     "authz_succeeded_empty_batch_check",
     "grant_created",
@@ -898,6 +908,22 @@ fn fixture_authz_succeeded_apply_grants() {
     assert_matches_fixture("authz_succeeded_apply_grants", &contract_fields(record));
 }
 
+/// A storage profile change, which asks two warehouse actions because it also replaces the
+/// credential. Built from the handler's own action list.
+#[test]
+fn fixture_authz_succeeded_update_storage() {
+    let record = emit_and_capture_one(|| {
+        LISTENER.authorization_succeeded(fixture_succeeded_event(
+            fixture_metadata(),
+            EventEntities::one(fixture_warehouse_entity()),
+            crate::api::management::v1::warehouse::update_storage_actions().event_actions(),
+            fixture_context(&[]),
+        ))
+    });
+
+    assert_matches_fixture("authz_succeeded_update_storage", &contract_fields(record));
+}
+
 /// A request that asked for nothing: a commit that changed nothing, and a drop that forced
 /// nothing.
 ///
@@ -1140,6 +1166,259 @@ fn fixture_authz_failed_tabular_move() {
     });
 
     assert_matches_fixture("authz_failed_tabular_move", &contract_fields(record));
+}
+
+/// A refusal recorded as the handlers record it: entities and actions from the handler's own
+/// types, error from the refusal's own type.
+fn refusal_record(
+    entities: EventEntities,
+    actions: Vec<ActionDescriptor>,
+    refusal: impl crate::service::events::AuthorizationFailureSource,
+) -> serde_json::Value {
+    refusal_record_for(entities, actions, None, refusal)
+}
+
+/// [`refusal_record`] of a check made for `for_principal`.
+fn refusal_record_for(
+    entities: EventEntities,
+    actions: Vec<ActionDescriptor>,
+    for_principal: Option<&UserOrRoleId>,
+    refusal: impl crate::service::events::AuthorizationFailureSource,
+) -> serde_json::Value {
+    let entities = Arc::new(entities);
+    let actions = Arc::new(actions);
+    let authorizations = Arc::new(synthesise_authorizations(
+        &entities,
+        &actions,
+        for_principal,
+        Some(false),
+    ));
+    let failure_reason = refusal.to_failure_reason();
+    let error = crate::service::events::AuthorizationError {
+        error_id: FIXTURE_ERROR_ID.to_string(),
+        ..crate::service::events::AuthorizationError::clone_from_error_model(
+            &refusal.into_error_model(),
+        )
+    };
+    emit_and_capture_one(|| {
+        LISTENER.authorization_failed(AuthorizationFailedEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
+            entities,
+            actions,
+            failure_reason,
+            error: Arc::new(error),
+            extra_context: fixture_context(&[]),
+            authorizations,
+        })
+    })
+}
+
+fn fixture_view() -> UserProvidedView {
+    UserProvidedView {
+        warehouse_id: crate::service::WarehouseId::new(
+            FIXTURE_WAREHOUSE_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        ),
+        view: TableIdent::new(
+            NamespaceIdent::new("sales".to_string()),
+            "orders_by_day".to_string(),
+        )
+        .into(),
+    }
+}
+
+/// A view create refused because a client that is not a trusted engine sent an engine owner
+/// property. The namespace is the entity, and `create_view` carries the properties as sent.
+#[test]
+fn fixture_authz_failed_create_view_owner_property() {
+    let action = CatalogNamespaceAction::CreateView {
+        name: Some("orders_by_day".to_string()),
+        properties: Arc::new(std::collections::BTreeMap::from([(
+            "trino.run-as-owner".to_string(),
+            "bob".to_string(),
+        )])),
+    };
+    let entities = UserProvidedNamespace::new(
+        crate::service::WarehouseId::new(
+            FIXTURE_WAREHOUSE_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        ),
+        NamespaceIdent::new("sales".to_string()),
+    )
+    .event_entities();
+    let record = refusal_record(
+        entities,
+        action.event_actions(),
+        ProtectedPropertyModification {
+            key: "trino.run-as-owner".to_string(),
+            protected: "trino.run-as-owner".to_string(),
+        },
+    );
+
+    assert_matches_fixture(
+        "authz_failed_create_view_owner_property",
+        &contract_fields(record),
+    );
+}
+
+/// A view commit refused because a client that is not a trusted engine set an engine owner
+/// property.
+#[test]
+fn fixture_authz_failed_view_commit_owner_property() {
+    let action = CatalogViewAction::Commit {
+        updated_properties: Arc::new(std::collections::BTreeMap::from([(
+            "trino.run-as-owner".to_string(),
+            "bob".to_string(),
+        )])),
+        removed_properties: Arc::new(Vec::new()),
+    };
+    let record = refusal_record(
+        fixture_view().event_entities(),
+        action.event_actions(),
+        ProtectedPropertyModification {
+            key: "trino.run-as-owner".to_string(),
+            protected: "trino.run-as-owner".to_string(),
+        },
+    );
+
+    assert_matches_fixture(
+        "authz_failed_view_commit_owner_property",
+        &contract_fields(record),
+    );
+}
+
+/// A view commit refused after authorization: it changes the current version of a view an
+/// engine runs as its owner, and does not come from that trusted engine.
+#[test]
+fn fixture_authz_failed_view_version_change() {
+    let action = CatalogViewAction::Commit {
+        updated_properties: Arc::new(std::collections::BTreeMap::new()),
+        removed_properties: Arc::new(Vec::new()),
+    };
+    let record = refusal_record(
+        fixture_view().event_entities(),
+        action.event_actions(),
+        ProtectedViewVersionChange {
+            owner_property: "trino.run-as-owner".to_string(),
+        },
+    );
+
+    assert_matches_fixture("authz_failed_view_version_change", &contract_fields(record));
+}
+
+/// The check of a call that skips the warehouse's soft-deletion window, such as a forced drop,
+/// refused because the caller may not change the soft-deletion settings: a record of its own
+/// on the warehouse, as the handlers build it.
+#[test]
+fn fixture_authz_failed_soft_deletion_skip() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let record = refusal_record(
+        warehouse_id.event_entities(),
+        CatalogWarehouseAction::ModifySoftDeletion.event_actions(),
+        crate::service::authz::soft_deletion_skip_forbidden(warehouse_id),
+    );
+
+    assert_matches_fixture("authz_failed_soft_deletion_skip", &contract_fields(record));
+}
+
+/// A view commit that makes the view run as its new owner, who may not switch the security
+/// mode of the view: the owner's own `change_security_mode` record, which names the owner.
+#[test]
+fn fixture_authz_failed_view_security_mode_change() {
+    let bob = crate::service::authn::UserId::try_from("oidc~bob").expect("valid test user id");
+    let record = refusal_record_for(
+        fixture_view().event_entities(),
+        CatalogViewAction::ChangeSecurityMode.event_actions(),
+        Some(&UserOrRoleId::User(bob.clone())),
+        SecurityModeChangeForbidden {
+            owner_property: "trino.run-as-owner".to_string(),
+            switch: SecurityModeSwitch::ToOwner {
+                owner: "bob".to_string(),
+            },
+            refused: RefusedIdentity::NewOwner(bob),
+        },
+    );
+
+    assert_matches_fixture(
+        "authz_failed_view_security_mode_change",
+        &contract_fields(record),
+    );
+}
+
+/// A register refused because the caller lacks the register right on the warehouse: the
+/// warehouse is the entity, as the register handler records it.
+#[test]
+fn fixture_authz_failed_register_table() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let action = CatalogWarehouseAction::RegisterTable;
+    let record = refusal_record(
+        warehouse_id.event_entities(),
+        action.event_actions(),
+        AuthZWarehouseActionForbidden::new(warehouse_id, &action),
+    );
+
+    assert_matches_fixture("authz_failed_register_table", &contract_fields(record));
+}
+
+/// A register whose caller may not see the table it registered: recorded as `loadTable`
+/// records it, `get_metadata` on the table by name, refused as not found.
+#[test]
+fn fixture_authz_failed_cannot_see_registered_table() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let table = TableIdent::new(
+        NamespaceIdent::new("sales".to_string()),
+        "orders".to_string(),
+    );
+    let record = refusal_record(
+        UserProvidedTable {
+            warehouse_id,
+            table: table.clone().into(),
+        }
+        .event_entities(),
+        CatalogTableAction::GetMetadata.event_actions(),
+        crate::service::authz::AuthZCannotSeeTable::new_forbidden(warehouse_id, table),
+    );
+
+    assert_matches_fixture(
+        "authz_failed_cannot_see_registered_table",
+        &contract_fields(record),
+    );
+}
+
+/// A generic table create refused because its location already holds files and the caller
+/// lacks the register right on the warehouse: recorded on the warehouse, as the handler does.
+#[test]
+fn fixture_authz_failed_generic_table_location_with_files() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let record = refusal_record(
+        warehouse_id.event_entities(),
+        CatalogWarehouseAction::RegisterTable.event_actions(),
+        crate::service::authz::file_takeover_forbidden(warehouse_id),
+    );
+
+    assert_matches_fixture(
+        "authz_failed_generic_table_location_with_files",
+        &contract_fields(record),
+    );
 }
 
 /// A check for another user whom an admission gate would refuse: the `AdmissionGate`

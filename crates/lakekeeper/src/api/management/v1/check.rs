@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ProjectId, WarehouseId,
     api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
+    config::TRINO_OWNER_PROPERTY,
     request_metadata::ProjectIdMissing,
     service::{
         ArcProjectId, ArcResolvedWarehouse, ArcRole, BasicTabularInfo, CachePolicy,
@@ -203,7 +204,9 @@ impl NamespaceIdentOrUuid {
 /// Identifier for a tabular (table, view, or generic table) — either a UUID
 /// or its name and namespace. Wire format primary names are `table-id` and
 /// `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
-/// accepted as input aliases for client ergonomics.
+/// accepted as input aliases for client ergonomics. A name addresses the live
+/// tabular. A dropped tabular that can still be restored and a staged table that
+/// was not committed yet are addressed by their UUID.
 pub enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     #[cfg_attr(feature = "open-api", schema(title = "TabularIdentOrUuidById"))]
@@ -269,6 +272,29 @@ pub enum CatalogActionCheckOperation {
     },
     View {
         action: CatalogViewAction,
+        #[serde(flatten)]
+        view: TabularIdentOrUuid,
+    },
+    /// May the identity, as the owner of a DEFINER view (one an engine runs as its
+    /// owner), read this view inside the DEFINER view's query?
+    ///
+    /// Allowed only if this view has the `trino.run-as-owner` property, which Trino reads, and
+    /// the identity may `select` it. Trino runs a view without this property in the session of
+    /// the outer view's owner, and anyone who may change that view would read with the owner's
+    /// rights. The audit log records this check as `select` on the view.
+    ViewInDefinerView {
+        #[serde(flatten)]
+        view: TabularIdentOrUuid,
+    },
+    /// May the identity replace this view, as Trino's `CREATE OR REPLACE VIEW` does?
+    ///
+    /// Such a check cannot say whether the replacement keeps the view's security mode. So it
+    /// needs `commit` on the view, and `change_security_mode` too if the view runs as another
+    /// user: its `trino.run-as-owner` property names someone other than the identity, compared
+    /// with the identity's user id within its identity provider. Lakekeeper checks a replacement
+    /// that makes a view run as its owner when the engine commits it. The audit log records
+    /// this check as `commit` on the view.
+    ViewReplace {
         #[serde(flatten)]
         view: TabularIdentOrUuid,
     },
@@ -419,23 +445,14 @@ impl CatalogActionCheckOperation {
                 (entity, action.action_descriptor())
             }
             CatalogActionCheckOperation::View { action, view } => {
-                let entity = match view {
-                    TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id,
-                        table_id,
-                    } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
-                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
-                        .field(FIELD_NAME_VIEW_ID, table_id),
-                    TabularIdentOrUuid::Name {
-                        namespace,
-                        table,
-                        warehouse_id,
-                    } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
-                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
-                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
-                        .field(FIELD_NAME_VIEW, table),
-                };
-                (entity, action.action_descriptor())
+                (view_audit_entity(view), action.action_descriptor())
+            }
+            CatalogActionCheckOperation::ViewInDefinerView { view } => (
+                view_audit_entity(view),
+                CatalogViewAction::Select.action_descriptor(),
+            ),
+            CatalogActionCheckOperation::ViewReplace { view } => {
+                (view_audit_entity(view), view_commit().action_descriptor())
             }
             CatalogActionCheckOperation::GenericTable {
                 action,
@@ -460,6 +477,25 @@ impl CatalogActionCheckOperation {
                 (entity, action.action_descriptor())
             }
         }
+    }
+}
+
+fn view_audit_entity(view: &TabularIdentOrUuid) -> EntityDescriptor {
+    match view {
+        TabularIdentOrUuid::IdInWarehouse {
+            warehouse_id,
+            table_id,
+        } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+            .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+            .field(FIELD_NAME_VIEW_ID, table_id),
+        TabularIdentOrUuid::Name {
+            namespace,
+            table,
+            warehouse_id,
+        } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+            .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+            .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+            .field(FIELD_NAME_VIEW, table),
     }
 }
 
@@ -506,9 +542,27 @@ type NamespaceChecksByIdentMap = HashMap<
 >;
 type TabularActionPair = (
     Option<CatalogTableAction>,
-    Option<CatalogViewAction>,
+    Option<ViewCheck>,
     Option<CatalogGenericTableAction>,
 );
+
+/// A requested check on a view.
+#[derive(Debug, Clone)]
+enum ViewCheck {
+    Action(CatalogViewAction),
+    /// [`CatalogActionCheckOperation::ViewInDefinerView`].
+    InDefinerView,
+    /// [`CatalogActionCheckOperation::ViewReplace`].
+    Replace,
+}
+
+/// A view commit of any kind.
+fn view_commit() -> CatalogViewAction {
+    CatalogViewAction::Commit {
+        updated_properties: Arc::default(),
+        removed_properties: Arc::default(),
+    }
+}
 type TabularChecksByIdMap =
     HashMap<(WarehouseId, Option<UserOrRole>), HashMap<TabularId, Vec<(usize, TabularActionPair)>>>;
 type TabularChecksByIdentMap = HashMap<
@@ -546,7 +600,6 @@ impl GroupedChecks {
 }
 
 /// Group checks by resource type and prepare result slots
-#[allow(clippy::too_many_lines)]
 fn group_checks(
     checks: Vec<CatalogActionCheckItem>,
     metadata: &RequestMetadata,
@@ -562,13 +615,14 @@ fn group_checks(
         });
         let for_user = check.identity;
 
-        match check.operation {
+        let (tabular, tabular_check) = match check.operation {
             CatalogActionCheckOperation::Server { action } => {
                 grouped
                     .server_checks
                     .entry(for_user)
                     .or_default()
                     .push((i, action));
+                continue;
             }
             CatalogActionCheckOperation::Project { action, project_id } => {
                 let project_id = metadata.require_project_id(project_id)?;
@@ -579,6 +633,7 @@ fn group_checks(
                     .entry(for_user)
                     .or_default()
                     .push((i, action));
+                continue;
             }
             CatalogActionCheckOperation::Warehouse {
                 action,
@@ -590,6 +645,7 @@ fn group_checks(
                     .entry((warehouse_id, for_user))
                     .or_default()
                     .push((i, action));
+                continue;
             }
             CatalogActionCheckOperation::Namespace { action, namespace } => {
                 grouped.seen_warehouse_ids.insert(namespace.warehouse_id());
@@ -619,115 +675,95 @@ fn group_checks(
                             .push((i, action));
                     }
                 }
+                continue;
             }
             CatalogActionCheckOperation::Table { action, table } => {
-                grouped.seen_warehouse_ids.insert(table.warehouse_id());
-                match table {
-                    TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id,
-                        table_id,
-                    } => {
-                        let tabular_id = TabularId::Table(table_id.into());
-                        grouped
-                            .tabular_checks_by_id
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_id)
-                            .or_default()
-                            .push((i, (Some(action), None, None)));
-                    }
-                    TabularIdentOrUuid::Name {
-                        namespace,
-                        table: table_name,
-                        warehouse_id,
-                    } => {
-                        let tabular_ident =
-                            TabularIdentOwned::Table(TableIdent::new(namespace, table_name));
-                        grouped
-                            .tabular_checks_by_ident
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_ident)
-                            .or_default()
-                            .push((i, (Some(action), None, None)));
-                    }
-                }
+                (table, TabularCheck::Table(action))
             }
             CatalogActionCheckOperation::View { action, view } => {
-                grouped.seen_warehouse_ids.insert(view.warehouse_id());
-                match view {
-                    TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id,
-                        table_id,
-                    } => {
-                        let tabular_id = TabularId::View(table_id.into());
-                        grouped
-                            .tabular_checks_by_id
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_id)
-                            .or_default()
-                            .push((i, (None, Some(action), None)));
-                    }
-                    TabularIdentOrUuid::Name {
-                        namespace,
-                        table: view_name,
-                        warehouse_id,
-                    } => {
-                        let tabular_ident =
-                            TabularIdentOwned::View(TableIdent::new(namespace, view_name));
-                        grouped
-                            .tabular_checks_by_ident
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_ident)
-                            .or_default()
-                            .push((i, (None, Some(action), None)));
-                    }
-                }
+                (view, TabularCheck::View(ViewCheck::Action(action)))
+            }
+            CatalogActionCheckOperation::ViewInDefinerView { view } => {
+                (view, TabularCheck::View(ViewCheck::InDefinerView))
+            }
+            CatalogActionCheckOperation::ViewReplace { view } => {
+                (view, TabularCheck::View(ViewCheck::Replace))
             }
             CatalogActionCheckOperation::GenericTable {
                 action,
                 generic_table,
-            } => {
-                grouped
-                    .seen_warehouse_ids
-                    .insert(generic_table.warehouse_id());
-                match generic_table {
-                    TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id,
-                        table_id,
-                    } => {
-                        let tabular_id = TabularId::GenericTable(table_id.into());
-                        grouped
-                            .tabular_checks_by_id
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_id)
-                            .or_default()
-                            .push((i, (None, None, Some(action))));
-                    }
-                    TabularIdentOrUuid::Name {
-                        namespace,
-                        table: gt_name,
-                        warehouse_id,
-                    } => {
-                        let tabular_ident =
-                            TabularIdentOwned::GenericTable(TableIdent::new(namespace, gt_name));
-                        grouped
-                            .tabular_checks_by_ident
-                            .entry((warehouse_id, for_user))
-                            .or_default()
-                            .entry(tabular_ident)
-                            .or_default()
-                            .push((i, (None, None, Some(action))));
-                    }
-                }
-            }
-        }
+            } => (generic_table, TabularCheck::GenericTable(action)),
+        };
+        group_tabular_check(&mut grouped, i, for_user, tabular, tabular_check);
     }
 
     Ok((grouped, results))
+}
+
+/// A requested check on a table, view or generic table.
+enum TabularCheck {
+    Table(CatalogTableAction),
+    View(ViewCheck),
+    GenericTable(CatalogGenericTableAction),
+}
+
+impl TabularCheck {
+    fn tabular_id(&self, id: uuid::Uuid) -> TabularId {
+        match self {
+            Self::Table(_) => TabularId::Table(id.into()),
+            Self::View(_) => TabularId::View(id.into()),
+            Self::GenericTable(_) => TabularId::GenericTable(id.into()),
+        }
+    }
+
+    fn tabular_ident(&self, ident: TableIdent) -> TabularIdentOwned {
+        match self {
+            Self::Table(_) => TabularIdentOwned::Table(ident),
+            Self::View(_) => TabularIdentOwned::View(ident),
+            Self::GenericTable(_) => TabularIdentOwned::GenericTable(ident),
+        }
+    }
+
+    fn into_pair(self) -> TabularActionPair {
+        match self {
+            Self::Table(action) => (Some(action), None, None),
+            Self::View(view_check) => (None, Some(view_check), None),
+            Self::GenericTable(action) => (None, None, Some(action)),
+        }
+    }
+}
+
+fn group_tabular_check(
+    grouped: &mut GroupedChecks,
+    i: usize,
+    for_user: Option<UserOrRole>,
+    tabular: TabularIdentOrUuid,
+    check: TabularCheck,
+) {
+    grouped.seen_warehouse_ids.insert(tabular.warehouse_id());
+    match tabular {
+        TabularIdentOrUuid::IdInWarehouse {
+            warehouse_id,
+            table_id,
+        } => grouped
+            .tabular_checks_by_id
+            .entry((warehouse_id, for_user))
+            .or_default()
+            .entry(check.tabular_id(table_id))
+            .or_default()
+            .push((i, check.into_pair())),
+        TabularIdentOrUuid::Name {
+            namespace,
+            table,
+            warehouse_id,
+        } => grouped
+            .tabular_checks_by_ident
+            .entry((warehouse_id, for_user))
+            .or_default()
+            .entry(check.tabular_ident(TableIdent::new(namespace, table)))
+            .or_default()
+            .push((i, check.into_pair())),
+    }
 }
 
 /// Fetch tabular infos and extract minimum required versions
@@ -776,12 +812,14 @@ async fn fetch_tabulars<C: CatalogStore>(
                     .iter()
                     .map(TabularIdentOwned::as_borrowed)
                     .collect_vec();
+                // A name addresses the live tabular. Dropped tabulars and staged tables that
+                // were not committed yet are addressed by id.
                 (
                     true,
                     C::get_tabular_infos_by_ident(
                         warehouse_id,
                         &tabulars,
-                        TabularListFlags::all(),
+                        TabularListFlags::active(),
                         catalog_state,
                     )
                     .await
@@ -974,51 +1012,106 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
     Ok(warehouses)
 }
 
-/// Convert optional table/view actions into `ActionOnTableOrView`
+type TabularCheckAction<'a, 'u> = ActionOnTableOrView<
+    'a,
+    'u,
+    TableInfo,
+    ViewInfo,
+    CatalogTableAction,
+    CatalogViewAction,
+    GenericTabularInfo,
+    CatalogGenericTableAction,
+>;
+
+/// Convert optional table/view actions into the actions to ask, each of which must be allowed.
+/// An empty list denies the check without asking the authorizer. `identity` is the identity the
+/// check is for: `user`, or the request's actor.
 fn convert_tabular_action<'a, 'u>(
     tabular_info: &'a ViewOrTableInfo,
     table_action: Option<CatalogTableAction>,
-    view_action: Option<CatalogViewAction>,
+    view_check: Option<ViewCheck>,
     generic_table_action: Option<CatalogGenericTableAction>,
     user: Option<&'u AuthzUserOrRole>,
-) -> Option<
-    ActionOnTableOrView<
-        'a,
-        'u,
-        TableInfo,
-        ViewInfo,
-        CatalogTableAction,
-        CatalogViewAction,
-        GenericTabularInfo,
-        CatalogGenericTableAction,
-    >,
-> {
+    identity: Option<&AuthzUserOrRole>,
+) -> Vec<TabularCheckAction<'a, 'u>> {
     match tabular_info {
-        ViewOrTableInfo::Table(table_info) => table_action.map(|action| {
-            ActionOnTableOrView::Table(ActionOnTable {
-                info: table_info,
-                action,
-                user,
-                is_delegated_execution: false,
+        ViewOrTableInfo::Table(table_info) => table_action
+            .map(|action| {
+                // The same action the server asks for a commit to this table.
+                let action = action.on_table(table_info);
+                ActionOnTableOrView::Table(ActionOnTable {
+                    info: table_info,
+                    action,
+                    user,
+                    is_delegated_execution: false,
+                })
             })
-        }),
-        ViewOrTableInfo::View(view_info) => view_action.map(|action| {
-            ActionOnTableOrView::View(ActionOnView {
-                info: view_info,
-                action,
-                user,
-                is_delegated_execution: false,
+            .into_iter()
+            .collect(),
+        ViewOrTableInfo::View(view_info) => view_check
+            .map_or_else(Vec::new, |check| {
+                view_check_actions(view_info, check, identity)
             })
-        }),
-        ViewOrTableInfo::GenericTable(gt_info) => generic_table_action.map(|action| {
-            ActionOnTableOrView::GenericTable(ActionOnGenericTable {
-                info: gt_info,
-                action,
-                user,
-                is_delegated_execution: false,
+            .into_iter()
+            .map(|action| {
+                // Not delegated: the authorizer keeps its guard on inspecting another user's
+                // rights.
+                ActionOnTableOrView::View(ActionOnView {
+                    info: view_info,
+                    action,
+                    user,
+                    is_delegated_execution: false,
+                })
             })
-        }),
+            .collect(),
+        ViewOrTableInfo::GenericTable(gt_info) => generic_table_action
+            .map(|action| {
+                ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                    info: gt_info,
+                    action,
+                    user,
+                    is_delegated_execution: false,
+                })
+            })
+            .into_iter()
+            .collect(),
     }
+}
+
+/// The view actions a check asks, each of which must be allowed. An empty list denies the check.
+fn view_check_actions(
+    view_info: &ViewInfo,
+    check: ViewCheck,
+    identity: Option<&AuthzUserOrRole>,
+) -> Vec<CatalogViewAction> {
+    let owner = view_info.properties.get(TRINO_OWNER_PROPERTY);
+    match check {
+        ViewCheck::Action(action) => vec![action],
+        ViewCheck::InDefinerView if owner.is_some() => vec![CatalogViewAction::Select],
+        ViewCheck::InDefinerView => {
+            tracing::info!(
+                "Denying a read of view '{}' ({}) in warehouse {} inside a DEFINER view: the \
+                 view has no engine owner property, so the outer owner's rights do not pass \
+                 through it",
+                view_info.tabular_ident,
+                view_info.tabular_id,
+                view_info.warehouse_id,
+            );
+            Vec::new()
+        }
+        // A replacement may make a DEFINER view of another user run as the caller.
+        ViewCheck::Replace if owner.is_some_and(|owner| !is_user(identity, owner)) => {
+            vec![view_commit(), CatalogViewAction::ChangeSecurityMode]
+        }
+        ViewCheck::Replace => vec![view_commit()],
+    }
+}
+
+/// Whether `identity` is the user `owner` names in `trino.run-as-owner`. Only this key counts:
+/// the caller is the Trino bridge, which sends a Trino user as that name within an identity
+/// provider.
+fn is_user(identity: Option<&AuthzUserOrRole>, owner: &str) -> bool {
+    matches!(identity, Some(AuthzUserOrRole::User(user)) if user.subject_in_idp() == owner)
 }
 
 /// Refetch namespaces that don't meet minimum version requirements
@@ -1582,6 +1675,9 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
     } = params;
     for ((warehouse_id, for_user), actions) in tabular_checks_by_id {
         let authz_for_user = resolve_identity(for_user, roles);
+        let identity = authz_for_user
+            .clone()
+            .or_else(|| metadata.actor().to_user_or_role());
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
         let tabular_infos_by_id = tabular_infos_by_id.clone();
@@ -1639,8 +1735,8 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
+                for (i, (table_action, view_check, gt_action)) in actions_on_tabular {
+                    for action in convert_tabular_action(tabular_info, table_action.clone(), view_check.clone(), gt_action.clone(), authz_for_user.as_ref(), identity.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1698,6 +1794,9 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
     } = params;
     for ((warehouse_id, for_user), actions) in tabular_checks_by_ident {
         let authz_for_user = resolve_identity(for_user, roles);
+        let identity = authz_for_user
+            .clone()
+            .or_else(|| metadata.actor().to_user_or_role());
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
         let tabular_infos_by_ident = tabular_infos_by_ident.clone();
@@ -1720,7 +1819,10 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
             let mut checks = Vec::with_capacity(actions.len());
             for (tabular_ident, actions_on_tabular) in &actions {
                 let Some(tabular_info) = tabular_infos_by_ident.get(&(warehouse_id, tabular_ident.clone())) else {
-                    // Tabular not found
+                    // No live tabular has this name. With `error_on_not_found`, the answer says
+                    // so before any authorization, so every caller learns whether the name is
+                    // taken. The Trino bridge relies on it to tell a free name apart from a
+                    // denied check.
                     if error_on_not_found {
                         match tabular_ident {
                             TabularIdentOwned::Table(table_ident) => {
@@ -1755,8 +1857,8 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
+                for (i, (table_action, view_check, gt_action)) in actions_on_tabular {
+                    for action in convert_tabular_action(tabular_info, table_action.clone(), view_check.clone(), gt_action.clone(), authz_for_user.as_ref(), identity.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1789,6 +1891,7 @@ async fn collect_authz_results(
     authz_tasks: &mut AuthzTaskJoinSet,
     results: &mut [CatalogActionsBatchCheckResult],
 ) -> Result<(), AuthZError> {
+    let mut decided = HashSet::new();
     while let Some(res) = authz_tasks.join_next().await {
         let (original_indices, allowed) = res.map_err(|e| {
             RequireWarehouseActionError::from(
@@ -1806,8 +1909,24 @@ async fn collect_authz_results(
             .into());
         }
         for (i, decision) in original_indices.into_iter().zip(decision_vec) {
-            results[i].allowed = decision.allowed;
-            results[i].determined_by = decision.determined_by;
+            let result = &mut results[i];
+            if decided.insert(i) {
+                result.allowed = decision.allowed;
+                result.determined_by = decision.determined_by;
+                continue;
+            }
+            // A check that asks several actions is allowed only if each is, and is decided by
+            // what decided its outcome.
+            match (result.allowed, decision.allowed) {
+                (true, false) => {
+                    result.allowed = false;
+                    result.determined_by = decision.determined_by;
+                }
+                (true, true) | (false, false) => {
+                    result.determined_by.extend(decision.determined_by);
+                }
+                (false, true) => {}
+            }
         }
     }
     Ok(())

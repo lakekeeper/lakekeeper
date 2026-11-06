@@ -12,7 +12,7 @@ mod list;
 
 use super::{CatalogServer, UnfilteredPage, maybe_get_secret, require_warehouse_id};
 use crate::{
-    CONFIG,
+    CONFIG, WarehouseId,
     api::{
         endpoints::EndpointFlat,
         iceberg::v1::{
@@ -24,7 +24,7 @@ use crate::{
         management::v1::warehouse::TabularDeleteProfile,
     },
     request_metadata::RequestMetadata,
-    server::{self, io::cleanup_deadline},
+    server::{self, authorize_soft_deletion_skip, io::cleanup_deadline},
     service::{
         CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTaskOps,
         NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
@@ -573,6 +573,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await;
         let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+        // Namespaces have no soft-deleted state, so a recursive delete hard-deletes every
+        // tabular below, dropped ones included.
+        if flags.recursive && warehouse.tabular_delete_profile.is_soft() {
+            authorize_soft_deletion_skip(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                &warehouse,
+            )
+            .await?;
+        }
 
         let event_ctx = event_ctx.resolve(ResolvedNamespace {
             warehouse: warehouse.clone(),
@@ -581,7 +592,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
-        let mut t = WriteTransaction::<C>::begin(state.v1_state.catalog).await?;
+        let t = WriteTransaction::<C>::begin(state.v1_state.catalog).await?;
         let namespace_locations = if flags.recursive {
             // recursive drop commits its own transaction
             try_recursive_drop::<_, C>(
@@ -595,36 +606,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?
         } else {
-            let drop_info = C::drop_namespace(warehouse_id, namespace_id, flags, &mut t).await?;
-            if let Some(ref key) = idempotency_key
-                && !C::try_insert_idempotency_key(
-                    warehouse_id,
-                    &IdempotencyInfo::builder()
-                        .key(*key)
-                        .endpoint(EndpointFlat::CatalogV1DropNamespace)
-                        .http_status(StatusCode::NO_CONTENT)
-                        .build(),
-                    t.transaction(),
-                )
-                .await?
-            {
-                t.rollback()
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!("Rollback failed after idempotency conflict: {e}");
-                    })
-                    .ok();
-                return Err(ErrorModel::request_in_progress().into());
-            }
-            t.commit().await?;
-            authorizer
-                .delete_namespace(&request_metadata, namespace_id)
-                .await
-                .inspect_err(|e| {
-                    tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
-                })
-                .ok();
-            drop_info.namespace_locations
+            drop_empty_namespace::<_, C>(
+                flags,
+                &authorizer,
+                warehouse_id,
+                t,
+                namespace_id,
+                &request_metadata,
+                idempotency_key.as_ref(),
+            )
+            .await?
         };
 
         event_ctx.emit_namespace_dropped_async();
@@ -777,6 +768,47 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
+async fn drop_empty_namespace<A: Authorizer, C: CatalogStore>(
+    flags: NamespaceDropFlags,
+    authorizer: &A,
+    warehouse_id: WarehouseId,
+    mut t: WriteTransaction<C>,
+    namespace_id: NamespaceId,
+    request_metadata: &RequestMetadata,
+    idempotency_key: Option<&IdempotencyKey>,
+) -> Result<Vec<(NamespaceId, Location)>> {
+    let drop_info = C::drop_namespace(warehouse_id, namespace_id, flags, &mut t).await?;
+    if let Some(key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1DropNamespace)
+                .http_status(StatusCode::NO_CONTENT)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
+    t.commit().await?;
+    authorizer
+        .delete_namespace(request_metadata, namespace_id)
+        .await
+        .inspect_err(|e| {
+            tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
+        })
+        .ok();
+    Ok(drop_info.namespace_locations)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     flags: NamespaceDropFlags,
@@ -811,9 +843,6 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
 
         if flags.purge {
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
-                if tabular_id.is_generic_table() {
-                    continue;
-                }
                 TabularPurgeTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
                         resource_demand: None,
@@ -1114,6 +1143,20 @@ pub(crate) fn validate_namespace_ident_creation(namespace: &NamespaceIdent) -> R
         .into());
     }
 
+    // REST clients separate namespace parts with U+001F in request paths. Only the new name is
+    // checked, so existing parents with such names keep accepting children.
+    if let Some(name) = namespace.as_ref().last()
+        && name.chars().any(char::is_control)
+    {
+        return Err(ErrorModel::bad_request(
+            "Namespace name cannot contain control characters.",
+            "InvalidNamespace",
+            None,
+        )
+        .append_detail(format!("Namespace: {namespace:?}"))
+        .into());
+    }
+
     Ok(())
 }
 
@@ -1387,6 +1430,38 @@ mod tests {
             candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![child, parent]
         );
+    }
+
+    #[test]
+    fn test_namespace_creation_refuses_control_characters() {
+        let ident = |parts: &[&str]| NamespaceIdent::from_strs(parts).unwrap();
+
+        for name in [
+            "a\u{1f}b",
+            "sa\u{0}les",
+            "sales\u{7f}",
+            "\tsales",
+            "sales\n",
+        ] {
+            for parts in [&[name][..], &["parent", name]] {
+                let err = validate_namespace_ident_creation(&ident(parts)).unwrap_err();
+                assert_eq!(err.error.code, 400, "{parts:?}");
+                assert_eq!(err.error.r#type, "InvalidNamespace", "{parts:?}");
+            }
+            // Existing namespaces with such names stay addressable.
+            validate_namespace_ident(&ident(&[name])).unwrap();
+        }
+
+        for parts in [
+            &["sales"][..],
+            &["daily sales"],
+            &[" sales "],
+            &["Café", "日本語"],
+            // A parent that exists with such a name keeps accepting children.
+            &["le\u{1f}gacy", "child"],
+        ] {
+            validate_namespace_ident_creation(&ident(parts)).unwrap();
+        }
     }
 
     #[test]

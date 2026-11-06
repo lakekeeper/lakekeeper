@@ -10,7 +10,8 @@ use lakekeeper::{
         ApiContext,
         data::v1::generic_tables::{
             CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
-            ListGenericTablesQuery, RenameGenericTableRequest, RenameGenericTableTarget,
+            ListGenericTablesQuery, LoadGenericTableResponse, RenameGenericTableRequest,
+            RenameGenericTableTarget,
         },
         iceberg::{
             types::DropParams,
@@ -21,13 +22,14 @@ use lakekeeper::{
     server::CatalogServer,
     service::{
         CatalogTabularOps as _, GenericTableFormat, State, TabularId, Transaction as _, UserId,
-        authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
+        authz::{AllowAllAuthorizer, CatalogWarehouseAction, tests::HidingAuthorizer},
         idempotency::IdempotencyKey,
         storage::{MemoryProfile, StorageProfile},
     },
 };
 use lakekeeper_integration_tests::{
-    create_ns, get_api_context, memory_io_profile, random_request_metadata, setup_simple,
+    REFUSED_NEW_TABULAR_NAMES, create_ns, create_table, drop_table, get_api_context,
+    memory_io_profile, random_request_metadata, setup_simple,
 };
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
@@ -887,4 +889,174 @@ async fn test_list_generic_tables_pagination(pool: PgPool) {
         pages >= 2,
         "page_size=3 over {total} rows should span >=2 pages"
     );
+}
+
+#[sqlx::test]
+async fn test_generic_tables_refuse_invalid_names(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        },
+        create_request("daily_sales"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::rename_generic_table(
+            Some(prefix.clone().into()),
+            RenameGenericTableRequest {
+                source: rename_target(&namespace, "daily_sales"),
+                destination: rename_target(&namespace, name),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("The destination name must be refused.");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+
+        let err = CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+            },
+            create_request(name),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("The name must be refused.");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+
+    let loaded = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.into()),
+            namespace,
+            table_name: "daily_sales".to_string(),
+        },
+        ctx,
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(loaded.table.name, "daily_sales");
+}
+
+type HidingCtx = ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>;
+
+/// A namespace `landing` and the location of a dropped table whose files stay in storage.
+async fn location_with_files_setup(
+    pool: PgPool,
+) -> (HidingCtx, HidingAuthorizer, NamespaceParameters, String) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "landing".to_string()).await;
+    let dropped = create_table(ctx.clone(), prefix.clone(), "landing", "dropped", false)
+        .await
+        .unwrap();
+    drop_table(
+        ctx.clone(),
+        &prefix,
+        "landing",
+        "dropped",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    let ns_params = NamespaceParameters {
+        prefix: Some(prefix.into()),
+        namespace: ns.namespace,
+    };
+    (
+        ctx,
+        authz,
+        ns_params,
+        dropped.metadata.location().to_string(),
+    )
+}
+
+async fn create_at(
+    ctx: &HidingCtx,
+    ns_params: &NamespaceParameters,
+    name: &str,
+    base_location: &str,
+) -> lakekeeper::api::Result<LoadGenericTableResponse> {
+    let mut request = create_request(name);
+    request.base_location = Some(base_location.to_string());
+    CatalogServer::create_generic_table(
+        ns_params.clone(),
+        request,
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+}
+
+/// Creating a generic table on a location that holds files takes the files over, as
+/// registering a table does, so it needs the register right on the warehouse. An empty
+/// location does not.
+#[sqlx::test]
+async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPool) {
+    let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
+    let register_right = format!("warehouse:{:?}", CatalogWarehouseAction::RegisterTable);
+
+    authz.block_action(&register_right);
+    let err = create_at(&ctx, &ns_params, "adopted", &with_files)
+        .await
+        .expect_err("a location with files needs the register right");
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden", "{err:?}");
+
+    let empty_sibling = format!("{with_files}-empty");
+    let created = create_at(&ctx, &ns_params, "fresh", &empty_sibling)
+        .await
+        .expect("an empty location needs no register right");
+    assert_eq!(created.table.base_location, empty_sibling);
+
+    authz.unblock_action(&register_right);
+    let adopted = create_at(&ctx, &ns_params, "adopted", &with_files)
+        .await
+        .expect("the register right allows taking the files over");
+    assert_eq!(adopted.table.base_location, with_files);
+}
+
+/// Re-creating a generic table at its own location, which holds files, without the register
+/// right gets 409, as a re-create with the right does, not a refusal.
+#[sqlx::test]
+async fn test_recreate_generic_table_on_its_files_without_the_register_right(pool: PgPool) {
+    let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
+    create_at(&ctx, &ns_params, "events", &with_files)
+        .await
+        .unwrap();
+
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterTable
+    ));
+    let err = create_at(&ctx, &ns_params, "events", &with_files)
+        .await
+        .expect_err("the name is in use");
+    assert_eq!(err.error.code, StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(err.error.r#type, "GenericTableAlreadyExists", "{err:?}");
 }

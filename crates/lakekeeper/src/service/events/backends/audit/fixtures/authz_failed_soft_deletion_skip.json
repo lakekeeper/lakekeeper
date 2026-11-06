@@ -1,0 +1,50 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.1",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.1"
+  },
+  "event_id": "019b76da-a800-7000-8000-000000000000",
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "modify_soft_deletion"
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "warehouse",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "modify_soft_deletion"
+      },
+      "entity": {
+        "entity_type": "warehouse",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001"
+      },
+      "allowed": false,
+      "determined_by": []
+    }
+  ],
+  "decision": "denied",
+  "failure_reason": "action_forbidden",
+  "error": {
+    "type": "WarehouseActionForbidden",
+    "code": 403,
+    "message": "Warehouse action `modify_soft_deletion` forbidden on warehouse `019684ff-0000-7000-8000-000000000001`. This call would delete tables, views or generic tables before their soft-deletion period ends, and that needs this action.",
+    "stack": [],
+    "error_id": "019684ff-0000-7000-8000-000000000006"
+  }
+}
