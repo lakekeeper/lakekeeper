@@ -185,6 +185,7 @@ Each row holds from its release up to the release in the next row.
 | ----------------------- | -------------- |
 | (earlier)               | not emitted    |
 | 0.14.0                  | `1.0`          |
+| 0.15.0                  | `1.1`          |
 
 ##### Not covered by `audit_format`
 
