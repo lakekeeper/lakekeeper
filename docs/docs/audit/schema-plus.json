@@ -3,7 +3,7 @@
   "title": "Audit records emitted by lakekeeper_plus",
   "x-audit-emitter": {
     "name": "lakekeeper_plus",
-    "format": "1.0"
+    "format": "1.1"
   },
   "$defs": {
     "AppliedPolicyContext": {
@@ -142,6 +142,20 @@
         "sources"
       ],
       "description": "Context of a `resolve_roles` record with outcome `roles_resolved`.",
+      "x-audit-kind": "context"
+    },
+    "DirectoryUserNotFoundCtx": {
+      "type": "object",
+      "properties": {
+        "provider_id": {
+          "$ref": "#/$defs/RoleProviderId",
+          "description": "The provider whose directory has no entry for the user."
+        }
+      },
+      "required": [
+        "provider_id"
+      ],
+      "description": "The `context` of a `directory_resolve_roles` record with `outcome: \"user_not_found\"`.",
       "x-audit-kind": "context"
     },
     "HandlerContext": {
@@ -320,6 +334,7 @@
       "x-audit-values": [
         "admission_enforce_check",
         "cached_role_provider",
+        "directory_resolve_roles",
         "ldap_resolve_roles",
         "resolve_roles"
       ],
@@ -328,6 +343,7 @@
       "x-audit-descriptions": {
         "admission_enforce_check": "An external enforce endpoint was asked whether a caller may use this instance.",
         "cached_role_provider": "A cached role provider answered from its cache, not from its upstream.",
+        "directory_resolve_roles": "A directory role provider (LDAP, Entra ID or Okta) found no entry for the user it\nasked about. An LDAP provider also writes its own `ldap_resolve_roles` record.",
         "ldap_resolve_roles": "An LDAP provider resolved one user's roles.",
         "resolve_roles": "The provider chain resolved one user's roles, across every provider that handled them."
       }
