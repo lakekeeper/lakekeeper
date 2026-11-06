@@ -84,12 +84,9 @@ enum Commands {
     },
     /// Run the server - The database must be migrated before running the server
     Serve {
-        #[clap(
-            default_value = "true",
-            short = 'f',
-            long = "force-start",
-            help = "Start server even if DB is not up or migrations aren't complete."
-        )]
+        /// Skip the start-up check that the database is migrated for this binary and reached
+        /// through the configured schema.
+        #[clap(short = 'f', long = "force-start", default_value_t = false)]
         force_start: bool,
     },
     /// Check the health endpoint of the server
@@ -489,6 +486,7 @@ async fn serve(force_start: bool) -> anyhow::Result<()> {
     }
     let bind_addr = std::net::SocketAddr::from((CONFIG.bind_ip, CONFIG.listen_port));
     if !force_start {
+        // No retries: `wait-for-db` or the orchestrator waits for a running migration.
         wait_for_db::wait_for_db(true, 0, 0, true).await?;
     }
     serve::serve_default(bind_addr).await?;
@@ -518,4 +516,25 @@ Enterprise Support: https://vakamo.com
     let console_span = format!("{console_span}\nLakekeeper Version: {VERSION}\n");
     println!("{console_span}");
     tracing::info!("Lakekeeper Version: {VERSION}");
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Commands};
+
+    fn parse_force_start(args: &[&str]) -> bool {
+        match Cli::try_parse_from(args).unwrap().command {
+            Some(Commands::Serve { force_start }) => force_start,
+            _ => panic!("expected the serve command"),
+        }
+    }
+
+    #[test]
+    fn serve_force_start_defaults_to_false() {
+        assert!(!parse_force_start(&["lakekeeper", "serve"]));
+        assert!(parse_force_start(&["lakekeeper", "serve", "--force-start"]));
+        assert!(parse_force_start(&["lakekeeper", "serve", "-f"]));
+    }
 }
