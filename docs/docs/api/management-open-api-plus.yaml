@@ -16942,8 +16942,9 @@ components:
             Defaults to 604800000 (7 days). Must be at least 86400000
             (24 hours) when the config is saved, unless
             `disable-min-older-than-check: true` is set in the same request
-            (`RemoveOrphanFilesRetentionTooShort` error code). A stored config
-            with a lower value fails at task pickup with the same code.
+            (`RemoveOrphanFilesRetentionTooShort` error code). Without that
+            switch, a stored config with a lower value fails at task pickup with
+            the same code.
           default: 604800000
         disable-min-older-than-check:
           type: boolean
