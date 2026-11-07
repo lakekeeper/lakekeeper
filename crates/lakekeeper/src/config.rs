@@ -111,25 +111,10 @@ pub(crate) fn get_config() -> DynAppConfig {
             !engine.owner_property().trim().is_empty(),
             "Invalid trusted engine '{name}': owner_property must not be empty"
         );
-        for (idp_id, identity) in engine.identities() {
+        for idp_id in engine.identities().keys() {
             assert!(
                 !idp_id.trim().is_empty(),
                 "Invalid trusted engine '{name}': identity IdP ID must not be empty"
-            );
-            assert!(
-                !identity.audiences.is_empty() || !identity.subjects.is_empty(),
-                "Invalid trusted engine '{name}', identity '{idp_id}': \
-                 at least one audience or subject must be configured"
-            );
-            assert!(
-                identity.audiences.iter().all(|a| !a.trim().is_empty()),
-                "Invalid trusted engine '{name}', identity '{idp_id}': \
-                 audiences must not contain empty strings"
-            );
-            assert!(
-                identity.subjects.iter().all(|s| !s.trim().is_empty()),
-                "Invalid trusted engine '{name}', identity '{idp_id}': \
-                 subjects must not contain empty strings"
             );
         }
     }
@@ -341,10 +326,7 @@ fn validate_required_claims(config: &DynAppConfig) {
     for (idp_id, rules) in providers {
         for (name, rule) in rules {
             assert!(
-                !name.is_empty()
-                    && name
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                is_valid_claim_rule_name(name),
                 "Invalid required claim rule '{name}' for OIDC provider '{idp_id}': rule name \
                  must match `[a-z0-9-]+`; write `tenant-filter`, not `tenant_filter`"
             );
@@ -353,6 +335,14 @@ fn validate_required_claims(config: &DynAppConfig) {
             }
         }
     }
+}
+
+/// Whether `name` is a valid name for a claim rule: `[a-z0-9-]+`.
+fn is_valid_claim_rule_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// The view property in which Trino stores the user a `SECURITY DEFINER` view runs as. Trino
@@ -412,31 +402,116 @@ pub(crate) fn protected_properties(
         .collect()
 }
 
-/// Identifies who is trusted to act as this engine from a specific `IdP`.
+/// Who may act as an engine, for tokens from one `IdP`.
 ///
-/// The map key (not part of this struct) is the `IdP` ID.
-/// A token matches if:
-/// - the map key matches the token's `IdP` ID, AND
-/// - any configured `audience` appears in the token's audiences,
-///   OR any configured `subject` matches the token's subject.
+/// The map key (not part of this struct) is the `IdP` ID. A token from that `IdP` matches only
+/// if it meets every configured condition: one of `audiences` is among its audiences, its
+/// subject is one of `subjects`, and it satisfies every rule in `claims`. Built only from a
+/// validated [`EngineIdentityConfig`], so every configured claim rule is compiled.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(try_from = "EngineIdentityConfig", into = "EngineIdentityConfig")]
 pub struct EngineIdentity {
+    config: EngineIdentityConfig,
+    claim_rules: Vec<limes::ClaimRule>,
+}
+
+/// An engine identity as written in configuration; see [`EngineIdentity`].
+///
+/// Unknown fields are refused: a misspelt condition would otherwise be dropped and the identity
+/// would match more tokens than configured.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EngineIdentityConfig {
+    /// The token must carry one of these audiences.
     #[serde(default)]
     pub audiences: Vec<String>,
+    /// The token's subject must be one of these.
     #[serde(default)]
     pub subjects: Vec<String>,
+    /// Rules keyed by rule name (`[a-z0-9-]+`), in the grammar of a provider's required claims.
+    /// The token must satisfy all of them.
+    #[serde(default)]
+    pub claims: HashMap<String, ClaimRuleConfig>,
+}
+
+impl TryFrom<EngineIdentityConfig> for EngineIdentity {
+    type Error = anyhow::Error;
+
+    fn try_from(config: EngineIdentityConfig) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !config.audiences.is_empty()
+                || !config.subjects.is_empty()
+                || !config.claims.is_empty(),
+            "an engine identity needs at least one audience, subject or claim rule"
+        );
+        anyhow::ensure!(
+            config.audiences.iter().all(|a| !a.trim().is_empty()),
+            "engine identity audiences must not contain empty strings"
+        );
+        anyhow::ensure!(
+            config.subjects.iter().all(|s| !s.trim().is_empty()),
+            "engine identity subjects must not contain empty strings"
+        );
+        let mut names: Vec<&String> = config.claims.keys().collect();
+        names.sort();
+        let claim_rules = names
+            .into_iter()
+            .map(|name| {
+                anyhow::ensure!(
+                    is_valid_claim_rule_name(name),
+                    "invalid engine claim rule `{name}`: rule name must match `[a-z0-9-]+`"
+                );
+                config.claims[name]
+                    .to_rule()
+                    .map_err(|e| anyhow::anyhow!("invalid engine claim rule `{name}`: {e}"))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        Ok(Self {
+            config,
+            claim_rules,
+        })
+    }
+}
+
+impl From<EngineIdentity> for EngineIdentityConfig {
+    fn from(identity: EngineIdentity) -> Self {
+        identity.config
+    }
 }
 
 impl EngineIdentity {
-    /// Check whether a token with the given audiences and subject matches this identity.
     #[must_use]
-    pub fn matches(&self, token_audiences: &HashSet<&str>, token_subject: Option<&str>) -> bool {
-        let audience_match = self
-            .audiences
-            .iter()
-            .any(|a| token_audiences.contains(a.as_str()));
-        let subject_match = token_subject.is_some_and(|sub| self.subjects.iter().any(|s| s == sub));
-        audience_match || subject_match
+    pub fn audiences(&self) -> &[String] {
+        &self.config.audiences
+    }
+
+    #[must_use]
+    pub fn subjects(&self) -> &[String] {
+        &self.config.subjects
+    }
+
+    #[must_use]
+    pub fn claims(&self) -> &HashMap<String, ClaimRuleConfig> {
+        &self.config.claims
+    }
+
+    /// Whether a token from this identity's `IdP` meets every configured condition.
+    #[must_use]
+    pub fn matches(&self, authentication: &limes::Authentication) -> bool {
+        let audiences = &self.config.audiences;
+        let subjects = &self.config.subjects;
+        let audience_match = audiences.is_empty()
+            || audiences
+                .iter()
+                .any(|a| authentication.audiences().contains(a));
+        let subject = authentication.subject().subject_in_idp();
+        let subject_match = subjects.is_empty() || subjects.iter().any(|s| s == subject);
+        audience_match
+            && subject_match
+            && self
+                .claim_rules
+                .iter()
+                .all(|rule| authentication.satisfies(rule))
     }
 }
 
@@ -3299,12 +3374,12 @@ mod test {
             assert_eq!(c.identities.len(), 2);
 
             let oidc = c.identities.get("oidc").unwrap();
-            assert_eq!(oidc.audiences, vec!["trino_dev", "trino_prod"]);
-            assert!(oidc.subjects.is_empty());
+            assert_eq!(oidc.audiences(), &["trino_dev", "trino_prod"]);
+            assert!(oidc.subjects().is_empty());
 
             let k8s = c.identities.get("kubernetes").unwrap();
-            assert!(k8s.audiences.is_empty());
-            assert_eq!(k8s.subjects, vec!["trino-sa", "trino-sa-2"]);
+            assert!(k8s.audiences().is_empty());
+            assert_eq!(k8s.subjects(), &["trino-sa", "trino-sa-2"]);
 
             // protected_properties should be pre-computed
             assert!(config.protected_properties.contains("trino.run-as-owner"));
@@ -3327,7 +3402,7 @@ mod test {
             let engine = config.trusted_engines.get("trino").unwrap();
             let TrustedEngine::Trino(c) = engine;
             let oidc = c.identities.get("oidc").unwrap();
-            assert_eq!(oidc.audiences, vec!["trino"]);
+            assert_eq!(oidc.audiences(), &["trino"]);
             Ok(())
         });
     }
@@ -3622,6 +3697,40 @@ mod test {
         assert!(m.determine_security_model(&props).is_err());
     }
 
+    fn engine_identity(config: EngineIdentityConfig) -> EngineIdentity {
+        EngineIdentity::try_from(config).unwrap()
+    }
+
+    fn any_of_claim(claim: &str, values: &[&str]) -> ClaimRuleConfig {
+        ClaimRuleConfig {
+            claim: claim.to_string(),
+            separator: None,
+            any_of: Some(values.iter().map(ToString::to_string).collect()),
+            all_of: None,
+            none_of: None,
+            exists: None,
+        }
+    }
+
+    fn engine_token(
+        subject: &str,
+        audiences: &[&str],
+        claims: serde_json::Value,
+    ) -> limes::Authentication {
+        limes::Authentication::builder()
+            .token_header(None)
+            .claims(claims)
+            .subject(limes::Subject::new(
+                Some("oidc".to_string()),
+                subject.to_string(),
+            ))
+            .name(None)
+            .email(None)
+            .principal_type(None)
+            .audiences(audiences.iter().map(ToString::to_string).collect())
+            .build()
+    }
+
     #[test]
     fn test_identities_accessor() {
         let engine = TrustedEngine::Trino(TrinoEngineConfig {
@@ -3629,17 +3738,17 @@ mod test {
             identities: HashMap::from([
                 (
                     "oidc".to_string(),
-                    EngineIdentity {
+                    engine_identity(EngineIdentityConfig {
                         audiences: vec!["trino_dev".to_string()],
-                        subjects: Vec::new(),
-                    },
+                        ..Default::default()
+                    }),
                 ),
                 (
                     "kubernetes".to_string(),
-                    EngineIdentity {
-                        audiences: Vec::new(),
+                    engine_identity(EngineIdentityConfig {
                         subjects: vec!["trino-sa".to_string()],
-                    },
+                        ..Default::default()
+                    }),
                 ),
             ]),
         });
@@ -3650,38 +3759,174 @@ mod test {
 
     #[test]
     fn test_engine_identity_matches_audience() {
-        let id = EngineIdentity {
+        let id = engine_identity(EngineIdentityConfig {
             audiences: vec!["trino".to_string()],
-            subjects: Vec::new(),
-        };
-        let auds: HashSet<&str> = ["trino"].into_iter().collect();
-        assert!(id.matches(&auds, None));
-        assert!(!id.matches(&HashSet::new(), None));
+            ..Default::default()
+        });
+        let empty = serde_json::json!({});
+        assert!(id.matches(&engine_token("any", &["trino"], empty.clone())));
+        assert!(!id.matches(&engine_token("any", &[], empty)));
     }
 
     #[test]
     fn test_engine_identity_matches_subject() {
-        let id = EngineIdentity {
-            audiences: Vec::new(),
+        let id = engine_identity(EngineIdentityConfig {
             subjects: vec!["trino-sa".to_string()],
-        };
-        assert!(id.matches(&HashSet::new(), Some("trino-sa")));
-        assert!(!id.matches(&HashSet::new(), Some("other")));
-        assert!(!id.matches(&HashSet::new(), None));
+            ..Default::default()
+        });
+        let empty = serde_json::json!({});
+        assert!(id.matches(&engine_token("trino-sa", &[], empty.clone())));
+        assert!(!id.matches(&engine_token("other", &[], empty)));
+    }
+
+    /// Audiences and subjects are two conditions, not alternatives: an identity that lists
+    /// both matches only a token that meets both.
+    #[test]
+    fn test_engine_identity_requires_audience_and_subject() {
+        let id = engine_identity(EngineIdentityConfig {
+            audiences: vec!["trino".to_string()],
+            subjects: vec!["admin-sa".to_string()],
+            ..Default::default()
+        });
+        let empty = serde_json::json!({});
+        assert!(id.matches(&engine_token("admin-sa", &["trino"], empty.clone())));
+        assert!(!id.matches(&engine_token("admin-sa", &["other"], empty.clone())));
+        assert!(!id.matches(&engine_token("other", &["trino"], empty)));
     }
 
     #[test]
-    fn test_engine_identity_matches_audience_or_subject() {
-        let id = EngineIdentity {
-            audiences: vec!["trino".to_string()],
-            subjects: vec!["admin-sa".to_string()],
+    fn test_engine_identity_requires_every_claim_rule() {
+        let id = engine_identity(EngineIdentityConfig {
+            subjects: vec!["engine-sa".to_string()],
+            claims: HashMap::from([
+                (
+                    "role".to_string(),
+                    any_of_claim("realm_access.roles", &["engine"]),
+                ),
+                ("app".to_string(), any_of_claim("idtyp", &["app"])),
+            ]),
+            ..Default::default()
+        });
+        let all = serde_json::json!({ "realm_access": { "roles": ["engine"] }, "idtyp": "app" });
+        assert!(id.matches(&engine_token("engine-sa", &[], all.clone())));
+        assert!(!id.matches(&engine_token("other", &[], all)));
+
+        let without_role = serde_json::json!({ "realm_access": { "roles": [] }, "idtyp": "app" });
+        assert!(!id.matches(&engine_token("engine-sa", &[], without_role)));
+        let without_app = serde_json::json!({ "realm_access": { "roles": ["engine"] } });
+        assert!(!id.matches(&engine_token("engine-sa", &[], without_app)));
+    }
+
+    #[test]
+    fn test_engine_identity_with_claim_rules_only() {
+        let id = engine_identity(EngineIdentityConfig {
+            claims: HashMap::from([(
+                "role".to_string(),
+                any_of_claim("realm_access.roles", &["engine"]),
+            )]),
+            ..Default::default()
+        });
+        let engine = serde_json::json!({ "realm_access": { "roles": ["reader", "engine"] } });
+        assert!(id.matches(&engine_token("anyone", &["any"], engine)));
+        let user = serde_json::json!({ "realm_access": { "roles": ["reader"] } });
+        assert!(!id.matches(&engine_token("anyone", &["any"], user)));
+    }
+
+    #[test]
+    fn test_engine_identity_refuses_invalid_configuration() {
+        let error = |config: EngineIdentityConfig| {
+            EngineIdentity::try_from(config).unwrap_err().to_string()
         };
-        let auds: HashSet<&str> = ["other_aud"].into_iter().collect();
-        // Subject matches even though audience doesn't
-        assert!(id.matches(&auds, Some("admin-sa")));
-        // Audience matches even though subject doesn't
-        let auds: HashSet<&str> = ["trino"].into_iter().collect();
-        assert!(id.matches(&auds, Some("other")));
+        assert!(
+            error(EngineIdentityConfig::default())
+                .contains("needs at least one audience, subject or claim rule")
+        );
+        assert!(
+            error(EngineIdentityConfig {
+                subjects: vec![" ".to_string()],
+                ..Default::default()
+            })
+            .contains("subjects must not contain empty strings")
+        );
+        assert!(
+            error(EngineIdentityConfig {
+                claims: HashMap::from([(
+                    "Role_Name".to_string(),
+                    any_of_claim("roles", &["engine"])
+                )]),
+                ..Default::default()
+            })
+            .contains("rule name must match `[a-z0-9-]+`")
+        );
+        let mut two_operators = any_of_claim("roles", &["engine"]);
+        two_operators.exists = Some(true);
+        assert!(
+            error(EngineIdentityConfig {
+                claims: HashMap::from([("role".to_string(), two_operators)]),
+                ..Default::default()
+            })
+            .contains("invalid engine claim rule `role`")
+        );
+    }
+
+    const TRINO_OIDC: &str = "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC";
+
+    fn set_trino_engine_env(jail: &mut figment::Jail) {
+        jail.set_env("LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__TYPE", "trino");
+        jail.set_env(
+            "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY",
+            "trino.run-as-owner",
+        );
+    }
+
+    #[test]
+    fn test_trusted_engine_claim_rules_from_env() {
+        figment::Jail::expect_with(|jail| {
+            set_trino_engine_env(jail);
+            jail.set_env(
+                format!("{TRINO_OIDC}__CLAIMS__ROLE__CLAIM"),
+                "realm_access.roles",
+            );
+            jail.set_env(format!("{TRINO_OIDC}__CLAIMS__ROLE__ANY_OF"), "[engine]");
+            jail.set_env(format!("{TRINO_OIDC}__CLAIMS__APP-ONLY__CLAIM"), "idtyp");
+            jail.set_env(format!("{TRINO_OIDC}__CLAIMS__APP-ONLY__ANY_OF"), "[app]");
+            let config = get_config();
+            let oidc = &config.trusted_engines["trino"].identities()["oidc"];
+            assert_eq!(oidc.claims().len(), 2);
+            assert!(oidc.audiences().is_empty() && oidc.subjects().is_empty());
+
+            let engine =
+                serde_json::json!({ "realm_access": { "roles": ["engine"] }, "idtyp": "app" });
+            assert!(oidc.matches(&engine_token("engine", &[], engine)));
+            let user =
+                serde_json::json!({ "realm_access": { "roles": ["engine"] }, "idtyp": "user" });
+            assert!(!oidc.matches(&engine_token("user", &[], user)));
+            Ok(())
+        });
+    }
+
+    /// A misspelt condition must stop startup: dropped silently, it would widen the match.
+    #[test]
+    #[should_panic(expected = "unknown field: found `claim`")]
+    fn test_trusted_engine_identity_refuses_unknown_fields() {
+        figment::Jail::expect_with(|jail| {
+            set_trino_engine_env(jail);
+            jail.set_env(format!("{TRINO_OIDC}__SUBJECTS"), "[engine]");
+            jail.set_env(format!("{TRINO_OIDC}__CLAIM__ROLE__CLAIM"), "roles");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid engine claim rule `role`")]
+    fn test_trusted_engine_invalid_claim_rule_stops_startup() {
+        figment::Jail::expect_with(|jail| {
+            set_trino_engine_env(jail);
+            jail.set_env(format!("{TRINO_OIDC}__CLAIMS__ROLE__CLAIM"), "roles");
+            let _config = get_config();
+            Ok(())
+        });
     }
 
     #[test]

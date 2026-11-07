@@ -128,8 +128,7 @@ jsonwebtoken = { version = "11.0", features = ["aws_lc_rs"] }
 k8s-openapi = { version = "0.28" }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-# TEMPORARY: pinned to main. Move to `tag = "v0.7.0"` once that release is published.
-limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "641c81961b423c5e72239655e8a0cff7a8bd5790", features = [
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", tag = "v0.7.0", features = [
     "kubernetes",
     "axum",
     "rustls-tls",

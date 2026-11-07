@@ -809,28 +809,38 @@ Trusted engines are configured as a map under `LAKEKEEPER__TRUSTED_ENGINES`. Eac
 | <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | — | Engine type. Currently only `trino` is supported. |
 | <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | — | The view property in which the engine stores the owner of a DEFINER view. For `trino`, set `trino.run-as-owner`: Trino always stores the owner there, and only an engine with exactly this owner property can write it. Lakekeeper logs a warning at startup for a `trino` engine with another value. |
 
-Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches AND (any audience matches OR any subject matches). Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
+Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches and the token meets **every** condition the identity configures: one of its audiences is listed in `AUDIENCES`, its subject is listed in `SUBJECTS`, and it satisfies every rule in `CLAIMS`. Configure at least one condition. Startup refuses an identity without conditions, an unknown field and a malformed rule. Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
 
 | Variable | Example | Default | Description |
 |---|---|---|---|
 | `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__SUBJECTS` | `[<engine-service-account-subject>]` | — | List of JWT subjects. A token matches if its subject appears in this list. Use the subject of the service account with which the engine authenticates. |
-| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__AUDIENCES` | `[lakekeeper-engine]` | — | List of JWT audiences. A token matches if any of its audiences appears in this list, so every token that carries a listed audience is treated as the engine. List an audience only if your identity provider guarantees that no user can obtain a token with it, for example an audience that only the engine can get by token exchange. |
+| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__CLAIMS__<RULE>__…` | `…__CLAIMS__ROLE__CLAIM=roles` <br> `…__CLAIMS__ROLE__ANY_OF='[lakekeeper-engine]'` | — | Rules the token must satisfy, keyed by rule name, in the grammar of [Required Claims](#required-claims). Every rule must hold. Choose claims that only the engine's own credential carries and that users cannot change. For Kubernetes tokens, the claims are the `extra` fields of the TokenReview. |
+| `LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`<br>`IDENTITIES__<IDP_ID>__AUDIENCES` | `[lakekeeper-engine]` | — | List of JWT audiences. A token matches if any of its audiences appears in this list, so every token that carries a listed audience is treated as the engine. List an audience only if no user can obtain a token with it. See [Setting Up Trusted Engines](./view-security.md#setting-up-trusted-engines). |
 
-**Example:** Trust a Trino engine that authenticates with its service account at the `oidc` provider:
+**Example:** Trust an engine that authenticates with its service account at the `oidc` provider:
 
 ```bash
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__IDENTITIES__OIDC__SUBJECTS=["<engine-service-account-subject>"]
 ```
 
-**Example with multiple IdPs:** Trust Trino from both an OIDC service account and a Kubernetes service account (the Kubernetes subject is shown for `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username`):
+**Example with multiple IdPs:** Trust an engine from both an OIDC service account and a Kubernetes service account (the Kubernetes subject is shown for `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username`):
 
 ```bash
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=["system:serviceaccount:<namespace>:trino"]
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__IDENTITIES__OIDC__SUBJECTS=["<engine-service-account-subject>"]
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__IDENTITIES__KUBERNETES__SUBJECTS=["system:serviceaccount:<namespace>:<service-account>"]
+```
+
+**Example with a claim rule:** Trust every token from the `oidc` provider that carries a role your identity provider assigns only to engine service accounts:
+
+```bash
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__IDENTITIES__OIDC__CLAIMS__ROLE__CLAIM=roles
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__IDENTITIES__OIDC__CLAIMS__ROLE__ANY_OF='[lakekeeper-engine]'
 ```
 
 ### Role Provider { .lkp }

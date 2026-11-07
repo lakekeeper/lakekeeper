@@ -98,17 +98,17 @@ The number of views a client may declare in one `referenced-by` chain is capped 
 
 Configure one or more trusted engines so that Lakekeeper knows which query engines to trust. See [Trusted Engines](./configuration.md#trusted-engines) for the full configuration reference.
 
-**Minimal example for Trino:**
+**Minimal example:**
 
 ```bash
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
-LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__MY_ENGINE__IDENTITIES__OIDC__SUBJECTS=["<engine-service-account-subject>"]
 ```
 
-Matching is **scoped to the IdP** the token was issued by. Each engine's `IDENTITIES` block is keyed per IdP (e.g. `IDENTITIES__OIDC__...`), and a token is only tested against the block matching its own IdP. Within that block, a request is matched when **either** its audience appears in `AUDIENCES` **or** its subject appears in `SUBJECTS`.
+Matching is **scoped to the IdP** the token was issued by. Each engine's `IDENTITIES` block is keyed per IdP (e.g. `IDENTITIES__OIDC__...`), and a token is only tested against the block matching its own IdP. Within that block, a request is matched only if it meets **every** condition configured there: its audience appears in `AUDIENCES`, its subject appears in `SUBJECTS`, and it satisfies every rule in `CLAIMS`.
 
-Lakekeeper trusts the identity of the token, not the software that sends it. Anyone who can get a token that matches the engine's `AUDIENCES` or `SUBJECTS` is treated as the engine and can set the owner of any view they can create. Match the engine by the subject of its own service account. List an audience in `AUDIENCES` only if your identity provider guarantees that no user can obtain a token that carries it, for example an audience that only the engine can get by [token exchange](https://datatracker.ietf.org/doc/html/rfc8693). The audience that users receive when they log in to the engine itself does not qualify, because every user of the engine holds such a token.
+Lakekeeper trusts the identity of the token, not the software that sends it. Anyone who can get a token that matches the engine's identity is treated as the engine and can set the owner of any view they can create. Match the engine by the subject of its own service account, or by claims that only the engine's credential carries and that users cannot change. List an audience in `AUDIENCES` only if no user can obtain a token that carries it, for example an audience that only the engine can get by [token exchange](https://datatracker.ietf.org/doc/html/rfc8693). The tokens an engine receives when users log in to it qualify only if the engine never hands them to its users, for example as a confidential client that keeps them on its servers. Whether an engine keeps these tokens to itself depends on the engine and its configuration.
 
 **What happens when a request is not matched as a trusted engine:**
 
