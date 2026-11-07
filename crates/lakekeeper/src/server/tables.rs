@@ -2103,6 +2103,15 @@ fn expired_metadata_files_to_delete(
         .collect()
 }
 
+/// `location` with an `s3a`/`s3n` scheme spelled `s3`, so the aliases compare equal.
+#[must_use]
+pub fn with_canonical_s3_scheme(location: &Location) -> Location {
+    S3Location::try_from_location(location, true).map_or_else(
+        |_| location.clone(),
+        |s3_location| s3_location.set_s3_scheme().into_location(),
+    )
+}
+
 pub fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
     let last_segment = location
         .as_str()
