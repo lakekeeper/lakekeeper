@@ -47,6 +47,8 @@ Individual tables can override warehouse settings using these Iceberg table prop
 - `history.expire.min-snapshots-to-keep` - Custom minimum retention for table
 - `lakekeeper.history.expire.min-snapshots-to-expire` - Custom threshold for table
 
+A value of `history.expire.max-snapshot-age-ms`, `history.expire.max-ref-age-ms` or `history.expire.min-snapshots-to-keep` that is not a whole number, such as `30d` or `2592000000L`, makes Lakekeeper skip the table instead of using the default. Lakekeeper logs a warning that names the property and its value.
+
 **24-hour minimum**:
 
 - Saving a queue config with `max-snapshot-age-ms` or `max-ref-age-ms` below 24 hours fails with `ExpireSnapshotsRetentionTooShort`, unless the same request sets `disable-min-age-check: true`. This stops a typo such as `max-snapshot-age-ms: 6000` (six seconds) from removing almost all snapshots.
@@ -58,6 +60,9 @@ Individual tables can override warehouse settings using these Iceberg table prop
 
 !!! note
     Tables using Iceberg native encryption (`encryption.key-id` set) are skipped. Expiration must read manifest lists and manifests to determine which files to remove, and Lakekeeper cannot decrypt them. Skipped tables are recorded as a successful (skipped) run, not a failure.
+
+!!! note
+    Tables that Apache Paimon may still use are skipped, so expiration does not delete data files that Paimon needs. Paimon 2.1 can register a mirror at its own storage path. A table is skipped while it keeps any snapshot that Paimon 2.1 or later wrote. To include it again, expire these snapshots with the engine that owns the table. A table is also skipped while its location holds a Paimon table of any version. Setting `gc.enabled=false` on a mirror protects it as well. With Paimon 2.1 or later, you can set it through the Paimon table option `metadata.iceberg.table-properties.gc.enabled=false`.
 
 ### Production Deployment
 
@@ -111,7 +116,7 @@ Configuration can be set via the Management UI or REST API endpoints:
 Individual tables can override warehouse settings using these Iceberg table properties:
 
 - `lakekeeper.remove-orphan-files.enabled` — `true` includes a table even when the warehouse master switch is off; `false` excludes it.
-- `lakekeeper.remove-orphan-files.older-than-ms` — per-table deletion-age threshold. A value below 24 hours is raised to 24 hours, unless the table also sets `lakekeeper.remove-orphan-files.disable-min-older-than-check=true`.
+- `lakekeeper.remove-orphan-files.older-than-ms` — per-table deletion-age threshold. A value below 24 hours is raised to 24 hours, unless the table also sets `lakekeeper.remove-orphan-files.disable-min-older-than-check=true`. A value that is not a whole number makes Lakekeeper skip the table and log a warning.
 - `lakekeeper.remove-orphan-files.disable-min-older-than-check` — `true` lets this table use an `older-than-ms` below 24 hours. Remove orphan files then also deletes files that writers uploaded but did not commit yet, if they are older than `older-than-ms`. We recommend setting it only while nothing writes to the table, and removing both properties after the cleanup.
 - `lakekeeper.remove-orphan-files.dry-run` — `true` makes the runs of this table dry runs, `false` lets them delete. Any other value also gives a dry run, so a typo never deletes files. If the warehouse config sets `dry-run`, a table cannot turn it off.
 
@@ -120,6 +125,7 @@ Individual tables can override warehouse settings using these Iceberg table prop
 - **`gc.enabled` check**: Tables with `gc.enabled=false` are excluded. Attempting to remove orphan files on such a table returns an error immediately.
 - **Encrypted tables skipped**: Tables using Iceberg native encryption (`encryption.key-id` set) are skipped. Identifying the referenced-file set requires reading manifests, which Lakekeeper cannot decrypt; running anyway risks deleting live data. Skipped tables are recorded as a successful (skipped) run; manually scheduling one returns an error immediately.
 - **24-hour minimum retention**: Saving a queue config with a `default-older-than-ms` below 24 hours fails with `RemoveOrphanFilesRetentionTooShort`, unless the same request sets `disable-min-older-than-check: true`. A typo like `default-older-than-ms: 6000` (six seconds) would otherwise delete files that writers uploaded more than six seconds ago but did not commit yet. A table value of `lakekeeper.remove-orphan-files.older-than-ms` below 24 hours is raised to 24 hours, unless the table sets `lakekeeper.remove-orphan-files.disable-min-older-than-check=true`. The run result shows the retention that the run used in `older-than-ms`.
+- **Paimon mirrors skipped**: Tables that Apache Paimon may still use are skipped, so Paimon's own files are not removed as orphans. As for [expiration](#expire-snapshots), a table is skipped while it keeps any snapshot that Paimon 2.1 or later wrote, and while its location holds a Paimon table of any version. Setting `gc.enabled=false` on a mirror protects it as well.
 - **Unknown age preservation**: Files where the storage backend does not report a last-modified timestamp are skipped (counted as `skipped-unknown-age-count` in the result).
 
 ### Recommended Usage

@@ -58,6 +58,7 @@ Optimize does not run on these tables:
 - Tables with format version 3.
 - Tables that use Iceberg native encryption (`encryption.key-id` is set).
 - Tables that use write-audit-publish (`write.wap.enabled=true`), because a rewrite would make the next publish fail. Set `lakekeeper.optimize.enabled=true` on such a table to optimize it anyway.
+- Tables that Apache Paimon 2.1 or later mirrors. [Snapshot expiry](./table-maintenance.md#expire-snapshots) and [orphan-file removal](./table-maintenance.md#remove-orphan-files) skip them too. Paimon recreates such a table after another writer adds a snapshot, and it can register the table at its own storage path, where expiry and orphan-file removal would delete Paimon's files. Optimize cannot detect tables that earlier Paimon versions mirror, so set `lakekeeper.optimize.enabled=false` on them.
 
 Compaction skips these tables, but manifest rewrite still runs on them:
 
@@ -65,7 +66,6 @@ Compaction skips these tables, but manifest rewrite still runs on them:
 - Tables stored on Azure Data Lake Storage (ADLS).
 - Tables with a column that compaction cannot write back unchanged. The task log names the column.
 - Tables whose data location (`write.data.path`) is outside the table location.
-- Tables that Apache Paimon mirrors.
 
 Compaction fails on tables that reference data files outside the table location, for example files added with Spark's `add_files` or `snapshot` procedure. The task log names the file. To stop these failures, set `lakekeeper.compaction.enabled=false` on the table. Manifest rewrite keeps running.
 
