@@ -480,16 +480,19 @@ impl From<EngineIdentity> for EngineIdentityConfig {
 }
 
 impl EngineIdentity {
+    /// Audiences of which the token must carry one; empty if not configured.
     #[must_use]
     pub fn audiences(&self) -> &[String] {
         &self.config.audiences
     }
 
+    /// Subjects of which the token's subject must be one; empty if not configured.
     #[must_use]
     pub fn subjects(&self) -> &[String] {
         &self.config.subjects
     }
 
+    /// Claim rules keyed by rule name, as configured. The token must satisfy all of them.
     #[must_use]
     pub fn claims(&self) -> &HashMap<String, ClaimRuleConfig> {
         &self.config.claims
