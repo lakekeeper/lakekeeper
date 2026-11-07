@@ -304,13 +304,22 @@ impl ObjectStore for ObjectStoreBridge {
                     store: STORE,
                     source: Box::new(e),
                 })?;
-            // The range is read from the object the metadata describes, so the metadata
-            // describes the bytes even if the object is replaced in between.
-            let bytes = self
-                .lakekeeper_io
-                .read_range_of(&path, &info, range.clone())
-                .await
-                .map_err(|e| read_err_to_os(location.as_ref(), e))?;
+            // A requested version is read by its id: `read_range_of` reads the current object
+            // on S3. Otherwise the range is read from the object the metadata describes, so the
+            // metadata describes the bytes even if the object is replaced in between.
+            let bytes = match version {
+                Some(version) => {
+                    self.lakekeeper_io
+                        .read_range_version(&path, version, range.clone())
+                        .await
+                }
+                None => {
+                    self.lakekeeper_io
+                        .read_range_of(&path, &info, range.clone())
+                        .await
+                }
+            }
+            .map_err(|e| read_err_to_os(location.as_ref(), e))?;
             let meta = object_meta(location.clone(), &info, size);
             (bytes, meta, range)
         } else {
@@ -943,6 +952,120 @@ mod tests {
             .unwrap();
         assert_eq!(ranged.meta.version, original.version);
         assert_eq!(&ranged.bytes().await.unwrap()[..], b"orig");
+    }
+
+    /// Memory storage whose `read_range_of` reads the current object if its `ETag` matches,
+    /// as on S3.
+    #[derive(Debug)]
+    struct ETagPinnedRanges(MemoryStorage);
+
+    #[async_trait::async_trait]
+    impl LakekeeperStorage for ETagPinnedRanges {
+        async fn delete(&self, path: &str) -> Result<(), crate::DeleteError> {
+            self.0.delete(path).await
+        }
+
+        async fn delete_batch(&self, paths: &[String]) -> Result<(), crate::DeleteBatchError> {
+            self.0.delete_batch(paths).await
+        }
+
+        async fn write(&self, path: &str, bytes: Bytes) -> Result<WriteOutcome, WriteError> {
+            self.0.write(path, bytes).await
+        }
+
+        async fn writer(
+            &self,
+            path: &str,
+        ) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError> {
+            self.0.writer(path).await
+        }
+
+        async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
+            self.0.read(path).await
+        }
+
+        async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
+            self.0.read_single(path).await
+        }
+
+        async fn read_range(
+            &self,
+            path: &str,
+            range: std::ops::Range<u64>,
+        ) -> Result<Bytes, ReadError> {
+            self.0.read_range(path, range).await
+        }
+
+        async fn read_range_version(
+            &self,
+            path: &str,
+            version: &str,
+            range: std::ops::Range<u64>,
+        ) -> Result<Bytes, ReadError> {
+            self.0.read_range_version(path, version, range).await
+        }
+
+        async fn read_range_of(
+            &self,
+            path: &str,
+            info: &FileInfo,
+            range: std::ops::Range<u64>,
+        ) -> Result<Bytes, ReadError> {
+            if self.0.metadata(path).await?.e_tag() != info.e_tag() {
+                return Err(crate::IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "The ETag does not match",
+                    path.to_string(),
+                )
+                .into());
+            }
+            self.0.read_range(path, range).await
+        }
+
+        async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+            self.0.metadata(path).await
+        }
+
+        async fn metadata_version(&self, path: &str, version: &str) -> Result<FileInfo, ReadError> {
+            self.0.metadata_version(path, version).await
+        }
+
+        async fn list(
+            &self,
+            path: &str,
+            page_size: Option<usize>,
+        ) -> Result<
+            futures::stream::BoxStream<'_, Result<Vec<FileInfo>, crate::IOError>>,
+            crate::InvalidLocationError,
+        > {
+            self.0.list(path, page_size).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_ranged_get_of_a_version_reads_that_version() {
+        let io: Arc<dyn LakekeeperStorage> =
+            Arc::new(ETagPinnedRanges(MemoryStorage::new_isolated()));
+        let store = ObjectStoreBridge::new(io, &Location::from_str("memory://bucket").unwrap());
+        let path = Path::from("object.bin");
+        let first = store
+            .put(&path, PutPayload::from(Bytes::from_static(b"first")))
+            .await
+            .unwrap();
+        store
+            .put(&path, PutPayload::from(Bytes::from_static(b"second")))
+            .await
+            .unwrap();
+
+        let ranged = |version: Option<String>| GetOptions {
+            version,
+            range: Some(GetRange::Bounded(0..3)),
+            ..Default::default()
+        };
+        let old = store.get_opts(&path, ranged(first.version)).await.unwrap();
+        assert_eq!(&old.bytes().await.unwrap()[..], b"fir");
+        let current = store.get_opts(&path, ranged(None)).await.unwrap();
+        assert_eq!(&current.bytes().await.unwrap()[..], b"sec");
     }
 
     #[test]
