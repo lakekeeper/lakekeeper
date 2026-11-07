@@ -78,6 +78,10 @@ jobs:
             os: ubuntu-22.04-arm
             name: lakekeeper-aarch64-unknown-linux-gnu.tar.gz
 
+          - target: powerpc64le-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: lakekeeper-powerpc64le-unknown-linux-gnu.tar.gz
+
           - target: aarch64-apple-darwin
             os: macos-26
             name: lakekeeper-aarch64-apple-darwin.tar.gz
@@ -116,6 +120,22 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
+
+      # Cross-compiled on x86. Linux on Power commonly runs with 64 KiB pages, and jemalloc
+      # refuses to start on a kernel whose pages are larger than the size it was built for.
+      - name: Setup cross toolchain [powerpc64le]
+        if: matrix.target == 'powerpc64le-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu libc6-dev-ppc64el-cross
+          {
+            echo "CARGO_TARGET_POWERPC64LE_UNKNOWN_LINUX_GNU_LINKER=powerpc64le-linux-gnu-gcc"
+            echo "CC_powerpc64le_unknown_linux_gnu=powerpc64le-linux-gnu-gcc"
+            echo "CXX_powerpc64le_unknown_linux_gnu=powerpc64le-linux-gnu-g++"
+            echo "AR_powerpc64le_unknown_linux_gnu=powerpc64le-linux-gnu-ar"
+            echo "JEMALLOC_SYS_WITH_LG_PAGE=16"
+          } >> "$GITHUB_ENV"
 
       - name: Build [Cargo]
         run: cargo build --all-features --release --locked --target ${{ matrix.target }}
@@ -179,6 +199,9 @@ jobs:
           cd -
           cd bin-lakekeeper-aarch64-unknown-linux-gnu.tar.gz
           tar xzvf lakekeeper-aarch64-unknown-linux-gnu.tar.gz
+          cd -
+          cd bin-lakekeeper-powerpc64le-unknown-linux-gnu.tar.gz
+          tar xzvf lakekeeper-powerpc64le-unknown-linux-gnu.tar.gz
           ls -Rlh
 
       - name: Set up QEMU
@@ -187,7 +210,7 @@ jobs:
       - name: Docker info
         run: docker info
 
-      # Builds two full images (amd64 + arm64); reclaim preinstalled toolchains
+      # Builds three full images (amd64 + arm64 + ppc64le); reclaim preinstalled toolchains
       # we don't use to avoid "no space left on device" on hosted runners.
       - name: Free disk space
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
@@ -214,6 +237,16 @@ jobs:
             --build-arg "BIN=bin-lakekeeper-aarch64-unknown-linux-gnu.tar.gz/lakekeeper" .
           docker save -o /tmp/docker-lakekeeper-arm64.tar localhost/lakekeeper-local:arm64
 
+      - name: Build Docker image (ppc64le)
+        run: |
+          DOCKER_BUILDKIT=1 docker build --provenance=false \
+            --platform linux/ppc64le -t localhost/lakekeeper-local:ppc64le \
+            -f docker/bin.Dockerfile \
+            --build-arg "ARCH=ppc64le" \
+            --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
+            --build-arg "BIN=bin-lakekeeper-powerpc64le-unknown-linux-gnu.tar.gz/lakekeeper" .
+          docker save -o /tmp/docker-lakekeeper-ppc64le.tar localhost/lakekeeper-local:ppc64le
+
       - name: Save Docker
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -234,6 +267,8 @@ jobs:
             arch: amd64
           - file: docker-lakekeeper/docker-lakekeeper-arm64.tar
             arch: arm64
+          - file: docker-lakekeeper/docker-lakekeeper-ppc64le.tar
+            arch: ppc64le
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -290,9 +325,11 @@ jobs:
         run: |
           docker load -i docker-lakekeeper/docker-lakekeeper-amd64.tar
           docker load -i docker-lakekeeper/docker-lakekeeper-arm64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-ppc64le.tar
           docker images
           docker inspect localhost/lakekeeper-local:amd64
           docker inspect localhost/lakekeeper-local:arm64
+          docker inspect localhost/lakekeeper-local:ppc64le
 
       - name: Release Please
         run: echo ${{ needs.release_please.outputs.tag_name }}
@@ -344,6 +381,7 @@ jobs:
         run: |
           docker load -i docker-lakekeeper/docker-lakekeeper-amd64.tar
           docker load -i docker-lakekeeper/docker-lakekeeper-arm64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-ppc64le.tar
           docker images
 
       - name: Push to quay.io
@@ -351,9 +389,11 @@ jobs:
           COMMIT_SHA=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
           docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64
           docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
+          docker tag localhost/lakekeeper-local:ppc64le quay.io/lakekeeper/catalog:${COMMIT_SHA}-ppc64le
           docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64
           docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
-          docker manifest create quay.io/lakekeeper/catalog:latest-main quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
+          docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-ppc64le
+          docker manifest create quay.io/lakekeeper/catalog:latest-main quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-ppc64le
           docker manifest push quay.io/lakekeeper/catalog:latest-main
 
       - name: Push to Dockerhub
@@ -362,9 +402,11 @@ jobs:
           COMMIT_SHA=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
           docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:${COMMIT_SHA}-amd64
           docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:${COMMIT_SHA}-arm64
+          docker tag localhost/lakekeeper-local:ppc64le vakamo/lakekeeper:${COMMIT_SHA}-ppc64le
           docker push vakamo/lakekeeper:${COMMIT_SHA}-amd64
           docker push vakamo/lakekeeper:${COMMIT_SHA}-arm64
-          docker manifest create vakamo/lakekeeper:latest-main vakamo/lakekeeper:${COMMIT_SHA}-amd64 vakamo/lakekeeper:${COMMIT_SHA}-arm64
+          docker push vakamo/lakekeeper:${COMMIT_SHA}-ppc64le
+          docker manifest create vakamo/lakekeeper:latest-main vakamo/lakekeeper:${COMMIT_SHA}-amd64 vakamo/lakekeeper:${COMMIT_SHA}-arm64 vakamo/lakekeeper:${COMMIT_SHA}-ppc64le
           docker manifest push vakamo/lakekeeper:latest-main
 
   # Create GitHub release with Rust build targets and release notes
@@ -423,22 +465,27 @@ jobs:
         run: |
           docker load -i docker-lakekeeper/docker-lakekeeper-amd64.tar
           docker load -i docker-lakekeeper/docker-lakekeeper-arm64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-ppc64le.tar
           docker images
 
       - name: Push Images to quay.io
         run: |
           docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-amd64
           docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
+          docker tag localhost/lakekeeper-local:ppc64le quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-ppc64le
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-amd64
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
+          docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-ppc64le
 
       - name: Push Images to Dockerhub
         if: vars.PUBLISH_DOCKERHUB == 'true'
         run: |
           docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-amd64
           docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-arm64
+          docker tag localhost/lakekeeper-local:ppc64le vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-ppc64le
           docker push vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-amd64
           docker push vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-arm64
+          docker push vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-ppc64le
 
       # A patch of an older release line can be released after a newer line.
       # Each floating tag moves only when this release is the highest version
@@ -486,15 +533,15 @@ jobs:
           # and each floating tag with its per-arch tags.
           push_tags() {
             local repository=$1 ref arch
-            docker manifest create "$repository:$TAG" "$repository:$TAG-amd64" "$repository:$TAG-arm64"
+            docker manifest create "$repository:$TAG" "$repository:$TAG-amd64" "$repository:$TAG-arm64" "$repository:$TAG-ppc64le"
             docker manifest push "$repository:$TAG"
             for ref in $FLOATING; do
-              for arch in amd64 arm64; do
+              for arch in amd64 arm64 ppc64le; do
                 docker tag "localhost/lakekeeper-local:$arch" "$repository:$ref-$arch"
                 docker push "$repository:$ref-$arch"
               done
               docker manifest rm "$repository:$ref" 2>/dev/null || true
-              docker manifest create "$repository:$ref" "$repository:$ref-amd64" "$repository:$ref-arm64"
+              docker manifest create "$repository:$ref" "$repository:$ref-amd64" "$repository:$ref-arm64" "$repository:$ref-ppc64le"
               docker manifest push "$repository:$ref"
             done
           }
