@@ -1,0 +1,5544 @@
+openapi: 3.1.0
+info:
+  title: Lakekeeper Management API
+  description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  version: 0.0.0
+servers:
+  - url: '{scheme}://{host}/{basePath}'
+    description: Lakekeeper Management API
+    variables:
+      basePath:
+        default: ''
+        description: Optional prefix to be appended to all routes
+      host:
+        default: localhost
+        description: The host address for the specified server
+      scheme:
+        default: https
+        description: The scheme of the URI, either http or https
+paths:
+  /management/v1/bootstrap:
+    post:
+      tags:
+        - server
+      summary: Bootstrap
+      description: |-
+        Initializes the Lakekeeper server and sets the initial administrator account.
+        This operation can only be performed once.
+      operationId: bootstrap
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapRequest'
+        required: true
+      responses:
+        '204':
+          description: Server bootstrapped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '500':
+          description: InternalError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/default-project:
+    get:
+      tags:
+        - project
+      summary: Get Default Project
+      description: |-
+        Retrieves information about the user's default project.
+        This endpoint is deprecated and will be removed in a future version.
+      operationId: get_default_project_deprecated
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
+    delete:
+      tags:
+        - project
+      summary: Delete default Project
+      description: |-
+        Removes the user's default project and all its resources.
+        This endpoint is deprecated and will be removed in a future version.
+      operationId: delete_default_project_deprecated
+      responses:
+        '204':
+          description: Project deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
+  /management/v1/default-project/rename:
+    post:
+      tags:
+        - project
+      summary: Rename the default project.
+      description: |-
+        Updates the name of the user's default project.
+        This endpoint is deprecated and will be removed in a future version.
+      operationId: rename_default_project_deprecated
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameProjectRequest'
+        required: true
+      responses:
+        '200':
+          description: Project renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
+  /management/v1/endpoint-statistics:
+    post:
+      tags:
+        - project
+      summary: Get API Statistics
+      description: |-
+        Retrieves detailed endpoint call statistics for your project, allowing you to monitor API usage patterns,
+        track frequency of operations, and analyze response codes.
+
+        ## Data Collection
+
+        The statistics include:
+        - Endpoint paths and HTTP methods
+        - Response status codes
+        - Call counts per endpoint
+        - Warehouse context (when applicable)
+        - Timestamps of activity
+
+        ## Time Aggregation
+
+        Statistics are aggregated hourly. Within each hour window:
+        - An initial entry is created on the first API call
+        - Subsequent calls update the existing hourly entry
+        - Each hour boundary creates a new aggregation bucket
+        - Hours with no API activity have no entries (gaps in data)
+
+        ## Response Format
+
+        The response includes timestamp buckets (in UTC) and corresponding endpoint metrics,
+        allowing for time-series analysis of API usage patterns.
+
+        Example:
+        - 00:00:00-00:16:32: no activity
+            - `timestamps: []`
+        - 00:16:32: warehouse created:
+            `{timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]}`
+        - 00:30:00: table created:
+            - `timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}, {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]`
+        - 00:45:00: table created:
+            - `timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}, {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}]]`
+        - 01:00:36: table deleted:
+            - `timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},{"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],[{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]`
+      operationId: get_endpoint_statistics
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetEndpointStatisticsRequest'
+        required: true
+      responses:
+        '200':
+          description: Endpoint statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndpointStatisticsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/info:
+    get:
+      tags:
+        - server
+      summary: Get Server Info
+      description: Returns basic information about the server configuration and status.
+      operationId: get_server_info
+      responses:
+        '200':
+          description: Server info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerInfo'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '500':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/permissions/check:
+    post:
+      tags:
+        - permissions
+      summary: Check if a specific action is allowed on the given object
+      operationId: check
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckResponse'
+  /management/v1/permissions/namespace/{namespace_id}:
+    get:
+      tags:
+        - permissions
+      summary: Get Authorization properties of a namespace
+      operationId: get_namespace_by_id
+      parameters:
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetNamespaceAuthPropertiesResponse'
+  /management/v1/permissions/namespace/{namespace_id}/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to a namespace
+      operationId: get_namespace_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server Relations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetNamespaceAccessResponse'
+  /management/v1/permissions/namespace/{namespace_id}/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments for a namespace
+      operationId: get_namespace_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/NamespaceRelation'
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetNamespaceAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for a namespace
+      operationId: update_namespace_assignments_by_id
+      parameters:
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNamespaceAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/namespace/{namespace_id}/managed-access:
+    post:
+      tags:
+        - permissions
+      summary: Set managed access property of a namespace
+      operationId: set_namespace_managed_access
+      parameters:
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetManagedAccessRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+  /management/v1/permissions/project/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to the default project
+      operationId: get_project_access
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server Relations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectAccessResponse'
+  /management/v1/permissions/project/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments of a project
+      operationId: get_project_assignments
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ProjectRelation'
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for the default project
+      operationId: update_project_assignments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/project/{project_id}/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to the default project
+      operationId: get_project_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: project_id
+          in: path
+          description: Project ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server Relations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectAccessResponse'
+  /management/v1/permissions/project/{project_id}/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments to a project
+      operationId: get_project_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ProjectRelation'
+        - name: project_id
+          in: path
+          description: Project ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for a project
+      operationId: update_project_assignments_by_id
+      parameters:
+        - name: project_id
+          in: path
+          description: Project ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/role/{role_id}/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to the default project
+      operationId: get_role_access_by_id
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRoleAccessResponse'
+  /management/v1/permissions/role/{role_id}/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments of a role
+      operationId: get_role_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/RoleRelation'
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRoleAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      operationId: update_role_assignments_by_id
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/server/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to the server
+      operationId: get_server_access
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server Access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetServerAccessResponse'
+  /management/v1/permissions/server/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments of the server
+      operationId: get_server_assignments
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ServerRelation'
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetServerAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for this server
+      operationId: update_server_assignments
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateServerAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}:
+    get:
+      tags:
+        - permissions
+      summary: Get Authorization properties of a warehouse
+      operationId: get_warehouse_by_id
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseAuthPropertiesResponse'
+  /management/v1/permissions/warehouse/{warehouse_id}/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to a warehouse
+      operationId: get_warehouse_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseAccessResponse'
+  /management/v1/permissions/warehouse/{warehouse_id}/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments for a warehouse
+      operationId: get_warehouse_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/WarehouseRelation'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for a warehouse
+      operationId: update_warehouse_assignments_by_id
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/managed-access:
+    post:
+      tags:
+        - permissions
+      summary: Set managed access property of a warehouse
+      operationId: set_warehouse_managed_access
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetManagedAccessRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+  /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to a table
+      operationId: get_table_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server Relations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTableAccessResponse'
+  /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments for a table
+      operationId: get_table_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/TableRelation'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTableAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for a table
+      operationId: update_table_assignments_by_id
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTableAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to a view
+      operationId: get_view_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetViewAccessResponse'
+  /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments for a view
+      operationId: get_view_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ViewRelation'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetViewAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for a view
+      operationId: update_view_assignments_by_id
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateViewAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/project:
+    get:
+      tags:
+        - project
+      summary: Get Project
+      description: Retrieves information about the user's default project.
+      operationId: get_default_project
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - project
+      summary: Create Project
+      description: Creates a new project with the specified configuration.
+      operationId: create_project
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+        required: true
+      responses:
+        '201':
+          description: Project created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - project
+      summary: Delete Project
+      operationId: delete_default_project
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Project deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project-list:
+    get:
+      tags:
+        - project
+      summary: List Projects
+      description: Lists all projects that the requesting user has access to.
+      operationId: list_projects
+      responses:
+        '200':
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProjectsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/rename:
+    post:
+      tags:
+        - project
+      summary: Rename Project
+      operationId: rename_default_project
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameProjectRequest'
+        required: true
+      responses:
+        '200':
+          description: Project renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/{project_id}:
+    get:
+      tags:
+        - project
+      summary: Get Project
+      operationId: get_project_by_id
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - project
+      summary: Delete Project by ID
+      description: Permanently removes a specific project and all its associated resources.
+      operationId: delete_project_by_id
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Project deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/{project_id}/rename:
+    post:
+      tags:
+        - project
+      summary: Rename Project by ID
+      description: Updates the name of a specific project.
+      operationId: rename_project_by_id
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameProjectRequest'
+        required: true
+      responses:
+        '200':
+          description: Project renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role:
+    get:
+      tags:
+        - role
+      summary: List Roles
+      description: Returns all roles in the project that the current user has access to view.
+      operationId: list_roles
+      parameters:
+        - name: name
+          in: query
+          description: Search for a specific role name
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: |-
+            Signals an upper bound of the number of results that a client will receive.
+            Default: 100
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: projectId
+          in: query
+          description: |-
+            Project ID from which roles should be listed
+            Deprecated: Please use the `x-project-id` header instead.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRolesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - role
+      summary: Create Role
+      description: Creates a role with the specified name, description, and permissions.
+      operationId: create_role
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+        required: true
+      responses:
+        '201':
+          description: Role successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}:
+    get:
+      tags:
+        - role
+      summary: Get Role
+      description: Retrieves detailed information about a specific role.
+      operationId: get_role
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Role details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - role
+      summary: Update Role
+      operationId: update_role
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleRequest'
+        required: true
+      responses:
+        '200':
+          description: Role updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - role
+      summary: Delete Role
+      description: Permanently removes a role and all its associated permissions.
+      operationId: delete_role
+      parameters:
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Role deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/search/role:
+    post:
+      tags:
+        - role
+      summary: Search Role
+      description: Performs a fuzzy search for roles based on the provided criteria.
+      operationId: search_role
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRoleRequest'
+        required: true
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchRoleResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/search/user:
+    post:
+      tags:
+        - user
+      summary: Search User
+      description: Performs a fuzzy search for users based on the provided criteria.
+      operationId: search_user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchUserRequest'
+        required: true
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchUserResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user:
+    get:
+      tags:
+        - user
+      summary: List Users
+      description: Returns a paginated list of users based on the provided query parameters.
+      operationId: list_user
+      parameters:
+        - name: name
+          in: query
+          description: Search for a specific username
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: |-
+            Signals an upper bound of the number of results that a client will receive.
+            Default: 100
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListUsersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - user
+      summary: Provision User
+      description: |-
+        Creates a new user or updates an existing user's metadata from the provided token.
+        The token should include "profile" and "email" scopes for complete user information.
+      operationId: create_user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+        required: true
+      responses:
+        '200':
+          description: User updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user/{user_id}:
+    get:
+      tags:
+        - user
+      summary: Get User by ID
+      description: Retrieves detailed information about a specific user.
+      operationId: get_user
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    put:
+      tags:
+        - user
+      summary: Replace User
+      description: |-
+        Replaces the current user details with the new details provided in the request.
+        If a field is not provided, it will be set to `None`.
+      operationId: update_user
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+        required: true
+      responses:
+        '200':
+          description: User details updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - user
+      summary: Delete User
+      description: |-
+        Permanently removes a user and all their associated permissions.
+        If the user is re-registered later, their permissions will need to be re-added.
+      operationId: delete_user
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: User deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse:
+    get:
+      tags:
+        - warehouse
+      summary: List Warehouses
+      description: |-
+        Returns all warehouses in the project that the current user has access to.
+        By default, deactivated warehouses are not included in the results.
+        Set the `include_deactivated` query parameter to `true` to include them.
+      operationId: list_warehouses
+      parameters:
+        - name: warehouseStatus
+          in: query
+          description: |-
+            Optional filter to return only warehouses
+            with the specified status.
+            If not provided, only active warehouses are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/WarehouseStatus'
+        - name: projectId
+          in: query
+          description: |-
+            The project ID to list warehouses for.
+            Deprecated: Please use the `x-project-id` header instead.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: List of warehouses
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWarehousesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Create Warehouse
+      description: |-
+        Creates a new warehouse in the specified project with the provided configuration.
+        The project of a warehouse cannot be changed after creation.
+        This operation validates the storage configuration.
+      operationId: create_warehouse
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWarehouseRequest'
+        required: true
+      responses:
+        '201':
+          description: Warehouse created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}:
+    get:
+      tags:
+        - warehouse
+      summary: Get Warehouse
+      description: Retrieves detailed information about a specific warehouse.
+      operationId: get_warehouse
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Warehouse details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - warehouse
+      summary: Delete Warehouse
+      description: |-
+        Permanently removes a warehouse and all its associated resources.
+        Use the `force` parameter to delete protected warehouses.
+      operationId: delete_warehouse
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Warehouse deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/activate:
+    post:
+      tags:
+        - warehouse
+      summary: Activate Warehouse
+      description: Re-enables access to a previously deactivated warehouse.
+      operationId: activate_warehouse
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Warehouse activated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/deactivate:
+    post:
+      tags:
+        - warehouse
+      summary: Deactivate Warehouse
+      description: Temporarily disables access to a warehouse without deleting its data.
+      operationId: deactivate_warehouse
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Warehouse deactivated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/delete-profile:
+    post:
+      tags:
+        - warehouse
+      summary: Update Deletion Profile
+      description: Configures the soft-delete behavior for a warehouse.
+      operationId: update_warehouse_delete_profile
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseDeleteProfileRequest'
+        required: true
+      responses:
+        '200':
+          description: Deletion Profile updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/deleted-tabulars:
+    get:
+      tags:
+        - warehouse
+      summary: List Soft-Deleted Tabulars
+      description: Returns all soft-deleted tables and views in the warehouse that are visible to the current user.
+      operationId: list_deleted_tabulars
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespaceId
+          in: query
+          description: Filter by Namespace ID
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: |-
+            Signals an upper bound of the number of results that a client will receive.
+            Default: 100
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: List of soft-deleted tabulars
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDeletedTabularsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop:
+    post:
+      tags:
+        - warehouse
+      summary: Undrop Tabular
+      description: Restores previously deleted tables or views to make them accessible again.
+      operationId: undrop_tabulars
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UndropTabularsRequest'
+        required: true
+      responses:
+        '204':
+          description: Tabular undropped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
+    post:
+      tags:
+        - warehouse
+      summary: Undrop Tabular
+      description: |-
+        Restores previously deleted tables or views to make them accessible again.
+        This endpoint is deprecated and will be removed soon.
+      operationId: undrop_tabulars_deprecated
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UndropTabularsRequest'
+        required: true
+      responses:
+        '204':
+          description: Tabular undropped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
+    get:
+      tags:
+        - warehouse
+      summary: Get Namespace Protection
+      description: Retrieves whether a namespace is protected from deletion.
+      operationId: get_namespace_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set Namespace Protection
+      description: Configures whether a namespace should be protected from deletion.
+      operationId: set_namespace_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProtectionRequest'
+        required: true
+      responses:
+        '200':
+          description: Namespace protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/protection:
+    post:
+      tags:
+        - warehouse
+      summary: Set Warehouse Protection
+      description: Configures whether a warehouse should be protected from deletion.
+      operationId: set_warehouse_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProtectionRequest'
+        required: true
+      responses:
+        '200':
+          description: Warehouse protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/rename:
+    post:
+      tags:
+        - warehouse
+      summary: Rename Warehouse
+      description: Updates the name of a specific warehouse.
+      operationId: rename_warehouse
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameWarehouseRequest'
+        required: true
+      responses:
+        '200':
+          description: Warehouse renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/search-tabular:
+    post:
+      tags:
+        - warehouse
+      summary: Search Tabulars
+      description: |-
+        Performs a fuzzy search for tabulars based on the provided criteria. If the search string
+        can be parsed as uuid:
+        - if there is tabular with that uuid, the tabular is in the response
+        - if there is a namespace with that uuid, tables in that namespace are in the response
+      operationId: search_tabular
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchTabularRequest'
+        required: true
+      responses:
+        '200':
+          description: List of tabulars
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchTabularResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/statistics:
+    get:
+      tags:
+        - warehouse
+      summary: Get Warehouse Statistics
+      description: |-
+        Retrieves statistical data about a warehouse's usage and resources over time.
+        Statistics are aggregated hourly when changes occur.
+
+        We lazily create a new statistics entry every hour, in between hours, the existing entry is
+        being updated. If there's a change at `created_at + 1 hour`, a new entry is created.
+        If there's been no change, no new entry is created, meaning there may be gaps.
+
+        Example:
+        - 00:16:32: warehouse created:
+            - `timestamp: 01:00:00, created_at: 00:16:32, updated_at: null, 0 tables, 0 views`
+        - 00:30:00: table created:
+            - `timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:30:00, 1 table, 0 views`
+        - 00:45:00: view created:
+            - `timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view`
+        - 01:00:36: table deleted:
+            - `timestamp: 02:00:00, created_at: 01:00:36, updated_at: null, 0 tables, 1 view`
+            - `timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view`
+      operationId: get_warehouse_statistics
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page_token
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: Warehouse statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WarehouseStatisticsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/storage:
+    post:
+      tags:
+        - warehouse
+      summary: Update Storage Profile
+      description: Updates both the storage profile and credentials of a warehouse.
+      operationId: update_storage_profile
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseStorageRequest'
+        required: true
+      responses:
+        '200':
+          description: Storage profile updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/storage-credential:
+    post:
+      tags:
+        - warehouse
+      summary: Update Storage Credential
+      description: |-
+        Updates only the storage credential of a warehouse without modifying the storage profile.
+        Useful for refreshing expiring credentials.
+      operationId: update_storage_credential
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseCredentialRequest'
+        required: true
+      responses:
+        '200':
+          description: Storage credential updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
+    get:
+      tags:
+        - warehouse
+      summary: Get Table Protection
+      description: Retrieves whether a table is protected from deletion.
+      operationId: get_table_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set Table Protection
+      description: Configures whether a table should be protected from deletion.
+      operationId: set_table_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProtectionRequest'
+        required: true
+      responses:
+        '200':
+          description: Table protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_tabular_expiration
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TabularExpirationQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_tabular_expiration
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TabularExpirationQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_tabular_purge
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_tabular_purge
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}:
+    get:
+      tags:
+        - tasks
+      summary: Get Details about a specific task by its ID.
+      operationId: get_task_details
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: numAttempts
+          in: query
+          description: 'Number of attempts to retrieve (default: 5)'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int32
+            default: 5
+            minimum: 0
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTaskDetailsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task/control:
+    post:
+      tags:
+        - tasks
+      summary: Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
+      description: Accepts at most 100 task IDs in one request.
+      operationId: control_tasks
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlTasksRequest'
+        required: true
+      responses:
+        '204':
+          description: All requested actions were successful
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task/list:
+    post:
+      tags:
+        - tasks
+      summary: List active and historic tasks.
+      operationId: list_tasks
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListTasksRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection:
+    get:
+      tags:
+        - warehouse
+      summary: Get View Protection
+      description: Retrieves whether a view is protected from deletion.
+      operationId: get_view_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set View Protection
+      description: Configures whether a view should be protected from deletion.
+      operationId: set_view_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProtectionRequest'
+        required: true
+      responses:
+        '200':
+          description: View protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/whoami:
+    get:
+      tags:
+        - user
+      summary: Whoami
+      description: Returns information about the user associated with the current authentication token.
+      operationId: whoami
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+components:
+  schemas:
+    AdlsProfile:
+      type: object
+      required:
+        - filesystem
+        - account-name
+      properties:
+        account-name:
+          type: string
+          description: Name of the azure storage account.
+        allow-alternative-protocols:
+          type: boolean
+          description: |-
+            Allow alternative protocols such as `wasbs://` in locations.
+            This is disabled by default. We do not recommend to use this setting
+            except for migration of old tables via the register endpoint.
+        authority-host:
+          type:
+            - string
+            - 'null'
+          format: uri
+          description: 'The authority host to use for authentication. Default: `https://login.microsoftonline.com`.'
+        filesystem:
+          type: string
+          description: Name of the adls filesystem, in blobstorage also known as container.
+        host:
+          type:
+            - string
+            - 'null'
+          description: 'The host to use for the storage account. Default: `dfs.core.windows.net`.'
+        key-prefix:
+          type:
+            - string
+            - 'null'
+          description: Subpath in the filesystem to use.
+        sas-token-validity-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: 'The validity of the sas token in seconds. Default: 3600.'
+          minimum: 0
+    AuthZBackend:
+      type: string
+      enum:
+        - allow-all
+        - openfga
+    AzCredential:
+      oneOf:
+        - type: object
+          title: AzCredentialClientCredentials
+          required:
+            - client-id
+            - tenant-id
+            - client-secret
+            - credential-type
+          properties:
+            client-id:
+              type: string
+            client-secret:
+              type: string
+            credential-type:
+              type: string
+              enum:
+                - client-credentials
+            tenant-id:
+              type: string
+        - type: object
+          title: AzCredentialSharedAccessKey
+          required:
+            - key
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - shared-access-key
+            key:
+              type: string
+        - type: object
+          title: AzCredentialManagedIdentity
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - azure-system-identity
+    BootstrapRequest:
+      type: object
+      required:
+        - accept-terms-of-use
+      properties:
+        accept-terms-of-use:
+          type: boolean
+          description: Set to true if you accept LAKEKEEPER terms of use.
+        is-operator:
+          type: boolean
+          description: |-
+            If set to true, the calling user is treated as an operator and obtain
+            a corresponding role. If not specified, the user is treated as a human.
+        user-email:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Email of the user performing bootstrap. Optional. If not provided
+            the server will try to parse the email from the provided token.
+        user-name:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Name of the user performing bootstrap. Optional. If not provided
+            the server will try to parse the name from the provided token.
+            The initial user will become the global admin.
+        user-type:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserType'
+              description: |-
+                Type of the user performing bootstrap. Optional. If not provided
+                the server will try to parse the type from the provided token.
+    CheckOperation:
+      oneOf:
+        - type: object
+          required:
+            - server
+          properties:
+            server:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/ServerAction'
+        - type: object
+          required:
+            - project
+          properties:
+            project:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/ProjectAction'
+                project-id:
+                  type:
+                    - string
+                    - 'null'
+                  format: uuid
+        - type: object
+          required:
+            - warehouse
+          properties:
+            warehouse:
+              type: object
+              required:
+                - action
+                - warehouse-id
+              properties:
+                action:
+                  $ref: '#/components/schemas/WarehouseAction'
+                warehouse-id:
+                  type: string
+                  format: uuid
+        - type: object
+          required:
+            - namespace
+          properties:
+            namespace:
+              allOf:
+                - $ref: '#/components/schemas/NamespaceIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/NamespaceAction'
+        - type: object
+          required:
+            - table
+          properties:
+            table:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/TableAction'
+        - type: object
+          required:
+            - view
+          properties:
+            view:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/ViewAction'
+      description: Represents an action on an object
+    CheckRequest:
+      type: object
+      description: Check if a specific action is allowed on the given object
+      required:
+        - operation
+      properties:
+        identity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserOrRole'
+              description: The user or role to check access for.
+        operation:
+          $ref: '#/components/schemas/CheckOperation'
+          description: The operation to check.
+    CheckResponse:
+      type: object
+      required:
+        - allowed
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the action is allowed.
+    ControlTaskAction:
+      oneOf:
+        - type: object
+          description: Stop the task gracefully. The task will be retried.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - stop
+        - type: object
+          description: Cancel the task permanently. The task is not retried.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - cancel
+        - type: object
+          description: |-
+            Run the task immediately, moving the `scheduled_for` time to now.
+            Affects only tasks in `Scheduled` or `Stopping` state.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - run-now
+        - type: object
+          description: |-
+            Run the task at the specified time, moving the `scheduled_for` time to the provided timestamp.
+            Affects only tasks in `Scheduled` or `Stopping` state.
+            Timestamps must be in RFC 3339 format.
+          required:
+            - scheduled_for
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - run-at
+            scheduled_for:
+              type: string
+              format: date-time
+              description: The time to run the task at
+              example: 2025-12-31T23:59:59Z
+    ControlTasksRequest:
+      type: object
+      required:
+        - action
+        - task-ids
+      properties:
+        action:
+          $ref: '#/components/schemas/ControlTaskAction'
+          description: The action to perform on the task
+        task-ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Tasks to apply the action to
+    CreateProjectRequest:
+      type: object
+      required:
+        - project-name
+      properties:
+        project-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Request a specific project ID - optional.
+            If not provided, a new project ID will be generated (recommended).
+        project-name:
+          type: string
+          description: Name of the project to create.
+    CreateProjectResponse:
+      type: object
+      required:
+        - project-id
+      properties:
+        project-id:
+          type: string
+          description: ID of the created project.
+    CreateRoleRequest:
+      type: object
+      required:
+        - name
+      properties:
+        description:
+          type:
+            - string
+            - 'null'
+          description: Description of the role
+        name:
+          type: string
+          description: Name of the role to create
+        project-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Project ID in which the role is created.
+            Deprecated: Please use the `x-project-id` header instead.
+    CreateUserRequest:
+      type: object
+      properties:
+        email:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Email of the user. If id is not specified, the email is extracted
+            from the provided token.
+        id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Subject id of the user - allows user provisioning.
+            The id must be identical to the subject in JWT tokens, prefixed
+            with `<idp-identifier>~`. For example: `oidc~1234567890` for OIDC users
+            or `kubernetes~1234567890` for Kubernetes users.
+            To create users in self-service manner, do not set the id.
+            The id is then extracted from the passed JWT token.
+        name:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Name of the user. If id is not specified, the name is extracted
+            from the provided token.
+        update-if-exists:
+          type: boolean
+          description: |-
+            Update the user if it already exists
+            Default: false
+        user-type:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserType'
+              description: Type of the user. Useful to override wrongly classified users
+    CreateWarehouseRequest:
+      type: object
+      required:
+        - warehouse-name
+        - storage-profile
+      properties:
+        delete-profile:
+          $ref: '#/components/schemas/TabularDeleteProfile'
+          description: 'Profile to determine behavior upon dropping of tabulars. Default: hard deletion.'
+        project-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Project ID in which to create the warehouse.
+            Deprecated: Please use the `x-project-id` header instead.
+        storage-credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageCredential'
+              description: Optional storage credential to use for the warehouse.
+        storage-profile:
+          $ref: '#/components/schemas/StorageProfile'
+          description: Storage profile to use for the warehouse.
+        warehouse-name:
+          type: string
+          description: |-
+            Name of the warehouse to create. Must be unique
+            within a project and may not contain "/"
+    CreateWarehouseResponse:
+      type: object
+      required:
+        - warehouse-id
+      properties:
+        warehouse-id:
+          type: string
+          format: uuid
+          description: ID of the created warehouse.
+    DeletedTabularResponse:
+      type: object
+      required:
+        - id
+        - name
+        - namespace
+        - typ
+        - warehouse-id
+        - created-at
+        - deleted-at
+        - expiration-date
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: Date when the tabular was created
+        deleted-at:
+          type: string
+          format: date-time
+          description: Date when the tabular was deleted
+        expiration-date:
+          type: string
+          format: date-time
+          description: Date when the tabular will not be recoverable anymore
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier of the tabular
+        name:
+          type: string
+          description: Name of the tabular
+        namespace:
+          type: array
+          items:
+            type: string
+          description: List of namespace parts the tabular belongs to
+        typ:
+          $ref: '#/components/schemas/TabularType'
+          description: Type of the tabular
+        warehouse-id:
+          type: string
+          format: uuid
+          description: Warehouse ID where the tabular is stored
+    EndpointStatistic:
+      type: object
+      required:
+        - count
+        - http-route
+        - status-code
+        - created-at
+      properties:
+        count:
+          type: integer
+          format: int64
+          description: Number of requests to this endpoint for the current time-slice.
+        created-at:
+          type: string
+          format: date-time
+          description: |-
+            Timestamp at which the datapoint was created in the database.
+
+            This is the exact time at which the current endpoint-status-warehouse combination was called
+            for the first time in the current time-slice.
+        http-route:
+          type: string
+          description: |-
+            The route of the endpoint.
+
+            Format: `METHOD /path/to/endpoint`
+        status-code:
+          type: integer
+          format: int32
+          description: The status code of the response.
+          minimum: 0
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            Timestamp at which the datapoint was last updated.
+
+            This is the exact time at which the current datapoint was last updated.
+        warehouse-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: |-
+            The ID of the warehouse that handled the request.
+
+            Only present for requests that could be associated with a warehouse. Some management
+            endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
+            will not have a `warehouse-id`.
+        warehouse-name:
+          type:
+            - string
+            - 'null'
+          description: |-
+            The name of the warehouse that handled the request.
+
+            Only present for requests that could be associated with a warehouse. Some management
+            endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
+            will not have a `warehouse-id`
+    EndpointStatisticsResponse:
+      type: object
+      required:
+        - timestamps
+        - called-endpoints
+        - previous-page-token
+        - next-page-token
+      properties:
+        called-endpoints:
+          type: array
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/EndpointStatistic'
+          description: |-
+            Array of arrays of statistics detailing each called endpoint for each `timestamp`.
+
+            See docs of `timestamps` for more details.
+        next-page-token:
+          type: string
+          description: |-
+            Token to get the next page of results.
+
+            Inverse of `previous-page-token`, see its documentation above.
+        previous-page-token:
+          type: string
+          description: |-
+            Token to get the previous page of results.
+
+            Endpoint statistics are not paginated through page-limits, we paginate them by stepping
+            through time. By default, the list-statistics endpoint will return all statistics for
+            `now()` - 1 day to `now()`. In the request, you can specify a `range_specifier` to set the end
+            date and step interval. The `previous-page-token` will then move to the neighboring window.
+            E.g. in the default case of `now()` and 1 day, it'd be `now()` - 2 days to `now()` - 1 day.
+        timestamps:
+          type: array
+          items:
+            type: string
+            format: date-time
+          description: |-
+            Array of timestamps indicating the time at which each entry in the `called_endpoints` array
+            is valid.
+
+            We lazily create a new statistics entry every hour, in between hours, the existing entry
+            is being updated. If any endpoint is called in the following hour, there'll be an entry in
+            `timestamps` for the following hour. If not, then there'll be no entry.
+    ErrorModel:
+      type: object
+      description: JSON error payload returned in a response with further details on the error
+      required:
+        - message
+        - type
+        - code
+      properties:
+        code:
+          type: integer
+          format: int32
+          description: HTTP response code
+          minimum: 0
+        message:
+          type: string
+          description: Human-readable error message
+        stack:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
+          description: Internal type definition of the error
+    GcsCredential:
+      oneOf:
+        - type: object
+          title: GcsCredentialServiceAccountKey
+          description: |-
+            Service Account Key
+
+            The key is the JSON object obtained when creating a service account key in the GCP console.
+          required:
+            - key
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - service-account-key
+            key:
+              $ref: '#/components/schemas/GcsServiceKey'
+        - type: object
+          title: GcsCredentialSystemIdentity
+          description: |-
+            GCP System Identity
+
+            Use the service account that the application is running as.
+            This can be a Compute Engine default service account or a user-assigned service account.
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - gcp-system-identity
+      description: |-
+        GCS Credentials
+
+        Currently only supports Service Account Key
+        Example of a key:
+        ```json
+            {
+              "type": "service_account",
+              "project_id": "example-project-1234",
+              "private_key_id": "....",
+              "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
+              "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
+              "client_id": "123456789012345678901",
+              "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+              "token_uri": "https://oauth2.googleapis.com/token",
+              "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+              "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+              "universe_domain": "googleapis.com"
+            }
+        ```
+    GcsProfile:
+      type: object
+      required:
+        - bucket
+      properties:
+        bucket:
+          type: string
+          description: Name of the GCS bucket
+        key-prefix:
+          type:
+            - string
+            - 'null'
+          description: Subpath in the bucket to use.
+    GcsServiceKey:
+      type: object
+      required:
+        - type
+        - project_id
+        - private_key_id
+        - private_key
+        - client_email
+        - client_id
+        - auth_uri
+        - token_uri
+        - auth_provider_x509_cert_url
+        - client_x509_cert_url
+        - universe_domain
+      properties:
+        auth_provider_x509_cert_url:
+          type: string
+        auth_uri:
+          type: string
+        client_email:
+          type: string
+        client_id:
+          type: string
+        client_x509_cert_url:
+          type: string
+        private_key:
+          type: string
+        private_key_id:
+          type: string
+        project_id:
+          type: string
+        token_uri:
+          type: string
+        type:
+          type: string
+        universe_domain:
+          type: string
+    GetEndpointStatisticsRequest:
+      type: object
+      required:
+        - warehouse
+      properties:
+        range-specifier:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TimeWindowSelector'
+              description: |-
+                Range specifier
+
+                Either for an explicit range or a page token to paginate through the results. See the docs of
+                `TimeWindowSelector` for more details.
+        status-codes:
+          type:
+            - array
+            - 'null'
+          items:
+            type: integer
+            format: int32
+            minimum: 0
+          description: |-
+            Status code filter
+
+            Optional filter to only return statistics for requests with specific status codes.
+        warehouse:
+          $ref: '#/components/schemas/WarehouseFilter'
+          description: |-
+            Warehouse filter
+
+            Can return statistics for a specific warehouse, all warehouses or requests that could not be
+            associated to any warehouse.
+    GetNamespaceAccessResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/NamespaceAction'
+    GetNamespaceAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/NamespaceAssignment'
+    GetNamespaceAuthPropertiesResponse:
+      type: object
+      required:
+        - managed-access
+        - managed-access-inherited
+      properties:
+        managed-access:
+          type: boolean
+        managed-access-inherited:
+          type: boolean
+    GetProjectAccessResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectAction'
+    GetProjectAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+        - project-id
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectAssignment'
+        project-id:
+          type: string
+          format: uuid
+    GetProjectResponse:
+      type: object
+      required:
+        - project-id
+        - project-name
+      properties:
+        project-id:
+          type: string
+          description: ID of the project.
+        project-name:
+          type: string
+          description: Name of the project
+    GetRoleAccessResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleAction'
+    GetRoleAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleAssignment'
+    GetServerAccessResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServerAction'
+    GetServerAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServerAssignment'
+    GetTableAccessResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableAction'
+    GetTableAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableAssignment'
+    GetTaskDetailsResponse:
+      allOf:
+        - $ref: '#/components/schemas/Task'
+          description: Most recent task information
+        - type: object
+          required:
+            - task-data
+            - attempts
+          properties:
+            attempts:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskAttempt'
+              description: History of past attempts
+            execution-details:
+              type:
+                - object
+                - 'null'
+              description: Execution details for the current attempt
+            task-data:
+              type: object
+              description: Task-specific data
+    GetTaskQueueConfigResponse:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/QueueConfigResponse'
+    GetViewAccessResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViewAction'
+    GetViewAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViewAssignment'
+    GetWarehouseAccessResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarehouseAction'
+    GetWarehouseAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarehouseAssignment'
+    GetWarehouseAuthPropertiesResponse:
+      type: object
+      required:
+        - managed-access
+      properties:
+        managed-access:
+          type: boolean
+    GetWarehouseResponse:
+      type: object
+      required:
+        - id
+        - name
+        - project-id
+        - storage-profile
+        - delete-profile
+        - status
+        - protected
+      properties:
+        delete-profile:
+          $ref: '#/components/schemas/TabularDeleteProfile'
+          description: Delete profile used for the warehouse.
+        id:
+          type: string
+          format: uuid
+          description: ID of the warehouse.
+        name:
+          type: string
+          description: Name of the warehouse.
+        project-id:
+          type: string
+          description: Project ID in which the warehouse was created.
+        protected:
+          type: boolean
+          description: Whether the warehouse is protected from being deleted.
+        status:
+          $ref: '#/components/schemas/WarehouseStatus'
+          description: Whether the warehouse is active.
+        storage-profile:
+          $ref: '#/components/schemas/StorageProfile'
+          description: Storage profile used for the warehouse.
+    IcebergErrorResponse:
+      type: object
+      description: JSON wrapper for all error responses (non-2xx)
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorModel'
+    ListDeletedTabularsResponse:
+      type: object
+      required:
+        - tabulars
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Token to fetch the next page
+        tabulars:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeletedTabularResponse'
+          description: List of tabulars
+    ListProjectsResponse:
+      type: object
+      required:
+        - projects
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/GetProjectResponse'
+          description: List of projects
+    ListRolesResponse:
+      type: object
+      required:
+        - roles
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+    ListTasksRequest:
+      type: object
+      properties:
+        created-after:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Filter tasks created after this timestamp
+          example: 2025-12-31T23:59:59Z
+        created-before:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Filter tasks created before this timestamp
+          example: 2025-12-31T23:59:59Z
+        entities:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/TaskEntity'
+          description: Filter by specific entity
+        page-size:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Number of results per page
+        page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Next page token, re-use the same request as for the original request,
+            but set this to the `next_page_token` from the previous response.
+            Stop iterating when no more items are returned in a page.
+        queue-name:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: Filter by one or more queue names
+        status:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/TaskStatus'
+          description: Filter by task status
+    ListTasksResponse:
+      type: object
+      required:
+        - tasks
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Token for the next page of results
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+          description: List of tasks
+    ListUsersResponse:
+      type: object
+      required:
+        - users
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+    ListWarehousesResponse:
+      type: object
+      required:
+        - warehouses
+      properties:
+        warehouses:
+          type: array
+          items:
+            $ref: '#/components/schemas/GetWarehouseResponse'
+          description: List of warehouses in the project.
+    NamespaceAction:
+      type: string
+      enum:
+        - create_table
+        - create_view
+        - create_namespace
+        - delete
+        - update_properties
+        - get_metadata
+        - read_assignments
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_pass_grants
+        - grant_manage_grants
+    NamespaceAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: NamespaceAssignmentOwnership
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - pass_grants
+          title: NamespaceAssignmentPassGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_grants
+          title: NamespaceAssignmentManageGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - describe
+          title: NamespaceAssignmentDescribe
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - select
+          title: NamespaceAssignmentSelect
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - create
+          title: NamespaceAssignmentCreate
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - modify
+          title: NamespaceAssignmentModify
+    NamespaceIdentOrUuid:
+      oneOf:
+        - type: object
+          required:
+            - namespace-id
+          properties:
+            namespace-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - namespace
+            - warehouse-id
+          properties:
+            namespace:
+              type: array
+              items:
+                type: string
+            warehouse-id:
+              type: string
+              format: uuid
+      description: Identifier for a namespace, either a UUID or its name and warehouse ID
+    NamespaceRelation:
+      type: string
+      enum:
+        - ownership
+        - pass_grants
+        - manage_grants
+        - describe
+        - select
+        - create
+        - modify
+    ProjectAction:
+      type: string
+      enum:
+        - create_warehouse
+        - delete
+        - rename
+        - list_warehouses
+        - create_role
+        - list_roles
+        - search_roles
+        - read_assignments
+        - grant_role_creator
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_project_admin
+        - grant_security_admin
+        - grant_data_admin
+    ProjectAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - project_admin
+          title: ProjectAssignmentProjectAdmin
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - security_admin
+          title: ProjectAssignmentSecurityAdmin
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - data_admin
+          title: ProjectAssignmentDataAdmin
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - role_creator
+          title: ProjectAssignmentRoleCreator
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - describe
+          title: ProjectAssignmentDescribe
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - select
+          title: ProjectAssignmentSelect
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - create
+          title: ProjectAssignmentCreate
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - modify
+          title: ProjectAssignmentModify
+    ProjectRelation:
+      type: string
+      enum:
+        - project_admin
+        - security_admin
+        - data_admin
+        - role_creator
+        - describe
+        - select
+        - create
+        - modify
+    ProtectionResponse:
+      type: object
+      required:
+        - protected
+      properties:
+        protected:
+          type: boolean
+          description: Indicates whether the entity is protected
+        updated_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Updated at
+    PurgeQueueConfig:
+      type: object
+    QueueConfig: {}
+    QueueConfigResponse:
+      allOf:
+        - {}
+        - type: object
+          required:
+            - queue-name
+          properties:
+            queue-name:
+              type: string
+    RenameProjectRequest:
+      type: object
+      required:
+        - new-name
+      properties:
+        new-name:
+          type: string
+          description: New name for the project.
+    RenameWarehouseRequest:
+      type: object
+      required:
+        - new-name
+      properties:
+        new-name:
+          type: string
+          description: New name for the warehouse.
+    Role:
+      type: object
+      required:
+        - id
+        - name
+        - project-id
+        - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: Timestamp when the role was created
+        description:
+          type:
+            - string
+            - 'null'
+          description: Description of the role
+        id:
+          type: string
+          format: uuid
+          description: Globally unique id of this role
+        name:
+          type: string
+          description: Name of the role
+        project-id:
+          type: string
+          description: Project ID in which the role is created.
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Timestamp when the role was last updated
+    RoleAction:
+      type: string
+      enum:
+        - assume
+        - can_grant_assignee
+        - can_change_ownership
+        - delete
+        - update
+        - read
+        - read_assignments
+    RoleAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - assignee
+          title: RoleAssignmentAssignee
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: RoleAssignmentOwnership
+    RoleRelation:
+      type: string
+      enum:
+        - assignee
+        - ownership
+    S3AccessKeyCredential:
+      type: object
+      title: S3CredentialAccessKey
+      required:
+        - aws-access-key-id
+        - aws-secret-access-key
+      properties:
+        aws-access-key-id:
+          type: string
+        aws-secret-access-key:
+          type: string
+        external-id:
+          type:
+            - string
+            - 'null'
+    S3AwsSystemIdentityCredential:
+      type: object
+      title: S3CredentialSystemIdentity
+      properties:
+        external-id:
+          type:
+            - string
+            - 'null'
+    S3CloudflareR2Credential:
+      type: object
+      title: CloudflareR2Credential
+      required:
+        - access-key-id
+        - secret-access-key
+        - token
+        - account-id
+      properties:
+        access-key-id:
+          type: string
+          description: Access key ID used for IO operations of Lakekeeper
+        account-id:
+          type: string
+          description: Cloudflare account ID, used to determine the temporary credentials endpoint.
+        secret-access-key:
+          type: string
+          description: Secret key associated with the access key ID.
+        token:
+          type: string
+          description: |-
+            Token associated with the access key ID.
+            This is used to fetch downscoped temporary credentials for vended credentials.
+    S3Credential:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/S3AccessKeyCredential'
+              description: Authenticate to AWS using access-key and secret-key.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - access-key
+          description: Authenticate to AWS using access-key and secret-key.
+        - allOf:
+            - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
+              description: |-
+                Authenticate to AWS using the identity configured on the system
+                 that runs lakekeeper. The AWS SDK is used to load the credentials.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - aws-system-identity
+          description: |-
+            Authenticate to AWS using the identity configured on the system
+             that runs lakekeeper. The AWS SDK is used to load the credentials.
+        - allOf:
+            - $ref: '#/components/schemas/S3CloudflareR2Credential'
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - cloudflare-r2
+    S3Flavor:
+      type: string
+      enum:
+        - aws
+        - s3-compat
+    S3Profile:
+      type: object
+      required:
+        - bucket
+        - region
+        - sts-enabled
+      properties:
+        allow-alternative-protocols:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Allow `s3a://` and `s3n://` in locations.
+            This is disabled by default. We do not recommend to use this setting
+            except for migration of old hadoop-based tables via the register endpoint.
+            Tables with `s3a` paths are not accessible outside the Java ecosystem.
+        assume-role-arn:
+          type:
+            - string
+            - 'null'
+          description: Optional ARN to assume when accessing the bucket from Lakekeeper.
+        aws-kms-key-arn:
+          type:
+            - string
+            - 'null'
+          description: ARN of the KMS key used to encrypt the S3 bucket, if any.
+        bucket:
+          type: string
+          description: Name of the S3 bucket
+        endpoint:
+          type:
+            - string
+            - 'null'
+          format: uri
+          description: |-
+            Optional endpoint to use for S3 requests, if not provided
+            the region will be used to determine the endpoint.
+            If both region and endpoint are provided, the endpoint will be used.
+            Example: `http://s3-de.my-domain.com:9000`
+        flavor:
+          $ref: '#/components/schemas/S3Flavor'
+          description: |-
+            S3 flavor to use.
+            Defaults to AWS
+        key-prefix:
+          type:
+            - string
+            - 'null'
+          description: Subpath in the bucket to use.
+        path-style-access:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            Path style access for S3 requests.
+            If the underlying S3 supports both, we recommend to not set `path_style_access`.
+        push-s3-delete-disabled:
+          type: boolean
+          description: |-
+            Controls whether the `s3.delete-enabled=false` flag is sent to clients.
+
+            In all Iceberg 1.x versions, when Spark executes `DROP TABLE xxx PURGE`, it directly
+            deletes files from S3, bypassing the catalog's soft-deletion mechanism.
+            Other query engines properly delegate this operation to the catalog.
+            This Spark behavior is expected to change in Iceberg 2.0.
+
+            Setting this to `true` pushes the `s3.delete-enabled=false` flag to clients,
+            which discourages Spark from directly deleting files during `DROP TABLE xxx PURGE` operations.
+            Note that clients may override this setting, and it affects other Spark operations
+            that require file deletion, such as removing snapshots.
+
+            For more details, refer to Lakekeeper's
+            [Soft-Deletion documentation](https://docs.lakekeeper.io/docs/nightly/concepts/#soft-deletion).
+            This flag has no effect if Soft-Deletion is disabled for the warehouse.
+        region:
+          type: string
+          description: Region to use for S3 requests.
+        remote-signing-url-style:
+          $ref: '#/components/schemas/S3UrlStyleDetectionMode'
+          description: |-
+            S3 URL style detection mode for remote signing.
+            One of `auto`, `path-style`, `virtual-host`.
+            Default: `auto`. When set to `auto`, Lakekeeper will first try to parse the URL as
+            `virtual-host` and then attempt `path-style`.
+            `path` assumes the bucket name is the first path segment in the URL. `virtual-host`
+            assumes the bucket name is the first subdomain if it is preceding `.s3` or `.s3-`.
+
+            Examples
+
+            Virtual host:
+              - <https://bucket.s3.endpoint.com/bar/a/key>
+              - <https://bucket.s3-eu-central-1.amazonaws.com/file>
+
+            Path style:
+              - <https://s3.endpoint.com/bucket/bar/a/key>
+              - <https://s3.us-east-1.amazonaws.com/bucket/file>
+        sts-enabled:
+          type: boolean
+        sts-role-arn:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Optional role ARN to assume for sts vended-credentials.
+            If not provided, `assume_role_arn` is used.
+            Either `assume_role_arn` or `sts_role_arn` must be provided if `sts_enabled` is true.
+        sts-session-tags:
+          type: object
+          description: Optional session tags for STS assume role operations.
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        sts-token-validity-seconds:
+          type: integer
+          format: int64
+          description: The validity of the sts tokens in seconds. Default is 3600
+          minimum: 0
+    S3UrlStyleDetectionMode:
+      type: string
+      enum:
+        - path
+        - virtual_host
+        - auto
+    SearchRoleRequest:
+      type: object
+      required:
+        - search
+      properties:
+        project-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Deprecated: Please use the `x-project-id` header instead.
+            Project ID in which the role is created.
+        search:
+          type: string
+          description: |-
+            Search string for fuzzy search.
+            Length is truncated to 64 characters.
+    SearchRoleResponse:
+      type: object
+      required:
+        - roles
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+          description: List of users matching the search criteria
+    SearchTabular:
+      type: object
+      required:
+        - namespace-name
+        - tabular-name
+        - tabular-id
+      properties:
+        distance:
+          type:
+            - number
+            - 'null'
+          format: float
+          description: Better matches have a lower distance
+        namespace-name:
+          type: array
+          items:
+            type: string
+          description: Namespace name
+        tabular-id:
+          $ref: '#/components/schemas/TabularIdentUuid'
+          description: ID of the tabular
+        tabular-name:
+          type: string
+          description: Tabular name
+    SearchTabularRequest:
+      type: object
+      required:
+        - search
+      properties:
+        search:
+          type: string
+          description: |-
+            Search string for fuzzy search.
+            Length is truncated to 64 characters.
+          maxLength: 64
+    SearchTabularResponse:
+      type: object
+      description: Search result for tabulars
+      required:
+        - tabulars
+      properties:
+        tabulars:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchTabular'
+          description: List of tabulars matching the search criteria
+    SearchUser:
+      type: object
+      required:
+        - name
+        - id
+        - user-type
+      properties:
+        email:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Email of the user. If id is not specified, the email is extracted
+            from the provided token.
+        id:
+          type: string
+          description: ID of the user
+        name:
+          type: string
+          description: Name of the user
+        user-type:
+          $ref: '#/components/schemas/UserType'
+          description: Type of the user
+    SearchUserRequest:
+      type: object
+      required:
+        - search
+      properties:
+        search:
+          type: string
+          description: |-
+            Search string for fuzzy search.
+            Length is truncated to 64 characters.
+    SearchUserResponse:
+      type: object
+      description: Search result for users
+      required:
+        - users
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchUser'
+          description: List of users matching the search criteria
+    ServerAction:
+      type: string
+      enum:
+        - create_project
+        - update_users
+        - delete_users
+        - list_users
+        - grant_admin
+        - provision_users
+        - read_assignments
+    ServerAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - admin
+          title: ServerAssignmentAdmin
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - operator
+          title: ServerAssignmentOperator
+    ServerInfo:
+      type: object
+      required:
+        - version
+        - bootstrapped
+        - server-id
+        - authz-backend
+        - aws-system-identities-enabled
+        - azure-system-identities-enabled
+        - gcp-system-identities-enabled
+        - queues
+      properties:
+        authz-backend:
+          $ref: '#/components/schemas/AuthZBackend'
+          description: '`AuthZ` backend in use.'
+        aws-system-identities-enabled:
+          type: boolean
+          description: If using AWS system identities for S3 storage profiles are enabled.
+        azure-system-identities-enabled:
+          type: boolean
+          description: If using Azure system identities for Azure storage profiles are enabled.
+        bootstrapped:
+          type: boolean
+          description: Whether the catalog has been bootstrapped.
+        default-project-id:
+          type:
+            - string
+            - 'null'
+          description: Default Project ID. Null if not set
+        gcp-system-identities-enabled:
+          type: boolean
+          description: If using GCP system identities for GCS storage profiles are enabled.
+        queues:
+          type: array
+          items:
+            type: string
+          description: List of queues that are registered for the server.
+        server-id:
+          type: string
+          format: uuid
+          description: |-
+            ID of the server.
+            Returns null if the catalog has not been bootstrapped.
+        version:
+          type: string
+          description: Version of the server.
+    ServerRelation:
+      type: string
+      enum:
+        - admin
+        - operator
+    SetManagedAccessRequest:
+      type: object
+      required:
+        - managed-access
+      properties:
+        managed-access:
+          type: boolean
+    SetProtectionRequest:
+      type: object
+      required:
+        - protected
+      properties:
+        protected:
+          type: boolean
+          description: Setting this to `true` will prevent the entity from being deleted unless `force` is used.
+    SetTaskQueueConfigRequest:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/QueueConfig'
+    StorageCredential:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/S3Credential'
+              description: |-
+                Credentials for S3 storage
+
+                Example payload in the code-snippet below:
+
+                ```
+                use lakekeeper::service::storage::StorageCredential;
+                let cred: StorageCredential = serde_json::from_str(r#"{
+                    "type": "s3",
+                    "credential-type": "access-key",
+                    "aws-access-key-id": "minio-root-user",
+                    "aws-secret-access-key": "minio-root-password"
+                  }"#).unwrap();
+                ```
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - s3
+          title: StorageCredentialS3
+          description: |-
+            Credentials for S3 storage
+
+            Example payload in the code-snippet below:
+
+            ```
+            use lakekeeper::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "s3",
+                "credential-type": "access-key",
+                "aws-access-key-id": "minio-root-user",
+                "aws-secret-access-key": "minio-root-password"
+              }"#).unwrap();
+            ```
+        - allOf:
+            - $ref: '#/components/schemas/AzCredential'
+              description: |-
+                Credentials for Az storage
+
+                Example payload:
+
+                ```
+                use lakekeeper::service::storage::StorageCredential;
+                let cred: StorageCredential = serde_json::from_str(r#"{
+                    "type": "az",
+                    "credential-type": "client-credentials",
+                    "client-id": "...",
+                    "client-secret": "...",
+                    "tenant-id": "..."
+                  }"#).unwrap();
+                ```
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - az
+          title: StorageCredentialAz
+          description: |-
+            Credentials for Az storage
+
+            Example payload:
+
+            ```
+            use lakekeeper::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "az",
+                "credential-type": "client-credentials",
+                "client-id": "...",
+                "client-secret": "...",
+                "tenant-id": "..."
+              }"#).unwrap();
+            ```
+        - allOf:
+            - $ref: '#/components/schemas/GcsCredential'
+              description: |
+                Credentials for GCS storage
+
+                Example payload in the code-snippet below:
+
+                ```
+                use lakekeeper::service::storage::StorageCredential;
+                let cred: StorageCredential = serde_json::from_str(r#"{
+                    "type": "gcs",
+                    "credential-type": "service-account-key",
+                    "key": {
+                      "type": "service_account",
+                      "project_id": "example-project-1234",
+                      "private_key_id": "....",
+                      "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
+                      "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
+                      "client_id": "123456789012345678901",
+                      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                      "token_uri": "https://oauth2.googleapis.com/token",
+                      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                      "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+                      "universe_domain": "googleapis.com"
+                    }
+                }"#).unwrap();
+                ```
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - gcs
+          title: StorageCredentialGcs
+          description: |
+            Credentials for GCS storage
+
+            Example payload in the code-snippet below:
+
+            ```
+            use lakekeeper::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "gcs",
+                "credential-type": "service-account-key",
+                "key": {
+                  "type": "service_account",
+                  "project_id": "example-project-1234",
+                  "private_key_id": "....",
+                  "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
+                  "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
+                  "client_id": "123456789012345678901",
+                  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                  "token_uri": "https://oauth2.googleapis.com/token",
+                  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+                  "universe_domain": "googleapis.com"
+                }
+            }"#).unwrap();
+            ```
+      description: Storage secret for a warehouse.
+    StorageProfile:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/AdlsProfile'
+              description: Azure storage profile
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - adls
+          title: StorageProfileAdls
+          description: Azure storage profile
+        - allOf:
+            - $ref: '#/components/schemas/S3Profile'
+              description: S3 storage profile
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - s3
+          title: StorageProfileS3
+          description: S3 storage profile
+        - allOf:
+            - $ref: '#/components/schemas/GcsProfile'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - gcs
+          title: StorageProfileGcs
+      description: Storage profile for a warehouse.
+    TableAction:
+      type: string
+      enum:
+        - drop
+        - write_data
+        - read_data
+        - get_metadata
+        - commit
+        - rename
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_select
+        - grant_modify
+        - change_ownership
+        - get_tasks
+        - control_tasks
+    TableAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: TableAssignmentOwnership
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - pass_grants
+          title: TableAssignmentPassGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_grants
+          title: TableAssignmentManageGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - describe
+          title: TableAssignmentDescribe
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - select
+          title: TableAssignmentSelect
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - modify
+          title: TableAssignmentCreate
+    TableRelation:
+      type: string
+      enum:
+        - ownership
+        - pass_grants
+        - manage_grants
+        - describe
+        - select
+        - modify
+    TabularDeleteProfile:
+      oneOf:
+        - type: object
+          title: TabularDeleteProfileHard
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - hard
+        - type: object
+          title: TabularDeleteProfileSoft
+          required:
+            - expiration-seconds
+            - type
+          properties:
+            expiration-seconds:
+              type: integer
+              format: int32
+            type:
+              type: string
+              enum:
+                - soft
+    TabularExpirationQueueConfig:
+      type: object
+      description: Warehouse-specific configuration for the tabular expiration (Soft-Deletion) queue.
+    TabularIdentOrUuid:
+      oneOf:
+        - type: object
+          required:
+            - warehouse-id
+            - table-id
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - namespace
+            - table
+            - warehouse-id
+          properties:
+            namespace:
+              type: array
+              items:
+                type: string
+            table:
+              type: string
+              description: Name of the table or view
+            warehouse-id:
+              type: string
+              format: uuid
+      description: Identifier for a table or view, either a UUID or its name and namespace
+    TabularIdentUuid:
+      oneOf:
+        - type: object
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+        - type: object
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - view
+    TabularType:
+      type: string
+      description: Type of tabular
+      enum:
+        - table
+        - view
+    Task:
+      type: object
+      required:
+        - task-id
+        - warehouse-id
+        - queue-name
+        - entity
+        - entity-name
+        - status
+        - scheduled-for
+        - attempt
+        - progress
+        - created-at
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Current attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this task attempt was created
+        entity:
+          $ref: '#/components/schemas/TaskEntity'
+          description: Type of entity this task operates on
+        entity-name:
+          type: array
+          items:
+            type: string
+          description: Name of the entity this task operates on
+        last-heartbeat-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last heartbeat timestamp for running tasks
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Parent task ID if this is a sub-task
+        picked-up-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the latest attempt of the task was picked up for processing by a worker.
+        progress:
+          type: number
+          format: float
+          description: Progress of the task (0.0 to 1.0)
+        queue-name:
+          type: string
+          description: Name of the queue processing this task
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When the latest attempt of the task is scheduled for
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Current status of the task
+        task-id:
+          type: string
+          format: uuid
+          description: Unique identifier for the task
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the task was last updated
+        warehouse-id:
+          type: string
+          format: uuid
+          description: Warehouse ID associated with the task
+    TaskAttempt:
+      type: object
+      required:
+        - attempt
+        - status
+        - scheduled-for
+        - created-at
+        - progress
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this attempt was created
+        duration:
+          type:
+            - string
+            - 'null'
+          description: How long this attempt took
+          example: PT1H30M45.5S
+        execution-details:
+          type:
+            - object
+            - 'null'
+          description: Execution details for this attempt
+        message:
+          type:
+            - string
+            - 'null'
+          description: Message associated with this attempt
+        progress:
+          type: number
+          format: float
+          description: Progress achieved in this attempt
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When this attempt was scheduled for
+        started-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When this attempt started
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Status of this attempt
+    TaskEntity:
+      oneOf:
+        - type: object
+          required:
+            - table-id
+            - warehouse-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - view-id
+            - warehouse-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+            warehouse-id:
+              type: string
+              format: uuid
+    TaskStatus:
+      type: string
+      enum:
+        - RUNNING
+        - SCHEDULED
+        - STOPPING
+        - CANCELLED
+        - SUCCESS
+        - FAILED
+    TimeWindowSelector:
+      oneOf:
+        - type: object
+          required:
+            - end
+            - interval
+            - type
+          properties:
+            end:
+              type: string
+              format: date-time
+              description: |-
+                End timestamp of the time window
+                Specify
+              example: 2023-12-31T23:59:59Z
+            interval:
+              type: string
+              description: |-
+                Duration/span of the time window
+
+                The returned statistics will be for the time window from `end` - `interval` to `end`.
+                Specify a ISO8601 duration string, e.g. `PT1H` for 1 hour, `P1D` for 1 day.
+              example: P1D
+            type:
+              type: string
+              enum:
+                - window
+          example:
+            type: window
+            end: 2023-12-31T23:59:59Z
+            interval: P1D
+        - type: object
+          required:
+            - token
+            - type
+          properties:
+            token:
+              type: string
+              description: |-
+                Opaque Token from previous response for paginating through time windows
+
+                Use the `next_page_token` or `previous_page_token` from a previous response
+            type:
+              type: string
+              enum:
+                - page-token
+          example:
+            type: page-token
+            token: xyz
+    UndropTabularsRequest:
+      type: object
+      required:
+        - targets
+      properties:
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TabularIdentUuid'
+          description: Tabulars to undrop
+    UpdateNamespaceAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NamespaceAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NamespaceAssignment'
+    UpdateProjectAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectAssignment'
+    UpdateRoleAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleAssignment'
+    UpdateRoleRequest:
+      type: object
+      required:
+        - name
+      properties:
+        description:
+          type:
+            - string
+            - 'null'
+          description: Description of the role. If not set, the description will be removed.
+        name:
+          type: string
+          description: Name of the role to create
+    UpdateServerAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServerAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServerAssignment'
+    UpdateTableAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableAssignment'
+    UpdateUserRequest:
+      type: object
+      required:
+        - name
+        - user-type
+      properties:
+        email:
+          type:
+            - string
+            - 'null'
+        name:
+          type: string
+        user-type:
+          $ref: '#/components/schemas/UserType'
+    UpdateViewAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViewAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViewAssignment'
+    UpdateWarehouseAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarehouseAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarehouseAssignment'
+    UpdateWarehouseCredentialRequest:
+      type: object
+      properties:
+        new-storage-credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageCredential'
+              description: |-
+                New storage credential to use for the warehouse.
+                If not specified, the existing credential is removed.
+    UpdateWarehouseDeleteProfileRequest:
+      type: object
+      required:
+        - delete-profile
+      properties:
+        delete-profile:
+          $ref: '#/components/schemas/TabularDeleteProfile'
+    UpdateWarehouseStorageRequest:
+      type: object
+      required:
+        - storage-profile
+      properties:
+        storage-credential:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageCredential'
+              description: |-
+                Optional storage credential to use for the warehouse.
+                The existing credential is not re-used. If no credential is
+                provided, we assume that this storage does not require credentials.
+        storage-profile:
+          $ref: '#/components/schemas/StorageProfile'
+          description: |-
+            Storage profile to use for the warehouse.
+            The new profile must point to the same location as the existing profile
+            to avoid data loss. For S3 this means that you may not change the
+            bucket, key prefix, or region.
+    User:
+      type: object
+      description: User of the catalog
+      required:
+        - name
+        - id
+        - user-type
+        - last-updated-with
+        - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was created
+        email:
+          type:
+            - string
+            - 'null'
+          description: Email of the user
+        id:
+          type: string
+          description: The user's ID
+        last-updated-with:
+          $ref: '#/components/schemas/UserLastUpdatedWith'
+          description: The endpoint that last updated the user
+        name:
+          type: string
+          description: Name of the user
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Timestamp when the user was last updated
+        user-type:
+          $ref: '#/components/schemas/UserType'
+          description: Type of the user
+    UserLastUpdatedWith:
+      type: string
+      description: How the user was last updated
+      enum:
+        - create-endpoint
+        - config-call-creation
+        - update-endpoint
+    UserOrRole:
+      oneOf:
+        - type: object
+          title: UserOrRoleUser
+          description: Id of the user
+          required:
+            - user
+          properties:
+            user:
+              type: string
+              description: Id of the user
+        - type: object
+          title: UserOrRoleRole
+          description: Id of the role
+          required:
+            - role
+          properties:
+            role:
+              type: string
+              format: uuid
+              description: Id of the role
+      description: Identifies a user or a role
+    UserType:
+      type: string
+      description: Type of a User
+      enum:
+        - human
+        - application
+    ViewAction:
+      type: string
+      enum:
+        - drop
+        - commit
+        - get_metadata
+        - rename
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_modify
+        - change_ownership
+        - get_tasks
+        - control_tasks
+    ViewAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: ViewAssignmentOwnership
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - pass_grants
+          title: ViewAssignmentPassGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_grants
+          title: ViewAssignmentManageGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - describe
+          title: ViewAssignmentDescribe
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - modify
+          title: ViewAssignmentModify
+    ViewRelation:
+      type: string
+      enum:
+        - ownership
+        - pass_grants
+        - manage_grants
+        - describe
+        - modify
+    WarehouseAction:
+      type: string
+      enum:
+        - create_namespace
+        - delete
+        - modify_storage
+        - modify_storage_credential
+        - get_config
+        - get_metadata
+        - list_namespaces
+        - include_in_list
+        - deactivate
+        - activate
+        - rename
+        - list_deleted_tabulars
+        - read_assignments
+        - grant_create
+        - grant_describe
+        - grant_modify
+        - grant_select
+        - grant_pass_grants
+        - grant_manage_grants
+        - change_ownership
+        - get_all_tasks
+        - control_all_tasks
+    WarehouseAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: WarehouseAssignmentOwnership
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - pass_grants
+          title: WarehouseAssignmentPassGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_grants
+          title: WarehouseAssignmentManageGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - describe
+          title: WarehouseAssignmentDescribe
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - select
+          title: WarehouseAssignmentSelect
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - create
+          title: WarehouseAssignmentCreate
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - modify
+          title: WarehouseAssignmentModify
+    WarehouseFilter:
+      oneOf:
+        - type: object
+          description: Filter for a specific warehouse
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - warehouse-id
+        - type: object
+          description: Filter for items that are not associated with a warehouse
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - unmapped
+        - type: object
+          description: Return all items in the current project, regardless of warehouse association
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - all
+    WarehouseRelation:
+      type: string
+      enum:
+        - ownership
+        - pass_grants
+        - manage_grants
+        - describe
+        - select
+        - create
+        - modify
+    WarehouseStatistics:
+      type: object
+      required:
+        - timestamp
+        - number-of-tables
+        - number-of-views
+        - updated-at
+      properties:
+        number-of-tables:
+          type: integer
+          format: int64
+          description: Number of tables in the warehouse.
+        number-of-views:
+          type: integer
+          format: int64
+          description: Number of views in the warehouse.
+        timestamp:
+          type: string
+          format: date-time
+          description: |-
+            Timestamp of when these statistics are valid until
+
+            We lazily create a new statistics entry every hour, in between hours, the existing entry
+            is being updated. If there's a change at `created_at` + 1 hour, a new entry is created. If
+            there's no change, no new entry is created.
+        updated-at:
+          type: string
+          format: date-time
+          description: Timestamp of when these statistics were last updated
+    WarehouseStatisticsResponse:
+      type: object
+      required:
+        - warehouse-ident
+        - stats
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Next page token
+        stats:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarehouseStatistics'
+          description: Ordered list of warehouse statistics.
+        warehouse-ident:
+          type: string
+          format: uuid
+          description: ID of the warehouse for which the stats were collected.
+    WarehouseStatus:
+      type: string
+      description: Status of a warehouse
+      enum:
+        - active
+        - inactive
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
+tags:
+  - name: server
+    description: Manage Server
+  - name: project
+    description: Manage Projects
+  - name: warehouse
+    description: Manage Warehouses
+  - name: tasks
+    description: View & Manage Tasks
+  - name: user
+    description: Manage Users
+  - name: role
+    description: Manage Roles
+  - name: permissions
+    description: Manage Permissions

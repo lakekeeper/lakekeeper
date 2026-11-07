@@ -1,0 +1,29 @@
+---
+title: "Community"
+description: "Get help with Lakekeeper through the community Discord and GitHub, or through commercial support from the maintainers at Vakamo."
+source: "https://docs.lakekeeper.io/support/"
+---
+
+# Community
+
+<div class="grid cards" markdown>
+
+- :fontawesome-brands-discord: &nbsp; __[Connect on Discord](https://discord.gg/jkAGG8p93B)__
+
+    ---
+
+    Connect with us on Discord to ask all your questions, stay up-to-date with the latest announcements and learn how others are using Lakekeeper.
+
+- :fontawesome-brands-github: &nbsp; __[Report Issues & Feature Request](https://github.com/lakekeeper/lakekeeper/issues/new)__
+
+    ---
+
+    Open Feature Requests and report Issues on GitHub.
+
+- :material-webhook: &nbsp; __[Enterprise Support](https://vakamo.com)__
+
+    ---
+
+    Get enterprise support for Lakekeeper in self-hosted or managed environments.
+
+</div>

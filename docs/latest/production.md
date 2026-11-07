@@ -1,0 +1,34 @@
+---
+title: "Production Checklist"
+description: "Checklist for running Lakekeeper in production: database, storage, identity provider, authorization and high-availability recommendations."
+source: "https://docs.lakekeeper.io/docs/latest/production/"
+---
+
+# Production Checklist
+
+Lakekeeper is the heart of your data platform and needs to integrate deeply with your existing infrastructure such as IdPs. The easiest way to get Lakekeeper to production is our enterprise support. Please find more information on our commercial offerings at [lakekeeper.io](https://lakekeeper.io)
+
+Please find following some general recommendations for productive setups:
+
+* Use an external high-available database as a catalog backend. We recommend using a managed service in your preferred Cloud or host a high available cluster on Kubernetes yourself using your preferred operator. We are using the amazing [CloudNativePG](https://cloudnative-pg.io) internally. Make sure the Database is backed-up regularly.
+* Ensure sure both `LAKEKEEPER__PG_DATABASE_URL_READ` and `LAKEKEEPER__PG_DATABASE_URL_WRITE` are set for ideal load distribution. Most postgres deployments specify separate URLs for reading and writing to channel writes to the master while distributing reads across replicas.
+* `LAKEKEEPER__PG_DATABASE_URL_WRITE` must always connect to the primary database, because [cache invalidation](./configuration.md#cache-invalidation) reads the change records there. Do not use a connection pooler on the write URL that sends read-only queries to read replicas, such as the load balancing of pgpool-II or the query routing of pgcat or Odyssey. PgBouncer in transaction mode works.
+* The read replicas that `LAKEKEEPER__PG_DATABASE_URL_READ` connects to must stay less than `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE` (default 10 seconds) behind the primary. Monitor their replay lag, for example `replay_lag` in `pg_stat_replication` on the primary. Queries on a replica can hold back replay: `hot_standby_feedback = on` avoids most of these conflicts, and a `max_standby_streaming_delay` of at most that value limits how long they can hold it back. Do not connect the read URL to a delayed replica (`recovery_min_apply_delay`).
+* Set `idle_in_transaction_session_timeout` on the database, for example to `10min`. A transaction that stays open and idle stops vacuum from removing deleted change records, and the table grows.
+* Give all Lakekeeper instances the same cache settings. Each instance deletes old change records based on its own longest cache time-to-live.
+* For medium or large deployments, ensure the `LAKEKEEPER__PG_READ_POOL_CONNECTIONS` and `LAKEKEEPER__PG_WRITE_POOL_CONNECTIONS` are set to a higher value to allow Lakekeeper to use more connections to the database.
+* Keep the clocks of all Lakekeeper instances, including task workers, and all query engines synchronized, for example with NTP. Lakekeeper stores its own clock as the table's last-updated time on each commit that writes new metadata for the table. Snapshot times come from the query engine. Lakekeeper refuses a new snapshot on the main branch from a writer whose clock is more than one minute ahead of Lakekeeper's. A writer whose clock is more than one minute behind can fail to commit to the main branch if another commit changed the main branch shortly before.
+* For high-available setups, ensure that multiple Lakekeeper instances are running on different nodes. We recommend our [helm chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper) for production deployments.
+* Ensure that Authentication is enabled, typically by setting `LAKEKEEPER__OPENID_PROVIDER_URI` and / or `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`. Check our [Authentication Guide](./authentication.md) for more information.
+* If `LAKEKEEPER__OPENID_PROVIDER_URI` is set, we recommend to set `LAKEKEEPER__OPENID_AUDIENCE` as well.
+* If Authorization is desired, follow our [Authorization Guide](./authorization.md). Ensure that OpenFGA is hosted in close proximity to Lakekeeper - ideally on the same VM or Kubernetes node. In our Helm-Chart we use `PodAffinity` to achieve this.
+* When using OpenFGA, make sure that Caching is enabled. Check the [OpenFGA in Production](./authorization-openfga.md#openfga-in-production) section for more information.
+* When using OpenFGA, deploy **v1.11 or later** — earlier versions lack the idempotent-write semantics that re-bootstrap, `openfga reconcile` and permission writes rely on, and fail with `cannot write a tuple which already exists`. See [Minimum OpenFGA version](./authorization-openfga.md#authorization-with-openfga).
+* If the default Postgres secret backend is used, ensure that `LAKEKEEPER__PG_ENCRYPTION_KEY` is set to a long random string.
+* Ensure that all Warehouses use distinct storage locations / prefixes and distinct credentials that only grant access to the prefix used for a Warehouse.
+* Ensure that SSL / TLS is enabled. Lakekeeper does not terminate connections natively. Please use a reverse proxy like Nginx or Envoy to secure the connection to Lakekeeper. On Kubernetes, any Ingress controller can be used. For high-availability, failover should be handled by the reverse proxy. Lakekeeper exposes a database-dependent `/health` endpoint that returns `200 OK` when healthy and `503 Service Unavailable` when unhealthy or unknown. Use it for Kubernetes readiness probes, and for liveness probes when pods should restart after sustained database-dependent health failures. If you are using our helm-chart, probes are already built-in.
+* When using our helm-chart with the default postgres secret store, we recommend to set `secretBackend.postgres.encryptionKeySecret` to use a pre-created secret to reduce the risk of overwriting the secret created by the helm-chart.
+* If a trusted query engine, such as a centrally managed trino, uses Lakekeeper's OPA bridge, ensure that no users have root access to trino or OPA as those contain credentials to Lakekeeper with very high permissions.
+* Specify the `LAKEKEEPER__OPENID_SUBJECT_CLAIM` configuration value if `LAKEKEEPER__OPENID_PROVIDER_URI` is set. Accepts a single claim name or a comma-separated list (e.g. `oid,sub`); the first claim present in the token is used. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`.
+* Create regular Backups of your Lakekeeper database (Postgres) and OpenFGA (if used). Test your backup and restore process regularly. Always backup the Lakekeeper database before upgrading Lakekeeper or OpenFGA.
+* Set up monitoring and observability. See the [Monitoring Guide](./monitoring.md) for details.
