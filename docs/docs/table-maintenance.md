@@ -47,6 +47,8 @@ Individual tables can override warehouse settings using these Iceberg table prop
 - `history.expire.min-snapshots-to-keep` - Custom minimum retention for table
 - `lakekeeper.history.expire.min-snapshots-to-expire` - Custom threshold for table
 
+A value of `history.expire.max-snapshot-age-ms`, `history.expire.max-ref-age-ms` or `history.expire.min-snapshots-to-keep` that is not a whole number, such as `30d` or `2592000000L`, makes Lakekeeper skip the table instead of using the default. Lakekeeper logs a warning that names the property and its value.
+
 **24-hour minimum**:
 
 - Saving a queue config with `max-snapshot-age-ms` or `max-ref-age-ms` below 24 hours fails with `ExpireSnapshotsRetentionTooShort`, unless the same request sets `disable-min-age-check: true`. This stops a typo such as `max-snapshot-age-ms: 6000` (six seconds) from removing almost all snapshots.
@@ -114,7 +116,7 @@ Configuration can be set via the Management UI or REST API endpoints:
 Individual tables can override warehouse settings using these Iceberg table properties:
 
 - `lakekeeper.remove-orphan-files.enabled` — `true` includes a table even when the warehouse master switch is off; `false` excludes it.
-- `lakekeeper.remove-orphan-files.older-than-ms` — per-table deletion-age threshold. A value below 24 hours is raised to 24 hours, unless the table also sets `lakekeeper.remove-orphan-files.disable-min-older-than-check=true`.
+- `lakekeeper.remove-orphan-files.older-than-ms` — per-table deletion-age threshold. A value below 24 hours is raised to 24 hours, unless the table also sets `lakekeeper.remove-orphan-files.disable-min-older-than-check=true`. A value that is not a whole number makes Lakekeeper skip the table and log a warning.
 - `lakekeeper.remove-orphan-files.disable-min-older-than-check` — `true` lets this table use an `older-than-ms` below 24 hours. Remove orphan files then also deletes files that writers uploaded but did not commit yet, if they are older than `older-than-ms`. We recommend setting it only while nothing writes to the table, and removing both properties after the cleanup.
 - `lakekeeper.remove-orphan-files.dry-run` — `true` makes the runs of this table dry runs, `false` lets them delete. Any other value also gives a dry run, so a typo never deletes files. If the warehouse config sets `dry-run`, a table cannot turn it off.
 
