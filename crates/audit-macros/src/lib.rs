@@ -701,6 +701,25 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
                     message
                 );
             }
+
+            /// This record as one JSON object: the keys and values of its log line, in the
+            /// same order, without the keys the log subscriber adds.
+            pub(crate) fn to_json(&self) -> ::serde_json::Value {
+                let mut map = ::serde_json::Map::new();
+                map.insert(
+                    "event_source".to_string(),
+                    crate::service::events::backends::audit::EVENT_SOURCE.into(),
+                );
+                map.insert(
+                    "audit_format".to_string(),
+                    crate::service::events::backends::audit::AUDIT_FORMAT.into(),
+                );
+                map.insert("record_type".to_string(), #record_type.into());
+                #(if let Some(value) = ::lakekeeper::audit::AuditJson::present(&self.#fields) {
+                    map.insert(stringify!(#fields).to_string(), value.value().clone());
+                })*
+                ::serde_json::Value::Object(map)
+            }
         }
     })
 }

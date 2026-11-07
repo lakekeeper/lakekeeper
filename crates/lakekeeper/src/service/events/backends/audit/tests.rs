@@ -1502,6 +1502,63 @@ fn fixture_idempotent_replay() {
     assert_matches_fixture("idempotent_replay", &contract_fields(record));
 }
 
+/// Assert that `json` carries what the log `line` carries, key for key and in the same order.
+#[track_caller]
+fn assert_json_matches_log_line(json: &serde_json::Value, line: serde_json::Value) {
+    let logged = contract_fields(line);
+    let keys = |record: &serde_json::Value| {
+        record
+            .as_object()
+            .expect("a record is a JSON object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(keys(json), keys(&logged));
+    assert_eq!(json, &logged);
+}
+
+/// An authorization record as JSON carries what its log line carries.
+#[test]
+fn an_authorization_record_as_json_matches_its_log_line() {
+    let event = fixture_succeeded_event(
+        fixture_metadata(),
+        EventEntities::one(fixture_table_entity()),
+        vec![fixture_read_action()],
+        fixture_context(&[]),
+    );
+    let record = assemble::authorization_succeeded(&event, &Enrichment::default());
+    let json = record.to_json();
+
+    let line = emit_and_capture_one(|| async {
+        record.emit("Authorization succeeded event");
+        Ok(())
+    });
+
+    assert_json_matches_log_line(&json, line);
+}
+
+/// A replay record as JSON carries what its log line carries.
+#[test]
+fn a_replay_record_as_json_matches_its_log_line() {
+    let event = IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        occurred_at: chrono::Utc::now(),
+        entities: Arc::new(EventEntities::one(fixture_table_entity())),
+        actions: Arc::new(vec![fixture_drop_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    };
+    let record = assemble::replay(&event, &Enrichment::default());
+    let json = record.to_json();
+
+    let line = emit_and_capture_one(|| async {
+        record.emit("Idempotent replay served");
+        Ok(())
+    });
+
+    assert_json_matches_log_line(&json, line);
+}
+
 /// One `grants_changed` event emits one record per grant triple, revocations
 /// first, so this covers both operations in the order a consumer sees them.
 #[test]
