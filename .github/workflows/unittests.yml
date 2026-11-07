@@ -63,6 +63,11 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
+          # Pull requests restore main's cache and write none of their own. A
+          # cache saved on a PR ref is readable by that one PR, and the Rust
+          # jobs together hold about 9.5 GB per ref against a 10 GB repo
+          # budget, so PR writes evict the main entry every job depends on.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-msrv-${{ steps.msrv.outputs.version }}-cache-ubuntu-24.04
       - name: cargo check
@@ -79,6 +84,8 @@ jobs:
           persist-credentials: false
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-machete
         uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
         with:
@@ -110,6 +117,8 @@ jobs:
           persist-credentials: false
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install sqlx-cli and migrate database
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -135,6 +144,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: rustfmt
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
@@ -161,6 +171,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: clippy
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
@@ -181,6 +192,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: clippy
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
       - name: Regenerate management openapi
@@ -302,6 +314,8 @@ jobs:
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 

@@ -86,6 +86,14 @@ jobs:
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          # Pull requests restore main's cache and write none of their own. A
+          # cache saved on a PR ref is readable by that one PR, and the Rust
+          # jobs together hold about 9.5 GB per ref against a 10 GB repo
+          # budget, so PR writes evict the main entry every job depends on.
+          # This job builds the whole workspace; cold it needs 23 of its 25
+          # minutes to compile, warm about 7.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
