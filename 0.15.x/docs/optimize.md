@@ -59,6 +59,7 @@ Optimize does not run on these tables:
 - Tables that use Iceberg native encryption (`encryption.key-id` is set).
 - Tables that use write-audit-publish (`write.wap.enabled=true`), because a rewrite would make the next publish fail. Set `lakekeeper.optimize.enabled=true` on such a table to optimize it anyway.
 - Tables that Apache Paimon 2.1 or later mirrors. [Snapshot expiry](./table-maintenance.md#expire-snapshots) and [orphan-file removal](./table-maintenance.md#remove-orphan-files) skip them too. Paimon recreates such a table after another writer adds a snapshot, and it can register the table at its own storage path, where expiry and orphan-file removal would delete Paimon's files. Optimize cannot detect tables that earlier Paimon versions mirror, so set `lakekeeper.optimize.enabled=false` on them.
+- Tables partitioned by the value of a `uuid` column (`identity` transform) in any of their partition specs, including earlier ones.
 
 Compaction skips these tables, but manifest rewrite still runs on them:
 
