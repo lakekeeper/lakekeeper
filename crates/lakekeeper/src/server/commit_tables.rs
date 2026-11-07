@@ -247,9 +247,21 @@ fn check_statistics_path_not_outside_table_location(
     let mut canonical = with_canonical_s3_scheme(&statistics_location);
     canonical.without_trailing_slash();
     if canonical != table_location && canonical.is_sublocation_of(&table_location) {
+        let table_depth = table_location.path_segments().len();
+        let segments = canonical.path_segments();
+        let suffixes: Vec<&str> = segments[table_depth..].to_vec();
+
+        for suffix in suffixes {
+            // decode suffix segment
+            let decoded = percent_encoding::percent_decode_str(suffix).decode_utf8_lossy();
+            // check suffix doesn't contain literal backslashes '\' or '.' or '..'
+            if decoded.contains('\\') || decoded == "." || decoded == ".." || decoded.contains('/') {
+                return Err(ErrorModel::bad_request(format!("Cannot set statistics whose file '{statistics_path}' is not inside the table location: '{table_location}'"), "StatisticsFileOutsideTableLocation", None).into());
+            }
+        }
         Ok(())
     } else {
-        Err(ErrorModel::bad_request(format!("Cannot set statistics whose file is not inside the table location: '{table_location}'"), "StatisticsFileOutsideTableLocation", None).into())
+        Err(ErrorModel::bad_request(format!("Cannot set statistics whose file '{statistics_path}' is not inside the table location: '{table_location}'"), "StatisticsFileOutsideTableLocation", None).into())
     }
 }
 
@@ -269,9 +281,21 @@ fn check_manifest_list_not_outside_table_location(
     let mut canonical = with_canonical_s3_scheme(&statistics_location);
     canonical.without_trailing_slash();
     if canonical != table_location && canonical.is_sublocation_of(&table_location) {
+        let table_depth = table_location.path_segments().len();
+        let segments = canonical.path_segments();
+        let suffixes: Vec<&str> = segments[table_depth..].to_vec();
+
+        for suffix in suffixes {
+            // decode suffix segment
+            let decoded = percent_encoding::percent_decode_str(suffix).decode_utf8_lossy();
+            // check suffix doesn't contain literal backslashes '\' or '.' or '..'
+            if decoded.contains('\\') || decoded == "." || decoded == ".." || decoded.contains('/') {
+                return Err(ErrorModel::bad_request(format!("Cannot add snapshots whose manifest list '{manifest_list_path}' is not inside the table location: '{table_location}'"), "ManifestListOutsideTableLocation", None).into());
+            }
+        }
         Ok(())
     } else {
-        Err(ErrorModel::bad_request(format!("Cannot add snapshots whose manifest list is not inside the table location: '{table_location}'"), "ManifestListOutsideTableLocation", None).into())
+        Err(ErrorModel::bad_request(format!("Cannot add snapshots whose manifest list '{manifest_list_path}' is not inside the table location: '{table_location}'"), "ManifestListOutsideTableLocation", None).into())
     }
 }
 
