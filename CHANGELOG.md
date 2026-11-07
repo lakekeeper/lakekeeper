@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.14.3](https://github.com/lakekeeper/lakekeeper/compare/v0.14.2...v0.14.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* **catalog:** keep prepared resources when the outcome of COMMIT is unknown ([#2176](https://github.com/lakekeeper/lakekeeper/issues/2176)) ([2906012](https://github.com/lakekeeper/lakekeeper/commit/2906012ec9d8ea8d8c9b19aebe1eb9566827600a))
+* **catalog:** preserve commas in quoted entity tags ([#2223](https://github.com/lakekeeper/lakekeeper/issues/2223)) ([2bbc206](https://github.com/lakekeeper/lakekeeper/commit/2bbc20648459d57350e10ac687adf0a152c4a7fe))
+* **catalog:** refuse a commit that removes the snapshot of a ref it does not remove ([#2185](https://github.com/lakekeeper/lakekeeper/issues/2185)) ([2906012](https://github.com/lakekeeper/lakekeeper/commit/2906012ec9d8ea8d8c9b19aebe1eb9566827600a))
+* **deps:** bump libz-sys to 1.1.31 for RUSTSEC-2026-0418 ([#2207](https://github.com/lakekeeper/lakekeeper/issues/2207)) ([2906012](https://github.com/lakekeeper/lakekeeper/commit/2906012ec9d8ea8d8c9b19aebe1eb9566827600a))
+* **deps:** bump zstd-sys and async-compression, ignore remaining zstd advisories ([#2188](https://github.com/lakekeeper/lakekeeper/issues/2188)) ([2906012](https://github.com/lakekeeper/lakekeeper/commit/2906012ec9d8ea8d8c9b19aebe1eb9566827600a))
+* **deps:** ignore RUSTSEC-2026-0429, zip is a build-only dependency of utoipa-swagger-ui ([#2210](https://github.com/lakekeeper/lakekeeper/issues/2210)) ([2906012](https://github.com/lakekeeper/lakekeeper/commit/2906012ec9d8ea8d8c9b19aebe1eb9566827600a))
+* **deps:** ignore RUSTSEC-2026-0441, pin-utils is an unmaintained dependency of the AWS SDK ([2bbc206](https://github.com/lakekeeper/lakekeeper/commit/2bbc20648459d57350e10ac687adf0a152c4a7fe))
+* include forwarded port for ipv6 hosts ([#2224](https://github.com/lakekeeper/lakekeeper/issues/2224)) ([2bbc206](https://github.com/lakekeeper/lakekeeper/commit/2bbc20648459d57350e10ac687adf0a152c4a7fe))
+* **io:** avoid duplicate slash when extending locations ([#2221](https://github.com/lakekeeper/lakekeeper/issues/2221)) ([2bbc206](https://github.com/lakekeeper/lakekeeper/commit/2bbc20648459d57350e10ac687adf0a152c4a7fe))
+* **namespace:** recursive delete with purge also removes the files of generic tables ([#2243](https://github.com/lakekeeper/lakekeeper/issues/2243)) ([2bbc206](https://github.com/lakekeeper/lakekeeper/commit/2bbc20648459d57350e10ac687adf0a152c4a7fe))
+* **postgres:** carry the sqlx fix for a cancelled begin() leaving a transaction open ([#2209](https://github.com/lakekeeper/lakekeeper/issues/2209)) ([2906012](https://github.com/lakekeeper/lakekeeper/commit/2906012ec9d8ea8d8c9b19aebe1eb9566827600a))
+* **postgres:** lock committed tables before writing their metadata ([#2219](https://github.com/lakekeeper/lakekeeper/issues/2219)) ([#2222](https://github.com/lakekeeper/lakekeeper/issues/2222)) ([b9ad90d](https://github.com/lakekeeper/lakekeeper/commit/b9ad90df7f2421582aa8fc58864c54c49b8e789f))
+* **postgres:** the migration check reads the tracker of the configured schema only ([#2257](https://github.com/lakekeeper/lakekeeper/issues/2257)) ([2bbc206](https://github.com/lakekeeper/lakekeeper/commit/2bbc20648459d57350e10ac687adf0a152c4a7fe))
+* re-read Azure workload identity credentials for new token requests ([#2193](https://github.com/lakekeeper/lakekeeper/issues/2193)) ([2906012](https://github.com/lakekeeper/lakekeeper/commit/2906012ec9d8ea8d8c9b19aebe1eb9566827600a))
+* **s3-signer:** tell clients not to reuse read signatures ([#2232](https://github.com/lakekeeper/lakekeeper/issues/2232)) ([9805bf5](https://github.com/lakekeeper/lakekeeper/commit/9805bf53308361f3e5686fdee33e18aa54eb6914))
+* **tables:** a commit to a table that was soft-dropped meanwhile gets 404 ([#2251](https://github.com/lakekeeper/lakekeeper/issues/2251)) ([2bbc206](https://github.com/lakekeeper/lakekeeper/commit/2bbc20648459d57350e10ac687adf0a152c4a7fe))
+
 ## [0.14.2](https://github.com/lakekeeper/lakekeeper/compare/v0.14.1...v0.14.2) (2026-10-25)
 
 
