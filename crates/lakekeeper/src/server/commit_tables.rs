@@ -10,12 +10,16 @@ use iceberg::{
 };
 use iceberg_ext::{
     catalog::TableUpdateKind,
+    configs::ParseFromStr,
     spec::{TableMetadataBuildResult, TableMetadataBuilder},
 };
 use lakekeeper_io::Location;
 
 use crate::{
-    server::tables::{create_table::ensure_format_version_allowed, parse_table_property_updates},
+    server::tables::{
+        create_table::ensure_format_version_allowed, parse_table_property_updates,
+        with_canonical_s3_scheme,
+    },
     service::{
         AllowedFormatVersions, ErrorModel, IcebergErrorResponse, Result,
         authz::{CatalogTableAction, CommitFacts},
@@ -91,6 +95,7 @@ pub(crate) fn ensure_schema_content_stable<'a>(
 ///
 /// `now_ms` is the server clock, read once per commit attempt; it becomes the new
 /// `last-updated-ms`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn apply_commit(
     metadata: TableMetadata,
     metadata_location: Option<&Location>,
@@ -182,6 +187,29 @@ pub(super) fn apply_commit(
                 check_immutable_properties_not_removed(&previous_immutable_properties, removals)?;
                 builder = TableUpdate::apply(update, builder).map_err(update_error)?;
             }
+            TableUpdate::AddSnapshot { snapshot } => {
+                check_manifest_list_not_outside_table_location(
+                    snapshot.manifest_list(),
+                    &previous_location,
+                )?;
+                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
+            }
+            TableUpdate::SetStatistics { statistics } => {
+                check_statistics_path_not_outside_table_location(
+                    &statistics.statistics_path,
+                    &previous_location,
+                )?;
+                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
+            }
+            TableUpdate::SetPartitionStatistics {
+                partition_statistics,
+            } => {
+                check_statistics_path_not_outside_table_location(
+                    &partition_statistics.statistics_path,
+                    &previous_location,
+                )?;
+                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
+            }
             _ => {
                 builder = TableUpdate::apply(update, builder).map_err(update_error)?;
             }
@@ -201,6 +229,50 @@ pub(super) fn apply_commit(
         build_result.metadata.last_updated_ms()
     );
     Ok(build_result)
+}
+
+fn check_statistics_path_not_outside_table_location(
+    statistics_path: &str,
+    table_location: &Location,
+) -> Result<()> {
+    let mut table_location = with_canonical_s3_scheme(table_location);
+    table_location.without_trailing_slash();
+    let statistics_location = Location::parse_value(statistics_path).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Failed to parse statistics file location '{statistics_path}'"),
+            "FailedToParseStatisticsFileLocation",
+            Some(Box::new(e)),
+        )
+    })?;
+    let mut canonical = with_canonical_s3_scheme(&statistics_location);
+    canonical.without_trailing_slash();
+    if canonical != table_location && canonical.is_sublocation_of(&table_location) {
+        Ok(())
+    } else {
+        Err(ErrorModel::bad_request(format!("Cannot set statistics whose file is not inside the table location: '{table_location}'"), "StatisticsFileOutsideTableLocation", None).into())
+    }
+}
+
+fn check_manifest_list_not_outside_table_location(
+    manifest_list_path: &str,
+    table_location: &Location,
+) -> Result<()> {
+    let mut table_location = with_canonical_s3_scheme(table_location);
+    table_location.without_trailing_slash();
+    let statistics_location = Location::parse_value(manifest_list_path).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Failed to parse manifest list file location '{manifest_list_path}'"),
+            "FailedToParseManifestsListFileLocation",
+            Some(Box::new(e)),
+        )
+    })?;
+    let mut canonical = with_canonical_s3_scheme(&statistics_location);
+    canonical.without_trailing_slash();
+    if canonical != table_location && canonical.is_sublocation_of(&table_location) {
+        Ok(())
+    } else {
+        Err(ErrorModel::bad_request(format!("Cannot add snapshots whose manifest list is not inside the table location: '{table_location}'"), "ManifestListOutsideTableLocation", None).into())
+    }
 }
 
 /// Answer an update the builder refused.
@@ -531,6 +603,159 @@ mod tests {
             now_ms(),
         );
         assert!(result.is_err(), "a real relocation was accepted");
+    }
+
+    mod file_location_validation {
+        use iceberg::spec::{PartitionStatisticsFile, StatisticsFile};
+
+        use super::{
+            HashMap, Operation, Snapshot, Summary, TableUpdate, apply_commit,
+            table_with_main_snapshot,
+        };
+
+        fn file_updates(path: &str, now: i64) -> [TableUpdate; 3] {
+            [
+                TableUpdate::AddSnapshot {
+                    snapshot: Snapshot::builder()
+                        .with_snapshot_id(2)
+                        .with_parent_snapshot_id(Some(1))
+                        .with_timestamp_ms(now)
+                        .with_sequence_number(2)
+                        .with_schema_id(0)
+                        .with_manifest_list(path.to_string())
+                        .with_summary(Summary {
+                            operation: Operation::Append,
+                            additional_properties: HashMap::new(),
+                        })
+                        .build(),
+                },
+                TableUpdate::SetStatistics {
+                    statistics: StatisticsFile {
+                        snapshot_id: 1,
+                        statistics_path: path.to_string(),
+                        file_size_in_bytes: 100,
+                        file_footer_size_in_bytes: 10,
+                        key_metadata: None,
+                        blob_metadata: vec![],
+                    },
+                },
+                TableUpdate::SetPartitionStatistics {
+                    partition_statistics: PartitionStatisticsFile {
+                        snapshot_id: 1,
+                        statistics_path: path.to_string(),
+                        file_size_in_bytes: 100,
+                    },
+                },
+            ]
+        }
+
+        fn assert_unsafe_suffix_refused(suffix: &str) {
+            let (metadata, now) = table_with_main_snapshot();
+            let path = format!("{}/{suffix}", metadata.location());
+            let results = file_updates(&path, now + 1000).map(|update| {
+                apply_commit(metadata.clone(), None, &[], vec![update], now + 1000)
+                    .map(|_| ())
+                    .map_err(|error| (error.error.code, error.error.r#type))
+            });
+
+            assert_eq!(
+                results,
+                [
+                    Err((400, "ManifestListOutsideTableLocation".to_string())),
+                    Err((400, "StatisticsFileOutsideTableLocation".to_string())),
+                    Err((400, "StatisticsFileOutsideTableLocation".to_string())),
+                ],
+                "file path: {path}; results: add-snapshot, set-statistics, set-partition-statistics",
+            );
+        }
+
+        fn assert_safe_suffix_accepted(table_location: &str, suffix: &str) {
+            let (metadata, now) = table_with_main_snapshot();
+            let metadata = metadata
+                .into_builder(None)
+                .set_location(table_location.to_string())
+                .build()
+                .unwrap()
+                .metadata;
+            let path = format!("{}/{suffix}", table_location.trim_end_matches('/'));
+            let result = apply_commit(
+                metadata,
+                None,
+                &[],
+                Vec::from(file_updates(&path, now + 1000)),
+                now + 1000,
+            )
+            .unwrap_or_else(|error| panic!("file path {path} was refused: {error:?}"));
+
+            assert_eq!(
+                result.metadata.snapshot_by_id(2).unwrap().manifest_list(),
+                path,
+            );
+            assert_eq!(
+                result
+                    .metadata
+                    .statistics_iter()
+                    .map(|file| file.statistics_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec![path.as_str()],
+            );
+            assert_eq!(
+                result
+                    .metadata
+                    .partition_statistics_iter()
+                    .map(|file| file.statistics_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec![path.as_str()],
+            );
+        }
+
+        #[test]
+        fn manifest_list_with_encoded_parent_segment_is_refused() {
+            assert_unsafe_suffix_refused("%2e%2e/other/metadata/file.avro");
+        }
+
+        #[test]
+        fn encoded_dot_segments_are_refused() {
+            for segment in ["%2E%2E", "%2e%2E", ".%2e", "%2e.", "%2e", "%2E"] {
+                assert_unsafe_suffix_refused(&format!("{segment}/other/metadata/file.avro"));
+            }
+        }
+
+        #[test]
+        fn encoded_separators_are_refused() {
+            for segment in ["x%2Fy", "x%2fy", "x%5Cy", "x%5cy"] {
+                assert_unsafe_suffix_refused(&format!("metadata/{segment}/file.avro"));
+            }
+        }
+
+        #[test]
+        fn literal_backslashes_are_refused() {
+            for suffix in [r"..\other\metadata\file.avro", r"metadata/file\name.avro"] {
+                assert_unsafe_suffix_refused(suffix);
+            }
+        }
+
+        #[test]
+        fn encoded_table_locations_are_accepted() {
+            for table_location in [
+                "s3://bucket/namespace%2Fname/table%5Cname",
+                "s3://bucket/namespace%5cname/table%2fname/",
+            ] {
+                assert_safe_suffix_accepted(table_location, "metadata/file.avro");
+            }
+        }
+
+        #[test]
+        fn safe_encoded_suffixes_are_accepted() {
+            for suffix in [
+                "metadata/data%20file.avro",
+                "metadata/a%2Eb.avro",
+                "metadata/version..avro",
+                "metadata/file%25name.avro",
+            ] {
+                assert_safe_suffix_accepted("s3://bucket/table", suffix);
+            }
+        }
     }
 
     #[test]
