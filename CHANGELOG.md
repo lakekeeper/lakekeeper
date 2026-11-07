@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.16.0](https://github.com/lakekeeper/lakekeeper/compare/v0.15.0...v0.16.0) (2026-11-07)
+
+
+### Bug Fixes
+
+* **deps:** pin the iceberg fork that writes manifests with the deflate codec ([#2263](https://github.com/lakekeeper/lakekeeper/issues/2263)) ([9a856f0](https://github.com/lakekeeper/lakekeeper/commit/9a856f0c25c60f8af352d5280fb5c9e5b12abd9c))
+
+
+### Documentation
+
+* expiry and orphan-file removal skip a table whose location holds a Paimon table ([8ba83d1](https://github.com/lakekeeper/lakekeeper/commit/8ba83d16b02b822aa9728e8b0862d1b562443a9e))
+* optimize workers follow the chart's keda and spill values ([e230d00](https://github.com/lakekeeper/lakekeeper/commit/e230d0082beeebc98a20e8da9d55d22d611e9dfa))
+* optimize, snapshot expiry and orphan-file removal skip tables that Paimon mirrors ([747f302](https://github.com/lakekeeper/lakekeeper/commit/747f302da8e8d6dec6401e49f3470539301cd8f5))
+* snapshot expiry and orphan-file removal skip tables with a retention value that is not a whole number ([8524b93](https://github.com/lakekeeper/lakekeeper/commit/8524b93346a91bd317de9960c2a1645c211c7b05))
+
+
+### Miscellaneous Chores
+
+* 0.15.x docs ([9124ea8](https://github.com/lakekeeper/lakekeeper/commit/9124ea8188cbebce0904078530310b9f11c60d87))
+* **docs:** Sync documentation from lakekeeper plus ([#2261](https://github.com/lakekeeper/lakekeeper/issues/2261)) ([03cfe3e](https://github.com/lakekeeper/lakekeeper/commit/03cfe3edb4c94a1161db412a79379c1c7912319f))
+* **release:** clear the audit format fragments shipped in 0.15.0 ([#2260](https://github.com/lakekeeper/lakekeeper/issues/2260)) ([24bdade](https://github.com/lakekeeper/lakekeeper/commit/24bdaded75a41f2a8da69706e3de9087978e6c55))
+
 ## [0.15.0](https://github.com/lakekeeper/lakekeeper/compare/v0.14.0...v0.15.0) (2026-11-06)
 
 
