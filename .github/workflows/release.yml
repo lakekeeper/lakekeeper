@@ -256,11 +256,12 @@ jobs:
   test-docker:
     name: Test Docker
     runs-on: ubuntu-24.04
-    continue-on-error: true
     needs:
       - build-docker
       - release_please
     strategy:
+      # Every architecture's image test gates publishing; run all of them to report each result.
+      fail-fast: false
       matrix:
         include:
           - file: docker-lakekeeper/docker-lakekeeper-amd64.tar
