@@ -274,7 +274,7 @@ pub(super) fn write_operation_record(event: OperationRecordedEvent) {
 #[audit_part(shape = "operation")]
 #[schemars(rename = "OperationRecord")]
 #[derive(Debug)]
-struct OperationWire {
+pub(super) struct OperationWire {
     /// Every product that contributed to this record, keyed by its name, with the version of
     /// what it contributes: the one that assembled it and any whose vocabulary it carries.
     emitters: Emitters,

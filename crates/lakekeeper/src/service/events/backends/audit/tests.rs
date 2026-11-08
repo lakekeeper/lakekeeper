@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex};
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
 
-use super::*;
+use super::{
+    sink::{ArcAuditSink, AuditDelivery, AuditDispatch, AuditRecord, AuditSink},
+    *,
+};
 use crate::{
     api::management::v1::{
         check::UserOrRole as AuthzUserOrRole,
@@ -1557,6 +1560,47 @@ fn a_replay_record_as_json_matches_its_log_line() {
     });
 
     assert_json_matches_log_line(&json, line);
+}
+
+/// A sink that keeps the address of every JSON object it is handed.
+#[derive(Debug, Default)]
+struct JsonAddressSink(Mutex<Vec<usize>>);
+
+#[async_trait::async_trait]
+impl AuditSink for JsonAddressSink {
+    fn name(&self) -> &str {
+        "json-address"
+    }
+
+    fn deliver(&self, record: &AuditDelivery<'_>) {
+        let address = std::ptr::from_ref(record.json()).addr();
+        self.0.lock().expect("sink poisoned").push(address);
+    }
+}
+
+/// Every sink is handed the same JSON object, so a record is serialized once however many
+/// sinks ask for it.
+#[test]
+fn every_sink_shares_one_json_object() {
+    let first = Arc::new(JsonAddressSink::default());
+    let second = Arc::new(JsonAddressSink::default());
+    let sinks: Vec<ArcAuditSink> = vec![first.clone(), second.clone()];
+    let dispatch = AuditDispatch::new(sinks);
+
+    let event = IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        occurred_at: chrono::Utc::now(),
+        entities: Arc::new(EventEntities::one(fixture_table_entity())),
+        actions: Arc::new(vec![fixture_drop_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    };
+    let record = assemble::replay(&event, &Enrichment::default());
+    dispatch.deliver(AuditRecord::Replay(record), "Idempotent replay served");
+
+    let first_seen = first.0.lock().expect("sink poisoned").clone();
+    let second_seen = second.0.lock().expect("sink poisoned").clone();
+    assert_eq!(first_seen.len(), 1);
+    assert_eq!(first_seen, second_seen);
 }
 
 /// One `grants_changed` event emits one record per grant triple, revocations

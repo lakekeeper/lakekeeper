@@ -11,6 +11,7 @@ pub mod render;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod schema;
 pub mod shapes;
+pub mod sink;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod validate;
 
