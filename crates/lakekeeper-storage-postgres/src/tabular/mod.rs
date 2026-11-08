@@ -606,7 +606,8 @@ impl From<FromTabularRowError> for CreateTabularError {
 }
 
 /// Errors with `LocationAlreadyTaken` if any other tabular in `warehouse_id`
-/// occupies `location`, sits under it, or contains it.
+/// occupies `location`, sits under it, or contains it, or if a queued or running
+/// purge task will delete such a location.
 ///
 /// This check is on its own: no index on `fs_location` is unique, so nothing at
 /// the schema level backstops it. Concurrent callers at colliding locations
@@ -644,7 +645,7 @@ pub(crate) async fn ensure_location_available(
     // every entry of `$2`. Both sides go through `fs_location_of` so neither can
     // carry one -- `$2` via `get_partial_fs_locations`.
     let fs_location = fs_location_of(location);
-    let taken = sqlx::query_scalar!(
+    let conflict = sqlx::query!(
         // Two `EXISTS` rather than one over an `OR`, which is the same predicate:
         // the planner does not build a `BitmapOr` in a generic plan, and this
         // statement is prepared and reused, so the `OR` form degraded to a
@@ -664,6 +665,11 @@ pub(crate) async fn ensure_location_available(
         //
         // The first branch covers exact duplicates: `$2` carries the location
         // and its parents, so equality is enough.
+        //
+        // A drop deletes the row and queues the purge in one transaction, so this
+        // single statement sees one of the two. The purge payload keeps the scheme,
+        // which `fs_location` drops. No id is excluded there: register reuses the
+        // UUID of the dropped table.
         r#"SELECT (
                EXISTS (
                    SELECT 1 FROM tabular ta
@@ -677,7 +683,17 @@ pub(crate) async fn ensure_location_available(
                      AND ta.fs_location ~<~ ($4 || '0')
                      AND ta.tabular_id != $3
                )
-           ) as "exists!""#,
+           ) as "taken!",
+           EXISTS (
+               SELECT 1 FROM task t
+               CROSS JOIN LATERAL (
+                   SELECT rtrim(substr(t.task_data->>'tabular_location',
+                       strpos(t.task_data->>'tabular_location', '://') + 3), '/') AS fs_location
+               ) p
+               WHERE t.warehouse_id = $1 AND t.queue_name = 'tabular_purge'
+                 AND (p.fs_location = ANY($2)
+                      OR (p.fs_location ~>=~ ($4 || '/') AND p.fs_location ~<~ ($4 || '0')))
+           ) as "purging!""#,
         warehouse_id,
         &partial_locations,
         self_tabular_id,
@@ -689,8 +705,11 @@ pub(crate) async fn ensure_location_available(
         e.into_catalog_backend_error()
             .append_detail("Error checking for conflicting locations")
     })?;
-    if taken {
+    if conflict.taken {
         return Err(LocationAlreadyTaken::new(location.clone()).into());
+    }
+    if conflict.purging {
+        return Err(LocationAlreadyTaken::purge_pending(location.clone()).into());
     }
     Ok(())
 }
@@ -2473,6 +2492,182 @@ mod tests {
         .await
         .expect("a location whose only descendant is in another warehouse does not collide");
         transaction.rollback().await.unwrap();
+    }
+
+    /// `ensure_location_available` refuses a location while a purge task of the warehouse
+    /// will delete it, a folder inside it, or a parent folder. The tasks are queued as a drop
+    /// queues them, so this test also fails if the queue name or the payload key changes.
+    #[sqlx::test]
+    async fn ensure_location_available_waits_for_pending_purges(pool: sqlx::PgPool) {
+        use lakekeeper::service::{
+            ArcProjectId, ProjectId,
+            tasks::{
+                ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
+                tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
+            },
+        };
+
+        async fn queue_purge(
+            pool: &sqlx::PgPool,
+            project_id: &ArcProjectId,
+            warehouse_id: WarehouseId,
+            location: &str,
+        ) {
+            let mut transaction = pool.begin().await.unwrap();
+            TabularPurgeTask::schedule_task::<crate::PostgresBackend>(
+                ScheduleTaskMetadata {
+                    resource_demand: None,
+                    project_id: project_id.clone(),
+                    parent_task_id: None,
+                    scheduled_for: None,
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id,
+                        entity_id: WarehouseTaskEntityId::Table {
+                            table_id: Uuid::now_v7().into(),
+                        },
+                        entity_name: vec!["dropped".to_string()],
+                    },
+                },
+                TabularPurgePayload::new(location),
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+        }
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (other_project_id, other_warehouse_id) = initialize_warehouse(
+            state.clone(),
+            None,
+            Some(&ProjectId::from(Uuid::now_v7())),
+            None,
+            true,
+        )
+        .await;
+
+        for location in [
+            "s3://bkt/same/tbl",
+            "s3://bkt/parent/inner/tbl",
+            "s3a://bkt/scheme/tbl",
+            "abfss://fs@account.dfs.core.windows.net/az/tbl",
+            "gs://bkt/gcs/tbl",
+            // Payloads written before trailing slashes were trimmed from locations.
+            "s3://bkt/trailing/tbl/",
+            r"s3://bkt/backslash/w\dir/t",
+            r"s3://bkt/near-miss/wdir/t",
+            "s3://bkt/wildcard/undXr/t",
+            "s3://bkt/boundary/a0",
+            "s3://bkt/boundary/ab",
+        ] {
+            queue_purge(&pool, &project_id, warehouse_id, location).await;
+        }
+        queue_purge(
+            &pool,
+            &other_project_id,
+            other_warehouse_id,
+            "s3://bkt/elsewhere/tbl",
+        )
+        .await;
+
+        let cases = [
+            ("s3://bkt/same/tbl", true, "same location"),
+            ("s3://bkt/same/tbl/data", true, "inside a purged location"),
+            (
+                "s3://bkt/parent",
+                true,
+                "a purge deletes a folder inside it",
+            ),
+            (
+                "s3://bkt/scheme/tbl",
+                true,
+                "the scheme is ignored, as for tabulars",
+            ),
+            (
+                "abfss://fs@account.dfs.core.windows.net/az/tbl",
+                true,
+                "an Azure location with `@`",
+            ),
+            ("gs://bkt/gcs/tbl", true, "a GCS location"),
+            (
+                "s3://bkt/trailing/tbl",
+                true,
+                "the payload ends with a slash",
+            ),
+            (
+                "s3://bkt/trailing/tbl/data",
+                true,
+                "inside a payload that ends with a slash",
+            ),
+            (
+                r"s3://bkt/backslash/w\dir",
+                true,
+                r"the payload holds a `\`",
+            ),
+            (
+                r"s3://bkt/near-miss/w\dir",
+                false,
+                r"`\` must not escape the `d` and reach `wdir`",
+            ),
+            (
+                "s3://bkt/wildcard/und_r",
+                false,
+                "`_` must not match the `X` in `undXr`",
+            ),
+            (
+                "s3://bkt/same/tbl-sibling",
+                false,
+                "shares a prefix but no path segment",
+            ),
+            (
+                "s3://bkt/boundary/a",
+                false,
+                "`a0` and `ab` sort past the range's upper endpoint",
+            ),
+            (
+                "s3://bkt/elsewhere/tbl",
+                false,
+                "the purge is in another warehouse",
+            ),
+        ];
+
+        // Collected rather than asserted in the loop, so a break shows every case it
+        // affects instead of only the first.
+        let mut wrong = Vec::new();
+        for (candidate, expect_refused, why) in cases {
+            let location = Location::from_str(candidate).unwrap();
+            let mut transaction = pool.begin().await.unwrap();
+            let result = ensure_location_available(
+                *warehouse_id,
+                Uuid::now_v7(),
+                &location,
+                &mut transaction,
+            )
+            .await;
+            transaction.rollback().await.unwrap();
+
+            let refused = match result {
+                Ok(()) => false,
+                Err(CreateTabularError::LocationAlreadyTaken(e))
+                    if e.to_string()
+                        == LocationAlreadyTaken::purge_pending(location.clone()).to_string() =>
+                {
+                    true
+                }
+                Err(e) => panic!("{candidate}: unexpected error {e:?}"),
+            };
+            if refused != expect_refused {
+                let direction = if expect_refused {
+                    "missed a pending purge"
+                } else {
+                    "refused a free location"
+                };
+                wrong.push(format!("{candidate}: {direction} -- {why}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     pub(super) async fn setup_test_tabular(pool: &sqlx::PgPool, protected: bool) -> TableInfo {
