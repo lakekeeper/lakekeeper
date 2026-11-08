@@ -1,3 +1,4 @@
+import base64
 import dataclasses
 import json
 import urllib
@@ -74,6 +75,9 @@ class Settings(BaseSettings):
     openid_client_id: Optional[Secret] = None
     openid_client_secret: Optional[Secret] = None
     openid_scope: Optional[str] = "lakekeeper"
+    # A second client, whose service account queries Trino as another user.
+    openid_other_client_id: Optional[Secret] = None
+    openid_other_client_secret: Optional[Secret] = None
     trino_uri: Optional[str] = None
     trino_auth_enabled: Optional[str] = None
     lakekeeper_warehouse: Optional[str] = None
@@ -936,6 +940,71 @@ def trino(warehouse: Warehouse, storage_config, trino_token):
         )
 
     yield conn
+
+
+@dataclasses.dataclass
+class TrinoUser:
+    connection: object
+    # Lakekeeper id of the user
+    user_id: str
+
+
+@pytest.fixture(scope="session")
+def trino_other_user(trino, warehouse: Warehouse) -> TrinoUser:
+    """A Trino session of a second user, who may use the warehouse.
+
+    Grants on the warehouse's objects are up to the tests. Only Trino with
+    authentication tells the users apart, through the OPA bridge.
+    """
+    if settings.trino_auth_enabled != "true":
+        pytest.skip("Trino authentication is not enabled")
+    if settings.openid_other_client_id is None:
+        pytest.skip("LAKEKEEPER_TEST__OPENID_OTHER_CLIENT_ID is not set")
+
+    from trino.auth import JWTAuthentication
+    from trino.dbapi import connect
+
+    response = requests.post(
+        settings.token_endpoint,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": settings.openid_other_client_id,
+            "client_secret": settings.openid_other_client_secret,
+            "scope": "trino",
+        },
+    )
+    response.raise_for_status()
+    token = response.json()["access_token"]
+    payload = token.split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    user_id = f"oidc~{claims['sub']}"
+
+    headers = {"Authorization": f"Bearer {warehouse.access_token}"}
+    requests.post(
+        warehouse.server.user_url,
+        headers=headers,
+        json={
+            "id": user_id,
+            "name": "Other Trino user",
+            "update-if-exists": True,
+            "user-type": "application",
+        },
+    ).raise_for_status()
+    requests.post(
+        warehouse.server.openfga_permissions_url
+        + f"/warehouse/{warehouse.warehouse_id}/assignments",
+        headers=headers,
+        json={"deletes": [], "writes": [{"type": "describe", "user": user_id}]},
+    ).raise_for_status()
+
+    connection = connect(
+        host=settings.trino_uri,
+        auth=JWTAuthentication(token),
+        http_scheme="https",
+        verify=False,  # Self-signed certificate
+        catalog=warehouse.normalized_catalog_name,
+    )
+    return TrinoUser(connection=connection, user_id=user_id)
 
 
 @pytest.fixture(scope="session")

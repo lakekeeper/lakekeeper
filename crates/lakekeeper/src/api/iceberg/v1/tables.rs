@@ -665,8 +665,16 @@ impl DataAccess {
 /// opaque value is `*`, so stripping them here would promote the latter into a
 /// wildcard the client never sent — see [`ETag::is_wildcard`].
 fn parse_etags(etags: &str) -> Vec<ETag> {
+    let mut quoted = false;
     etags
-        .split(',')
+        .split(|c| match c {
+            '"' => {
+                quoted = !quoted;
+                false
+            }
+            ',' => !quoted,
+            _ => false,
+        })
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
         .map(ETag::from)
@@ -1453,6 +1461,28 @@ mod test {
             assert!(!etags[0].is_wildcard(), "{sent} was read as a wildcard");
             assert_eq!(etags[0].validator(), "*", "still a tag once normalised");
         }
+    }
+
+    #[test]
+    fn test_parse_if_none_match_keeps_commas_inside_tags() {
+        for sent in ["\"old,*,tag\"", "W/\"old,*,tag\""] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::IF_NONE_MATCH, sent.parse().unwrap());
+
+            let etags = parse_if_none_match(&headers);
+            assert_eq!(etags, vec![sent.into()]);
+            assert!(!etags[0].is_wildcard());
+            assert_eq!(etags[0].validator(), "old,*,tag");
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, "\"a,b\", W/\"c,d\"".parse().unwrap());
+        headers.append(header::IF_NONE_MATCH, "\"other\"".parse().unwrap());
+        let etags = parse_if_none_match(&headers);
+        assert_eq!(
+            etags,
+            vec!["\"a,b\"".into(), "W/\"c,d\"".into(), "\"other\"".into()]
+        );
     }
 
     #[test]

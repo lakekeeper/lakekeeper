@@ -2635,12 +2635,11 @@ pub(crate) mod tests {
             )));
         }
 
-        /// A `write` grant on a namespace lets a principal write data to a table below it
-        /// and commit snapshots, refs and statistics, but not change the table's
-        /// structure, properties or history, nor drop, rename or protect it.
+        /// A `write` grant on a namespace lets a principal make every commit to a table below
+        /// it and write its files, but not drop, rename, protect it or control its tasks.
         #[tokio::test]
-        async fn test_write_commits_data_but_not_structure() {
-            use lakekeeper::service::authz::{CatalogTableAction, TableUpdateKind};
+        async fn test_write_commits_everything_but_never_drops() {
+            use lakekeeper::service::authz::{CatalogTableAction, CommitFacts, TableUpdateKind};
 
             let authorizer = new_authorizer_in_empty_store().await;
             let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"));
@@ -2659,7 +2658,110 @@ pub(crate) mod tests {
                 .create_table(&metadata, warehouse_id, table_id, namespace_id)
                 .await
                 .unwrap();
+            let writer = grant_namespace_write(&authorizer, namespace_id).await;
 
+            let allowed = async |action: CatalogTableAction| {
+                authorizer
+                    .check(CheckRequestTupleKey {
+                        user: format!("user:{writer}"),
+                        relation: action.to_openfga().to_string(),
+                        object: (warehouse_id, table_id).to_openfga(),
+                    })
+                    .await
+                    .unwrap()
+            };
+            // Every commit asks `can_commit`, so one kind stands for all.
+            let schema_change = CatalogTableAction::Commit {
+                updated_properties: Arc::default(),
+                removed_properties: Arc::default(),
+                target_refs: Arc::default(),
+                update_kinds: Arc::new(
+                    [
+                        TableUpdateKind::AddSchema,
+                        TableUpdateKind::SetCurrentSchema,
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                commit_facts: CommitFacts::staged_request_for_tests(),
+            };
+            assert!(allowed(schema_change).await);
+            assert!(allowed(CatalogTableAction::WriteData).await);
+            assert!(allowed(CatalogTableAction::ReadData).await);
+            for action in [
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
+                CatalogTableAction::Rename,
+                CatalogTableAction::SetProtection,
+                CatalogTableAction::Undrop,
+                CatalogTableAction::ControlTasks,
+            ] {
+                assert!(!allowed(action.clone()).await, "{action:?} needs modify");
+            }
+        }
+
+        /// A `write` grant on a namespace lets a principal commit to a view below it, which
+        /// replaces its definition or changes its properties, but not drop, rename or
+        /// protect it.
+        #[tokio::test]
+        async fn test_write_commits_to_a_view_but_never_drops_it() {
+            use lakekeeper::service::authz::CatalogViewAction;
+
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"));
+            let warehouse_id = WarehouseId::new_random();
+            let namespace_id = NamespaceId::new_random();
+            let view_id = ViewId::new_random();
+            authorizer
+                .create_namespace(
+                    &metadata,
+                    namespace_id,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+            authorizer
+                .create_view(&metadata, warehouse_id, view_id, namespace_id)
+                .await
+                .unwrap();
+            let writer = grant_namespace_write(&authorizer, namespace_id).await;
+
+            let allowed = async |action: CatalogViewAction| {
+                authorizer
+                    .check(CheckRequestTupleKey {
+                        user: format!("user:{writer}"),
+                        relation: action.to_openfga().to_string(),
+                        object: (warehouse_id, view_id).to_openfga(),
+                    })
+                    .await
+                    .unwrap()
+            };
+            assert!(
+                allowed(CatalogViewAction::Commit {
+                    updated_properties: Arc::default(),
+                    removed_properties: Arc::default(),
+                })
+                .await
+            );
+            for action in [
+                CatalogViewAction::Drop {
+                    force: false,
+                    purge: false,
+                },
+                CatalogViewAction::Rename,
+                CatalogViewAction::SetProtection,
+            ] {
+                assert!(!allowed(action.clone()).await, "{action:?} needs modify");
+            }
+        }
+
+        /// Grants `write` on `namespace_id` to a new user and returns that user.
+        async fn grant_namespace_write(
+            authorizer: &OpenFGAAuthorizer,
+            namespace_id: NamespaceId,
+        ) -> UserId {
             let writer = UserId::new_unchecked("oidc", "writer");
             authorizer
                 .write(
@@ -2673,73 +2775,7 @@ pub(crate) mod tests {
                 )
                 .await
                 .unwrap();
-
-            let allowed = async |action: CatalogTableAction| {
-                authorizer
-                    .check(CheckRequestTupleKey {
-                        user: format!("user:{writer}"),
-                        relation: action.to_openfga().to_string(),
-                        object: (warehouse_id, table_id).to_openfga(),
-                    })
-                    .await
-                    .unwrap()
-            };
-            let commit = |kinds: &[TableUpdateKind]| CatalogTableAction::Commit {
-                updated_properties: Arc::default(),
-                removed_properties: Arc::default(),
-                target_refs: Arc::default(),
-                update_kinds: Arc::new(kinds.iter().copied().collect()),
-            };
-
-            for kinds in [
-                vec![
-                    TableUpdateKind::AddSnapshot,
-                    TableUpdateKind::SetSnapshotRef,
-                ],
-                vec![TableUpdateKind::SetStatistics],
-            ] {
-                assert!(allowed(commit(&kinds)).await, "{kinds:?} is a data commit");
-            }
-            for kinds in [
-                vec![
-                    TableUpdateKind::AddSchema,
-                    TableUpdateKind::SetCurrentSchema,
-                ],
-                vec![TableUpdateKind::AddSnapshot, TableUpdateKind::SetProperties],
-                vec![TableUpdateKind::RemoveSnapshots],
-                // Names no update, so it asks about commits in general.
-                vec![],
-            ] {
-                assert!(!allowed(commit(&kinds)).await, "{kinds:?} needs modify");
-            }
-            // A check that changes properties without naming kinds, as an engine's
-            // access-control bridge may send it.
-            assert!(
-                !allowed(CatalogTableAction::Commit {
-                    updated_properties: Arc::new(std::collections::BTreeMap::from([(
-                        "write.format.default".to_string(),
-                        "orc".to_string()
-                    )])),
-                    removed_properties: Arc::default(),
-                    target_refs: Arc::default(),
-                    update_kinds: Arc::default(),
-                })
-                .await,
-                "changing properties needs modify"
-            );
-            assert!(allowed(CatalogTableAction::WriteData).await);
-            assert!(allowed(CatalogTableAction::ReadData).await);
-            for action in [
-                CatalogTableAction::Drop {
-                    force: false,
-                    purge: false,
-                },
-                CatalogTableAction::Rename,
-                CatalogTableAction::SetProtection,
-                CatalogTableAction::Undrop,
-            ] {
-                assert!(!allowed(action.clone()).await, "{action:?} needs modify");
-            }
+            writer
         }
 
         /// Views and generic tables ride the same hook, and each has its own object type

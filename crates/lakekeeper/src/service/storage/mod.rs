@@ -20,7 +20,6 @@ use std::{
 pub use az::{AzCredential, EndpointMode, GenericAdlsProfile, OneLakeProfile, TopLevelFolder};
 pub(crate) use error::ValidationError;
 use error::{CredentialsError, TableConfigError, UpdateError};
-use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::{NamespaceIdent, TableIdent};
 // `rest::StorageCredential` is the response-side credential entry; `StorageCredential` in this
@@ -51,7 +50,7 @@ use crate::{
         management::v1::warehouse::TabularDeleteProfile,
     },
     request_metadata::RequestMetadata,
-    server::{compression_codec::CompressionCodec, io::list_location},
+    server::{compression_codec::CompressionCodec, io::IOErrorExt},
     service::{
         BasicTabularInfo, NamespaceVersion, TabularId, TabularInfo, WarehouseVersion,
         storage::{
@@ -135,6 +134,19 @@ pub enum StoragePermissions {
     Read,
     ReadWrite,
     ReadWriteDelete,
+}
+
+impl StoragePermissions {
+    /// What a caller may receive for a tabular from its data privileges on it.
+    /// Write credentials can also read, so they need read as well.
+    #[must_use]
+    pub(crate) fn from_data_privileges(can_read: bool, can_write: bool) -> Option<Self> {
+        match (can_read, can_write) {
+            (true, true) => Some(Self::ReadWriteDelete),
+            (true, false) => Some(Self::Read),
+            (false, _) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1723,22 +1735,17 @@ pub(crate) async fn is_empty(
 ) -> Result<bool, ValidationError> {
     tracing::debug!("Checking location is empty: {location}");
 
-    let mut entry_stream = list_location(io, location, Some(1)).await.map_err(|e| {
-        tracing::debug!("Initializing list location failed: {e}");
-        ValidationError::from(e)
-    })?;
-    while let Some(entries) = entry_stream.next().await {
-        let entries = entries.map_err(|e| {
-            tracing::debug!("Stream batch failed: {e}");
-            ValidationError::from(Box::new(e))
+    let is_empty = io
+        .is_directory_empty(location.as_str())
+        .await
+        .map_err(|e| {
+            tracing::debug!("Checking location `{location}` failed: {e}");
+            ValidationError::from(IOErrorExt::from(e))
         })?;
-
-        if !entries.is_empty() {
-            tracing::debug!("Location `{location}` is not empty, entries: {entries:?}",);
-            return Ok(false);
-        }
+    if !is_empty {
+        tracing::debug!("Location `{location}` is not empty");
     }
-    Ok(true)
+    Ok(is_empty)
 }
 
 #[cfg(test)]

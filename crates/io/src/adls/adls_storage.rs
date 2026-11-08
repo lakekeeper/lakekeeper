@@ -20,15 +20,16 @@ use azure_storage_datalake::{
 };
 use bytes::{Bytes, BytesMut};
 use chrono::DateTime;
-use futures::{StreamExt as _, future::BoxFuture};
+use futures::{StreamExt as _, TryStreamExt as _, future::BoxFuture};
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ObjectRead, ReadError,
-    RemoveEmptyDirectoryOutcome, WriteError,
+    LakekeeperFileWrite, LakekeeperStorage, ListPages, Location, ObjectRead, ReadError,
+    RemoveEmptyDirectoryOutcome, WriteError, WriteOutcome,
     adls::{AdlsLocation, adls_error::parse_error},
     delete_limit::{DeleteEndpoint, DeleteLimit},
-    delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
+    delete_not_found_is_ok, execute_with_parallelism, pages_are_empty, safe_usize_to_i64,
+    validate_file_size,
 };
 
 #[derive(Debug, Clone)]
@@ -111,6 +112,48 @@ impl AdlsStorage {
     #[must_use]
     pub fn client(&self) -> &DataLakeClient {
         &self.data_lake_client
+    }
+
+    /// Pages of every path under `path`, recursively, also of names that are not a valid
+    /// [`Location`]. Directories below `path` are listed too.
+    fn list_paths(
+        &self,
+        path: &str,
+        page_size: Option<usize>,
+    ) -> Result<(Location, ListPages<'_, Path>), InvalidLocationError> {
+        let path = format!("{}/", path.trim_end_matches('/'));
+        let adls_location = AdlsLocation::try_from_str(&path, true)
+            .map_err(|e| e.with_context("List Operation failed"))?;
+        let base_location = adls_location.location().clone();
+
+        let client = self.get_filesystem_client(&adls_location)?;
+
+        let mut list_op = client.list_paths().directory(adls_location.blob_name());
+
+        // Set maximum results per page if requested.
+        // By default, ADLS returns 5000 items per page.
+        if let Some(size) = page_size {
+            // Convert to NonZeroU32, ensuring it's at least 1
+            if let Some(max_results) = NonZeroU32::new(u32::try_from(size).unwrap_or(u32::MAX)) {
+                list_op = list_op.max_results(max_results);
+            }
+        }
+
+        let list_stream = list_op.into_stream();
+
+        let stream = list_stream.map(move |result| {
+            let result = result.map_err(|e| {
+                parse_error(e, path.as_str()).with_context("Failed to list ADLS path")
+            });
+            if let Err(err) = &result
+                && err.kind() == ErrorKind::NotFound
+            {
+                return Ok(vec![]); // Return empty list if path does not exist
+            }
+            result.map(|page| page.paths)
+        });
+
+        Ok((base_location, stream.boxed()))
     }
 }
 
@@ -227,7 +270,7 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(())
     }
 
-    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<WriteOutcome, WriteError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
         let client = self.get_file_client(&adls_location)?;
@@ -317,16 +360,18 @@ impl LakekeeperStorage for AdlsStorage {
             }
         }
 
-        if let Err(e) = flush_close(&client, file_length, path).await {
-            delete_partial_file_logged_infallible(
-                &client,
-                path,
-                "flush_close failed after bulk write",
-            )
-            .await;
-            return Err(e);
+        match flush_close(&client, file_length, path).await {
+            Ok(outcome) => Ok(outcome),
+            Err(e) => {
+                delete_partial_file_logged_infallible(
+                    &client,
+                    path,
+                    "flush_close failed after bulk write",
+                )
+                .await;
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
@@ -467,45 +512,20 @@ impl LakekeeperStorage for AdlsStorage {
         page_size: Option<usize>,
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
-        let path = format!("{}/", path.trim_end_matches('/'));
-        let adls_location = AdlsLocation::try_from_str(&path, true)
-            .map_err(|e| e.with_context("List Operation failed"))?;
-        let base_location = adls_location.location().clone();
-
-        let client = self.get_filesystem_client(&adls_location)?;
-
-        let mut list_op = client.list_paths().directory(adls_location.blob_name());
-
-        // Set maximum results per page if requested.
-        // By default, ADLS returns 5000 items per page.
-        if let Some(size) = page_size {
-            // Convert to NonZeroU32, ensuring it's at least 1
-            if let Some(max_results) = NonZeroU32::new(u32::try_from(size).unwrap_or(u32::MAX)) {
-                list_op = list_op.max_results(max_results);
-            }
-        }
-
-        let list_stream = list_op.into_stream();
-
-        let stream = list_stream.map(move |result| {
-            let base_location = base_location.clone();
-            let result = result.map_err(|e| {
-                parse_error(e, path.as_str()).with_context("Failed to list ADLS path")
-            });
-            if let Err(err) = &result
-                && err.kind() == ErrorKind::NotFound
-            {
-                return Ok(vec![]); // Return empty list if path does not exist
-            }
-            result.map(|page| {
-                page.paths
+        let (base_location, pages) = self.list_paths(path, page_size)?;
+        Ok(pages
+            .map_ok(move |paths| {
+                paths
                     .iter()
                     .filter_map(try_parse_file_info(&base_location))
                     .collect::<Vec<_>>()
             })
-        });
+            .boxed())
+    }
 
-        Ok(stream.boxed())
+    async fn is_directory_empty(&self, path: &str) -> Result<bool, ReadError> {
+        let (_, pages) = self.list_paths(path, Some(1))?;
+        Ok(pages_are_empty(pages).await?)
     }
 
     /// Native ADLS Gen2 recursive delete via `DELETE` + `recursive=true`.
@@ -900,13 +920,20 @@ async fn append_chunk(
     })
 }
 
-/// Finalise the file by flushing and closing it.
-async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Result<(), WriteError> {
+/// Finalise the file by flushing and closing it. ADLS reports no version.
+async fn flush_close(
+    client: &FileClient,
+    file_length: i64,
+    path: &str,
+) -> Result<WriteOutcome, WriteError> {
     client
         .flush(file_length)
         .close(true)
         .await
-        .map(|_| ())
+        .map(|response| WriteOutcome {
+            e_tag: response.etag,
+            version: None,
+        })
         .map_err(|e| {
             WriteError::IOError(parse_error(e, path).with_context(format!(
                 "Failed to flush and close ADLS file (length {file_length})"
@@ -1081,7 +1108,7 @@ impl LakekeeperFileWrite for AdlsFileWrite {
         Ok(())
     }
 
-    async fn close(&mut self) -> Result<(), WriteError> {
+    async fn close(&mut self) -> Result<WriteOutcome, WriteError> {
         let prev_state = std::mem::replace(&mut self.state, AdlsWriterState::Closed);
         match prev_state {
             AdlsWriterState::Closed | AdlsWriterState::Aborted | AdlsWriterState::AbortFailed => {
@@ -1118,16 +1145,18 @@ impl LakekeeperFileWrite for AdlsFileWrite {
             }
             self.offset += chunk_len;
         }
-        if let Err(e) = flush_close(&self.client, self.offset, &self.path).await {
-            delete_partial_file_logged_infallible(
-                &self.client,
-                &self.path,
-                "flush_close failed during close",
-            )
-            .await;
-            return Err(e);
+        match flush_close(&self.client, self.offset, &self.path).await {
+            Ok(outcome) => Ok(outcome),
+            Err(e) => {
+                delete_partial_file_logged_infallible(
+                    &self.client,
+                    &self.path,
+                    "flush_close failed during close",
+                )
+                .await;
+                Err(e)
+            }
         }
-        Ok(())
     }
 }
 
@@ -1215,6 +1244,54 @@ mod tests {
             .await
             .unwrap();
         (storage, format!("{endpoint}/"), requests)
+    }
+
+    /// Storage whose endpoint answers every listing with one file named `name`.
+    async fn storage_listing(name: &str) -> AdlsStorage {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let body = serde_json::json!({"paths": [{
+            "contentLength": "1",
+            "etag": "0x1",
+            "group": "group",
+            "isDirectory": "false",
+            "lastModified": "Thu, 05 Nov 2026 10:00:00 GMT",
+            "name": name,
+            "owner": "owner",
+            "permissions": "rw-r-----",
+        }]})
+        .to_string();
+        let app = axum::Router::new().fallback(move || {
+            std::future::ready(([("content-type", "application/json")], body.clone()))
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        AzureSettings::builder()
+            .cloud_location(CloudLocation::Custom {
+                account: "account".to_string(),
+                uri: endpoint,
+            })
+            .build()
+            .get_storage_client(&AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth {
+                key: "dGVzdC1zaGFyZWQta2V5".to_string(),
+            }))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_name_that_is_not_a_location_makes_the_directory_non_empty() {
+        let storage = storage_listing("p/a#b").await;
+        let path = "abfss://filesystem@account.dfs.core.windows.net/p";
+
+        let listed = storage
+            .list(path, None)
+            .await
+            .unwrap()
+            .try_concat()
+            .await
+            .unwrap();
+        assert!(listed.is_empty(), "{listed:?}");
+        assert!(!storage.is_directory_empty(path).await.unwrap());
     }
 
     #[tokio::test]

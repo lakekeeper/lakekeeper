@@ -192,8 +192,8 @@ fn table_info_from_updated_row(
 }
 
 /// Locks the committed tables' `tabular` rows in id order and fails with
-/// [`TabularNotFound`] if a row is missing, or [`ConcurrentUpdateError`] if its metadata
-/// location differs from the one the commit was built on.
+/// [`TabularNotFound`] if a table is missing or soft-dropped, or [`ConcurrentUpdateError`]
+/// if its metadata location differs from the one the commit was built on.
 ///
 /// Runs before any sub-table write, so commits to one table queue here and a stale commit
 /// fails before its writes can collide with the winner's, on a unique key or by locking
@@ -215,6 +215,7 @@ async fn lock_tables_for_commit(
         SELECT tabular_id, metadata_location
         FROM tabular
         WHERE warehouse_id = $1 AND tabular_id = ANY($2::uuid[]) AND typ = 'table'
+            AND deleted_at IS NULL
         ORDER BY tabular_id
         FOR NO KEY UPDATE
         "#,
@@ -715,8 +716,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        CatalogState, PostgresBackend, namespace::tests::initialize_namespace,
-        tabular::drop_tabular, warehouse::test::initialize_warehouse,
+        CatalogState, PostgresBackend,
+        namespace::tests::initialize_namespace,
+        tabular::{drop_tabular, mark_tabular_as_deleted},
+        warehouse::test::initialize_warehouse,
     };
 
     const TEST_LOCATION: &str = "s3://bucket/test/location";
@@ -1402,6 +1405,40 @@ mod tests {
 
         let mut t = pool.begin().await.unwrap();
         drop_tabular(
+            table_info.warehouse_id,
+            table_info.tabular_id.into(),
+            false,
+            None,
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = pool.begin().await.unwrap();
+        let err = commit_table_transaction(table_info.warehouse_id, vec![commit], &mut t)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CommitTableTransactionError::TabularNotFound(_)),
+            "expected TabularNotFound, got {err:?}"
+        );
+    }
+
+    /// A commit to a table soft-dropped after the commit was built fails with
+    /// `TabularNotFound`, although a soft drop keeps the metadata location.
+    #[sqlx::test]
+    async fn test_commit_to_soft_dropped_table_fails_with_not_found(pool: sqlx::PgPool) {
+        let (table_info, metadata) = setup_table(pool.clone()).await;
+        let commit = commit_on(
+            &metadata,
+            table_info.metadata_location.as_ref(),
+            "metadata2.json",
+            set_property,
+        );
+
+        let mut t = pool.begin().await.unwrap();
+        mark_tabular_as_deleted(
             table_info.warehouse_id,
             table_info.tabular_id.into(),
             false,

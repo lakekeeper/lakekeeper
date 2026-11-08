@@ -19,7 +19,7 @@ type warehouse
     # twin adds the weaker privileges it subsumes and what flows down from the
     # project. Actions read the `_effective` twin.
     define describe: [user, role#assignee]
-    define describe_effective: describe or ownership or select_effective or create_effective or describe_effective from project
+    define describe_effective: describe or ownership or select_effective or describe_effective from project
     define select: [user, role#assignee]
     define select_effective: select or ownership or write_effective or select_effective from project
     define create: [user, role#assignee]
@@ -35,7 +35,7 @@ type warehouse
     # downward, so a descendant never re-asks the question of its parent: what it
     # inherits from above is already answered by `describe_effective` here.
     define visible_below: describe or select or create or write or modify or ownership or visible_below from namespace
-    # Governance tag attachment. Independent of `modify` (separation of duties:
+    # Governance tag attachment. Independent of `write` and `modify` (separation of duties:
     # classify without holding data/DDL rights); security_admin governs.
     define manage_tags: [user, role#assignee] or security_admin from project
 
@@ -47,7 +47,8 @@ type warehouse
     define can_delete: modify_effective
     define can_update_storage: modify_effective
     define can_update_storage_credential: modify_effective
-    define can_get_metadata: describe_effective or visible_below from namespace
+    # `create` shows the containers it may create in, not the tables, views and generic tables inside.
+    define can_get_metadata: describe_effective or create_effective or visible_below from namespace
     define can_get_config: can_get_metadata
     define can_set_protection: modify_effective
     define can_set_format_version_policy: modify_effective
@@ -62,6 +63,8 @@ type warehouse
     define can_rename: modify_effective
     define can_list_deleted_tabulars: can_get_metadata
     define can_modify_soft_deletion: modify_effective
+    # Registering files that are already in the warehouse's storage, for example orphaned files of a dropped table: registering a table, or creating a generic table on a location that holds files. Asked with the create relation on the namespace.
+    define can_register_table: modify_effective
     define can_get_endpoint_statistics: describe_effective
     # Task permissions
     define can_get_all_tasks: describe_effective

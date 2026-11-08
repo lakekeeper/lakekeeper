@@ -99,6 +99,7 @@ Follow `crates/lakekeeper/src/api/management/v1/lakekeeper_actions.rs` as the re
 - Validate request inputs (query parsing, `require_project_id(None)`, request shape) with `?` before authorizing; such errors emit no event. From the first authorization step on, audit every failure: role resolution, catalog fetches, authz and serialization go inside the single `Result` passed to one `event_ctx.emit_authz(...)?`. Report a denial found before `emit_authz` with `event_ctx.emit_early_authz_failure(...)`, and one found after it, on the checked context `emit_authz` returns, with `emit_late_authz_failure(...)`.
 - Use `require_*_presence` to fold `Result<Option<T>, CatalogError>` into `AuthZError`.
 - Match `APIEventContext::for_*` to the actual target resource — never default to `for_server`.
+- Give a check of another action on another entity (for example `modify_soft_deletion` on the warehouse of a forced drop) its own record: build an `APIEventContext` for that entity after the call's own `emit_authz`.
 - Never format errors into user-facing messages. Attach typed errors via `.source(Some(Box::new(e)))`.
 
 ## Audit Log

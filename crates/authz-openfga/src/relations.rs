@@ -654,6 +654,7 @@ pub enum ProjectRelation {
     Describe,
     Select,
     Create,
+    /// The write tier.
     Write,
     Modify,
     // -- Actions --
@@ -999,6 +1000,7 @@ pub enum WarehouseRelation {
     Describe,
     Select,
     Create,
+    /// The write tier.
     Write,
     Modify,
     ManageTags,
@@ -1040,6 +1042,7 @@ pub enum WarehouseRelation {
     CanSetProtection,
     CanSetFormatVersionPolicy,
     CanGetEndpointStatistics,
+    CanRegisterTable,
     // -- Revoke actions --
     CanRevokeCreate,
     CanRevokeDescribe,
@@ -1315,6 +1318,9 @@ impl ReducedRelation for CatalogWarehouseAction {
             }
             CatalogWarehouseAction::Delete { .. } => WarehouseRelation::CanDelete,
             CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
+            CatalogWarehouseAction::UpdateStorageCredential => {
+                WarehouseRelation::CanUpdateStorageCredential
+            }
             CatalogWarehouseAction::ManageTags => WarehouseRelation::CanManageTags,
             CatalogWarehouseAction::GetMetadata => WarehouseRelation::CanGetMetadata,
             CatalogWarehouseAction::GetConfig => WarehouseRelation::CanGetConfig,
@@ -1342,6 +1348,7 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::GetEndpointStatistics => {
                 WarehouseRelation::CanGetEndpointStatistics
             }
+            CatalogWarehouseAction::RegisterTable => WarehouseRelation::CanRegisterTable,
             // Same permission as `APIWarehouseAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogWarehouseAction::ReadGrants => WarehouseRelation::CanReadAssignments,
@@ -1401,6 +1408,7 @@ pub enum NamespaceRelation {
     Describe,
     Select,
     Create,
+    /// The write tier.
     Write,
     Modify,
     ManageTags,
@@ -1769,6 +1777,7 @@ pub enum TableRelation {
     ManageGrants,
     Describe,
     Select,
+    /// The write tier.
     Write,
     Modify,
     ManageTags,
@@ -1778,7 +1787,6 @@ pub enum TableRelation {
     CanReadData,
     CanGetMetadata,
     CanCommit,
-    CanCommitData,
     CanRename,
     CanMove,
     CanIncludeInList,
@@ -2034,9 +2042,7 @@ impl ReducedRelation for CatalogTableAction {
             CatalogTableAction::ReadData => TableRelation::CanReadData,
             CatalogTableAction::ManageTags => TableRelation::CanManageTags,
             CatalogTableAction::GetMetadata => TableRelation::CanGetMetadata,
-            action @ CatalogTableAction::Commit { .. } if action.is_data_commit() => {
-                TableRelation::CanCommitData
-            }
+            // Every commit is the write tier's, whatever it changes.
             CatalogTableAction::Commit { .. } => TableRelation::CanCommit,
             CatalogTableAction::Rename => TableRelation::CanRename,
             CatalogTableAction::Move { .. } => TableRelation::CanMove,
@@ -2092,6 +2098,8 @@ pub enum ViewRelation {
     ManageGrants,
     Describe,
     Select,
+    /// The write tier.
+    Write,
     Modify,
     ManageTags,
     // -- Actions --
@@ -2108,6 +2116,7 @@ pub enum ViewRelation {
     CanGrantManageGrants,
     CanGrantDescribe,
     CanGrantSelect,
+    CanGrantWrite,
     CanGrantModify,
     CanGrantManageTags,
     CanChangeOwnership,
@@ -2115,8 +2124,10 @@ pub enum ViewRelation {
     CanGetTasks,
     CanControlTasks,
     CanSetProtection,
+    CanChangeSecurityMode,
     // -- Revoke actions --
     CanRevokeDescribe,
+    CanRevokeWrite,
     CanRevokeModify,
     CanRevokeSelect,
 }
@@ -2151,6 +2162,7 @@ pub(super) enum APIViewRelation {
     ManageGrants,
     Describe,
     Select,
+    Write,
     Modify,
     ManageTags,
 }
@@ -2169,6 +2181,8 @@ pub(super) enum ViewAssignment {
     Describe(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentSelect"))]
     Select(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentWrite"))]
+    Write(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentModify"))]
     Modify(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentManageTags"))]
@@ -2183,6 +2197,7 @@ impl GrantableRelation for APIViewRelation {
             APIViewRelation::ManageGrants => ViewRelation::CanGrantManageGrants,
             APIViewRelation::Describe => ViewRelation::CanGrantDescribe,
             APIViewRelation::Select => ViewRelation::CanGrantSelect,
+            APIViewRelation::Write => ViewRelation::CanGrantWrite,
             APIViewRelation::Modify => ViewRelation::CanGrantModify,
             APIViewRelation::ManageTags => ViewRelation::CanGrantManageTags,
         }
@@ -2212,6 +2227,9 @@ impl Assignment for ViewAssignment {
             APIViewRelation::Select => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Select)
             }
+            APIViewRelation::Write => {
+                UserOrRole::parse_from_openfga(user).map(ViewAssignment::Write)
+            }
             APIViewRelation::Modify => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Modify)
             }
@@ -2228,6 +2246,7 @@ impl Assignment for ViewAssignment {
             | ViewAssignment::ManageGrants(user)
             | ViewAssignment::Describe(user)
             | ViewAssignment::Select(user)
+            | ViewAssignment::Write(user)
             | ViewAssignment::Modify(user)
             | ViewAssignment::ManageTags(user) => user.to_openfga(),
         }
@@ -2240,6 +2259,7 @@ impl Assignment for ViewAssignment {
             ViewAssignment::ManageGrants { .. } => APIViewRelation::ManageGrants,
             ViewAssignment::Describe { .. } => APIViewRelation::Describe,
             ViewAssignment::Select { .. } => APIViewRelation::Select,
+            ViewAssignment::Write { .. } => APIViewRelation::Write,
             ViewAssignment::Modify { .. } => APIViewRelation::Modify,
             ViewAssignment::ManageTags { .. } => APIViewRelation::ManageTags,
         }
@@ -2264,6 +2284,7 @@ pub(super) enum APIViewAction {
     GrantManageTags,
     GrantDescribe,
     GrantSelect,
+    GrantWrite,
     GrantModify,
     ChangeOwnership,
     GetTasks,
@@ -2281,6 +2302,7 @@ pub(super) enum OpenFGAViewAction {
     GrantManageTags,
     GrantDescribe,
     GrantSelect,
+    GrantWrite,
     GrantModify,
     ChangeOwnership,
 }
@@ -2295,6 +2317,7 @@ impl ReducedRelation for APIViewRelation {
             APIViewRelation::ManageGrants => ViewRelation::ManageGrants,
             APIViewRelation::Describe => ViewRelation::Describe,
             APIViewRelation::Select => ViewRelation::Select,
+            APIViewRelation::Write => ViewRelation::Write,
             APIViewRelation::Modify => ViewRelation::Modify,
             APIViewRelation::ManageTags => ViewRelation::ManageTags,
         }
@@ -2318,6 +2341,7 @@ impl ReducedRelation for APIViewAction {
             APIViewAction::GrantManageTags => ViewRelation::CanGrantManageTags,
             APIViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
             APIViewAction::GrantSelect => ViewRelation::CanGrantSelect,
+            APIViewAction::GrantWrite => ViewRelation::CanGrantWrite,
             APIViewAction::GrantModify => ViewRelation::CanGrantModify,
             APIViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
             APIViewAction::GetTasks => ViewRelation::CanGetTasks,
@@ -2347,6 +2371,7 @@ impl ReducedRelation for CatalogViewAction {
             // Same permission as `APIViewAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogViewAction::ReadGrants => ViewRelation::CanReadAssignments,
+            CatalogViewAction::ChangeSecurityMode => ViewRelation::CanChangeSecurityMode,
         }
     }
 }
@@ -2362,6 +2387,7 @@ impl ReducedRelation for OpenFGAViewAction {
             OpenFGAViewAction::GrantManageTags => ViewRelation::CanGrantManageTags,
             OpenFGAViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
             OpenFGAViewAction::GrantSelect => ViewRelation::CanGrantSelect,
+            OpenFGAViewAction::GrantWrite => ViewRelation::CanGrantWrite,
             OpenFGAViewAction::GrantModify => ViewRelation::CanGrantModify,
             OpenFGAViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
         }
@@ -2392,6 +2418,7 @@ pub enum GenericTableRelation {
     ManageGrants,
     Describe,
     Select,
+    /// The write tier.
     Write,
     Modify,
     ManageTags,
@@ -2764,6 +2791,7 @@ impl RevocableRelation for APIViewRelation {
         match self {
             // Delegable, so taking them back is administration.
             APIViewRelation::Describe => ViewRelation::CanRevokeDescribe,
+            APIViewRelation::Write => ViewRelation::CanRevokeWrite,
             APIViewRelation::Modify => ViewRelation::CanRevokeModify,
             APIViewRelation::Select => ViewRelation::CanRevokeSelect,
             // Never delegable, so one relation covers both directions.
@@ -2899,6 +2927,88 @@ pub(crate) mod test {
         );
     }
 
+    /// Every commit asks `can_commit`: data-only commits, structural ones, requests without
+    /// updates, commits to a staged table and checks that name no update kinds.
+    #[test]
+    fn every_commit_maps_to_can_commit() {
+        use std::sync::Arc;
+
+        use lakekeeper::service::authz::{CommitFacts, TableUpdateKind};
+
+        let commit = |kinds: &[TableUpdateKind], commit_facts| {
+            CatalogTableAction::Commit {
+                updated_properties: Arc::default(),
+                removed_properties: Arc::default(),
+                target_refs: Arc::default(),
+                update_kinds: Arc::new(kinds.iter().copied().collect()),
+                commit_facts,
+            }
+            .to_openfga()
+        };
+        let append = [
+            TableUpdateKind::AddSnapshot,
+            TableUpdateKind::SetSnapshotRef,
+        ];
+        let facts = [
+            CommitFacts::live_check_for_tests(),
+            CommitFacts::live_request_for_tests(),
+            CommitFacts::staged_request_for_tests(),
+            CommitFacts::default(),
+        ];
+        for commit_facts in facts {
+            for kinds in [
+                &append[..],
+                &[],
+                &[TableUpdateKind::AddSchema],
+                &[
+                    TableUpdateKind::RemoveSnapshots,
+                    TableUpdateKind::RemoveSnapshotRef,
+                ],
+            ] {
+                assert_eq!(
+                    commit(kinds, commit_facts),
+                    TableRelation::CanCommit,
+                    "{kinds:?} with {commit_facts:?}"
+                );
+            }
+        }
+        let with_properties = CatalogTableAction::Commit {
+            updated_properties: Arc::new(
+                [("owner".to_string(), "team".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            removed_properties: Arc::default(),
+            target_refs: Arc::default(),
+            update_kinds: Arc::new([TableUpdateKind::SetProperties].into_iter().collect()),
+            commit_facts: CommitFacts::live_request_for_tests(),
+        };
+        assert_eq!(with_properties.to_openfga(), TableRelation::CanCommit);
+    }
+
+    // Both relations resolve alike in the model, so a swap would pass every model test.
+    #[test]
+    fn storage_and_credential_updates_map_to_their_own_relations() {
+        assert_eq!(
+            CatalogWarehouseAction::UpdateStorage.to_openfga(),
+            WarehouseRelation::CanUpdateStorage
+        );
+        assert_eq!(
+            CatalogWarehouseAction::UpdateStorageCredential.to_openfga(),
+            WarehouseRelation::CanUpdateStorageCredential
+        );
+    }
+
+    // A view's commit and security mode switch can resolve alike in the model, so a swap would
+    // pass every model test.
+    #[test]
+    fn view_security_mode_change_maps_to_its_own_relation() {
+        assert_eq!(
+            CatalogViewAction::ChangeSecurityMode.to_openfga(),
+            ViewRelation::CanChangeSecurityMode
+        );
+    }
+
     #[test]
     fn tag_creator_maps_to_its_own_grant_and_stored_relations() {
         assert_eq!(
@@ -2938,5 +3048,85 @@ pub(crate) mod test {
             ProjectAssignment::TagCreator(u()).relation(),
             APIProjectRelation::TagCreator
         );
+    }
+
+    /// The assignments API names the write tier `write`, in the relation filter and in the
+    /// `type` of an assignment, and stores it as `write`.
+    #[test]
+    fn the_assignments_api_names_the_write_tier_write() {
+        let u = || UserOrRole::User(UserId::new_unchecked("oidc", "u"));
+        let type_of = |assignment: serde_json::Value| assignment["type"].clone();
+        assert_eq!(
+            type_of(serde_json::to_value(ProjectAssignment::Write(u())).unwrap()),
+            "write"
+        );
+        assert_eq!(
+            type_of(serde_json::to_value(WarehouseAssignment::Write(u())).unwrap()),
+            "write"
+        );
+        assert_eq!(
+            type_of(serde_json::to_value(NamespaceAssignment::Write(u())).unwrap()),
+            "write"
+        );
+        assert_eq!(
+            type_of(serde_json::to_value(TableAssignment::Write(u())).unwrap()),
+            "write"
+        );
+        assert_eq!(
+            type_of(serde_json::to_value(ViewAssignment::Write(u())).unwrap()),
+            "write"
+        );
+        assert_eq!(
+            type_of(serde_json::to_value(GenericTableAssignment::Write(u())).unwrap()),
+            "write"
+        );
+        let filter = serde_json::json!("write");
+        assert_eq!(
+            serde_json::from_value::<APIProjectRelation>(filter.clone())
+                .unwrap()
+                .to_openfga(),
+            ProjectRelation::Write
+        );
+        assert_eq!(
+            serde_json::from_value::<APIWarehouseRelation>(filter.clone())
+                .unwrap()
+                .to_openfga(),
+            WarehouseRelation::Write
+        );
+        assert_eq!(
+            serde_json::from_value::<APINamespaceRelation>(filter.clone())
+                .unwrap()
+                .to_openfga(),
+            NamespaceRelation::Write
+        );
+        assert_eq!(
+            serde_json::from_value::<APITableRelation>(filter.clone())
+                .unwrap()
+                .to_openfga(),
+            TableRelation::Write
+        );
+        assert_eq!(
+            serde_json::from_value::<APIGenericTableRelation>(filter.clone())
+                .unwrap()
+                .to_openfga(),
+            GenericTableRelation::Write
+        );
+        assert_eq!(
+            serde_json::from_value::<APIViewRelation>(filter)
+                .unwrap()
+                .to_openfga(),
+            ViewRelation::Write
+        );
+        assert_eq!(TableRelation::Write.to_string(), "write");
+        assert_eq!(
+            serde_json::to_value(APITableAction::GrantWrite).unwrap(),
+            "grant_write"
+        );
+        // `modify` keeps its name in both APIs.
+        assert_eq!(
+            type_of(serde_json::to_value(TableAssignment::Modify(u())).unwrap()),
+            "modify"
+        );
+        assert_eq!(TableRelation::Modify.to_string(), "modify");
     }
 }

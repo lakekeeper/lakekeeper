@@ -232,11 +232,11 @@ Label values:
 |---------------------------------------|--------|
 | `kind`                                | `gating`, `role_granting` |
 | `decision`                            | `allow`, `deny` |
-| `source`                              | `cache`, `upstream` |
+| `source`                              | `cache`, `upstream`, `claims` (the token passed the check on its [claims](./admission.md#satisfied-by-claims)) |
 | `outcome`                             | `allow` (`2xx`), `deny` (exactly `403`), `unavailable` (anything else, including timeouts) |
 | `reason` on `fail_closed_total`       | `upstream` |
 
-Buckets stop at 10s. Cached decisions make no call, so `_count` measures load on your endpoint, not the request rate.
+Buckets stop at 10s. Cached decisions and checks passed on claims make no call, so `_count` measures load on your endpoint, not the request rate.
 
 A check that fails closed records no decision. `upstream` counts per failed check, so one rejected request can increment it several times.
 
@@ -274,7 +274,7 @@ We recommend scaling on `demand`. It adds up the tasks that wait to start (`due`
 
 `oldest-due-seconds` is how long the longest waiting task has waited, or `null` if no task waits. The same value is available as a metric, see [Task Queue Metrics](#task-queue-metrics).
 
-The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots` and `remove_orphan_files`.
+The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots`, `remove_orphan_files` and `optimize`. The `optimize` queue also reports each [size class](./optimize-workers.md#size-classes) on its own: `GET /task-queue/optimize/demand?class=<name>`.
 
 A trigger of a KEDA ScaledJob looks like this:
 

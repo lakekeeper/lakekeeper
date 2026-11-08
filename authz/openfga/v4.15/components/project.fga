@@ -29,7 +29,7 @@ type project
     # weaker privileges it subsumes. A project sits at the top of the privilege
     # hierarchy, so nothing flows into it from above. Actions read the twin.
     define describe: [user, role#assignee]
-    define describe_effective: describe or select_effective or create_effective or data_admin or security_admin
+    define describe_effective: describe or select_effective or data_admin or security_admin
     define select: [user, role#assignee]
     define select_effective: select or write_effective
     define create: [user, role#assignee]
@@ -49,7 +49,8 @@ type project
     # Drop this project
     define can_delete: modify_effective
     define can_rename: modify_effective
-    define can_get_metadata: describe_effective or visible_below from warehouse or admin from server
+    # `create` shows the containers it may create in, not the tables, views and generic tables inside.
+    define can_get_metadata: describe_effective or create_effective or visible_below from warehouse or admin from server
     # Can list elements in this projects - will be filtered subsequently
     define can_list_warehouses: can_get_metadata
     define can_include_in_list: can_get_metadata

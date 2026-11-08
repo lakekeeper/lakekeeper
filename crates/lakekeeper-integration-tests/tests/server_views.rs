@@ -324,3 +324,104 @@ async fn test_reuse_view_ids_soft_delete(pool: PgPool) {
         .await;
     }
 }
+
+/// View responses carry no storage access. The memory profile of the other tests returns no
+/// storage config for any tabular, so these run against an S3-compatible store with STS. Named
+/// so nextest's default profile filters them out; CI runs them against the store configured
+/// via `LAKEKEEPER_TEST__S3_*`.
+mod s3_compat_integration_tests {
+    use iceberg::TableIdent;
+    use iceberg_ext::catalog::rest::{CommitViewRequest, ViewUpdate};
+    use lakekeeper::{
+        api::{
+            RequestMetadata,
+            iceberg::{
+                types::Prefix,
+                v1::{
+                    DataAccess, NamespaceParameters, ViewParameters,
+                    views::{LoadViewRequest, ViewService},
+                },
+            },
+            management::v1::warehouse::TabularDeleteProfile,
+        },
+        server::CatalogServer,
+        service::authz::AllowAllAuthorizer,
+    };
+    use lakekeeper_integration_tests::{
+        assert_view_response_without_storage_access, create_ns, create_view_request,
+        s3_compatible_profile, setup_simple,
+    };
+    use maplit::hashmap;
+    use sqlx::PgPool;
+
+    const VENDED_CREDENTIALS: DataAccess = DataAccess {
+        vended_credentials: true,
+        remote_signing: false,
+    };
+
+    #[sqlx::test]
+    async fn test_view_responses_carry_no_storage_access(pool: PgPool) {
+        let (profile, cred) = s3_compatible_profile();
+        let (ctx, warehouse) = setup_simple(
+            pool,
+            profile,
+            Some(cred),
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+        let prefix = warehouse.warehouse_id.to_string();
+        let namespace = create_ns(ctx.clone(), prefix.clone(), "ns".to_string())
+            .await
+            .namespace;
+
+        let created = CatalogServer::create_view(
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: namespace.clone(),
+            },
+            create_view_request(Some("v"), None),
+            ctx.clone(),
+            VENDED_CREDENTIALS,
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_view_response_without_storage_access(&created, "createView");
+
+        let view = ViewParameters {
+            prefix: Some(Prefix(prefix)),
+            view: TableIdent::new(namespace, "v".to_string()),
+        };
+        let loaded = CatalogServer::load_view(
+            view.clone(),
+            LoadViewRequest {
+                data_access: VENDED_CREDENTIALS.into(),
+                referenced_by: None,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_view_response_without_storage_access(&loaded, "loadView");
+
+        let committed = CatalogServer::commit_view(
+            view,
+            CommitViewRequest {
+                identifier: None,
+                requirements: None,
+                updates: vec![ViewUpdate::SetProperties {
+                    updates: hashmap! { "comment".to_string() => "replaced".to_string() },
+                }],
+            },
+            ctx,
+            VENDED_CREDENTIALS,
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_view_response_without_storage_access(&committed, "replaceView");
+    }
+}

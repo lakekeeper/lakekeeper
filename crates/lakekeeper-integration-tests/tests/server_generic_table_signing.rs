@@ -15,24 +15,23 @@ use lakekeeper::{
     WarehouseId,
     api::{
         ApiContext, IcebergErrorResponse,
-        data::v1::generic_tables::{
-            CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
-        },
+        data::v1::generic_tables::{GenericTableParameters, GenericTableService as _},
         iceberg::{
             types::Prefix,
             v1::{
-                DataAccess, LoadTableResultOrNotModified, TableParameters,
-                namespace::NamespaceParameters,
+                DataAccess, LoadTableResultOrNotModified, TableParameters, ViewParameters,
                 s3_signer::{Service as _, SignTarget},
                 tables::{LoadTableRequest, TablesService as _},
+                views::{LoadViewRequest, ViewService as _},
             },
         },
     },
     server::{CatalogServer, tables::create_table::create_table_request_into_table_metadata},
     service::{
-        AllowedFormatVersions, CatalogNamespaceOps as _, CatalogStore, CatalogTableOps as _,
-        CatalogTabularOps as _, CatalogViewOps as _, GenericTableFormat, NamespaceId,
-        SecretStore as _, State, TableCreation, TableId, TabularListFlags, Transaction as _,
+        AllowedFormatVersions, CatalogGenericTableOps as _, CatalogNamespaceOps as _, CatalogStore,
+        CatalogTableOps as _, CatalogTabularOps as _, CatalogViewOps as _, GenericTableCreation,
+        GenericTableFormat, GenericTableId, NamespaceId, SecretStore as _, State, TableCreation,
+        TableId, TabularListFlags, Transaction as _,
         authz::{
             AllowAllAuthorizer, Authorizer, CatalogGenericTableAction, CatalogTableAction,
             tests::HidingAuthorizer,
@@ -44,7 +43,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::{
-    create_table_request, get_api_context, random_request_metadata,
+    assert_view_response_without_storage_access, create_table_request, get_api_context,
+    random_request_metadata,
 };
 use lakekeeper_io::Location;
 use lakekeeper_storage_postgres::{
@@ -113,38 +113,41 @@ fn namespace(name: &str) -> NamespaceIdent {
     NamespaceIdent::new(name.to_string())
 }
 
-fn create_request(name: &str) -> CreateGenericTableRequest {
-    CreateGenericTableRequest {
-        name: name.to_string(),
-        format: GenericTableFormat::Unknown("lance".to_string()),
-        base_location: None,
-        doc: None,
-        properties: HashMap::default(),
-        schema: None,
-        statistics: None,
-    }
-}
-
-/// Creates a generic table and returns its `base-location` (an `s3://…` URI).
+/// Creates a generic table and returns its `base-location` (an `s3://…` URI). Bypasses the
+/// REST handler, which checks on S3 that the location is empty, for the same reason as
+/// [`create_catalog_table`].
 async fn create_generic_table<A: Authorizer>(
     ctx: &Ctx<A>,
     namespace_name: &str,
     warehouse_id: WarehouseId,
     name: &str,
 ) -> String {
-    CatalogServer::create_generic_table(
-        NamespaceParameters {
-            prefix: Some(warehouse_id.to_string().into()),
-            namespace: namespace(namespace_name),
+    let namespace_id = resolve_namespace_id(ctx, warehouse_id, namespace_name).await;
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let info = PostgresBackend::create_generic_table(
+        GenericTableCreation {
+            generic_table_id: GenericTableId::from(uuid::Uuid::now_v7()),
+            namespace_id,
+            warehouse_id,
+            name: name.to_string(),
+            format: GenericTableFormat::Unknown("lance".to_string()),
+            location: format!("s3://{BUCKET}/{namespace_name}/{name}")
+                .parse()
+                .unwrap(),
+            doc: None,
+            schema: None,
+            statistics: None,
+            properties: HashMap::default(),
         },
-        create_request(name),
-        ctx.clone(),
-        random_request_metadata(),
+        transaction.transaction(),
     )
     .await
-    .unwrap()
-    .table
-    .base_location
+    .unwrap();
+    transaction.commit().await.unwrap();
+    info.location.to_string()
 }
 
 async fn generic_table_id<A: Authorizer>(
@@ -1106,6 +1109,35 @@ async fn test_load_table_advertises_remote_signing_config(pool: PgPool) {
     );
 }
 
+/// A view response carries no signer keys and no storage config, even if the client asks
+/// for remote signing. The signer refuses views anyway.
+#[sqlx::test]
+async fn test_load_view_advertises_no_remote_signing(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    create_catalog_view(&ctx, &namespace_name, warehouse_id, "myview").await;
+
+    let response = CatalogServer::load_view(
+        ViewParameters {
+            prefix: Some(Prefix(warehouse_id.to_string())),
+            view: TableIdent::new(NamespaceIdent::new(namespace_name), "myview".to_string()),
+        },
+        LoadViewRequest {
+            data_access: DataAccess {
+                vended_credentials: false,
+                remote_signing: true,
+            }
+            .into(),
+            referenced_by: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("loading the view must succeed");
+
+    assert_view_response_without_storage_access(&response, "loadView");
+}
+
 /// The unit tests in the signer check which header names stay unsigned; these
 /// check that a store accepts what it signs. Named so nextest's default profile
 /// filters them out; CI runs them against the store configured via
@@ -1187,11 +1219,11 @@ mod s3_compat_integration_tests {
         request.send().await.unwrap()
     }
 
-    /// Iceberg's signer client reuses a GET signature for the same URI, so the next
-    /// ranged read of an object goes out with the cached signature and a different
-    /// `Range`, and the AWS SDK v2 counts each attempt in `amz-sdk-request`. Both
-    /// come in title case from the SDK, and the store must still accept the
-    /// signature.
+    /// A client that caches signatures reuses a GET signature for the same URI, so
+    /// the next ranged read of an object goes out with the cached signature and a
+    /// different `Range`, and the AWS SDK v2 counts each attempt in
+    /// `amz-sdk-request`. Both come in title case from the SDK, and the store must
+    /// still accept the signature.
     #[sqlx::test]
     async fn test_cached_signature_serves_another_range(pool: PgPool) {
         let (profile, cred) = s3_compatible_profile();

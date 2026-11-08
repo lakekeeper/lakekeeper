@@ -403,8 +403,8 @@ async fn sync_view_schemas(
             continue;
         }
         sqlx::query!(
-            r#"INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
-               VALUES ($1, $2, $3, NULL)"#,
+            r#"INSERT INTO view_schema (warehouse_id, view_id, schema_id)
+               VALUES ($1, $2, $3)"#,
             *warehouse_id,
             view_id,
             s.schema_id(),
