@@ -791,29 +791,19 @@ pub(crate) async fn auth_middleware_fn<
             request_metadata.set_instance_admin(true);
         }
 
-        // Identify trusted engines based on token identity (IdP, audiences, subject).
-        // Each engine defines `identities` specifying who may act as that engine.
-        // Multiple engines may match — this is intentional (e.g. an admin token
-        // whose audience appears in several engine configs).
-        let token_idp_id = authentication.subject().idp_id();
-        let token_audiences: std::collections::HashSet<&str> = authentication
-            .audiences()
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let token_subject = Some(authentication.subject().subject_in_idp());
-
-        if let Some(token_idp) = token_idp_id {
+        // Identify trusted engines: each engine configures, per IdP, the conditions a token
+        // must meet to act as that engine. Several engines may match one token.
+        if let Some(token_idp) = authentication.subject().idp_id() {
             let matching_engines: Vec<_> = CONFIG
                 .trusted_engines
-                .iter()
-                .filter(|(_key, engine)| {
+                .values()
+                .filter(|engine| {
                     engine
                         .identities()
                         .get(token_idp)
-                        .is_some_and(|id| id.matches(&token_audiences, token_subject))
+                        .is_some_and(|identity| identity.matches(&authentication))
                 })
-                .map(|(_, engine)| engine.clone())
+                .cloned()
                 .collect();
 
             if !matching_engines.is_empty() {
