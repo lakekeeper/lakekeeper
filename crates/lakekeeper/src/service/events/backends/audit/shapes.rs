@@ -253,18 +253,8 @@ impl<E: AuditEmitter> OperationRecord<E> {
 /// Write `event` as one operation record on the log. The one place an operation record is
 /// written.
 pub(super) fn write_operation_record(event: OperationRecordedEvent) {
-    let record = Arc::unwrap_or_clone(event.record);
-    OperationWire {
-        emitters: record.emitters,
-        event_id: record.event_id,
-        request_id: record.request_id,
-        time: record.time,
-        operation: record.operation,
-        actor: record.actor,
-        outcome: record.outcome,
-        context: record.context,
-    }
-    .emit(record.message);
+    let (record, message) = OperationWire::from_event(event);
+    record.emit(message);
 }
 
 /// An operation record: something the system did that touches identity or access, with no
@@ -295,4 +285,24 @@ pub(super) struct OperationWire {
     /// emitter; absent for an operation that carries none.
     #[schemars(with = "Option<serde_json::Value>")]
     context: Option<AuditJson>,
+}
+
+impl OperationWire {
+    /// The record `event` carries, and the text of its log line.
+    pub(super) fn from_event(event: OperationRecordedEvent) -> (Self, &'static str) {
+        let record = Arc::unwrap_or_clone(event.record);
+        (
+            Self {
+                emitters: record.emitters,
+                event_id: record.event_id,
+                request_id: record.request_id,
+                time: record.time,
+                operation: record.operation,
+                actor: record.actor,
+                outcome: record.outcome,
+                context: record.context,
+            },
+            record.message,
+        )
+    }
 }

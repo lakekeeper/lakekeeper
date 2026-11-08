@@ -4,7 +4,8 @@ use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
 
 use super::{
-    sink::{ArcAuditSink, AuditDelivery, AuditDispatch, AuditRecord, AuditSink},
+    shapes::OperationWire,
+    sink::{ArcAuditSink, AuditDelivery, AuditDispatch, AuditRecord, AuditSink, LogSink},
     *,
 };
 use crate::{
@@ -1562,6 +1563,20 @@ fn a_replay_record_as_json_matches_its_log_line() {
     assert_json_matches_log_line(&json, line);
 }
 
+/// An operation record as JSON carries what its log line carries.
+#[test]
+fn an_operation_record_as_json_matches_its_log_line() {
+    let (record, message) = OperationWire::from_event(record_without_request().into_event());
+    let json = record.to_json();
+
+    let line = emit_and_capture_one(|| async {
+        record.emit(message);
+        Ok(())
+    });
+
+    assert_json_matches_log_line(&json, line);
+}
+
 /// A sink that keeps the address of every JSON object it is handed.
 #[derive(Debug, Default)]
 struct JsonAddressSink(Mutex<Vec<usize>>);
@@ -1601,6 +1616,38 @@ fn every_sink_shares_one_json_object() {
     let second_seen = second.0.lock().expect("sink poisoned").clone();
     assert_eq!(first_seen.len(), 1);
     assert_eq!(first_seen, second_seen);
+}
+
+/// A record handed to the log sink is written as the line the replay fixture pins.
+#[test]
+fn the_log_sink_writes_the_fixture_line() {
+    let uuid = |s: &str| s.parse::<uuid::Uuid>().expect("fixed test uuid");
+    let entities = UserProvidedTable {
+        warehouse_id: crate::service::WarehouseId::new(uuid(FIXTURE_WAREHOUSE_ID)),
+        table: TableIdent {
+            namespace: NamespaceIdent::new("sales".to_string()),
+            name: "orders".to_string(),
+        }
+        .into(),
+    }
+    .event_entities();
+    let event = IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        occurred_at: chrono::Utc::now(),
+        entities: Arc::new(entities),
+        actions: Arc::new(vec![fixture_drop_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    };
+    let sinks: Vec<ArcAuditSink> = vec![Arc::new(LogSink)];
+    let dispatch = AuditDispatch::new(sinks);
+
+    let line = emit_and_capture_one(|| async {
+        let record = assemble::replay(&event, &Enrichment::default());
+        dispatch.deliver(AuditRecord::Replay(record), "Idempotent replay served");
+        Ok(())
+    });
+
+    assert_matches_fixture("idempotent_replay", &contract_fields(line));
 }
 
 /// One `grants_changed` event emits one record per grant triple, revocations

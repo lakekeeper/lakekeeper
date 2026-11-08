@@ -21,6 +21,15 @@ impl AuditRecord<'_> {
             Self::Operation(record) => record.to_json(),
         }
     }
+
+    /// Write this record as one log line, with `message` as its text.
+    pub(super) fn emit(&self, message: &'static str) {
+        match self {
+            Self::Authorization(record) => record.emit(message),
+            Self::Replay(record) => record.emit(message),
+            Self::Operation(record) => record.emit(message),
+        }
+    }
 }
 
 /// One record on its way to the sinks.
@@ -83,6 +92,21 @@ pub trait AuditSink: Send + Sync + std::fmt::Debug {
 
 /// Reference to an [`AuditSink`] that can be cheaply cloned and shared.
 pub type ArcAuditSink = Arc<dyn AuditSink>;
+
+/// Writes every audit record to the log, as one line.
+#[derive(Debug, Default)]
+pub(crate) struct LogSink;
+
+#[async_trait::async_trait]
+impl AuditSink for LogSink {
+    fn name(&self) -> &str {
+        "log"
+    }
+
+    fn deliver(&self, record: &AuditDelivery<'_>) {
+        record.record().emit(record.message());
+    }
+}
 
 /// The sinks every audit record is handed to, fixed at startup.
 #[derive(Debug, Clone, Default)]
