@@ -219,8 +219,7 @@ impl<E: AuditEmitter> OperationRecord<E> {
         self
     }
 
-    /// Hand the record to every listener of `events`, the audit listener among them, which
-    /// writes it to the log.
+    /// Hand the record to every listener of `events`, the audit listener among them.
     ///
     /// Does nothing while the audit log does not record it (see [`crate::audit::log_enabled`]):
     /// with the audit trail disabled, or with a `tracing` filter that drops the audit target.
@@ -248,13 +247,6 @@ impl<E: AuditEmitter> OperationRecord<E> {
             }),
         }
     }
-}
-
-/// Write `event` as one operation record on the log. The one place an operation record is
-/// written.
-pub(super) fn write_operation_record(event: OperationRecordedEvent) {
-    let (record, message) = OperationWire::from_event(event);
-    record.emit(message);
 }
 
 /// An operation record: something the system did that touches identity or access, with no

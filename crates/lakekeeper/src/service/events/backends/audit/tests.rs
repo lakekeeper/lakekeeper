@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
@@ -71,7 +71,7 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for CapturedLogs {
 }
 
 /// The listener as the binary installs it with emails off.
-static LISTENER: AuditEventListener = AuditEventListener::new();
+static LISTENER: LazyLock<AuditEventListener> = LazyLock::new(AuditEventListener::new);
 
 /// Render audit events through the same JSON formatter the binary configures
 /// (`crates/lakekeeper-bin/src/main.rs`), and return the parsed lines.
@@ -1648,6 +1648,26 @@ fn the_log_sink_writes_the_fixture_line() {
     });
 
     assert_matches_fixture("idempotent_replay", &contract_fields(line));
+}
+
+/// A listener given a dispatch hands its records to that dispatch's sinks, and to no others.
+#[test]
+fn a_listener_hands_each_record_to_its_dispatch() {
+    let sink = Arc::new(JsonAddressSink::default());
+    let sinks: Vec<ArcAuditSink> = vec![sink.clone()];
+    let listener = AuditEventListener::new().with_dispatch(AuditDispatch::new(sinks));
+
+    let event = IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        occurred_at: chrono::Utc::now(),
+        entities: Arc::new(EventEntities::one(fixture_table_entity())),
+        actions: Arc::new(vec![fixture_drop_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    };
+    let log_lines = emit_and_capture(|| listener.idempotent_replay_served(event));
+
+    assert_eq!(sink.0.lock().expect("sink poisoned").len(), 1);
+    assert_eq!(log_lines, Vec::<serde_json::Value>::new());
 }
 
 /// One `grants_changed` event emits one record per grant triple, revocations
