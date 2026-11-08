@@ -288,6 +288,8 @@ jobs:
         run: |
           docker exec minio /usr/bin/mc alias set local http://localhost:9000 minio-root-user minio-root-password
           docker exec minio /usr/bin/mc mb local/tests
+          docker exec minio /usr/bin/mc mb local/tests-versioned
+          docker exec minio /usr/bin/mc version enable local/tests-versioned
 
       - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         if: ${{ env.AZURE_CLIENT_ID != '' }}
@@ -366,6 +368,7 @@ jobs:
           LAKEKEEPER_TEST__KV2__SECRET_MOUNT: secret
           # minio test envs
           LAKEKEEPER_TEST__S3_BUCKET: tests
+          LAKEKEEPER_TEST__S3_VERSIONED_BUCKET: tests-versioned
           LAKEKEEPER_TEST__S3_REGION: local
           LAKEKEEPER_TEST__S3_ACCESS_KEY: minio-root-user
           LAKEKEEPER_TEST__S3_SECRET_KEY: minio-root-password
