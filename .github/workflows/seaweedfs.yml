@@ -91,8 +91,6 @@ jobs:
           # cache saved on a PR ref is readable by that one PR, and the Rust
           # jobs together hold about 9.5 GB per ref against a 10 GB repo
           # budget, so PR writes evict the main entry every job depends on.
-          # This job builds the whole workspace; cold it needs 23 of its 25
-          # minutes to compile, warm about 7.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
@@ -109,6 +107,16 @@ jobs:
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           sqlx database create
           sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+      # Compiling in its own step keeps the Test timeout a guard against a hung
+      # test. This job builds the whole workspace: about 7 minutes against a
+      # warm cache, about 23 against none, while the tests themselves run in
+      # seconds.
+      - name: Build tests
+        timeout-minutes: 45
+        run: cargo nextest run --profile ${{ env.NEXTEST_PROFILE }} --all-targets --all-features --workspace --no-run
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 
