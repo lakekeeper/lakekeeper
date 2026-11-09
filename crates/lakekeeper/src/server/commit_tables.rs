@@ -17,8 +17,10 @@ use lakekeeper_io::Location;
 
 use crate::{
     server::tables::{
-        create_table::ensure_format_version_allowed, is_safe_strict_sublocation, parse_table_property_updates,
-    }, service::{
+        create_table::ensure_format_version_allowed, is_safe_strict_sublocation,
+        parse_table_property_updates,
+    },
+    service::{
         AllowedFormatVersions, ErrorModel, IcebergErrorResponse, Result,
         authz::{CatalogTableAction, CommitFacts},
     },
@@ -236,14 +238,16 @@ fn check_statistics_path_not_outside_table_location(
 ) -> Result<()> {
     let statistics_location = Location::parse_value(statistics_path).map_err(|e| {
         ErrorModel::bad_request(
-            format!("Failed to parse provided statistics file path '{statistics_path}' as location"),
+            format!(
+                "Failed to parse provided statistics file path '{statistics_path}' as location"
+            ),
             "FailedToParseStatisticsFileLocation",
             Some(Box::new(e)),
         )
     })?;
     if !is_safe_strict_sublocation(&statistics_location, table_location) {
         let msg = format!(
-            "Cannot set statistics whose file '{statistics_path}'\
+            "Cannot set statistics whose file '{statistics_path}' \
              is not inside the table location: '{table_location}'"
         );
         return Err(
@@ -267,7 +271,7 @@ fn check_manifest_list_not_outside_table_location(
     })?;
     if !is_safe_strict_sublocation(&manifest_list_location, table_location) {
         let msg = format!(
-            "Cannot add snapshots whose manifest list '{manifest_list_path}'\
+            "Cannot add snapshots whose manifest list '{manifest_list_path}' \
              is not inside the table location: '{table_location}'"
         );
         return Err(ErrorModel::bad_request(msg, "ManifestListOutsideTableLocation", None).into());
