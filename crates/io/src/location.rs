@@ -117,49 +117,35 @@ impl Location {
         self
     }
 
+    /// Append `segments` to the path, with exactly one `/` between parts. Runs of `/` collapse
+    /// to one, including trailing slashes of the current path. A trailing empty segment ends
+    /// the result in `/`. Without segments, the location stays unchanged.
     pub fn extend<I>(&mut self, segments: I) -> &mut Self
     where
         I: IntoIterator,
         I::Item: AsRef<str>,
     {
-        let extension = segments
-            .into_iter()
-            .map(|s| {
-                if s.as_ref().is_empty() {
-                    "/"
-                } else {
-                    s.as_ref()
-                }
-                .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("/");
-        // Remove duplicate slashes if any
-        let extension = {
-            let mut result = String::with_capacity(extension.len());
-            let mut prev_slash = false;
-            for ch in extension.chars() {
-                if ch == '/' {
-                    if !prev_slash {
-                        result.push(ch);
-                    }
-                    prev_slash = true;
-                } else {
-                    result.push(ch);
-                    prev_slash = false;
-                }
-            }
-            result
-        };
-
-        if !self.authority_and_path.ends_with('/')
-            && !extension.starts_with('/')
-            && !extension.is_empty()
-        {
-            self.authority_and_path.push('/');
+        let mut segments = segments.into_iter().peekable();
+        if segments.peek().is_none() {
+            return self;
         }
-        self.authority_and_path.push_str(&extension);
-        self.full_location = format!("{}://{}", self.scheme, self.authority_and_path);
+
+        let path = &mut self.authority_and_path;
+        path.truncate(path.trim_end_matches('/').len());
+        // A `/` is added only after a character other than `/`, so runs of `/` collapse.
+        for segment in segments {
+            for part in segment.as_ref().split('/') {
+                if !path.ends_with('/') {
+                    path.push('/');
+                }
+                path.push_str(part);
+            }
+        }
+
+        self.full_location.clear();
+        self.full_location.push_str(&self.scheme);
+        self.full_location.push_str("://");
+        self.full_location.push_str(&self.authority_and_path);
         self
     }
 
@@ -817,6 +803,27 @@ mod tests {
         let mut location = Location::from_str("s3://bucket/").unwrap();
         location.extend(["foo", "bar"]);
         assert_eq!(location.as_str(), "s3://bucket/foo/bar");
+    }
+
+    #[test]
+    fn test_extend_slashes_at_boundary() {
+        for (base, segments, expected) in [
+            ("s3://bucket/", vec!["/foo"], "s3://bucket/foo"),
+            ("s3://bucket/foo/", vec!["/bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket/foo/", vec!["", "bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket/foo/", vec!["/"], "s3://bucket/foo/"),
+            ("s3://bucket/foo", vec!["/bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket/foo/", vec![], "s3://bucket/foo/"),
+            ("s3://bucket/foo///", vec!["/bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket/foo///", vec!["bar"], "s3://bucket/foo/bar"),
+            ("s3://bucket///", vec!["bar"], "s3://bucket/bar"),
+            ("s3://bucket/foo///", vec!["/"], "s3://bucket/foo/"),
+            ("s3://bucket/foo///", vec![], "s3://bucket/foo///"),
+        ] {
+            let mut location = Location::from_str(base).unwrap();
+            location.extend(&segments);
+            assert_eq!(location.as_str(), expected, "{base} + {segments:?}");
+        }
     }
 
     #[test]
