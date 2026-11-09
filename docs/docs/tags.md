@@ -61,10 +61,12 @@ Create a definition by `POST`ing to `/management/v1/tag-definition`:
 
 ### Who may define tags
 
+With OpenFGA (see [Tags in the OpenFGA model](authorization-openfga.md#tags)):
+
 - Creating definitions requires the project's **tag-creator** capability (or a project security admin). This delegates vocabulary creation without granting broader administrative rights.
 - Managing an *existing* definition — updating, deleting, or delegating who may apply it — keys off the definition's **ownership** (or a project security admin), not tag-creator.
 
-See [Authorization](authorization.md) for the capability model.
+With Cedar<span class="lkp"></span>, see the tag definitions note in [What each privilege allows](authorization-cedar.md#what-each-privilege-allows).
 
 ## Applying tags to objects
 

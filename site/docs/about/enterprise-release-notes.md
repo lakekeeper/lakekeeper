@@ -4,6 +4,188 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 
 # Lakekeeper+ Release Notes
 
+## v0.15.0 (2026-11-07)
+
+_Based on Lakekeeper OSS v0.15.0._
+
+Lakekeeper Plus 0.15 brings **Optimize** 🎉: your tables stay fast on their own, with no compaction jobs to run. Table maintenance now handles tables of any size. The release also includes everything new in [Lakekeeper 0.15](https://docs.lakekeeper.io/about/release-notes/). Please read the Breaking Changes and Upgrade Notes before you upgrade.
+
+### Highlights
+
+- **🚀 Optimize: fast tables, no compaction jobs to run.** Optimize is written in Rust and runs in Lakekeeper's own workers, with no Spark cluster needed. It compacts small files, applies delete files and merges small manifests in the background after writes, so your engines read fewer and larger files. Optimize is off by default: set `optimizeWorkers.enabled: true` in the Helm chart, then turn it on for a warehouse or a table. See [Optimize](https://docs.lakekeeper.io/docs/0.15.x/optimize/) and [Optimize Workers](https://docs.lakekeeper.io/docs/0.15.x/optimize-workers/).
+- **Table maintenance for tables of any size.** Snapshot expiration and orphan file removal run in bounded memory. See [Table Maintenance](https://docs.lakekeeper.io/docs/0.15.x/table-maintenance/).
+- **Cedar: finer privileges.** Tagging needs `manage_tags`, which `manage` no longer includes. Policies can also treat a data commit differently from a schema change, for example to let pipelines write data but not change the schema. See [What a table commit changes](https://docs.lakekeeper.io/docs/0.15.x/authorization-cedar/#what-a-table-commit-changes).
+
+### Features
+
+- **Admit users by a token claim.** The enforce gate can admit users whose token carries the claims you list, for example one identity-provider group. See [Satisfied by claims](https://docs.lakekeeper.io/docs/0.15.x/admission/#satisfied-by-claims).
+- **Console.** Set up Optimize and follow its runs, move tables and views to another namespace, and navigate faster with page tabs, pins and recently opened objects in the navigation bar.
+
+### Bug Fixes
+
+- **Cedar keeps working when a policy file or ConfigMap fails to refresh.** It keeps using the last policies that loaded.
+- **The Entra ID role provider now finds the groups of applications and managed identities.** The app registration also needs the Microsoft Graph permission `Application.Read.All`.
+- **Remove orphan files: more table `dry-run` values now mean a dry run,** for example `yes` or a value with a typo. If one of your tables had such a value, check its past run results: `dry-run: false` means the run deleted the orphan files it found.
+- **Table maintenance uses the current warehouse and table settings,** skips soft-deleted tables, reads metadata with small mistakes by the engine that wrote it, and no longer blocks deleting a warehouse.
+- **Remove orphan files no longer deletes files that are still in use on ADLS when their stored name is URL-decoded.** Iceberg Java with an Azure Data Lake SDK before 12.19.0 stores a partition folder such as `ts=10%3A00` as `ts=10:00`. Remove orphan files now treats both names as the same file.
+- **Table maintenance skips a table if a retention property is not a whole number.** Examples are `history.expire.max-snapshot-age-ms=30d` and a typo in `lakekeeper.remove-orphan-files.older-than-ms`. Before, expire snapshots and remove orphan files used the default retention. Lakekeeper logs a warning that names the property, and scheduling the task by hand returns `400`.
+- **Table maintenance skips tables that Apache Paimon may still use**, so it does not delete Paimon's files. See [Expire Snapshots](https://docs.lakekeeper.io/docs/0.15.x/table-maintenance/#expire-snapshots).
+- **Security updates of dependencies** (RUSTSEC-2026-0410, RUSTSEC-2026-0441).
+
+### Breaking Changes
+
+- **Cedar: `manage` no longer allows tagging.** Before you upgrade, grant `manage_tags` in addition to `manage` to users who need to tag objects. See [Upgrading from Lakekeeper Plus 0.14](https://docs.lakekeeper.io/docs/0.15.x/authorization-cedar/#upgrading-from-lakekeeper-plus-014).
+- **Cedar: `create` no longer lets users see everything inside.** Grant `describe` in addition to `create` to users who need to see the tables, views, generic tables, tasks and statistics of a project, warehouse or namespace.
+- **Cedar: a few operations need `manage` on the warehouse or the view.** Registering a table and skipping soft deletion (for example a `force` drop) need `manage` on the warehouse. Switching a view between `SECURITY DEFINER` and `SECURITY INVOKER` needs `manage` on the view.
+- **Cedar: update your own policies.** The predefined policies already include these changes. See [Cedar Actions](https://docs.lakekeeper.io/docs/0.15.x/authorization-cedar/#cedar-actions).
+    - The policy API refuses new and changed policies that use `<X>ModifyActions`. Use `<X>Actions` to include tagging, or the new `<X>ManageActions` to leave tagging out. Existing policies keep working, and the server logs a warning for each.
+    - Allow the new actions where needed: `ModifySoftDeletion`, `RegisterTable`, `UpdateStorageCredential` and `ChangeViewSecurityMode`.
+    - Replacing the storage credential checks the new `UpdateStorageCredential`. Changing the storage profile checks it as well as `UpdateStorage`. A policy with `action == Lakekeeper::Action::"UpdateStorage"` no longer covers these operations: such a permit allows neither, and such a forbid does not stop credential replacement. Write `action in [Lakekeeper::Action::"UpdateStorage"]`, which covers both.
+    - If you set `LAKEKEEPER__CEDAR__SCHEMA_FILE`, replace that file with this release's schema plus your own changes. Do this in the same rollout as the upgrade.
+- **Table maintenance keeps at least 24 hours of history and orphan files.** For a shorter retention, turn off this minimum explicitly. See [Expire Snapshots](https://docs.lakekeeper.io/docs/0.15.x/table-maintenance/#expire-snapshots) and [Remove Orphan Files](https://docs.lakekeeper.io/docs/0.15.x/table-maintenance/#remove-orphan-files).
+- **Task details show `outcome`** in place of `permanent-failure`. Update scripts that read it.
+- **`serve` starts only on a migrated database.** Helm chart users are not affected. In your own manifests, run `migrate` first. See [Upgrades & Migration](https://docs.lakekeeper.io/docs/0.15.x/concepts/#upgrades-migration).
+
+### Upgrade Notes
+
+- **Check the snapshot expiration queue config.** If it has `max-snapshot-age-ms` or `max-ref-age-ms` below 24 hours, raise it or set `disable-min-age-check: true`.
+- **Cedar during the rolling upgrade:** until every pod runs 0.15, do not add policies that use what is new in 0.15, such as `<X>ManageActions`.
+- **Removed metrics:** `lakekeeper_cache_weighted_bytes`, `lakekeeper_cache_instances` and the `cache_type="table_metadata"` series of the cache metrics. Update dashboards that use them.
+
+### Upstream Lakekeeper changes (bump to v0.15.0)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/). The ones to check before you upgrade:
+
+- **Database migration:** the migration copies the endpoint statistics, which takes time and disk space. Plan for it, and let a running `pg_dump` finish first ([lakekeeper#2138](https://github.com/lakekeeper/lakekeeper/pull/2138), [lakekeeper#2244](https://github.com/lakekeeper/lakekeeper/pull/2244)).
+- **OpenFGA:** `create` now shows users only what they create. Grant `describe` too where users need to see the tables of others. Registering a table and skipping soft deletion need `modify` on the warehouse. Switching a view's security mode needs `modify` on the view ([lakekeeper#2240](https://github.com/lakekeeper/lakekeeper/pull/2240), [lakekeeper#2249](https://github.com/lakekeeper/lakekeeper/pull/2249)).
+- **Views:** to create `SECURITY DEFINER` views through Trino, configure Trino as a trusted engine. See [View Security](https://docs.lakekeeper.io/docs/0.15.x/view-security/) ([lakekeeper#2212](https://github.com/lakekeeper/lakekeeper/pull/2212)).
+- **OPA bridge:** deploy this release's bridge policies with the server. With Cedar, `CREATE OR REPLACE` through Trino needs `CommitTable` or `CommitView`. See [OPA](https://docs.lakekeeper.io/docs/0.15.x/opa/#replacing-tables-and-views) ([lakekeeper#2215](https://github.com/lakekeeper/lakekeeper/pull/2215)).
+- **Storage:** a warehouse that uses the AWS system identity needs an `assume-role-arn` and an `external-id`, and Google Cloud Storage has a few new requirements ([lakekeeper#2174](https://github.com/lakekeeper/lakekeeper/pull/2174), [lakekeeper#2159](https://github.com/lakekeeper/lakekeeper/pull/2159)).
+- **Kafka:** Kerberos (`GSSAPI`) is not supported ([lakekeeper#2108](https://github.com/lakekeeper/lakekeeper/pull/2108)).
+- **Clocks:** keep the clocks of Lakekeeper, its workers and its clients in sync. Lakekeeper refuses a snapshot dated more than a minute ahead of its own clock ([lakekeeper#2220](https://github.com/lakekeeper/lakekeeper/pull/2220)).
+
+### Audit log format
+
+Lakekeeper Plus writes the same audit log as Lakekeeper, so this section lists the audit log changes of Lakekeeper v0.15.0 together with those of Lakekeeper Plus.
+
+**Additions** — an existing parser keeps working:
+
+- **Every audit record now carries an `event_id`, a UUID that is unique to that record.**
+
+    ```text
+    authorization, replay, operation   + event_id
+    ```
+
+    Records that share a `request_id`, such as those of a grant change, have different `event_id` values. A line delivered twice carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time.
+
+    **What to do:** Nothing. To remove duplicate records, use `event_id`.
+
+- **A new record: `operation: "directory_resolve_roles"` with `outcome: "user_not_found"`.**
+
+    An LDAP, Entra ID or Okta role provider writes it once per directory call when the directory has no entry for the user it asked about.
+
+    - `operation`: new value `directory_resolve_roles`, written only with `outcome: "user_not_found"`.
+    - `context.provider_id`: the role provider whose directory has no entry for the user.
+    - `actor`: the user the directory was asked about. This can be another user than the caller of the request.
+    - The record carries no `request_id`.
+
+    For the same call, an LDAP provider also writes its `ldap_resolve_roles` record with `outcome: "user_not_found"`.
+
+    **What to do:** nothing. If one `provider_id` writes many such records, check that the subject claim names users the way that directory does.
+
+**Also worth knowing** — the format itself did not change:
+
+- **Registering files that are already in storage is authorized on the warehouse, with the new action `register_table`.**
+
+    ```text
+    POST /catalog/v1/{prefix}/namespaces/{namespace}/register
+      register_table (warehouse entity)   new, in addition to create_table (namespace entity)
+    POST /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables
+      register_table (warehouse entity)   new, in addition to create_generic_table (namespace entity), only when the location holds files
+    ```
+
+    A register now produces an authorization record for `register_table` on the warehouse, allowed or refused, in addition to the `create_table` record on the namespace. `register_table` is checked before the metadata file is read. If `register_table` is refused, the `create_table` record is also written, as refused. It names the table only by the requested name, because the metadata file is not read.
+
+    If the caller may register the table but may not see it, the table stays registered, and the register writes a refused `get_metadata` record on the table, as `loadTable` does.
+
+    Creating a generic table on a location that already holds files produces a `register_table` record on the warehouse in addition to the `create_generic_table` record. A refusal has error type `WarehouseActionForbidden`, and its message says that the location holds files. A location without files produces no `register_table` record.
+
+    **What to do:** Nothing. To find registers and generic tables created over existing files, match `register_table`.
+
+- **Switching a Lakekeeper process into or out of read-only maintenance mode at runtime is recorded with two new actions.**
+
+    ```text
+    POST /management/v1/server/maintenance-mode
+      mode read-only   set_maintenance_mode_read_only
+      mode off         set_maintenance_mode_off
+    ```
+
+    Both are recorded on the server entity, allowed or refused. Only instance admins are allowed.
+
+    **What to do:** Nothing.
+
+- **A call that skips the soft-deletion window of a warehouse also asks `modify_soft_deletion` on that warehouse, which has a record of its own. The call is refused when the caller may not change the soft-deletion settings of that warehouse.**
+
+    ```text
+    drop (table, view or generic table)                        force: true
+    delete (namespace)                                         recursive: true
+    control_tasks (warehouse)                                  run now or run at, when a soft-deletion task is among the tasks
+    drop (table), invoked_by: register_table_overwrite         force: true
+    ```
+
+    The `control_tasks` record does not say which control or which tasks were asked for. All four cases apply only in warehouses with soft deletion.
+
+    When the check of its own action allows such a call, the call writes its record with `decision: allowed`, and then a record of `modify_soft_deletion` on the warehouse. If the caller may not change the soft-deletion settings, this second record has `decision: denied`, `failure_reason: action_forbidden` and error type `WarehouseActionForbidden`, and the call is refused. A call that the check of its own action refuses writes no `modify_soft_deletion` record.
+
+    A change of the soft-deletion settings writes the same `modify_soft_deletion` record, and no other authorization record. The `modify_soft_deletion` record of a skip has the same `request_id` as the record of the call.
+
+    A register with `overwrite` that replaces an active table with another table (a different table UUID) in a warehouse with soft deletion records the drop of the replaced table with `force: true`, also when the call is allowed. Before, it recorded `force: false`.
+
+    **What to do:** To find calls that skip the soft-deletion window, match `modify_soft_deletion` records that share their `request_id` with a record of another action. If you filter or alert on drops with `force: true`, these now also include drops by a register with `overwrite`. You can tell them apart by `invoked_by: register_table_overwrite`.
+
+- **Replacing a warehouse's storage credential is recorded as `update_storage_credential`; a storage profile change records `update_storage` and `update_storage_credential`.**
+
+    ```text
+                                                      before            after
+    POST …/warehouse/{id}/storage-credential          update_storage    update_storage_credential
+    POST …/warehouse/{id}/storage/validate-credential update_storage    update_storage_credential
+    POST …/warehouse/{id}/storage                     update_storage    update_storage, update_storage_credential
+    POST …/warehouse/{id}/storage/validate-profile    update_storage    update_storage, update_storage_credential
+    POST …/warehouse/{id}/storage/validate-access     update_storage    update_storage
+    ```
+
+    A record with both actions has two entries in `actions` and one entry per action in `authorizations`. If the request is denied, both entries have `allowed: false`. If an error stopped the evaluation, neither entry has `allowed`.
+
+    **What to do:** If a rule finds credential replacements by `update_storage`, match `update_storage_credential` as well. If a rule reads only the first entry of `actions`, read all entries.
+
+- **A view create or view commit that the view owner property rules refuse is recorded as a denied authorization.**
+
+    ```text
+    create_view (namespace entity)  error type ProtectedPropertyModification
+    commit (view entity)            error type ProtectedPropertyModification or ProtectedViewVersionChange
+    ```
+
+    On a server with authentication, a `create_view` or `commit` that writes `trino.run-as-owner`, or the owner property of a configured trusted engine, is refused unless it comes from a trusted engine that owns that property. A `commit` that changes the current version of a view holding such a property is refused unless it comes from that engine. The records have `decision: denied` and `failure_reason: action_forbidden`. A `ProtectedViewVersionChange` record has the same `request_id` as an allowed `commit` record of the same request.
+
+    If that engine changes the query of such a view and does not send the owner property, the commit removes the property. The allowed `commit` record lists `updated_properties` and `removed_properties` as the engine sent them.
+
+    **What to do:** Nothing.
+
+- **A view commit that switches the view between running as its owner and running as the caller is recorded with the new view action `change_security_mode`, in records of its own.**
+
+    ```text
+    change_security_mode (view entity)              one record per checked principal, after the commit record
+    introspect_permissions, operation view-replace  recorded as commit (view entity)
+    ```
+
+    A view commit from a trusted engine that adds or removes `trino.run-as-owner`, or the owner property of another configured trusted engine, needs `change_security_mode` on the view. After the `commit` record of the request, Lakekeeper writes one `change_security_mode` record for the identity that sends the commit and, if the commit adds the property, one for the user that the property names, with that user in `for_principal`. Each record has its own decision and the same `request_id`. A refused switch has `decision: denied`, `failure_reason: action_forbidden` and error type `SecurityModeChangeForbidden`, and the view does not change. A commit that keeps the security mode writes no `change_security_mode` record.
+
+    The batch-check operation `view-replace` asks whether a user may replace a view. Its decision is recorded as `commit` on the view, even when `change_security_mode` decided it.
+
+    **What to do:** Nothing.
+
+Records from v0.15.0 carry `audit_format` **1.1** (was 1.0). Records from v0.15.0 that Lakekeeper Plus contributes to carry `emitters.lakekeeper_plus` **1.1** (was 1.0).
+
 ## v0.14.2 (2026-10-25)
 
 _Based on Lakekeeper OSS v0.14.2._

@@ -26,7 +26,9 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         ArcProjectId, ArcRoleIdent, RoleIdent,
-        admission::{AdmissionContext, AdmissionGates, AdmissionTrigger, RejectionKind},
+        admission::{
+            AdmissionContext, AdmissionGates, AdmissionTrigger, RejectionKind, TokenClaims,
+        },
         authz::InstanceAdminMembership,
         events::EventDispatcher,
     },
@@ -210,7 +212,8 @@ impl OidcProviderConfig {
 }
 
 impl ClaimRuleConfig {
-    /// Build the validated rule.
+    /// Build the validated rule. Every check a rule gets is made here, so a
+    /// configuration that reuses this grammar refuses the same rules.
     ///
     /// # Errors
     /// If not exactly one operator is set, or the rule is structurally invalid.
@@ -237,6 +240,21 @@ impl ClaimRuleConfig {
         })?;
         let mut rule = rule?;
         if let Some(separator) = &self.separator {
+            anyhow::ensure!(
+                self.exists.is_none(),
+                "`separator` has no effect on `exists`; remove one of them"
+            );
+            // For a deny, splitting on any whitespace finds everything a whitespace literal
+            // finds and the values it misses, so the literal form is dominated — and its one
+            // distinguishing behaviour is to admit a token it was written to reject.
+            anyhow::ensure!(
+                !(self.none_of.is_some()
+                    && !separator.is_empty()
+                    && separator.chars().all(char::is_whitespace)),
+                "a whitespace `separator` on `none_of` reads only that exact character, so a \
+                 value delimited by any other whitespace is admitted. Write \
+                 `SEPARATOR=whitespace`."
+            );
             // A literal separator is byte-exact, so a deny written for space-delimited scopes
             // is blind to a tab. `whitespace` reaches the separator that splits on any of them.
             let separator = if separator.eq_ignore_ascii_case(WHITESPACE_SEPARATOR) {
@@ -773,29 +791,19 @@ pub(crate) async fn auth_middleware_fn<
             request_metadata.set_instance_admin(true);
         }
 
-        // Identify trusted engines based on token identity (IdP, audiences, subject).
-        // Each engine defines `identities` specifying who may act as that engine.
-        // Multiple engines may match — this is intentional (e.g. an admin token
-        // whose audience appears in several engine configs).
-        let token_idp_id = authentication.subject().idp_id();
-        let token_audiences: std::collections::HashSet<&str> = authentication
-            .audiences()
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let token_subject = Some(authentication.subject().subject_in_idp());
-
-        if let Some(token_idp) = token_idp_id {
+        // Identify trusted engines: each engine configures, per IdP, the conditions a token
+        // must meet to act as that engine. Several engines may match one token.
+        if let Some(token_idp) = authentication.subject().idp_id() {
             let matching_engines: Vec<_> = CONFIG
                 .trusted_engines
-                .iter()
-                .filter(|(_key, engine)| {
+                .values()
+                .filter(|engine| {
                     engine
                         .identities()
                         .get(token_idp)
-                        .is_some_and(|id| id.matches(&token_audiences, token_subject))
+                        .is_some_and(|identity| identity.matches(&authentication))
                 })
-                .map(|(_, engine)| engine.clone())
+                .cloned()
                 .collect();
 
             if !matching_engines.is_empty() {
@@ -884,8 +892,9 @@ async fn admit_then_check_actor<A: super::authz::Authorizer>(
 /// Post-authentication admission gates: a coarse, pluggable rejection of an
 /// already-authenticated user that must not be admitted to this instance at all
 /// (e.g. an external control-plane permission service). A gate decides about the
-/// request's user and sees nothing of the request itself. `Some` is the refusal the
-/// request gets. No-op unless the host binary registered at least one gate.
+/// request's user and sees nothing of the request but whether its token satisfies a
+/// claim rule. `Some` is the refusal the request gets. No-op unless the host binary
+/// registered at least one gate.
 #[cfg(feature = "router")]
 async fn run_admission_gates(
     admission_gates: &AdmissionGates,
@@ -908,11 +917,14 @@ async fn run_admission_gates(
         );
     };
     match admission_gates
-        .admit(AdmissionContext::new(
-            user_id,
-            AdmissionTrigger::from_request(request_metadata),
-            events,
-        ))
+        .admit(
+            AdmissionContext::new(
+                user_id,
+                AdmissionTrigger::from_request(request_metadata),
+                events,
+            )
+            .with_token_claims(TokenClaims::from_request(request_metadata)),
+        )
         .await
     {
         // On admit, fold any roles the gate(s) resolved into the request
@@ -1420,6 +1432,49 @@ mod tests {
             BuiltInAuthenticators::Single(auth) => auth.authenticate(token, &introspection).await,
             BuiltInAuthenticators::Chain(chain) => chain.authenticate(token, &introspection).await,
         }
+    }
+
+    /// `to_rule` itself refuses the rules startup refuses, so a configuration that reuses
+    /// the grammar outside `openid_providers` cannot accept them.
+    #[test]
+    fn to_rule_refuses_separator_on_exists() {
+        let rule = ClaimRuleConfig {
+            claim: "groups".to_string(),
+            separator: Some(",".to_string()),
+            any_of: None,
+            all_of: None,
+            none_of: None,
+            exists: Some(true),
+        };
+        assert_eq!(
+            rule.to_rule().unwrap_err().to_string(),
+            "`separator` has no effect on `exists`; remove one of them"
+        );
+    }
+
+    #[test]
+    fn to_rule_refuses_a_whitespace_literal_on_a_deny() {
+        let deny = ClaimRuleConfig {
+            claim: "scope".to_string(),
+            separator: Some("\t".to_string()),
+            any_of: None,
+            all_of: None,
+            none_of: Some(vec!["admin".to_string()]),
+            exists: None,
+        };
+        assert_eq!(
+            deny.to_rule().unwrap_err().to_string(),
+            "a whitespace `separator` on `none_of` reads only that exact character, so a value \
+             delimited by any other whitespace is admitted. Write `SEPARATOR=whitespace`."
+        );
+
+        // Narrowing a grant rejects, which is the safe direction, so a grant may keep it.
+        let grant = ClaimRuleConfig {
+            none_of: None,
+            all_of: Some(vec!["admin".to_string()]),
+            ..deny
+        };
+        assert!(grant.to_rule().is_ok());
     }
 
     fn routing(
@@ -2802,6 +2857,56 @@ mod tests {
                 authorizer.assume_role_checks(),
                 vec![Some(vec![granted_role().to_string()])]
             );
+        }
+
+        /// Admits exactly the requests whose token is in group `data-team`.
+        #[derive(Debug)]
+        struct GroupGate(limes::ClaimRule);
+        #[async_trait]
+        impl AdmissionGate for GroupGate {
+            fn name(&self) -> &'static str {
+                "group"
+            }
+            async fn admit(
+                &self,
+                ctx: AdmissionContext<'_>,
+            ) -> Result<GateDecision, AdmissionRejection> {
+                if ctx.token_claims.satisfy(&self.0) {
+                    Ok(GateDecision::admit())
+                } else {
+                    Err(AdmissionRejection::forbidden("not admitted", "TestDenied"))
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn a_gate_tests_the_claims_of_the_request_token() {
+            let gates = AdmissionGates::new(vec![Arc::new(GroupGate(
+                limes::ClaimRule::any_of("groups", ["data-team"]).unwrap(),
+            ))]);
+            let authorizer = HidingAuthorizer::new();
+            let user_id = UserId::new_unchecked("oidc", "test-user-one");
+
+            for (groups, expected) in [
+                (["data-team"], None),
+                (["finance"], Some(StatusCode::FORBIDDEN)),
+            ] {
+                let mut metadata = RequestMetadata::test_user_with_claims(
+                    user_id.clone(),
+                    serde_json::json!({ "groups": groups }),
+                );
+                let actor = metadata.actor().clone();
+                let refusal = admit_then_check_actor(
+                    &gates,
+                    &authorizer,
+                    &EventDispatcher::new(vec![]),
+                    &actor,
+                    None,
+                    &mut metadata,
+                )
+                .await;
+                assert_eq!(refusal.map(|r| r.status()), expected, "{groups:?}");
+            }
         }
     }
 }

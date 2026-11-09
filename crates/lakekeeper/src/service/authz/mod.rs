@@ -1098,12 +1098,19 @@ pub enum CatalogWarehouseAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     Delete {
-        /// Whether protection is bypassed, so a warehouse marked protected is deleted with
-        /// everything in it.
+        /// Whether protection is bypassed, so a warehouse marked protected can be deleted. The
+        /// warehouse must still be empty, and unfinished tasks still block the delete, except
+        /// tasks of queues that are cancelled when their warehouse is deleted.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
     },
+    /// Change or validate the warehouse's storage profile, or validate the storage the warehouse
+    /// currently runs with. Changing or validating a profile also requires
+    /// `update_storage_credential`, because a profile change replaces or clears the credential.
     UpdateStorage,
+    /// Replace or clear the warehouse's storage credential, or validate a replacement, leaving
+    /// the storage profile as it is.
+    UpdateStorageCredential,
     GetMetadata,
     GetConfig,
     ListNamespaces,
@@ -1122,6 +1129,12 @@ pub enum CatalogWarehouseAction {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
+    /// Register files that are already in the warehouse's storage, for example orphaned files
+    /// of a dropped table: register a table from an existing metadata file, or create a
+    /// generic table on a location that holds files.
+    /// Asked together with the create action on the namespace. The files may be anywhere in
+    /// the warehouse's storage, so it is a right on the warehouse.
+    RegisterTable,
     /// Attach/detach governance tags on this warehouse.
     ManageTags,
     /// Accept a namespace being moved in from elsewhere as a child of this entity.
@@ -1171,7 +1184,7 @@ pub enum CatalogWarehouseAction {
 /// The warehouse actions enumerated for permission introspection (`GET
 /// /warehouse/{id}/actions`). The subtree grant actions are enumerated with the
 /// absent scope (the base-capability form).
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 28]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -1179,6 +1192,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
         },
         CatalogWarehouseAction::Delete { force: false },
         CatalogWarehouseAction::UpdateStorage,
+        CatalogWarehouseAction::UpdateStorageCredential,
         CatalogWarehouseAction::GetMetadata,
         CatalogWarehouseAction::GetConfig,
         CatalogWarehouseAction::ListNamespaces,
@@ -1197,6 +1211,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
         CatalogWarehouseAction::SetProtection,
         CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
+        CatalogWarehouseAction::RegisterTable,
         CatalogWarehouseAction::ManageTags,
         CatalogWarehouseAction::AcceptMovedNamespace {
             source: Arc::new(Vec::new()),
@@ -1209,7 +1224,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 26]> = LazyL
 impl CatalogWarehouseAction {
     /// Introspectable warehouse actions — see [`WAREHOUSE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 26] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 28] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -1226,6 +1241,7 @@ impl CatalogWarehouseAction {
         match self {
             CatalogWarehouseAction::Delete { .. }
             | CatalogWarehouseAction::UpdateStorage
+            | CatalogWarehouseAction::UpdateStorageCredential
             | CatalogWarehouseAction::Deactivate
             | CatalogWarehouseAction::Activate
             | CatalogWarehouseAction::Rename
@@ -1251,6 +1267,8 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::GetAllTasks
             | CatalogWarehouseAction::ControlAllTasks
             | CatalogWarehouseAction::GetEndpointStatistics
+            // Adds a table, does not change the warehouse.
+            | CatalogWarehouseAction::RegisterTable
             // Governance tag attachment is metadata, not part of the reconciled spec.
             | CatalogWarehouseAction::ManageTags
             // Grant administration is not part of the reconciled spec.
@@ -1287,6 +1305,7 @@ impl EventAction for CatalogWarehouseAction {
             }
             // Contribute no audit context. Listed, not `_`, so a new variant cannot be missed.
             Self::UpdateStorage { .. }
+            | Self::UpdateStorageCredential { .. }
             | Self::GetMetadata { .. }
             | Self::GetConfig { .. }
             | Self::ListNamespaces { .. }
@@ -1305,6 +1324,7 @@ impl EventAction for CatalogWarehouseAction {
             | Self::SetProtection { .. }
             | Self::SetFormatVersionPolicy { .. }
             | Self::GetEndpointStatistics { .. }
+            | Self::RegisterTable { .. }
             | Self::ManageTags { .. }
             | Self::ReadGrants { .. } => {}
         }
@@ -1358,8 +1378,10 @@ pub enum CatalogNamespaceAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     Delete {
-        /// Whether the warehouse-configured soft-deletion is bypassed: contained tabulars are
-        /// hard-deleted at once, not kept for the configured grace period.
+        /// Whether protection is skipped: of the namespace, and with `recursive` of everything
+        /// below it. A recursive delete in a warehouse with soft deletion requires it: namespaces
+        /// have no soft-deleted state, so every table, view and generic table below is
+        /// hard-deleted at once, dropped ones included.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data/metadata files are physically purged.
@@ -1668,9 +1690,11 @@ impl EventAction for CatalogNamespaceAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed: the table is hard-deleted at
-        /// once, not kept for the configured grace period. Extra destructive — irreversible right
-        /// away.
+        /// Whether the drop skips the table's protection and, in a warehouse with soft deletion,
+        /// the soft-deletion window: the table is hard-deleted at once. Also set for the drop of
+        /// an active table that a register with `overwrite` replaces with another table (a
+        /// different table UUID) in a warehouse with soft deletion. That drop skips only the
+        /// window; protection holds.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data files are physically purged from storage.
@@ -1698,6 +1722,11 @@ pub enum CatalogTableAction {
         // branch-ref move (schema, spec, properties, snapshot expiry, …).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
         update_kinds: Arc<BTreeSet<TableUpdateKind>>,
+        /// What the server establishes about this commit; see [`CommitFacts`].
+        // Skipped by serde, so no client can claim it, and kept out of the audit record.
+        #[serde(skip)]
+        #[audit(expands_to = "")]
+        commit_facts: CommitFacts,
     },
     Rename,
     /// Rename this table into another namespace. Asked in addition to `rename` when a
@@ -1731,12 +1760,7 @@ static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 14]> = LazyLock::new
         CatalogTableAction::WriteData,
         CatalogTableAction::ReadData,
         CatalogTableAction::GetMetadata,
-        CatalogTableAction::Commit {
-            updated_properties: Arc::new(BTreeMap::new()),
-            removed_properties: Arc::new(Vec::new()),
-            target_refs: Arc::new(BTreeSet::new()),
-            update_kinds: Arc::new(BTreeSet::new()),
-        },
+        CatalogTableAction::any_commit(),
         CatalogTableAction::Rename,
         CatalogTableAction::Move {
             destination: Arc::new(Vec::new()),
@@ -1757,8 +1781,11 @@ impl CatalogTableAction {
     }
 
     /// Whether this is a commit that only changes the table's data; see
-    /// [`TableUpdateKind::changes_only_data`]. A commit check that names no update kinds
-    /// asks about commits in general, so it is not one.
+    /// [`TableUpdateKind::changes_only_data`]. A commit request without updates is one: it
+    /// changes neither data nor structure. A commit check that names no update kinds asks
+    /// about commits in general, so it is not one. A commit to a staged table is not one
+    /// either: it finishes the table's creation. Neither is a commit that
+    /// [`Self::on_table`] did not mark.
     #[must_use]
     pub fn is_data_commit(&self) -> bool {
         match self {
@@ -1767,12 +1794,111 @@ impl CatalogTableAction {
                 removed_properties,
                 target_refs: _,
                 update_kinds,
+                commit_facts,
             } => {
-                updated_properties.is_empty()
+                commit_facts.target == CommitTarget::LiveTable
+                    && updated_properties.is_empty()
                     && removed_properties.is_empty()
-                    && TableUpdateKind::changes_only_data(update_kinds)
+                    && ((commit_facts.lists_every_update && update_kinds.is_empty())
+                        || TableUpdateKind::changes_only_data(update_kinds))
             }
             _ => false,
+        }
+    }
+
+    /// This action, asked on `table`: a commit is marked as going to a live or a staged
+    /// table; every other action stays as it is. Every place that authorizes a commit calls
+    /// this, because an unmarked commit is never a data commit.
+    #[must_use]
+    pub(crate) fn on_table(mut self, table: &TableInfo) -> Self {
+        if let Self::Commit { commit_facts, .. } = &mut self {
+            commit_facts.target = if table.is_staged() {
+                CommitTarget::StagedTable
+            } else {
+                CommitTarget::LiveTable
+            };
+        }
+        self
+    }
+
+    /// A commit of any kind: the commit check that names no update kinds and changes no
+    /// property.
+    #[must_use]
+    pub(crate) fn any_commit() -> Self {
+        Self::Commit {
+            updated_properties: Arc::default(),
+            removed_properties: Arc::default(),
+            target_refs: Arc::default(),
+            update_kinds: Arc::default(),
+            commit_facts: CommitFacts::default(),
+        }
+    }
+}
+
+/// What the server establishes about a [`CatalogTableAction::Commit`], beyond what a
+/// permission check can name.
+///
+/// No client can claim any of it: serde skips it. The default describes a permission check
+/// whose table is not resolved yet; its `update_kinds` are the kinds it names, and a check
+/// that names none asks about a commit of any kind. [`CatalogTableAction::is_data_commit`]
+/// is the only method that interprets it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct CommitFacts {
+    /// `update_kinds` lists every update of a commit request the server applies, so an
+    /// empty list means a commit request without updates.
+    lists_every_update: bool,
+    /// The table the commit goes to; see [`CatalogTableAction::on_table`].
+    target: CommitTarget,
+}
+
+/// The table a commit goes to, as [`CatalogTableAction::on_table`] resolves it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+enum CommitTarget {
+    /// Not resolved, so the commit is never a data commit.
+    #[default]
+    Unresolved,
+    LiveTable,
+    /// The commit finishes the table's creation.
+    StagedTable,
+}
+
+impl CommitFacts {
+    /// The facts of a commit request the server applies: `update_kinds` lists every update.
+    #[must_use]
+    pub(crate) fn of_request() -> Self {
+        Self {
+            lists_every_update: true,
+            target: CommitTarget::Unresolved,
+        }
+    }
+
+    /// A permission check on a live table, for tests outside this crate.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn live_check_for_tests() -> Self {
+        Self {
+            lists_every_update: false,
+            target: CommitTarget::LiveTable,
+        }
+    }
+
+    /// A commit request to a live table, for tests outside this crate.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn live_request_for_tests() -> Self {
+        Self {
+            lists_every_update: true,
+            target: CommitTarget::LiveTable,
+        }
+    }
+
+    /// A commit request to a staged table, for tests outside this crate.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn staged_request_for_tests() -> Self {
+        Self {
+            lists_every_update: true,
+            target: CommitTarget::StagedTable,
         }
     }
 }
@@ -1786,6 +1912,8 @@ impl EventAction for CatalogTableAction {
                 removed_properties,
                 target_refs,
                 update_kinds,
+                // The record states the commit as the request does.
+                commit_facts: _,
             } => {
                 b = b.context(ActionContextKey::UpdatedProperties(
                     updated_properties.as_ref().clone(),
@@ -1848,9 +1976,8 @@ impl EventAction for CatalogTableAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed: the view is hard-deleted at
-        /// once, not kept for the configured grace period. Extra destructive — irreversible right
-        /// away.
+        /// Whether the drop skips the view's protection and, in a warehouse with soft deletion,
+        /// the soft-deletion window: the view is hard-deleted at once.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying metadata files are physically purged from storage.
@@ -1888,8 +2015,12 @@ pub enum CatalogViewAction {
     ManageTags,
     /// Can list the grants held on this view.
     ReadGrants,
+    /// Switch the view between running as its owner and running as the caller: a commit that
+    /// adds or removes an engine owner property such as `trino.run-as-owner`. A commit that adds
+    /// one also asks it for the user the property names.
+    ChangeSecurityMode,
 }
-static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 13]> = LazyLock::new(|| {
+static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 14]> = LazyLock::new(|| {
     [
         CatalogViewAction::Drop {
             force: false,
@@ -1912,11 +2043,12 @@ static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 13]> = LazyLock::new(|
         CatalogViewAction::SetProtection,
         CatalogViewAction::ManageTags,
         CatalogViewAction::ReadGrants,
+        CatalogViewAction::ChangeSecurityMode,
     ]
 });
 impl CatalogViewAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogViewAction; 13] {
+    pub fn variants() -> &'static [CatalogViewAction; 14] {
         &VIEW_ACTION_VARIANTS
     }
 }
@@ -1954,7 +2086,8 @@ impl EventAction for CatalogViewAction {
             | Self::ControlTasks { .. }
             | Self::SetProtection { .. }
             | Self::ManageTags { .. }
-            | Self::ReadGrants { .. } => {}
+            | Self::ReadGrants { .. }
+            | Self::ChangeSecurityMode { .. } => {}
         }
         b.build()
     }
@@ -1978,9 +2111,8 @@ impl EventAction for CatalogViewAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogGenericTableAction {
     Drop {
-        /// Whether the warehouse-configured soft-deletion is bypassed: the generic table is
-        /// hard-deleted at once, not kept for the configured grace period. Extra destructive —
-        /// irreversible right away.
+        /// Whether the drop skips the generic table's protection and, in a warehouse with
+        /// soft deletion, the soft-deletion window: the generic table is hard-deleted at once.
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
         /// Whether the underlying data files are physically purged from storage.
@@ -2252,6 +2384,7 @@ pub enum CatalogWarehouseActionKind {
     CreateNamespace,
     Delete,
     UpdateStorage,
+    UpdateStorageCredential,
     GetMetadata,
     GetConfig,
     ListNamespaces,
@@ -2270,6 +2403,7 @@ pub enum CatalogWarehouseActionKind {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
+    RegisterTable,
     ManageTags,
     AcceptMovedNamespace,
     ReadGrants,
@@ -2283,6 +2417,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::AcceptMovedNamespace { .. } => Self::AcceptMovedNamespace,
             CatalogWarehouseAction::Delete { .. } => Self::Delete,
             CatalogWarehouseAction::UpdateStorage => Self::UpdateStorage,
+            CatalogWarehouseAction::UpdateStorageCredential => Self::UpdateStorageCredential,
             CatalogWarehouseAction::GetMetadata => Self::GetMetadata,
             CatalogWarehouseAction::GetConfig => Self::GetConfig,
             CatalogWarehouseAction::ListNamespaces => Self::ListNamespaces,
@@ -2301,6 +2436,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::SetProtection => Self::SetProtection,
             CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
+            CatalogWarehouseAction::RegisterTable => Self::RegisterTable,
             CatalogWarehouseAction::ManageTags => Self::ManageTags,
             CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
             CatalogWarehouseAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
@@ -2423,6 +2559,7 @@ pub enum CatalogViewActionKind {
     SetProtection,
     ManageTags,
     ReadGrants,
+    ChangeSecurityMode,
 }
 impl From<&CatalogViewAction> for CatalogViewActionKind {
     fn from(action: &CatalogViewAction) -> Self {
@@ -2440,6 +2577,7 @@ impl From<&CatalogViewAction> for CatalogViewActionKind {
             CatalogViewAction::SetProtection => Self::SetProtection,
             CatalogViewAction::ManageTags => Self::ManageTags,
             CatalogViewAction::ReadGrants => Self::ReadGrants,
+            CatalogViewAction::ChangeSecurityMode => Self::ChangeSecurityMode,
         }
     }
 }
@@ -3252,6 +3390,7 @@ pub mod tests {
         for a in [
             A::Delete { force: false },
             A::UpdateStorage,
+            A::UpdateStorageCredential,
             A::Deactivate,
             A::Activate,
             A::Rename,
@@ -3279,6 +3418,7 @@ pub mod tests {
             A::GetAllTasks,
             A::ControlAllTasks,
             A::GetEndpointStatistics,
+            A::RegisterTable,
             A::ManageTags,
         ] {
             assert!(!a.is_spec_mutation(), "{a:?} should not be a spec mutation");
@@ -3564,11 +3704,13 @@ pub mod tests {
             d.context.iter().map(|k| k.as_str().to_string()).collect()
         };
 
+        // `commit_facts` never reaches the record.
         let commit = CatalogTableAction::Commit {
             updated_properties: Arc::new(BTreeMap::new()),
             removed_properties: Arc::new(Vec::new()),
             target_refs: Arc::new(BTreeSet::new()),
             update_kinds: Arc::new(BTreeSet::new()),
+            commit_facts: CommitFacts::of_request(),
         };
         assert_eq!(
             keys(commit.action_descriptor()),
@@ -3774,6 +3916,10 @@ pub mod tests {
                 serde_json::json!({"action": "set_protection"}),
             ),
             (
+                CatalogViewAction::ChangeSecurityMode,
+                serde_json::json!({"action": "change_security_mode"}),
+            ),
+            (
                 CatalogViewAction::Commit {
                     updated_properties: Arc::new(BTreeMap::new()),
                     removed_properties: Arc::new(Vec::new()),
@@ -3856,6 +4002,7 @@ pub mod tests {
                     removed_properties: Arc::new(Vec::new()),
                     target_refs: Arc::new(BTreeSet::new()),
                     update_kinds: Arc::new(BTreeSet::new()),
+                    commit_facts: CommitFacts::default(),
                 },
                 serde_json::json!({"action": "commit"}),
             ),
@@ -3882,6 +4029,7 @@ pub mod tests {
             removed_properties: Arc::new(vec!["key2".to_string(), "key3".to_string()]),
             target_refs: Arc::new(BTreeSet::new()),
             update_kinds: Arc::new(BTreeSet::new()),
+            commit_facts: CommitFacts::default(),
         };
         let serialized = serde_json::to_value(&action).expect("Failed to serialize");
         let expected_serialized = serde_json::json!({
@@ -3910,6 +4058,7 @@ pub mod tests {
                 TableUpdateKind::SetSnapshotRef,
                 TableUpdateKind::AddSchema,
             ])),
+            commit_facts: CommitFacts::default(),
         };
         let context: BTreeMap<&str, String> = action
             .action_descriptor()
@@ -3930,17 +4079,7 @@ pub mod tests {
     #[test]
     fn test_is_data_commit() {
         let commit = |updated: &[(&str, &str)], removed: &[&str], kinds: &[TableUpdateKind]| {
-            CatalogTableAction::Commit {
-                updated_properties: Arc::new(
-                    updated
-                        .iter()
-                        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                        .collect(),
-                ),
-                removed_properties: Arc::new(removed.iter().map(|k| (*k).to_string()).collect()),
-                target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
-                update_kinds: Arc::new(kinds.iter().copied().collect()),
-            }
+            commit_with_facts(updated, removed, kinds, CommitFacts::live_check_for_tests())
         };
         let append = [
             TableUpdateKind::AddSnapshot,
@@ -3955,6 +4094,134 @@ pub mod tests {
         assert!(!CatalogTableAction::WriteData.is_data_commit());
     }
 
+    #[cfg(test)]
+    fn commit_with_facts(
+        updated: &[(&str, &str)],
+        removed: &[&str],
+        kinds: &[TableUpdateKind],
+        commit_facts: CommitFacts,
+    ) -> CatalogTableAction {
+        CatalogTableAction::Commit {
+            updated_properties: Arc::new(
+                updated
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect(),
+            ),
+            removed_properties: Arc::new(removed.iter().map(|k| (*k).to_string()).collect()),
+            target_refs: Arc::default(),
+            update_kinds: Arc::new(kinds.iter().copied().collect()),
+            commit_facts,
+        }
+    }
+
+    /// A commit request without updates is a data commit. A check that names no update
+    /// kinds asks about a commit of any kind, so it is not.
+    #[test]
+    fn test_is_data_commit_of_a_request_without_updates() {
+        let every = CommitFacts::live_request_for_tests();
+        let append = [
+            TableUpdateKind::AddSnapshot,
+            TableUpdateKind::SetSnapshotRef,
+        ];
+
+        assert!(commit_with_facts(&[], &[], &[], every).is_data_commit());
+        assert!(
+            !commit_with_facts(&[], &[], &[], CommitFacts::live_check_for_tests()).is_data_commit()
+        );
+        assert!(!commit_with_facts(&[("owner", "team")], &[], &[], every).is_data_commit());
+        assert!(
+            !commit_with_facts(&[], &[], &[TableUpdateKind::AddSchema], every).is_data_commit()
+        );
+        assert!(commit_with_facts(&[], &[], &append, every).is_data_commit());
+    }
+
+    /// A commit that `on_table` did not mark is never a data commit, as a check or as a
+    /// request, so an authorization site that forgets the mark refuses a data-only grant.
+    #[test]
+    fn test_an_unmarked_commit_is_never_a_data_commit() {
+        let append = [
+            TableUpdateKind::AddSnapshot,
+            TableUpdateKind::SetSnapshotRef,
+        ];
+        for facts in [CommitFacts::default(), CommitFacts::of_request()] {
+            assert!(!commit_with_facts(&[], &[], &append, facts).is_data_commit());
+            assert!(!commit_with_facts(&[], &[], &[], facts).is_data_commit());
+        }
+        assert!(
+            !commit_with_facts(&[], &[], &append, CommitFacts::staged_request_for_tests())
+                .is_data_commit()
+        );
+    }
+
+    /// The commit of any kind is the check `{"action": "commit"}`, and not a data commit.
+    #[test]
+    fn test_any_commit_is_the_commit_check_without_update_kinds() {
+        let check: CatalogTableAction =
+            serde_json::from_value(serde_json::json!({"action": "commit"})).unwrap();
+        assert_eq!(CatalogTableAction::any_commit(), check);
+        assert!(!CatalogTableAction::any_commit().is_data_commit());
+    }
+
+    /// JSON can neither set nor carry `commit_facts`: a check that claims to list
+    /// every update stays a check, and a commit request serializes as that check.
+    #[test]
+    fn test_commit_facts_never_reach_or_leave_json() {
+        let claimed: CatalogTableAction = serde_json::from_value(serde_json::json!({
+            "action": "commit",
+            "commit_facts": {"lists_every_update": true, "to_staged_table": false}
+        }))
+        .unwrap();
+        assert_eq!(claimed, CatalogTableAction::any_commit());
+        assert!(!claimed.is_data_commit());
+
+        assert_eq!(
+            serde_json::to_value(commit_with_facts(&[], &[], &[], CommitFacts::of_request()))
+                .unwrap(),
+            serde_json::json!({"action": "commit"})
+        );
+    }
+
+    /// A commit to a staged table is never a data commit, whatever it contains, and the
+    /// request or check carries the same content. On a live table it is one when its updates
+    /// only change data. `on_table` changes no other action.
+    #[test]
+    fn test_a_commit_to_a_staged_table_is_never_a_data_commit() {
+        let live = crate::service::TableInfo::new_random(Uuid::nil().into());
+        let staged = crate::service::TableInfo {
+            metadata_location: None,
+            ..live.clone()
+        };
+        let request = CommitFacts::of_request();
+        let append = [
+            TableUpdateKind::AddSnapshot,
+            TableUpdateKind::SetSnapshotRef,
+        ];
+
+        for (facts, kinds) in [
+            (request, &append[..]),
+            (request, &[][..]),
+            (CommitFacts::default(), &append[..]),
+        ] {
+            let action = commit_with_facts(&[], &[], kinds, facts);
+            assert!(action.clone().on_table(&live).is_data_commit());
+            let on_staged = action.clone().on_table(&staged);
+            assert!(!on_staged.is_data_commit());
+            assert_eq!(
+                serde_json::to_value(&on_staged).unwrap(),
+                serde_json::to_value(&action).unwrap()
+            );
+            assert_eq!(
+                format!("{:?}", on_staged.action_descriptor()),
+                format!("{:?}", action.action_descriptor())
+            );
+        }
+        assert_eq!(
+            CatalogTableAction::ReadData.on_table(&staged),
+            CatalogTableAction::ReadData
+        );
+    }
+
     /// Locks the wire shape of the ref/kind fields — kinds serialize as their kebab-case
     /// Iceberg action names. This is a serialized contract that authorizers parse, so a
     /// change here is a change to their input, not an internal rename.
@@ -3965,6 +4232,7 @@ pub mod tests {
             removed_properties: Arc::default(),
             target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
             update_kinds: Arc::new(BTreeSet::from([TableUpdateKind::SetSnapshotRef])),
+            commit_facts: CommitFacts::default(),
         };
         let serialized = serde_json::to_value(&action).expect("Failed to serialize");
         assert_eq!(
@@ -4306,6 +4574,8 @@ pub mod tests {
         pub hidden: Arc<RwLock<HashSet<String>>>,
         /// Strings encode `object_type:action` e.g. `namespace:can_create_table`.
         blocked_actions: Arc<RwLock<HashSet<String>>>,
+        /// Like `blocked_actions`, matched only in full. See [`Self::block_action_exact`].
+        blocked_actions_exact: Arc<RwLock<HashSet<String>>>,
         /// Per-user object hiding. Key: `format!("{user:?}")`, Value: set of object strings.
         /// Global `hidden` is checked first; per-user entries hide additional objects
         /// but cannot override global hides. See [`Self::check_available_for_user`].
@@ -4404,11 +4674,15 @@ pub mod tests {
     }
 
     impl HidingAuthorizer {
+        /// The blocked-action key of [`Self::block_structural_commits`].
+        const STRUCTURAL_COMMIT: &'static str = "table:structural_commit";
+
         #[must_use]
         pub fn new() -> Self {
             Self {
                 hidden: Arc::new(RwLock::new(HashSet::new())),
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
+                blocked_actions_exact: Arc::default(),
                 hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
                 bootstrap: &[],
@@ -4603,7 +4877,9 @@ pub mod tests {
             let blocked = self.blocked_actions.read().unwrap();
             // Exact match or prefix match (e.g. "namespace:CreateTable" matches
             // "namespace:CreateTable { name: Some(...), ... }").
-            blocked.contains(action) || blocked.iter().any(|b| action.starts_with(b.as_str()))
+            blocked.contains(action)
+                || blocked.iter().any(|b| action.starts_with(b.as_str()))
+                || self.blocked_actions_exact.read().unwrap().contains(action)
         }
 
         /// Answering for another principal discloses that principal's access, so the
@@ -4627,6 +4903,36 @@ pub mod tests {
                 .write()
                 .unwrap()
                 .insert(object.to_string());
+        }
+
+        /// Lifts a block set with [`Self::block_action`].
+        ///
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
+        pub fn unblock_action(&self, object: &str) {
+            self.blocked_actions.write().unwrap().remove(object);
+        }
+
+        /// Blocks only the action whose key is exactly `object`. [`Self::block_action`]
+        /// matches by prefix, so `warehouse:UpdateStorage` there also blocks
+        /// `warehouse:UpdateStorageCredential`.
+        ///
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
+        pub fn block_action_exact(&self, object: &str) {
+            self.blocked_actions_exact
+                .write()
+                .unwrap()
+                .insert(object.to_string());
+        }
+
+        /// Blocks every table commit that is not a data commit, as a data-only grant does; see
+        /// [`CatalogTableAction::is_data_commit`].
+        ///
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
+        pub fn block_structural_commits(&self) {
+            self.block_action(Self::STRUCTURAL_COMMIT);
         }
 
         /// Blocks `can_list_everything` action on every object it is defined for.
@@ -4968,9 +5274,12 @@ pub mod tests {
             let results: Vec<bool> = actions
                 .iter()
                 .map(|(_parent_namespace, action)| {
-                    if self.action_is_blocked(
-                        format!("table:{:?}", action.action.clone().into()).as_str(),
-                    ) {
+                    let table_action: CatalogTableAction = action.action.clone().into();
+                    if self.action_is_blocked(format!("table:{table_action:?}").as_str())
+                        || (matches!(table_action, CatalogTableAction::Commit { .. })
+                            && !table_action.is_data_commit()
+                            && self.action_is_blocked(Self::STRUCTURAL_COMMIT))
+                    {
                         return false;
                     }
                     let table_id = action.info.table_id();

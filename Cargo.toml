@@ -17,7 +17,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.14.0"
+version = "0.15.0"
 homepage = "https://lakekeeper.io/"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
 rust-version = "1.95"
@@ -116,7 +116,7 @@ hyper-util = { version = "0.1.20", features = [
     "service",
     "tokio",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "5117310e4abe9b1fcf61b2e58a9d9dc6c300d8f4" }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "42cab5d673f796fd4888fd1fec1fc89dccfbb2db" }
 inventory = "0.3.24"
 iso8601 = "0.6.2"
 itertools = "0.14.0"
@@ -128,8 +128,7 @@ jsonwebtoken = { version = "11.0", features = ["aws_lc_rs"] }
 k8s-openapi = { version = "0.28" }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-# TEMPORARY: pinned to main. Move to `tag = "v0.7.0"` once that release is published.
-limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "641c81961b423c5e72239655e8a0cff7a8bd5790", features = [
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", tag = "v0.7.0", features = [
     "kubernetes",
     "axum",
     "rustls-tls",

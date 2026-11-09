@@ -1,8 +1,9 @@
 # Tests for CreateTable / CreateView under a name that is already taken. Trino
 # asks the same operation for `CREATE OR REPLACE`, so a taken name also needs
-# `commit` on the table or view. A free name needs only the create action.
-# The bridge cannot see which updates Trino sends, so it asks about a commit of
-# any kind. For a table, the commit targets the ref `main`.
+# `commit` on the table, or Lakekeeper's `view-replace` check on the view. A
+# free name needs only the create action. The bridge cannot see which updates
+# Trino sends, so it asks about a commit of any kind. For a table, the commit
+# targets the ref `main`.
 package trino_test
 
 import data.trino
@@ -103,6 +104,15 @@ _expected_table_replace_check(namespace, updated_properties) := {
 }
 
 _expected_view_replace_check := {
+	"operation": {"view-replace": {
+		"warehouse-id": "mock-wh-id",
+		"namespace": ["schema_a"],
+		"table": "t",
+	}},
+	"identity": {"user": "oidc~test-user"},
+}
+
+_view_commit_check := {
 	"operation": {"view": {
 		"action": {"action": "commit"},
 		"warehouse-id": "mock-wh-id",
@@ -128,6 +138,18 @@ mock_http_expect_table_replace_check_with_properties(request) := _mock_http_repl
 )
 
 mock_http_expect_view_replace_check(request) := _mock_http_replace_expecting(request, _expected_view_replace_check)
+
+# A server that does not know the `view-replace` check rejects every request
+# that carries it, although it would allow a commit to the view.
+mock_http_server_without_view_replace(request) := {"status_code": 422, "body": {"error": {
+	"code": 422,
+	"type": "UnprocessableEntity",
+	"message": "unknown variant `view-replace`",
+}}} if {
+	contains(request.url, "batch-check")
+	request.body["error-on-not-found"] == true
+	request.body.checks[0].operation["view-replace"]
+} else := _mock_http_replace_expecting(request, _view_commit_check)
 
 # --- CreateTable ---
 
@@ -283,11 +305,20 @@ test_create_view_taken_name_with_commit_allowed if {
 		with http.send as mock_http_name_taken_replace_allowed
 }
 
-test_create_view_asks_commit_on_the_view if {
+test_create_view_asks_lakekeeper_to_replace_the_view if {
 	trino.allow with input as _create_view_input
 		with data.configuration.lakekeeper as mock_lakekeeper
 		with data.configuration.trino_catalog as mock_trino_catalog
 		with http.send as mock_http_expect_view_replace_check
+}
+
+# The server rejects the request before it looks up the name, so a free name is
+# refused too.
+test_create_view_is_denied_by_a_server_without_the_check if {
+	not trino.allow with input as _create_view_input
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_server_without_view_replace
 }
 
 test_create_view_table_not_found_is_no_free_view_name if {
@@ -309,6 +340,13 @@ test_create_materialized_view_taken_name_without_commit_denied if {
 		with data.configuration.lakekeeper as mock_lakekeeper
 		with data.configuration.trino_catalog as mock_trino_catalog
 		with http.send as mock_http_name_taken_replace_denied
+}
+
+test_create_materialized_view_asks_lakekeeper_to_replace_the_view if {
+	trino.allow with input as _create_input("CreateMaterializedView", "schema_a", "t")
+		with data.configuration.lakekeeper as mock_lakekeeper
+		with data.configuration.trino_catalog as mock_trino_catalog
+		with http.send as mock_http_expect_view_replace_check
 }
 
 test_create_materialized_view_free_name_allowed if {

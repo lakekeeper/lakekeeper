@@ -53,7 +53,7 @@ POST /management/v1/warehouse/{warehouse_id}/grants
 
 Grant to a **role** rather than to individual users wherever you can — one grant plus role membership beats one grant per person.
 
-Granting requires the authority to hand that privilege on, on that resource. Your authorizer decides who has it; under OpenFGA see [Grants](./authorization-openfga.md#grants).
+Granting requires the authority to hand that privilege on, on that resource. Your authorizer decides who has it: see [OpenFGA grants](./authorization-openfga.md#grants) or, for Cedar<span class="lkp"></span>, [What each privilege allows](./authorization-cedar.md#what-each-privilege-allows). Whoever may grant a privilege may also grant it to themselves or to a role they belong to, so the right to grant `select` includes the right to read. The [audit log](./logging.md#audit-logs) records every grant.
 
 !!! note "The instance-admin bypass does not apply to grant writes"
     Handing out permissions is not covered by the [instance-admin bypass](./instance-admins.md). Grant writes always go through the configured authorizer, which decides the outcome.

@@ -6,6 +6,7 @@ pub mod list;
 pub mod load;
 pub(crate) mod owner_property;
 pub mod rename;
+pub(crate) mod security_mode;
 
 use iceberg_ext::catalog::rest::ViewUpdate;
 
@@ -37,15 +38,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         list::list_views(parameters, query, state, request_metadata).await
     }
 
-    /// Create a view in the given namespace
+    /// Create a view in the given namespace. A view response carries no storage access, so
+    /// `data_access` has no effect.
     async fn create_view(
         parameters: NamespaceParameters,
         request: CreateViewRequest,
         state: ApiContext<State<A, C, S>>,
-        data_access: impl Into<DataAccessMode> + Send,
+        _data_access: impl Into<DataAccessMode> + Send,
         request_metadata: RequestMetadata,
     ) -> Result<LoadViewResult> {
-        create::create_view(parameters, request, state, data_access, request_metadata).await
+        create::create_view(parameters, request, state, request_metadata).await
     }
 
     /// Load a view from the catalog

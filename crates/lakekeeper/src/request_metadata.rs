@@ -533,6 +533,28 @@ impl RequestMetadata {
             .build()
     }
 
+    /// Like [`Self::test_user`] but the token carries `claims`.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn test_user_with_claims(
+        user_id: crate::service::UserId,
+        claims: serde_json::Value,
+    ) -> Self {
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Principal(user_id.clone()))
+            .authentication(
+                Authentication::builder()
+                    .token_header(None)
+                    .claims(claims)
+                    .subject(user_id.into())
+                    .name(Some("Test User".to_string()))
+                    .email(None)
+                    .principal_type(None)
+                    .build(),
+            )
+            .build()
+    }
+
     /// Like [`Self::test_user`] but the token carries no `name` claim — exercises
     /// the nameless-token path (e.g. the role-provider stub backfill gate, which
     /// must NOT downgrade a row from a token that provides no name).

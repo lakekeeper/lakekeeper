@@ -205,6 +205,18 @@ require_view_access_simple(catalog_name, schema_name, view_name, action) if {
 	)
 }
 
+require_view_in_definer_view_access(catalog_name, schema_name, view_name) if {
+	is_canonical_tabular_name(view_name)
+	trino_catalog := catalog_config_by_name[catalog_name]
+	lakekeeper.require_view_in_definer_view_access(
+		trino_catalog.lakekeeper_id,
+		trino_catalog.lakekeeper_warehouse,
+		namespace_for_schema(schema_name),
+		view_name,
+		lakekeeper_user_id,
+	)
+}
+
 # Trino drops a view through the Iceberg REST catalog without
 # `purgeRequested`, and Lakekeeper then drops with purge. The check describes
 # the drop as Lakekeeper authorizes it.
@@ -262,7 +274,9 @@ require_table_replace_access(catalog_name, schema_name, table_name, updated_prop
 }
 
 # The same holds for `CreateView` and `CREATE OR REPLACE VIEW`: creating a view
-# also needs `commit` on a live view with that name.
+# also needs Lakekeeper to allow replacing a live view with that name. That is
+# `commit`, and for a view that runs as another user also
+# `change_security_mode`.
 require_view_replace_access(catalog_name, schema_name, view_name) if {
 	is_canonical_tabular_name(view_name)
 	trino_catalog := catalog_config_by_name[catalog_name]

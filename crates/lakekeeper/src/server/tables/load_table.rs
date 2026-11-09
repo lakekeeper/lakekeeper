@@ -362,7 +362,7 @@ async fn refetch_warehouse<C: CatalogStore, A: Authorizer>(
 /// Named rather than inlined at its one call site so a test can drive the mapping
 /// directly: inlined, the `None` arm was reachable only through a full request and
 /// nothing pinned which variant it produced.
-fn storage_access_for(
+pub(super) fn storage_access_for(
     storage_permissions: Option<StoragePermissions>,
     delegation: DataAccessMode,
     warehouse_version: WarehouseVersion,

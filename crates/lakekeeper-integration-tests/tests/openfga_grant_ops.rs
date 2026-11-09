@@ -244,7 +244,7 @@ mod grant {
                     "describe",
                     "select",
                     "create",
-                    "write_data",
+                    "write",
                     "modify",
                     "manage_tags"
                 ]
@@ -479,7 +479,7 @@ mod grant {
                     "describe",
                     "select",
                     "create",
-                    "write_data",
+                    "write",
                     "modify",
                     "manage_tags"
                 ]
@@ -831,7 +831,7 @@ mod grant {
                     "ownership",
                     "pass_grants",
                     "select",
-                    "write_data"
+                    "write"
                 ]
             );
 

@@ -1,4 +1,6 @@
 import conftest
+import pytest
+import requests
 
 
 def test_create_namespace(trino, warehouse: conftest.Warehouse):
@@ -775,11 +777,10 @@ def test_table_extra_properties(trino, warehouse: conftest.Warehouse):
 
 
 def test_select_from_view_on_view(trino, warehouse: conftest.Warehouse):
-    # View-on-view: the outer view's DEFINER-run-as-owner check on the inner
-    # view reaches Trino as CreateViewWithSelectFromColumns on the inner
-    # view's name. The OPA bridge must permit that via the view path;
-    # table-lookup at Lakekeeper returns not-found for a view and would
-    # otherwise deny.
+    # View-on-view, queried by the owner of both views: Trino checks the inner
+    # view with `SelectFromColumns` as the owner. The OPA bridge must permit
+    # that via the view path; table-lookup at Lakekeeper returns not-found for
+    # a view and would otherwise deny.
     ns = "test_select_from_view_on_view"
     cur = trino.cursor()
     cur.execute(f"CREATE SCHEMA {ns}")
@@ -794,6 +795,77 @@ def test_select_from_view_on_view(trino, warehouse: conftest.Warehouse):
         f"CREATE OR REPLACE VIEW {ns}.outer_view AS SELECT strings FROM {ns}.inner_view"
     )
 
+    r = cur.execute(f"SELECT * FROM {ns}.outer_view ORDER BY strings").fetchall()
+    assert r == [["a"], ["b"]]
+
+
+def _create_definer_view_over_view(cur, ns: str, inner_security: str):
+    """`outer_view` (DEFINER) reads `inner_view`, which reads `my_table`."""
+    cur.execute(f"CREATE SCHEMA {ns}")
+    cur.execute(f"CREATE TABLE {ns}.my_table (strings VARCHAR) WITH (format='PARQUET')")
+    cur.execute(f"INSERT INTO {ns}.my_table VALUES ('a'), ('b')")
+    cur.execute(
+        f"CREATE VIEW {ns}.inner_view SECURITY {inner_security} AS SELECT strings FROM {ns}.my_table"
+    )
+    cur.execute(
+        f"CREATE VIEW {ns}.outer_view SECURITY DEFINER AS SELECT strings FROM {ns}.inner_view"
+    )
+
+
+def _grant_view_select(warehouse: conftest.Warehouse, ns: str, view: str, user_id: str):
+    headers = {"Authorization": f"Bearer {warehouse.access_token}"}
+    response = requests.get(
+        f"{warehouse.server.catalog_url}v1/{warehouse.warehouse_id}/namespaces/{ns}/views/{view}",
+        headers=headers,
+    )
+    response.raise_for_status()
+    view_id = response.json()["metadata"]["view-uuid"]
+    requests.post(
+        warehouse.server.openfga_permissions_url
+        + f"/warehouse/{warehouse.warehouse_id}/view/{view_id}/assignments",
+        headers=headers,
+        json={"deletes": [], "writes": [{"type": "select", "user": user_id}]},
+    ).raise_for_status()
+
+
+def test_owner_reads_own_definer_view_over_invoker_view(
+    trino, warehouse: conftest.Warehouse
+):
+    ns = "test_owner_reads_own_definer_view_over_invoker_view"
+    cur = trino.cursor()
+    _create_definer_view_over_view(cur, ns, "INVOKER")
+
+    r = cur.execute(f"SELECT * FROM {ns}.outer_view ORDER BY strings").fetchall()
+    assert r == [["a"], ["b"]]
+
+
+def test_other_user_cannot_read_definer_view_over_invoker_view(
+    trino, trino_other_user: conftest.TrinoUser, warehouse: conftest.Warehouse
+):
+    # Trino runs the INVOKER view as the outer view's owner. The OPA bridge
+    # refuses it, so whoever can change the INVOKER view cannot read with the
+    # owner's rights.
+    from trino.exceptions import TrinoUserError
+
+    ns = "test_other_user_cannot_read_definer_view_over_invoker_view"
+    _create_definer_view_over_view(trino.cursor(), ns, "INVOKER")
+    _grant_view_select(warehouse, ns, "outer_view", trino_other_user.user_id)
+
+    cur = trino_other_user.connection.cursor()
+    with pytest.raises(
+        TrinoUserError, match="View owner does not have sufficient privileges"
+    ):
+        cur.execute(f"SELECT * FROM {ns}.outer_view").fetchall()
+
+
+def test_other_user_reads_definer_view_over_definer_view(
+    trino, trino_other_user: conftest.TrinoUser, warehouse: conftest.Warehouse
+):
+    ns = "test_other_user_reads_definer_view_over_definer_view"
+    _create_definer_view_over_view(trino.cursor(), ns, "DEFINER")
+    _grant_view_select(warehouse, ns, "outer_view", trino_other_user.user_id)
+
+    cur = trino_other_user.connection.cursor()
     r = cur.execute(f"SELECT * FROM {ns}.outer_view ORDER BY strings").fetchall()
     assert r == [["a"], ["b"]]
 

@@ -14,12 +14,13 @@ use crate::{
         },
     },
     request_metadata::{ProjectIdMissing, RequestMetadata},
+    server::authorize_soft_deletion_skip,
     service::{
         ArcProjectId, ArcResolvedWarehouse, CachePolicy, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity,
         NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId,
         TabularId, TabularListFlags, TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId,
-        ViewOrTableDeletionInfo, ViewOrTableInfo,
+        ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseStatus,
         authz::{
             AuthZCannotListAllTasks, AuthZCannotSeeGenericTable, AuthZCannotSeeTable,
             AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps as _,
@@ -844,6 +845,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         let (event_ctx, (warehouse, tabular_expiration_entities)) =
             event_ctx.emit_authz(authz_result)?;
+        // Running a soft-deletion task early hard-deletes its tabular before the window ends,
+        // whatever task permissions the caller holds.
+        if matches!(
+            event_ctx.action().action,
+            ControlTaskAction::RunNow | ControlTaskAction::RunAt { .. }
+        ) && !tabular_expiration_entities.is_empty()
+            && warehouse.tabular_delete_profile.is_soft()
+        {
+            authorize_soft_deletion_skip(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                &warehouse,
+            )
+            .await?;
+        }
 
         let event_ctx = Arc::new(event_ctx.resolve(tabular_expiration_entities));
 
@@ -1564,7 +1581,13 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     query: &ControlTasksRequest,
     warehouse_id: WarehouseId,
 ) -> Result<(ArcResolvedWarehouse, Vec<TabularId>), AuthZError> {
-    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
+    let warehouse = C::get_warehouse_by_id_cache_aware(
+        warehouse_id,
+        WarehouseStatus::active(),
+        CachePolicy::Skip,
+        catalog_state.clone(),
+    )
+    .await;
     let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
 
     let [authz_can_use, authz_control_all] = authorizer

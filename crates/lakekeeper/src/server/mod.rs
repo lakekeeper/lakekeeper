@@ -26,8 +26,12 @@ use crate::{
         ErrorModel, Result,
         iceberg::v1::{PageToken, Prefix},
     },
+    request_metadata::ArcRequestMetadata,
     service::{
-        CatalogStore, ReadTransaction, authz::Authorizer, secrets::SecretStore,
+        CatalogStore, ReadTransaction, ResolvedWarehouse,
+        authz::{Authorizer, CatalogWarehouseAction, require_soft_deletion_skip},
+        events::{APIEventContext, EventDispatcher},
+        secrets::SecretStore,
         storage::StorageCredential,
     },
 };
@@ -108,6 +112,26 @@ fn require_warehouse_id(prefix: Option<&Prefix>) -> std::result::Result<Warehous
             })?
             .as_ref(),
     )
+}
+
+/// Requires `ModifySoftDeletion` on `warehouse` for a call that skips its soft-deletion window.
+/// The check gets an audit record of its own on the warehouse, after the call's record.
+pub(crate) async fn authorize_soft_deletion_skip<A: Authorizer>(
+    authorizer: &A,
+    request_metadata: ArcRequestMetadata,
+    dispatcher: EventDispatcher,
+    warehouse: &ResolvedWarehouse,
+) -> Result<()> {
+    let event_ctx = APIEventContext::for_warehouse(
+        request_metadata,
+        dispatcher,
+        warehouse.warehouse_id,
+        CatalogWarehouseAction::ModifySoftDeletion,
+    );
+    let result =
+        require_soft_deletion_skip(authorizer, event_ctx.request_metadata(), warehouse).await;
+    event_ctx.emit_authz(result)?;
+    Ok(())
 }
 
 pub(crate) async fn maybe_get_secret<S: SecretStore>(
