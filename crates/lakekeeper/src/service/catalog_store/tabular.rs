@@ -1538,9 +1538,14 @@ define_transparent_error! {
 
 // --------------------------- Create Tabulars ----------------
 #[derive(thiserror::Error, Debug)]
-#[error("Location '{location}' is already taken by another table or view.")]
+#[error("Location '{location}' {}", if *.purge_pending {
+    "overlaps the location of a dropped table, view or generic table whose files a purge task will delete. The location is free again when that task has finished."
+} else {
+    "is already taken by another table or view."
+})]
 pub struct LocationAlreadyTaken {
     location: Location,
+    purge_pending: bool,
     stack: Vec<String>,
 }
 impl LocationAlreadyTaken {
@@ -1548,7 +1553,17 @@ impl LocationAlreadyTaken {
     pub fn new(location: Location) -> Self {
         Self {
             location,
+            purge_pending: false,
             stack: Vec::new(),
+        }
+    }
+
+    /// The location overlaps one whose purge task has not finished yet.
+    #[must_use]
+    pub fn purge_pending(location: Location) -> Self {
+        Self {
+            purge_pending: true,
+            ..Self::new(location)
         }
     }
 }
