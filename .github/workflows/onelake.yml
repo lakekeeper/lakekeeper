@@ -53,6 +53,11 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           rustflags: ""
+          # Pull requests restore main's cache and write none of their own. A
+          # cache saved on a PR ref is readable by that one PR, and the Rust
+          # jobs together hold about 9.5 GB per ref against a 10 GB repo
+          # budget, so PR writes evict the main entry every job depends on.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
