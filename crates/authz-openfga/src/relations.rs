@@ -1041,6 +1041,7 @@ pub enum WarehouseRelation {
     CanControlAllTasks,
     CanSetProtection,
     CanSetFormatVersionPolicy,
+    CanSetRollbackCompactionPolicy,
     CanGetEndpointStatistics,
     CanRegisterTable,
     // -- Revoke actions --
@@ -1227,6 +1228,7 @@ pub(super) enum APIWarehouseAction {
     ControlAllTasks,
     SetProtection,
     SetFormatVersionPolicy,
+    SetRollbackCompactionPolicy,
     GetEndpointStatistics,
 }
 
@@ -1300,6 +1302,9 @@ impl ReducedRelation for APIWarehouseAction {
             APIWarehouseAction::SetFormatVersionPolicy => {
                 WarehouseRelation::CanSetFormatVersionPolicy
             }
+            APIWarehouseAction::SetRollbackCompactionPolicy => {
+                WarehouseRelation::CanSetRollbackCompactionPolicy
+            }
             APIWarehouseAction::GetEndpointStatistics => {
                 WarehouseRelation::CanGetEndpointStatistics
             }
@@ -1344,6 +1349,9 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::SetProtection => WarehouseRelation::CanSetProtection,
             CatalogWarehouseAction::SetFormatVersionPolicy => {
                 WarehouseRelation::CanSetFormatVersionPolicy
+            }
+            CatalogWarehouseAction::SetRollbackCompactionPolicy => {
+                WarehouseRelation::CanSetRollbackCompactionPolicy
             }
             CatalogWarehouseAction::GetEndpointStatistics => {
                 WarehouseRelation::CanGetEndpointStatistics

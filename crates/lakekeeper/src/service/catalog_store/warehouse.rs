@@ -228,6 +228,48 @@ pub struct WarehouseFormatVersionPolicy {
     pub default_format_version: Option<FormatVersion>,
 }
 
+/// Per-warehouse transparent-commit policy. See [`crate::server::tables::transparent_commit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RollbackCompactionPolicy {
+    /// When `true`, a writer's commit that would fail optimistic-concurrency
+    /// validation solely because of intervening rollbackable compaction
+    /// snapshots reaps those snapshots and rebases the writer on top, so the
+    /// writer wins over compaction.
+    pub enabled: bool,
+    /// A compaction snapshot older than this many seconds is not rolled back.
+    pub max_compaction_age_seconds: u64,
+    /// For this many seconds after a rollback, commits that remove snapshots are rejected
+    /// with a retryable conflict. For this many seconds after such a commit, no compaction
+    /// is rolled back.
+    pub snapshot_removal_fence_seconds: u64,
+}
+
+impl RollbackCompactionPolicy {
+    /// Applies when a policy does not set `max_compaction_age_seconds`.
+    pub const DEFAULT_MAX_COMPACTION_AGE_SECONDS: u64 = 86_400;
+    /// Applies when a policy does not set `snapshot_removal_fence_seconds`.
+    pub const DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS: u64 = 60;
+
+    /// The fence window as a duration.
+    #[must_use]
+    pub fn snapshot_removal_fence(&self) -> chrono::Duration {
+        i64::try_from(self.snapshot_removal_fence_seconds)
+            .ok()
+            .and_then(chrono::Duration::try_seconds)
+            .unwrap_or(chrono::Duration::MAX)
+    }
+}
+
+impl Default for RollbackCompactionPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_compaction_age_seconds: Self::DEFAULT_MAX_COMPACTION_AGE_SECONDS,
+            snapshot_removal_fence_seconds: Self::DEFAULT_SNAPSHOT_REMOVAL_FENCE_SECONDS,
+        }
+    }
+}
+
 /// Reference to [`ResolvedWarehouse`] that can be cheaply cloned and shared.
 pub type ArcResolvedWarehouse = Arc<ResolvedWarehouse>;
 
@@ -260,6 +302,8 @@ pub struct ResolvedWarehouse {
     /// does not specify one. When `None`, resolves to `V2` if allowed, otherwise
     /// the highest allowed version. Always a member of `allowed_format_versions`.
     pub default_format_version: Option<FormatVersion>,
+    /// Transparent-commit policy. Disabled by default.
+    pub rollback_compaction_policy: RollbackCompactionPolicy,
     /// Timestamp when the warehouse metadata was last updated.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Version of the warehouse entity.
@@ -287,6 +331,7 @@ impl ResolvedWarehouse {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: AllowedFormatVersions::default(),
             default_format_version: None,
+            rollback_compaction_policy: RollbackCompactionPolicy::default(),
             updated_at: None,
             version: WarehouseVersion(0),
         }
@@ -310,6 +355,7 @@ impl ResolvedWarehouse {
             managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: AllowedFormatVersions::default(),
             default_format_version: None,
+            rollback_compaction_policy: RollbackCompactionPolicy::default(),
             updated_at: None,
             version: WarehouseVersion(0),
         }
@@ -704,6 +750,17 @@ define_transparent_error! {
 define_transparent_error! {
     pub enum SetWarehouseManagedByError,
     stack_message: "Error setting warehouse managed-by marker in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+        DatabaseIntegrityError,
+    ]
+}
+
+// ---------------- Set Warehouse Rollback-Compaction Policy Error ----------------
+define_transparent_error! {
+    pub enum SetWarehouseRollbackCompactionPolicyError,
+    stack_message: "Error setting warehouse rollback-compaction policy in catalog",
     variants: [
         CatalogBackendError,
         WarehouseIdNotFound,
@@ -1155,6 +1212,22 @@ where
         transaction: &mut WriteTransaction<Self>,
     ) -> std::result::Result<ArcResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
         let warehouse = Self::set_warehouse_format_version_policy_impl(
+            warehouse_id,
+            policy,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.record(CacheKey::Warehouse(warehouse_id));
+        Ok(Arc::new(warehouse))
+    }
+
+    /// Set the transparent-commit (rollback-compaction-on-conflict) policy of a warehouse.
+    async fn set_warehouse_rollback_compaction_policy(
+        warehouse_id: WarehouseId,
+        policy: RollbackCompactionPolicy,
+        transaction: &mut WriteTransaction<Self>,
+    ) -> std::result::Result<ArcResolvedWarehouse, SetWarehouseRollbackCompactionPolicyError> {
+        let warehouse = Self::set_warehouse_rollback_compaction_policy_impl(
             warehouse_id,
             policy,
             transaction.transaction(),

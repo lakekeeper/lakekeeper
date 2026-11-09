@@ -970,6 +970,7 @@ tests:
           can_get_endpoint_statistics: true
           can_set_protection: true
           can_set_format_version_policy: true
+          can_set_rollback_compaction_policy: true
       - user: user:warehouse_1_owner
         object: namespace:namespace_1
         assertions:
@@ -1171,6 +1172,7 @@ tests:
           can_get_endpoint_statistics: false
           can_set_protection: false
           can_set_format_version_policy: false
+          can_set_rollback_compaction_policy: false
       - user: user:select_table_3
         object: namespace:namespace_1
         assertions:
@@ -2580,6 +2582,7 @@ tests:
           can_modify_task_queue_config: false
           can_set_protection: false
           can_set_format_version_policy: false
+          can_set_rollback_compaction_policy: false
           can_activate: false
           can_deactivate: false
           can_grant_write: false
