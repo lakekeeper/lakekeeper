@@ -1,0 +1,175 @@
+name: integration tests
+
+# Every suite that runs against the server image. The image is built once per
+# run and shared through the `lakekeeper-image` artifact: the build compiles
+# the whole server from scratch, so it is the most expensive job here.
+#
+# The image carries the debug binary, so the suites run with debug_assertions.
+# The release image is built by the Release workflow on every push to main.
+
+on:
+  push:
+    branches:
+      - main
+      - "manual-release-*"
+      - "rel-*"
+  pull_request:
+    branches:
+      - main
+      - "manual-release-*"
+      - "rel-*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read # Needed to checkout code
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  docker:
+    # The release-please PR for main changes versions and the changelog on top
+    # of the latest main commit, and the push run of that commit tests the same
+    # code. A minor release requires that run to be green (.github/RELEASING.md).
+    # Every suite needs this job, so skipping it skips them all, and a skipped
+    # required check passes. The repository check keeps a fork branch with that
+    # name from skipping. Patch release PRs on rel-* run everything.
+    if: ${{ !(github.head_ref == 'release-please--branches--main' && github.event.pull_request.head.repo.full_name == github.repository) }}
+    uses: ./.github/workflows/docker_build.yml
+    with:
+      platform: "amd64"
+      dockerfile: "docker/full-debug.Dockerfile"
+      image_name: "lakekeeper-local"
+
+  tests:
+    needs: docker
+    strategy:
+      fail-fast: false
+      matrix:
+        names:
+          - pyiceberg
+          - pyiceberg-legacy_md5
+          - pyiceberg_aws_remote_signing
+          - starrocks
+          - trino
+          - trino_opa
+          - spark_openfga-1.8.0
+          - spark_openfga-1.9.2
+          - spark_openfga-1.10.1
+          - spark_kv2-1.10.1
+          # - spark_adls-1.9.2 # Broken due to https://github.com/apache/iceberg/pull/13730
+          - spark_adls-1.10.1
+          - spark_wasbs-1.10.1
+          - spark_aws_remote_signing-1.8.0
+          - spark_aws_remote_signing-1.9.2
+          - spark_aws_remote_signing-1.10.1
+          - spark_aws_remote_signing-1.12.0
+          - spark_aws_sts-1.8.0
+          - spark_aws_sts-1.9.2
+          - spark_aws_sts-1.10.1
+          - spark_aws_kms-1.10.1
+          - spark_gcs-1.8.0
+          # - spark_gcs-1.9.2 # Broken due to https://github.com/apache/iceberg/issues/14634
+          - spark_gcs-1.10.1
+          - spark_minio_sts-1.8.0
+          - spark_minio_sts-1.9.2
+          - spark_minio_sts-1.10.1
+          - spark_minio_remote_signing-1.8.0
+          - spark_minio_remote_signing-1.9.2
+          - spark_minio_remote_signing-1.10.1
+          - spark_minio_remote_signing-1.12.0
+          - spark_minio_s3a-1.10.1
+          - spark_minio_sts_separate_endpoint-1.10.1
+          - spark_aws_system_identity_sts-1.10.1
+          - spark_aws_system_identity_remote_signing-1.10.1
+    uses: ./.github/workflows/integration_test_workflow.yml
+    with:
+      test_name: ${{ matrix.names }}
+    secrets: inherit
+
+  lance:
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Restore binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: lakekeeper-image
+          path: artifacts
+      - name: Restore Docker image
+        run: docker load -i artifacts/lakekeeper-local-amd64.tar
+      - name: Test Lance Generic Table API
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
+        with:
+          max_attempts: 2
+          timeout_minutes: 15
+          command: cd tests/integration-tests/lance && bash run.sh
+        env:
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
+
+  examples:
+    needs: docker
+    uses: ./.github/workflows/test-examples.yml
+    secrets: inherit
+
+  migrations:
+    needs: docker
+    uses: ./.github/workflows/migrations.yml
+
+  kube-auth:
+    needs: docker
+    uses: ./.github/workflows/kube-auth.yml
+    secrets: inherit
+
+  # Required checks. Each one lists `docker` as well: a failed image build
+  # skips the suites, and a check that saw only skipped suites would pass.
+  integration_tests_results:
+    name: Integration tests results
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs: [docker, tests]
+    steps:
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            [[ $result == "success" || $result == "skipped" ]] || exit 1
+          done
+
+  examples_results:
+    name: all examples pass
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs: [docker, examples]
+    steps:
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            [[ $result == "success" || $result == "skipped" ]] || exit 1
+          done
+
+  migrations_results:
+    name: all migration tests pass
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs: [docker, migrations]
+    steps:
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            [[ $result == "success" || $result == "skipped" ]] || exit 1
+          done

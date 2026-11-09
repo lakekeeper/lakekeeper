@@ -1,11 +1,8 @@
 name: Kubernetes auth integration test
 
+# Called by integration.yml, which builds the `lakekeeper-image` artifact.
 on:
-  push:
-    branches:
-      - main
-      - "rel-*"
-  pull_request:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,19 +10,8 @@ env:
 permissions:
   contents: read  # Needed to checkout code
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
-
 jobs:
-  docker:
-    uses: ./.github/workflows/docker_build.yml
-    with:
-      platform: 'amd64'
-      dockerfile: 'docker/full.Dockerfile'
-      image_name: 'lakekeeper-local'
   kube_auth:
-    needs: docker
     runs-on: ubuntu-24.04
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
