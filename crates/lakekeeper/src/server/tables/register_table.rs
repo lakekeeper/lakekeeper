@@ -161,6 +161,7 @@ pub(super) async fn registered_table_result<A: Authorizer>(
             .and_then(|c| c.remote_signing.clone()),
         config: Some(load_response_config(storage_config.map(|c| c.config))),
         storage_credentials,
+        labels: None,
         etag: Some(etag),
     })
 }

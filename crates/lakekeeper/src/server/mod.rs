@@ -3,6 +3,7 @@ pub(crate) mod compression_codec;
 mod config;
 pub mod generic_tables;
 pub(crate) mod io;
+pub(crate) mod labels;
 mod metrics;
 pub mod namespace;
 #[cfg(feature = "s3-signer")]
