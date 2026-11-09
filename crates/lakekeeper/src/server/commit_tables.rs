@@ -17,10 +17,8 @@ use lakekeeper_io::Location;
 
 use crate::{
     server::tables::{
-        create_table::ensure_format_version_allowed, parse_table_property_updates,
-        with_canonical_s3_scheme,
-    },
-    service::{
+        create_table::ensure_format_version_allowed, is_safe_strict_sublocation, parse_table_property_updates,
+    }, service::{
         AllowedFormatVersions, ErrorModel, IcebergErrorResponse, Result,
         authz::{CatalogTableAction, CommitFacts},
     },
@@ -231,72 +229,50 @@ pub(super) fn apply_commit(
     Ok(build_result)
 }
 
+/// Rejects statistics file paths that are malformed or fail [`is_safe_strict_sublocation`].
 fn check_statistics_path_not_outside_table_location(
     statistics_path: &str,
     table_location: &Location,
 ) -> Result<()> {
-    let mut table_location = with_canonical_s3_scheme(table_location);
-    table_location.without_trailing_slash();
     let statistics_location = Location::parse_value(statistics_path).map_err(|e| {
         ErrorModel::bad_request(
-            format!("Failed to parse statistics file location '{statistics_path}'"),
+            format!("Failed to parse provided statistics file path '{statistics_path}' as location"),
             "FailedToParseStatisticsFileLocation",
             Some(Box::new(e)),
         )
     })?;
-    let mut canonical = with_canonical_s3_scheme(&statistics_location);
-    canonical.without_trailing_slash();
-    if canonical != table_location && canonical.is_sublocation_of(&table_location) {
-        let table_depth = table_location.path_segments().len();
-        let segments = canonical.path_segments();
-        let suffixes: Vec<&str> = segments[table_depth..].to_vec();
-
-        for suffix in suffixes {
-            // decode suffix segment
-            let decoded = percent_encoding::percent_decode_str(suffix).decode_utf8_lossy();
-            // check suffix doesn't contain literal backslashes '\' or '.' or '..'
-            if decoded.contains('\\') || decoded == "." || decoded == ".." || decoded.contains('/') {
-                return Err(ErrorModel::bad_request(format!("Cannot set statistics whose file '{statistics_path}' is not inside the table location: '{table_location}'"), "StatisticsFileOutsideTableLocation", None).into());
-            }
-        }
-        Ok(())
-    } else {
-        Err(ErrorModel::bad_request(format!("Cannot set statistics whose file '{statistics_path}' is not inside the table location: '{table_location}'"), "StatisticsFileOutsideTableLocation", None).into())
+    if !is_safe_strict_sublocation(&statistics_location, table_location) {
+        let msg = format!(
+            "Cannot set statistics whose file '{statistics_path}'\
+             is not inside the table location: '{table_location}'"
+        );
+        return Err(
+            ErrorModel::bad_request(msg, "StatisticsFileOutsideTableLocation", None).into(),
+        );
     }
+    Ok(())
 }
 
+/// Rejects manifest list paths that are malformed or fail [`is_safe_strict_sublocation`].
 fn check_manifest_list_not_outside_table_location(
     manifest_list_path: &str,
     table_location: &Location,
 ) -> Result<()> {
-    let mut table_location = with_canonical_s3_scheme(table_location);
-    table_location.without_trailing_slash();
-    let statistics_location = Location::parse_value(manifest_list_path).map_err(|e| {
+    let manifest_list_location = Location::parse_value(manifest_list_path).map_err(|e| {
         ErrorModel::bad_request(
-            format!("Failed to parse manifest list file location '{manifest_list_path}'"),
+            format!("Failed to parse manifest list file path '{manifest_list_path}' as location"),
             "FailedToParseManifestsListFileLocation",
             Some(Box::new(e)),
         )
     })?;
-    let mut canonical = with_canonical_s3_scheme(&statistics_location);
-    canonical.without_trailing_slash();
-    if canonical != table_location && canonical.is_sublocation_of(&table_location) {
-        let table_depth = table_location.path_segments().len();
-        let segments = canonical.path_segments();
-        let suffixes: Vec<&str> = segments[table_depth..].to_vec();
-
-        for suffix in suffixes {
-            // decode suffix segment
-            let decoded = percent_encoding::percent_decode_str(suffix).decode_utf8_lossy();
-            // check suffix doesn't contain literal backslashes '\' or '.' or '..'
-            if decoded.contains('\\') || decoded == "." || decoded == ".." || decoded.contains('/') {
-                return Err(ErrorModel::bad_request(format!("Cannot add snapshots whose manifest list '{manifest_list_path}' is not inside the table location: '{table_location}'"), "ManifestListOutsideTableLocation", None).into());
-            }
-        }
-        Ok(())
-    } else {
-        Err(ErrorModel::bad_request(format!("Cannot add snapshots whose manifest list '{manifest_list_path}' is not inside the table location: '{table_location}'"), "ManifestListOutsideTableLocation", None).into())
+    if !is_safe_strict_sublocation(&manifest_list_location, table_location) {
+        let msg = format!(
+            "Cannot add snapshots whose manifest list '{manifest_list_path}'\
+             is not inside the table location: '{table_location}'"
+        );
+        return Err(ErrorModel::bad_request(msg, "ManifestListOutsideTableLocation", None).into());
     }
+    Ok(())
 }
 
 /// Answer an update the builder refused.
@@ -779,6 +755,11 @@ mod tests {
             ] {
                 assert_safe_suffix_accepted("s3://bucket/table", suffix);
             }
+        }
+
+        #[test]
+        fn table_location_with_trailing_slash_is_refused_as_file_location() {
+            assert_unsafe_suffix_refused("");
         }
     }
 
