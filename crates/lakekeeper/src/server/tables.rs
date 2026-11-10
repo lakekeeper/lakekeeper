@@ -2113,7 +2113,7 @@ pub fn with_canonical_s3_scheme(location: &Location) -> Location {
 }
 
 #[must_use]
-pub fn canonicalize_location(location: &Location) -> Location {
+fn canonicalize_location(location: &Location) -> Location {
     let mut location = with_canonical_s3_scheme(location);
     location.without_trailing_slash();
     location
@@ -2124,7 +2124,7 @@ pub fn canonicalize_location(location: &Location) -> Location {
 /// Treats `s3`, `s3a`, and `s3n` as aliases and ignores trailing slashes.
 /// Equal normalized locations return `false`.
 #[must_use]
-pub fn is_strict_sublocation(location: &Location, parent: &Location) -> bool {
+fn is_strict_sublocation(location: &Location, parent: &Location) -> bool {
     let location = canonicalize_location(location);
     let parent = canonicalize_location(parent);
     location != parent && location.is_sublocation_of(&parent)
