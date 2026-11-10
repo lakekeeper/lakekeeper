@@ -583,11 +583,11 @@ impl AdmissionGates {
                     // serialized when attached, so asking first makes a rejection
                     // free when the audit trail is off.
                     //
-                    // Written on the request path, so the record is in the log
+                    // Written on the request path, so the record reaches the sinks
                     // before the rejection is answered; admission runs on every
                     // authenticated request, so a slow listener continues on a
                     // task of its own and never delays the rejection.
-                    if crate::audit::log_enabled() {
+                    if crate::audit::enabled() {
                         let record = crate::audit::OperationRecord::new(
                             AuditOperation::AdmissionDecided.as_wire(),
                             ctx.triggered_by,

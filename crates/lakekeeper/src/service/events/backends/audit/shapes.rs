@@ -201,12 +201,12 @@ impl<E: AuditEmitter> OperationRecord<E> {
     /// Attach the operation's `context` object, an audit type of the same emitter.
     ///
     /// Taken by value like every other part of the record. Serialized here, so the record
-    /// carries the tree and needs no second type parameter, and only while the audit log
-    /// records it (see [`crate::audit::log_enabled`]).
+    /// carries the tree and needs no second type parameter, and only while records are built
+    /// (see [`crate::audit::enabled`]).
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub fn context<C: AuditPart<Emitter = E>>(mut self, context: C) -> Self {
-        if crate::audit::log_enabled() {
+        if crate::audit::enabled() {
             self.context = Some(AuditJson::of(&context));
         }
         self
@@ -221,11 +221,10 @@ impl<E: AuditEmitter> OperationRecord<E> {
 
     /// Hand the record to every listener of `events`, the audit listener among them.
     ///
-    /// Does nothing while the audit log does not record it (see [`crate::audit::log_enabled`]):
-    /// with the audit trail disabled, or with a `tracing` filter that drops the audit target.
+    /// Does nothing while no sink receives it (see [`crate::audit::enabled`]).
     /// Await it, or spawn it to keep the listeners off the caller's path.
     pub async fn dispatch(self, events: &EventDispatcher) {
-        if !crate::audit::log_enabled() {
+        if !crate::audit::enabled() {
             return;
         }
         events.operation_recorded(self.into_event()).await;

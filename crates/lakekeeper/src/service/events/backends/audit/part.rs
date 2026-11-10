@@ -506,21 +506,28 @@ pub fn warn_on_retired_audit_filter() {
 
 /// Whether an audit record emitted now reaches the log.
 ///
-/// Two switches must both be open: `LAKEKEEPER__AUDIT__TRACING__ENABLED`, which decides
-/// whether the catalog keeps an audit trail at all, and the `tracing` filter on
-/// [`AUDIT_TARGET`], which decides whether the subscriber records what is written there.
+/// Three switches must all be open: `LAKEKEEPER__AUDIT__TRACING__ENABLED`, which decides
+/// whether the catalog keeps an audit trail at all, the log sink (see `ActiveSinks`), and the
+/// `tracing` filter on [`AUDIT_TARGET`], which decides whether the subscriber records what is
+/// written there.
 ///
-/// It answers for the log only. Every record passes this on its way out, and an operation
-/// record is dispatched to the event listeners only while it holds, so a listener other than
-/// the audit listener receives one only while the audit log records it. Code that suppresses
-/// an ordinary log line because the audit record covers it must ask this first: with either
-/// switch closed the event would be in neither log.
+/// Code that suppresses an ordinary log line because the audit record covers it must ask
+/// this first: with any switch closed the event would be in neither log.
 ///
 /// `tracing` caches its half per call site when the filter is static.
 #[must_use]
 pub fn log_enabled() -> bool {
     crate::CONFIG.audit.tracing.enabled
+        && super::sink::active().log
         && tracing::enabled!(target: AUDIT_TARGET, tracing::Level::INFO)
+}
+
+/// Whether audit records are built at all: true while any sink will receive them.
+///
+/// The audit listener and [`super::OperationRecord`] ask it before they do any work.
+#[must_use]
+pub fn enabled() -> bool {
+    log_enabled() || (crate::CONFIG.audit.tracing.enabled && super::sink::active().others)
 }
 
 #[cfg(test)]

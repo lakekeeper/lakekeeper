@@ -1,6 +1,9 @@
 //! Where audit records go: the sinks, and the list a record is handed to.
 
-use std::{cell::OnceCell, sync::Arc};
+use std::{
+    cell::OnceCell,
+    sync::{Arc, OnceLock},
+};
 
 use super::shapes::{AuthorizationRecord, OperationWire, ReplayRecord};
 
@@ -106,6 +109,47 @@ impl AuditSink for LogSink {
     fn deliver(&self, record: &AuditDelivery<'_>) {
         record.record().emit(record.message());
     }
+}
+
+/// What the audit gates need to know about the sinks chosen at startup.
+///
+/// The log is the one sink with rules of its own: the `tracing` filter can drop its records,
+/// and only it lets a plain error line be dropped. Every other sink counts only by being
+/// there, so one flag covers them all, whatever crate provides them.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ActiveSinks {
+    /// The log sink is active.
+    pub(super) log: bool,
+    /// A sink other than the log is active.
+    pub(super) others: bool,
+}
+
+/// Set once, by [`assemble`].
+static ACTIVE: OnceLock<ActiveSinks> = OnceLock::new();
+
+/// The sinks chosen at startup; the log alone until then, as in unit tests.
+pub(super) fn active() -> ActiveSinks {
+    ACTIVE.get().copied().unwrap_or(ActiveSinks {
+        log: true,
+        others: false,
+    })
+}
+
+/// The dispatch to `others`, after the log sink when `log` is set. Called once, at startup.
+pub(crate) fn assemble(log: bool, others: Vec<ArcAuditSink>) -> AuditDispatch {
+    let others_active = !others.is_empty();
+    let mut sinks: Vec<ArcAuditSink> = Vec::new();
+    if log {
+        sinks.push(Arc::new(LogSink));
+    }
+    sinks.extend(others);
+
+    // One process has one configuration, so a second call holds the same values.
+    let _ = ACTIVE.set(ActiveSinks {
+        log,
+        others: others_active,
+    });
+    AuditDispatch::new(sinks)
 }
 
 /// The sinks every audit record is handed to, fixed at startup.
