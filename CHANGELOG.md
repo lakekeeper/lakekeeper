@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.9](https://github.com/lakekeeper/lakekeeper/compare/v0.13.8...v0.13.9) (2026-11-09)
+
+
+### Bug Fixes
+
+* **deps:** bump libz-sys to 1.1.31 for RUSTSEC-2026-0418 ([#2207](https://github.com/lakekeeper/lakekeeper/issues/2207)) ([5b18607](https://github.com/lakekeeper/lakekeeper/commit/5b18607f6e721e61b1c97436145fd64b4752d573))
+* **deps:** bump zstd-sys and async-compression, ignore remaining zstd advisories ([#2188](https://github.com/lakekeeper/lakekeeper/issues/2188)) ([5b18607](https://github.com/lakekeeper/lakekeeper/commit/5b18607f6e721e61b1c97436145fd64b4752d573))
+* **deps:** ignore RUSTSEC-2026-0429, zip is a build-only dependency of utoipa-swagger-ui ([#2210](https://github.com/lakekeeper/lakekeeper/issues/2210)) ([5b18607](https://github.com/lakekeeper/lakekeeper/commit/5b18607f6e721e61b1c97436145fd64b4752d573))
+* **deps:** ignore RUSTSEC-2026-0435, parquet 58 never uses the thrift binary protocol ([5b18607](https://github.com/lakekeeper/lakekeeper/commit/5b18607f6e721e61b1c97436145fd64b4752d573))
+* **deps:** ignore RUSTSEC-2026-0441, pin-utils is an unmaintained dependency of the AWS SDK ([226b6d2](https://github.com/lakekeeper/lakekeeper/commit/226b6d2180a9759673ba217be563fe5aee60780a))
+* include forwarded port for ipv6 hosts ([#2224](https://github.com/lakekeeper/lakekeeper/issues/2224)) ([226b6d2](https://github.com/lakekeeper/lakekeeper/commit/226b6d2180a9759673ba217be563fe5aee60780a))
+* **io:** avoid duplicate slash when extending locations ([#2221](https://github.com/lakekeeper/lakekeeper/issues/2221)) ([226b6d2](https://github.com/lakekeeper/lakekeeper/commit/226b6d2180a9759673ba217be563fe5aee60780a))
+* **postgres:** carry the sqlx fix for a cancelled begin() leaving a transaction open ([#2209](https://github.com/lakekeeper/lakekeeper/issues/2209)) ([5b18607](https://github.com/lakekeeper/lakekeeper/commit/5b18607f6e721e61b1c97436145fd64b4752d573))
+* **postgres:** lock committed tables before writing their metadata ([#2219](https://github.com/lakekeeper/lakekeeper/issues/2219)) ([5b18607](https://github.com/lakekeeper/lakekeeper/commit/5b18607f6e721e61b1c97436145fd64b4752d573))
+* re-read Azure workload identity credentials for new token requests ([#2193](https://github.com/lakekeeper/lakekeeper/issues/2193)) ([5b18607](https://github.com/lakekeeper/lakekeeper/commit/5b18607f6e721e61b1c97436145fd64b4752d573))
+* **s3-signer:** tell clients not to reuse read signatures ([#2232](https://github.com/lakekeeper/lakekeeper/issues/2232)) ([362d664](https://github.com/lakekeeper/lakekeeper/commit/362d664af005f0cf5912c8ca20c6c55c3ef657ef))
+* **tables:** a commit to a table that was soft-dropped meanwhile gets 404 ([#2251](https://github.com/lakekeeper/lakekeeper/issues/2251)) ([226b6d2](https://github.com/lakekeeper/lakekeeper/commit/226b6d2180a9759673ba217be563fe5aee60780a))
+
 ## [0.13.8](https://github.com/lakekeeper/lakekeeper/compare/v0.13.7...v0.13.8) (2026-10-24)
 
 
