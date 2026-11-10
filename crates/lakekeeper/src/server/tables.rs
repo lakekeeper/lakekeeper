@@ -2091,6 +2091,10 @@ fn expired_metadata_files_to_delete(
                     );
                 })
                 .ok()?;
+
+            // Registered tables can have metadata-log paths with literal percent escapes
+            // in object keys. Cleanup checks prefix ownership; decoded-suffix restrictions
+            // apply to new manifest-list and statistics-file references.
             if is_strict_sublocation(&location, table_location) {
                 Some(location)
             } else {
