@@ -2127,7 +2127,7 @@ pub fn canonicalize_location(location: &Location) -> Location {
 pub fn is_strict_sublocation(location: &Location, parent: &Location) -> bool {
     let location = canonicalize_location(location);
     let parent = canonicalize_location(parent);
-    location.is_prefix_within(&parent)
+    location != parent && location.is_sublocation_of(&parent)
 }
 
 /// Returns whether `location` is a strict sublocation with an unambiguous path suffix.
