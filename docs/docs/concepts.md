@@ -115,7 +115,7 @@ Each Warehouse is associated with a unique location on object stores. Never shar
 
 Each Warehouse also has a UUID, unique across the whole instance, which appears as the `prefix` in `/catalog` URLs. Lakekeeper assigns it, which is what we recommend; provisioning tools that need the ID up front can pass `warehouse-id` to `POST /management/v1/warehouse` instead — prefer a UUIDv7, and expect a `409` if the ID is taken. Do not re-use the ID of a deleted Warehouse: caches and permission records key on the Warehouse ID alone, so an ID that changes hands can briefly resolve to the previous Warehouse.
 
-Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Please note that Warehouses and Namespaces cannot be deleted via the `/catalog` API if child objects are present. This includes soft-deleted Tables. A cascade-drop API is added in one of the next releases as part of the `/management` API.
+Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Warehouses can only be deleted when they are empty. By default, Namespaces can also only be deleted when they are empty. Soft-deleted tables, views and generic tables count for both. To delete a Namespace with everything in it, see [Recursive Deletion on Namespaces](#recursive-deletion-on-namespaces).
 
 ### Namespaces
 
@@ -127,7 +127,7 @@ You can move a Namespace to another parent in the same Warehouse, rename it, or 
 
 ### Tables & Views
 
-Each Namespace can contain multiple Tables and Views. When creating new Tables and Views, we recommend to not specify the `location` explicitly. If locations are specified explicitly, the location must be a valid sub location of the `storage-profile` of the Warehouse - this is validated by Lakekeeper upon creation. Lakekeeper also ensures that there are no Tables or Views that use a parent- or sub-folder as their `location` and that the location is empty on creation. These checks are required to ensure that no data is leaked via vended-credentials.
+Each Namespace can contain multiple Tables and Views. When creating new Tables and Views, we recommend to not specify the `location` explicitly. If locations are specified explicitly, the location must be a valid sub location of the `storage-profile` of the Warehouse - this is validated by Lakekeeper upon creation. Lakekeeper also ensures that there are no Tables or Views that use a parent- or sub-folder as their `location` and that the location is empty on creation. A Table or View dropped with purge keeps its location until the purge of its files has finished. These checks ensure that the credentials Lakekeeper vends for a Table give no access to the files of another Table, and that dropping a Table or View with purge deletes no files of another one. A commit can move a View to a new location that passes the same checks and is neither inside nor above the old location. Lakekeeper then deletes the old location with all files in it.
 
 ### Users
 
@@ -164,11 +164,12 @@ Without this option, which includes all Iceberg versions older than 1.12, Spark 
 
 Lakekeeper allows warehouses to enable soft deletion as a data protection mechanism. When enabled:
 
-* Tables and views aren't immediately removed from the catalog when dropped
+* Tables, views and generic tables aren't immediately removed from the catalog when dropped
 * Instead, they're marked as deleted and scheduled for cleanup
 * The data remains recoverable until the configured expiration period elapses
 * Recovery is only possible for warehouses with soft deletion enabled
 * The expiration delay is fixed at the time of dropping - changing warehouse settings only affects newly dropped tables
+* A dropped table keeps its table UUID until it expires. Until then, its metadata file cannot be registered again; restore the table instead.
 
 Soft deletion works correctly only when clients follow these behaviors:
 
@@ -228,9 +229,13 @@ spark.sql(f"USE {catalog_name}")
 
 ## What Lakekeeper Enforces
 
-Lakekeeper decides every request made to the catalog: creating, changing, dropping, renaming and protecting tables, and granting access. Depending on the authorizer, it also checks what a change to a table does: with [OpenFGA](./authorization-openfga.md#write-data), a user who may only write data cannot change the table's schema.
+Lakekeeper decides every request made to the catalog: creating, changing, dropping, renaming and protecting tables, and granting access. With [Cedar](./authorization-cedar.md#what-a-table-commit-changes)<span class="lkp"></span>, a policy can also check what a change to a table does, for example allow only commits that change data.
 
 Reading and writing files in storage does not go through Lakekeeper. A user who may only read a table gets read-only access to its storage location. A user who may write gets access to write and delete files there, through vended credentials or remote signing. A writer can therefore overwrite or delete any file of the table, including the files of older versions, and Lakekeeper cannot see or prevent it. Snapshots, time travel, soft deletion and protection guard against changes made through the catalog, not against changes to the files themselves. Settings that ask clients not to delete files, such as `push-s3-delete-disabled`, are a request a client can ignore.
+
+Revoking access stops Lakekeeper from handing out new credentials. Credentials it already handed out stay valid until they expire. For S3, STACKIT, Azure and OneLake, the storage profile sets how long they stay valid, one hour by default (for S3, `sts-token-validity-seconds`). On GCS they expire with the Google access token that Lakekeeper gets from the warehouse's storage credential, usually within one hour. Remote signing checks access for every request it signs.
+
+A user who may write a table can commit metadata that points to files outside the table's location, for example to the files of another table. An engine that reads with its own storage credentials, such as Trino with static keys, then reads these files for everyone who may read the table. We recommend that engines read only through vended credentials or remote signing, which reach only the table's location.
 
 To recover, back up the table files in storage, not only the Lakekeeper database: a database backup restores the catalog, not the data. Versioning or soft delete on the bucket also helps.
 
@@ -242,13 +247,13 @@ Lakekeeper provides several complementary mechanisms for protecting data assets 
 
 Protection prevents accidental deletion of important entities in Lakekeeper. When an entity is protected, attempts to delete it through standard API calls will be rejected.
 
-Protection can be applied to Warehouses, Namespaces, Tables, and Views via the Management API.
+Protection can be applied to Warehouses, Namespaces, Tables, Views and Generic Tables via the Management API.
 
 ### Recursive Deletion on Namespaces
 
 By default, Lakekeeper enforces that namespaces must be empty before deletion. Recursive deletion provides a way to delete a namespace and all its contained entities in a single operation.
 
-When deleting a namespace, add the recursive=true query parameter to the request.
+When deleting a namespace, add the recursive=true query parameter to the request. The files of the dropped tables, views and generic tables are removed only if `purge=true` is set.
 
 Protected entities within the hierarchy will prevent recursive deletion unless force is also used.
 
@@ -257,7 +262,7 @@ Protected entities within the hierarchy will prevent recursive deletion unless f
 Force deletion is an administrative override that allows deletion of protected entities and bypasses certain safety checks:
 
 * Bypasses protection settings
-* Overrides soft-deletion mechanisms for immediate hard deletion
+* Deletes tables, views and generic tables at once, also in warehouses with soft deletion
 
 Add the `force=true` query parameter to deletion requests:
 
@@ -265,16 +270,35 @@ Add the `force=true` query parameter to deletion requests:
 DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 
-Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The `purgeRequested` flag for tables is still respected and determines if the physical data of the table should be removed. Purge defaults to true for tables managed by Lakekeeper.
+Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy.
+
+In a warehouse with soft deletion, a recursive namespace deletion needs `force`. Namespaces cannot be soft-deleted, so it deletes every table, view and generic table below the namespace at once, including those that were already dropped and wait for expiration.
+
+### Skipping Soft Deletion
+
+Soft deletion is a safety net for the whole warehouse: dropped tables, views and generic tables can be restored until they expire. Skipping it needs the permission that also changes the soft-deletion settings of the warehouse: `modify` on the warehouse in OpenFGA, the action `ModifySoftDeletion`<span class="lkp"></span> in Cedar.
+
+In a warehouse with soft deletion, these calls need this permission in addition to their own:
+
+* Dropping a table, view or generic table with `force=true`
+* Deleting a namespace with `recursive=true`
+* Registering a table with `overwrite` that replaces an active table with another table (a different table UUID). Registering another metadata file of the same table, also at another location, needs no extra permission.
+* Running a soft-deletion task now or at a set time through the task management API
+
+In warehouses with hard deletion, and when deleting a namespace without `recursive=true`, `force` only skips protection and needs no extra permission.
+
+In a warehouse with soft deletion, users without this permission can delete a namespace only when it is empty. Dropped tables, views and generic tables count until they expire.
+
+In a warehouse managed by the instance (`managed-by: instance-admin`), only instance admins can change the soft-deletion settings, but this permission still decides who may skip soft deletion.
 
 ## Upgrades & Migration
 
 Lakekeeper relies on a persistent backend (Postgres) and an optional authorization system (OpenFGA). As Lakekeeper evolves, these systems may need schema or configuration updates to support new features and improvements. The `lakekeeper migrate` command initializes and updates both Postgres schemas (creating necessary tables and structures) and authorization models to ensure compatibility with your current Lakekeeper version.
 
-**Migration is required before each Lakekeeper upgrade.** You must run the migration before starting the `lakekeeper serve` command to ensure all system components are properly updated and configured. Without running the migration first, the `lakekeeper serve` command will fail to start with the error: "Database is not up to date with binary, make sure to run the migrate command before starting the server." Migrations are designed to be resilient - you can safely skip intermediate versions and migrate directly to your target version. If the system is already up to date, the migration command will exit immediately without making any changes.
+**Migration is required before each Lakekeeper upgrade.** You must run the migration before starting the `lakekeeper serve` command to ensure all system components are properly updated and configured. Without running the migration first, the `lakekeeper serve` command will fail to start with the error: "Database is not up to date with binary, make sure to run the migrate command before starting the server." `lakekeeper serve` also refuses to start if a newer Lakekeeper version already migrated the database, or if the connection does not reach the schema set in `LAKEKEEPER__PG_SCHEMA`. To start anyway, for example to roll back to an older version in an emergency, run `lakekeeper serve --force-start`. Migrations are designed to be resilient - you can safely skip intermediate versions and migrate directly to your target version. If the system is already up to date, the migration command will exit immediately without making any changes.
 
 **All Postgres migrations run within a single transaction,** ensuring that either the entire migration completes successfully or the database remains unchanged. This prevents partial migrations that could leave your system in an inconsistent state.
 
 **Always create a backup of your Postgres database before running migrations.** While migrations are designed to be safe, having a backup ensures you can restore your system to a known good state if needed.
 
-When using the Lakekeeper Helm Chart, migrations are handled automatically through a dedicated job during deployment.
+When using the Lakekeeper Helm Chart, migrations are handled automatically through a dedicated job during deployment. The chart also runs this check in an init container before `serve` starts.

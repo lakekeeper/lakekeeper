@@ -655,3 +655,436 @@ async fn setup_drop_test(
         namespace_names: ns_names,
     }
 }
+
+mod recursive_purge {
+    use std::{collections::HashMap, time::Duration};
+
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use iceberg::NamespaceIdent;
+    use lakekeeper::{
+        api::{
+            data::v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
+            iceberg::{
+                types::Prefix,
+                v1::{NamespaceParameters, namespace::NamespaceDropFlags},
+            },
+            management::v1::warehouse::TabularDeleteProfile,
+        },
+        server::CatalogServer,
+        service::{GenericTableFormat, tasks::tabular_purge_queue},
+    };
+    use lakekeeper_integration_tests::{
+        create_table, drop_namespace, random_request_metadata, spawn_build_in_queues,
+    };
+    use lakekeeper_io::{LakekeeperStorage, Location, StorageBackend, memory::MemoryStorage};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::setup_drop_test;
+
+    async fn list_all(io: &StorageBackend, location: &Location) -> Vec<String> {
+        let mut entries = Vec::new();
+        let mut stream = io.list(location.as_str(), None).await.unwrap();
+        while let Some(page) = stream.next().await {
+            entries.extend(page.unwrap().iter().map(|f| f.location().to_string()));
+        }
+        entries
+    }
+
+    /// Locations of the purge tasks scheduled for `entity_id`, pending or finished.
+    async fn purge_locations(pool: &PgPool, entity_id: Uuid) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT task_data->>'tabular_location' FROM task WHERE queue_name = $1 AND entity_id = $2 \
+             UNION ALL \
+             SELECT task_data->>'tabular_location' FROM task_log WHERE queue_name = $1 AND entity_id = $2",
+        )
+        .bind(tabular_purge_queue::QUEUE_NAME.as_str())
+        .bind(entity_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    pub(super) async fn tabular_id(pool: &PgPool, name: &str) -> Uuid {
+        sqlx::query_scalar("SELECT tabular_id FROM tabular WHERE name = $1")
+            .bind(name)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// A recursive drop with `purge` removes the files of the tables and the generic tables in
+    /// the namespace.
+    async fn recursive_purge_removes_all_tabular_files(
+        pool: PgPool,
+        delete_profile: TabularDeleteProfile,
+        force: bool,
+    ) {
+        let setup = setup_drop_test(pool.clone(), 0, 0, 1, delete_profile).await;
+        let ctx = setup.ctx;
+        let prefix = setup.warehouse.warehouse_id.to_string();
+        let ns_name = setup.namespace_names[0].clone();
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new(ns_name.clone()),
+        };
+        let cancellation_token = lakekeeper::CancellationToken::new();
+        let _queues = spawn_build_in_queues(
+            &ctx,
+            Some(Duration::from_millis(100)),
+            cancellation_token.clone(),
+        )
+        .await;
+        let io = StorageBackend::Memory(MemoryStorage::new());
+
+        let table = create_table(ctx.clone(), &prefix, &ns_name, "tab", false)
+            .await
+            .unwrap();
+        let table_location: Location = table.metadata.location().parse().unwrap();
+        let generic_table = CatalogServer::create_generic_table(
+            ns_params.clone(),
+            CreateGenericTableRequest {
+                name: "gt".to_string(),
+                format: GenericTableFormat::Unknown("lance".to_string()),
+                base_location: None,
+                doc: None,
+                properties: HashMap::default(),
+                schema: None,
+                statistics: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        let generic_table_location: Location = generic_table.table.base_location.parse().unwrap();
+        for location in [&table_location, &generic_table_location] {
+            io.write(
+                location.cloning_push("data/file.bin").as_str(),
+                Bytes::from_static(b"data"),
+            )
+            .await
+            .unwrap();
+            assert!(!list_all(&io, location).await.is_empty(), "{location}");
+        }
+        let table_id = tabular_id(&pool, "tab").await;
+        let generic_table_id = tabular_id(&pool, "gt").await;
+
+        drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force,
+                purge: true,
+                recursive: true,
+            },
+            ns_params,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            purge_locations(&pool, table_id).await,
+            vec![table_location.to_string()]
+        );
+        assert_eq!(
+            purge_locations(&pool, generic_table_id).await,
+            vec![generic_table_location.to_string()]
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let table_files = list_all(&io, &table_location).await;
+            let generic_table_files = list_all(&io, &generic_table_location).await;
+            if table_files.is_empty() && generic_table_files.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "files left after the purge: {table_files:?} {generic_table_files:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        cancellation_token.cancel();
+    }
+
+    #[sqlx::test]
+    async fn test_recursive_purge_hard_deletion(pool: PgPool) {
+        recursive_purge_removes_all_tabular_files(pool, TabularDeleteProfile::Hard {}, false).await;
+    }
+
+    #[sqlx::test]
+    async fn test_recursive_purge_soft_deletion_force(pool: PgPool) {
+        recursive_purge_removes_all_tabular_files(
+            pool,
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(3600),
+            },
+            true,
+        )
+        .await;
+    }
+}
+
+/// A purge removes the location of a dropped tabular after the dropped row is gone. Until the
+/// purge has finished, no other tabular can take that location or one that overlaps it.
+mod purge_after_takeover {
+    use std::{collections::HashMap, time::Duration};
+
+    use iceberg::NamespaceIdent;
+    use iceberg_ext::catalog::rest::{LoadTableResult, RegisterTableRequest};
+    use lakekeeper::{
+        api::{
+            ApiContext, Result,
+            data::v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
+            iceberg::{
+                types::Prefix,
+                v1::{DataAccess, NamespaceParameters, tables::TablesService as _},
+            },
+            management::v1::warehouse::TabularDeleteProfile,
+        },
+        server::CatalogServer,
+        service::{
+            CatalogWarehouseOps, GenericTableFormat, State, WarehouseId, WarehouseStatus,
+            authz::AllowAllAuthorizer, tasks::tabular_purge_queue,
+        },
+    };
+    use lakekeeper_integration_tests::{
+        create_table_request, drop_table, eventually, memory_files_under, put_memory_file,
+        random_request_metadata, spawn_build_in_queues,
+    };
+    use lakekeeper_io::Location;
+    use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::{recursive_purge::tabular_id, setup_drop_test};
+
+    type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
+
+    /// A warehouse with one namespace.
+    struct Catalog {
+        pool: PgPool,
+        ctx: Ctx,
+        warehouse_id: WarehouseId,
+        ns_name: String,
+    }
+
+    /// The table `tab`, created with a data file and dropped with `purge`.
+    struct DroppedTable {
+        id: Uuid,
+        location: Location,
+        metadata_location: String,
+    }
+
+    impl Catalog {
+        async fn new(pool: PgPool) -> Self {
+            let setup = setup_drop_test(pool.clone(), 0, 0, 1, TabularDeleteProfile::Hard {}).await;
+            Self {
+                pool,
+                ctx: setup.ctx,
+                warehouse_id: setup.warehouse.warehouse_id,
+                ns_name: setup.namespace_names[0].clone(),
+            }
+        }
+
+        fn ns_params(&self) -> NamespaceParameters {
+            NamespaceParameters {
+                prefix: Some(Prefix(self.warehouse_id.to_string())),
+                namespace: NamespaceIdent::new(self.ns_name.clone()),
+            }
+        }
+
+        /// No tabular can use this location itself, only locations inside it.
+        async fn base_location(&self) -> Location {
+            PostgresBackend::get_warehouse_by_id(
+                self.warehouse_id,
+                WarehouseStatus::active(),
+                self.ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .storage_profile
+            .base_location()
+            .unwrap()
+        }
+
+        async fn create_table(
+            &self,
+            name: &str,
+            location: Option<&Location>,
+        ) -> Result<LoadTableResult> {
+            let mut request = create_table_request(Some(name.to_string()), Some(false));
+            request.location = location.map(ToString::to_string);
+            CatalogServer::create_table(
+                self.ns_params(),
+                request,
+                DataAccess::not_specified(),
+                self.ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+        }
+
+        async fn register_table(&self, name: &str, metadata_location: &str) -> Result<()> {
+            CatalogServer::register_table(
+                self.ns_params(),
+                RegisterTableRequest::builder()
+                    .name(name.to_string())
+                    .metadata_location(metadata_location.to_string())
+                    .build(),
+                DataAccess::not_specified(),
+                self.ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .map(|_| ())
+        }
+
+        async fn create_generic_table(&self, name: &str, location: &Location) -> Result<()> {
+            CatalogServer::create_generic_table(
+                self.ns_params(),
+                CreateGenericTableRequest {
+                    name: name.to_string(),
+                    format: GenericTableFormat::Unknown("lance".to_string()),
+                    base_location: Some(location.to_string()),
+                    doc: None,
+                    properties: HashMap::default(),
+                    schema: None,
+                    statistics: None,
+                },
+                self.ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .map(|_| ())
+        }
+
+        /// Creates the table `tab` with a data file, and drops it with `purge`, which queues
+        /// its purge task.
+        async fn drop_table_with_purge(&self, location: Option<&Location>) -> DroppedTable {
+            let table = self.create_table("tab", location).await.unwrap();
+            let location: Location = table.metadata.location().parse().unwrap();
+            put_memory_file(location.cloning_push("data/file.bin").as_str()).await;
+            let id = tabular_id(&self.pool, "tab").await;
+            drop_table(
+                self.ctx.clone(),
+                &self.warehouse_id.to_string(),
+                &self.ns_name,
+                "tab",
+                Some(true),
+                false,
+            )
+            .await
+            .unwrap();
+            DroppedTable {
+                id,
+                location,
+                metadata_location: table.metadata_location.unwrap(),
+            }
+        }
+
+        /// Runs the built-in queues until the purge task of `dropped_id` has succeeded.
+        async fn run_purge(&self, dropped_id: Uuid) {
+            let cancellation_token = lakekeeper::CancellationToken::new();
+            let queues = spawn_build_in_queues(
+                &self.ctx,
+                Some(Duration::from_millis(100)),
+                cancellation_token.clone(),
+            )
+            .await;
+            eventually("the purge task succeeds", || async {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS (SELECT 1 FROM task_log WHERE queue_name = $1 \
+                     AND entity_id = $2 AND status = 'success')",
+                )
+                .bind(tabular_purge_queue::QUEUE_NAME.as_str())
+                .bind(dropped_id)
+                .fetch_one(&self.pool)
+                .await
+                .unwrap()
+            })
+            .await;
+            cancellation_token.cancel();
+            queues.await.unwrap();
+        }
+    }
+
+    /// Asserts that `result` is the conflict for `location` while a purge is pending.
+    fn assert_purge_pending<T: std::fmt::Debug>(result: Result<T>, location: &Location) {
+        let error = result
+            .expect_err("the location is free while its purge is pending")
+            .error;
+        assert_eq!(
+            (error.code, error.r#type.as_str(), error.message.as_str()),
+            (
+                409,
+                "LocationAlreadyTaken",
+                format!(
+                    "Location '{location}' overlaps the location of a dropped table, view or \
+                     generic table whose files a purge task will delete. The location is free \
+                     again when that task has finished."
+                )
+                .as_str()
+            )
+        );
+    }
+
+    /// Registering the dropped table's own metadata file would adopt its location and id.
+    #[sqlx::test]
+    async fn test_register_from_the_dropped_metadata_waits_for_the_purge(pool: PgPool) {
+        let catalog = Catalog::new(pool).await;
+        let dropped = catalog.drop_table_with_purge(None).await;
+        assert_purge_pending(
+            catalog
+                .register_table("tab", &dropped.metadata_location)
+                .await,
+            &dropped.location,
+        );
+
+        catalog.run_purge(dropped.id).await;
+        assert_eq!(
+            memory_files_under(dropped.location.as_str()).await,
+            Vec::<String>::new()
+        );
+    }
+
+    /// The inner location is empty, so only the pending purge stops the create. After the
+    /// purge, the location is free.
+    #[sqlx::test]
+    async fn test_create_inside_the_location_waits_for_the_purge(pool: PgPool) {
+        let catalog = Catalog::new(pool).await;
+        let dropped = catalog.drop_table_with_purge(None).await;
+        let inner_location = dropped.location.cloning_push("inner");
+        assert_purge_pending(
+            catalog.create_table("inner", Some(&inner_location)).await,
+            &inner_location,
+        );
+
+        catalog.run_purge(dropped.id).await;
+        let inner = catalog
+            .create_table("inner", Some(&inner_location))
+            .await
+            .unwrap();
+        assert_eq!(
+            memory_files_under(dropped.location.as_str()).await,
+            vec![inner.metadata_location.unwrap()]
+        );
+    }
+
+    /// The parent folder holds the dropped table's files, so a generic table created there
+    /// needs `RegisterTable` on the warehouse.
+    #[sqlx::test]
+    async fn test_generic_table_at_a_parent_location_waits_for_the_purge(pool: PgPool) {
+        let catalog = Catalog::new(pool).await;
+        let parent = catalog.base_location().await.cloning_push("p");
+        let dropped = catalog
+            .drop_table_with_purge(Some(&parent.cloning_push("tab")))
+            .await;
+        assert_purge_pending(catalog.create_generic_table("gt", &parent).await, &parent);
+
+        catalog.run_purge(dropped.id).await;
+        catalog.create_generic_table("gt", &parent).await.unwrap();
+    }
+}

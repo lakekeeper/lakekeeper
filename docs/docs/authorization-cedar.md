@@ -35,7 +35,7 @@ To evaluate authorization requests, Cedar requires the following information:
 
 Most deployments only need to configure `LAKEKEEPER__CEDAR__POLICY_SOURCES__*` and optionally `LAKEKEEPER__OPENID_ROLES_CLAIM` if role information is available in user tokens.
 
-Generic (non-Iceberg) tables are a first-class resource in Cedar too: they have their own `Lakekeeper::GenericTable` entity and a parallel set of action groups — `GenericTableActions`, `GenericTableDescribeActions`, `GenericTableSelectActions` and `GenericTableModifyActions` — that mirror the regular `Table` actions. Use them in policies exactly as you would the `Table` equivalents.
+Generic (non-Iceberg) tables are a first-class resource in Cedar too: they have their own `Lakekeeper::GenericTable` entity and a parallel set of action groups — `GenericTableActions`, `GenericTableDescribeActions`, `GenericTableSelectActions`, `GenericTableWriteActions` and `GenericTableManageActions` — that mirror the regular `Table` actions. Use them in policies exactly as you would the `Table` equivalents.
 
 ## RBAC and ABAC Support
 
@@ -136,7 +136,7 @@ when { resource.principal_privileges.direct.describe };
 permit (principal, action in Lakekeeper::Action::"ServerCreateActions", resource is Lakekeeper::Server)
 when { resource.principal_privileges.direct.create };
 
-permit (principal, action in Lakekeeper::Action::"ServerModifyActions", resource is Lakekeeper::Server)
+permit (principal, action in Lakekeeper::Action::"ServerManageActions", resource is Lakekeeper::Server)
 when { resource.principal_privileges.direct.manage };
 
 permit (principal, action in Lakekeeper::Action::"ServerGrantActions", resource is Lakekeeper::Server)
@@ -266,15 +266,15 @@ A project or a warehouse can switch single predefined policies on or off for its
 
 ### What each privilege allows
 
-A grant on an object reaches everything beneath it: server, project, warehouse, namespace, then tables, views and generic tables. A project grant also reaches the project's tags. Policies read this as `principal_privileges.inherited`. Grants reach downward only: a grant on a table does not make its namespace or warehouse visible. A stronger privilege includes the weaker ones on the same ladder: `describe` < `select` < `write` < `manage` on tables, views and generic tables, `describe` < `create` < `manage` on containers, and `describe` < `apply` < `manage` on tags (see [How action groups are nested](#how-action-groups-are-nested)).
+A grant on an object reaches everything beneath it: server, project, warehouse, namespace, then tables, views and generic tables. A project grant also reaches the project's tags, but project `manage` reaches them only as `describe` (see the notes below). Policies read this as `principal_privileges.inherited`. Grants reach downward only: a grant on a table does not make its namespace or warehouse visible. A stronger privilege includes the weaker ones on the same ladder: `describe` < `select` < `write` < `manage` on tables, views and generic tables, `describe` < `manage` and `create` < `manage` on containers, and `describe` < `apply` < `manage` on tags (see [How action groups are nested](#how-action-groups-are-nested)). On containers, `create` includes only part of `describe`, as the table shows.
 
 | Privilege | Granted on | Reaches children | What it allows |
 |---|---|---|---|
 | `describe` | Every level | Yes | `<Level>DescribeActions`: see the object and its metadata, and list what is in it. On a tag, `ReadTag`. |
 | `select` | Server down to table, view, generic table | Yes | `TableSelectActions`, `ViewSelectActions`, `GenericTableSelectActions`: read data and metadata. |
-| `write` | Server down to table, view, generic table | Yes | `TableWriteActions`, `ViewWriteActions`, `GenericTableWriteActions`: write and commit data, and read it. |
-| `create` | Server, project, warehouse, namespace | Yes | `<Level>CreateActions`: create warehouses, namespaces, tables, views and generic tables inside the object, and everything `describe` allows there. |
-| `manage` | Every level | Yes | `<Level>ModifyActions`: full control of the object, including deleting it, and everything the weaker privileges allow. This covers tagging the object, `CreateTag` on a project, and `TagModifyActions` on a tag. |
+| `write` | Server down to table, view, generic table | Yes | `TableWriteActions`, `ViewWriteActions`, `GenericTableWriteActions`: read and write data, and commit any change, such as a table's schema, partitioning and properties, expiring snapshots, or a view's definition. |
+| `create` | Server, project, warehouse, namespace | Yes | Part of `<Level>CreateActions`: create warehouses, namespaces, tables, views and generic tables inside the object, and see the object and the warehouses and namespaces inside it. It does not show the tables, views and generic tables inside, including the ones the holder creates, the tasks or the endpoint statistics; grant `describe` too where users need these. |
+| `manage` | Every level | Yes | `<Level>ManageActions`: full control of the object, including deleting it, and everything the weaker privileges allow. It does not attach or remove tags; that needs `manage_tags`. On a tag, full control of that tag. |
 | `manage_tags` | Server down to table, view, generic table | Yes | `Manage<Level>Tags` and `<Level>DescribeActions` on warehouses, namespaces, tables (column tags too), views and generic tables. No data access. |
 | `apply` | Tag | No | `TagApplyActions`: attach the tag, with any of its values, and remove it, and read the tag. |
 | `read_grants` | Every level | Yes | `Read<Level>Grants`: see who holds which privilege on the object. On a project, warehouse or namespace also the subtree listing. |
@@ -288,13 +288,21 @@ Notes:
 - **`select` and `write` on a container** act on the tables, views and generic tables beneath it, not on the container. Grant `describe` on the container too, so the holder can reach and list what is in it.
 - **`manage` does not administer grants or policies.** Grant `read_grants`, `pass_grants`, `manage_grants`, `read_policies` or `manage_policies` for those.
 - **Moving** a namespace, table, view or generic table to another namespace needs `manage` and `manage_grants` on it, because a move changes which grants apply to it. The destination needs `create` or `manage`. Renaming a table, view or generic table within its namespace needs `manage` alone; renaming a namespace is a move.
-- **`manage_tags`** tags objects without access to their data. On a server or project it acts only on what is beneath; grant `describe` there too to list warehouses and tags. Attaching or removing a tag also needs `apply` or `manage` on the tag. Policies may read tags to decide access, so treat tagging as a governance right.
-- **`apply`** counts only on the tag it is granted on. Attaching the tag also needs `manage_tags` or `manage` on the object.
+- **Skipping soft deletion**, such as a forced drop or a recursive namespace delete in a warehouse with soft deletion, needs `manage` on the warehouse. `manage` on a namespace, table, view or generic table is not enough. See [Skipping Soft Deletion](./concepts.md#skipping-soft-deletion).
+- **`manage_tags`** tags objects without access to their data. On a server or project it acts on what is beneath; grant `describe` there too to list warehouses and tags. Attaching or removing a tag needs `manage_tags` on the object and `apply` or `manage` on the tag. Policies may read tags to decide access, so treat tagging as a governance right.
+- **Tag definitions**: `manage` on the project or the server lets the holder only read the project's tags. With `manage_tags` on the project or the server as well, the holder can create tag definitions and has `manage` on every tag of the project.
+- **`apply`** counts only on the tag it is granted on.
 - **`read_grants`** reads grants and nothing else: no check of what another user or role may do, no grant, no revoke. On a project the subtree listing is everything one user or role holds in it; on a warehouse or namespace it is every grant at and under it.
 - **`pass_grants`** counts only on the object it is granted on, and works in the grant direction only: it never revokes. It passes on `describe`, `select`, `write` and `create` (project, warehouse, namespace), `describe`, `select` and `write` (table, view, generic table), or `describe` and `apply` (tag), each only when the holder holds that privilege on the object, directly or from above (`apply` directly). It never passes on `manage`, `manage_tags` or a grant or policy privilege, and gives no check of what others may do. On the server it does nothing without a policy of your own.
 - **`manage_grants`** is the only privilege that lets the holder check what another user or role may do (`Introspect<Level>Authorization`). That check runs every policy, including ones the holder cannot read.
 - **`read_policies` and `manage_policies`** on a project count for the project itself and reach its warehouses. On a warehouse both also allow `UseWarehouse`.
 - **Reading grants** shows that the object exists, even where a policy hides it otherwise. A subtree listing or revoke is decided once, on the project, warehouse or namespace it names, so a `forbid` on the grants of something inside does not shorten it. A subtree revoke removes the holder's own grants too; see [Clearing a subtree](./grants.md#clearing-a-subtree).
+
+#### Upgrading from Lakekeeper Plus 0.14
+
+- **Grants**: In Plus 0.14, a `manage` grant also allowed tagging the object. On a project or the server, it also allowed creating tag definitions and managing every tag of the project. Where holders still need this, grant `manage_tags` next to `manage` before you upgrade. Plus 0.14 already knows `manage_tags`, so these holders keep tagging during the upgrade. In Plus 0.14, `create` on a project, warehouse or namespace also showed the tables, views and generic tables inside, the tasks and the endpoint statistics. Where holders need these, grant `describe` next to `create` before you upgrade.
+- **Group names**: In Plus 0.14, the step below `<Level>Actions` was called `<Level>ModifyActions`, and it included the level's tag action. Lakekeeper still accepts this name and reads it as `<Level>Actions`, so stored policies keep their meaning. It logs a warning for each loaded policy that uses the name. The policy API refuses the name in new or changed policies, and accepts a stored policy that is sent again unchanged. When you change such a policy, write `<Level>Actions` to keep the level's tag action, or `<Level>ManageActions` to leave it out.
+- **During the upgrade**: Until every replica runs Plus 0.15, store no project or warehouse policy that names something new in 0.15, such as `<Level>ManageActions` or the commit context fields `data_commit`, `update_kinds` and `target_refs`. [Policy and Entity Management](#policy-and-entity-management) explains why, and what to do with your own schema file.
 
 ### Roles and the project
 
@@ -430,7 +438,7 @@ type TagValue = {
 
 The tags are the object's [effective tags](./tags.md#effective-inherited-tags), the same set `?effective=true` returns: its own tags plus those inherited from the namespaces and the warehouse above it. When one tag is applied at several levels, the nearest one wins. Column tags are not included.
 
-Keys are the tag's name exactly as defined, case included: a tag named `PII` matches `hasTag("PII")`, not `hasTag("pii")`. Renaming a tag changes its key. Values keep their case too.
+Keys are the tag's name exactly as defined, upper and lower case included: a tag named `PII` matches `hasTag("PII")`, not `hasTag("pii")`. Values keep their upper and lower case too.
 
 ```cedar
 // The object, or anything above it, is tagged pii
@@ -447,27 +455,17 @@ resource.governance_tags.hasTag("sensitivity") &&
 
 Guard every `getTag` with `hasTag`: any key may be missing, and Cedar rejects a policy that reads a tag without checking for it first.
 
+Whoever can change the tags on an object can change what a tag-based policy decides for it. `ApplyTag` attaches a tag or changes its value, and `RemoveTag` detaches it. `UpdateTag` can rename a tag, which changes its key on every object that carries it. Moving an object to another namespace changes the tags it inherits, and a move needs no tag action.
+
 ### Rules a Lower Level Cannot Weaken
 
 The nearest value wins, so a tag applied to a table replaces the value the table would inherit. If namespace `finance` is tagged `sensitivity=restricted` and a table inside it `sensitivity=public`, the table's `value` is `public`. Anyone allowed to tag that table could lift a restriction set on the namespace.
 
-When a rule must hold whatever is applied further down, check `values` instead. It keeps every value on the way down, and a lower level cannot remove one:
+When a rule must hold whatever is applied further down, check `values` instead. It holds every value of the tag on the object and on every level above it, and a lower level cannot remove one:
 
 ```cedar
-// Restricted data, wherever the restriction was applied, only for the compliance group.
-forbid (
-    principal,
-    action in Lakekeeper::Action::"TableSelectActions",
-    resource is Lakekeeper::Table
-)
-when {
-    resource.governance_tags.hasTag("sensitivity") &&
-    resource.governance_tags.getTag("sensitivity").values.contains("restricted")
-}
-unless {
-    principal is Lakekeeper::User &&
-    principal.project_roles.contains({provider_id: "oidc", source_id: "compliance"})
-};
+resource.governance_tags.hasTag("sensitivity") &&
+resource.governance_tags.getTag("sensitivity").values.contains("restricted")
 ```
 
 ## User Identity Derivations
@@ -678,7 +676,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
     permit (
         principal is Lakekeeper::User,
-        action in [Lakekeeper::Action::"WarehouseModifyActions"],
+        action in [Lakekeeper::Action::"WarehouseManageActions"],
         resource
     )
     when {
@@ -722,9 +720,9 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     permit (
         principal == Lakekeeper::User::"oidc~<user-id>",
         action in
-            [Lakekeeper::Action::"NamespaceModifyActions",
-            Lakekeeper::Action::"TableModifyActions",
-            Lakekeeper::Action::"ViewModifyActions"],
+            [Lakekeeper::Action::"NamespaceManageActions",
+            Lakekeeper::Action::"TableManageActions",
+            Lakekeeper::Action::"ViewManageActions"],
         resource
     ) when {
         ( resource is Lakekeeper::Warehouse && resource.name == "dev" ) ||
@@ -795,11 +793,11 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
 ??? example "ABAC: Role-based table access using static role membership"
 
-    This example grants read/write access to tables tagged with an `access-role` property matching the requesting user's role — using traditional RBAC role membership. The `access-role-*` keys use the `access-` prefix so Lakekeeper parses them as entity references; the `.raw` field always stores the original string.
+    This example grants read and manage access to tables whose `access-role-*` property names the requesting user's role — using traditional RBAC role membership. The `access-role-*` keys use the `access-` prefix so Lakekeeper parses them as entity references; the `.raw` field always stores the original string.
 
     ```cedar
     @id("abac-role-based-access-marketing-select")
-    @description("ABAC: Allow Read access to tables tagged with access-role-select:marketing to the marketing-select role")
+    @description("ABAC: Let the marketing-select role read tables whose access-role-select property is marketing")
     permit (
         principal in Lakekeeper::Role::"my-project/lakekeeper~marketing-select",
         action in Lakekeeper::Action::"TableSelectActions",
@@ -811,37 +809,37 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
         resource.properties.getTag("access-role-select").raw == "marketing"
     };
 
-    @id("abac-role-based-access-marketing-modify")
-    @description("ABAC: Allow Modify access to tables tagged with access-role-modify:marketing, but prevent removing or changing the tag itself")
+    @id("abac-role-based-access-marketing-manage")
+    @description("ABAC: Allow Manage access to tables whose access-role-manage property is marketing, but prevent removing or changing that property")
     permit (
-        principal in Lakekeeper::Role::"my-project/lakekeeper~marketing-modify",
-        action in Lakekeeper::Action::"TableModifyActions",
+        principal in Lakekeeper::Role::"my-project/lakekeeper~marketing-manage",
+        action in Lakekeeper::Action::"TableManageActions",
         resource is Lakekeeper::Table
     )
     when
     {
-        resource.properties.hasTag("access-role-modify") &&
-        resource.properties.getTag("access-role-modify").raw == "marketing"
+        resource.properties.hasTag("access-role-manage") &&
+        resource.properties.getTag("access-role-manage").raw == "marketing"
     }
     unless
     {
-        // Prevent users from removing or changing the access-control tag itself.
+        // Prevent users from removing or changing the access-role-manage property.
         action == Lakekeeper::Action::"CommitTable" &&
-        (context.table_properties_removal.contains("access-role-modify") ||
-         context.table_properties_updates.hasTag("access-role-modify"))
+        (context.table_properties_removal.contains("access-role-manage") ||
+         context.table_properties_updates.hasTag("access-role-manage"))
     };
 
     @id("abac-role-based-access-marketing-admin")
-    @description("ABAC: Allow full Modify access (including changing access tags) to marketing-admin role")
+    @description("ABAC: Allow full Manage access (including changing the access-role-manage property) to marketing-admin role")
     permit (
         principal in Lakekeeper::Role::"my-project/lakekeeper~marketing-admin",
-        action in Lakekeeper::Action::"TableModifyActions",
+        action in Lakekeeper::Action::"TableManageActions",
         resource is Lakekeeper::Table
     )
     when
     {
-        resource.properties.hasTag("access-role-modify") &&
-        resource.properties.getTag("access-role-modify").raw == "marketing"
+        resource.properties.hasTag("access-role-manage") &&
+        resource.properties.getTag("access-role-manage").raw == "marketing"
     };
     ```
 
@@ -849,7 +847,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
     This is a more advanced ABAC pattern where each table carries its own access control list in an `access-owners` and `access-readers` property. The values are JSON arrays of entity references (roles and/or users), parsed automatically by Lakekeeper.
 
-    **Tag the table** (e.g. via the Iceberg REST API or your ETL pipeline):
+    **Set the table properties** (e.g. via the Iceberg REST API or your ETL pipeline):
     ```
     access-owners  = ["role-full:oidc~data-admins", "user:oidc~alice@example.com"]
     access-readers = ["role:analysts", "role-full:oidc~reporting-team"]
@@ -872,10 +870,10 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     };
 
     @id("abac-property-acl-modify")
-    @description("Allow write access to any table where the principal is listed in the access-owners property")
+    @description("Allow Manage access to any table where the principal is listed in the access-owners property")
     permit (
         principal,
-        action in Lakekeeper::Action::"TableModifyActions",
+        action in Lakekeeper::Action::"TableManageActions",
         resource is Lakekeeper::Table
     )
     when
@@ -903,7 +901,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
     Apply access-control lists at the namespace level so that all tables in the namespace inherit the same restrictions.
 
-    **Tag the namespace**:
+    **Set the namespace properties**:
     ```
     access-readers = ["role-full:oidc~finance-readers"]
     access-writers = ["role-full:oidc~finance-engineers"]
@@ -1205,6 +1203,10 @@ When `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` is set to `true`, La
 
 This ensures that authorization policies are always valid before serving requests
 
+If you replace the built-in schema with `LAKEKEEPER__CEDAR__SCHEMA_FILE`, merge each release's schema changes into your file before you upgrade. Lakekeeper does not start if your file lacks a privilege, an attribute or a context field that the release sends.
+
+During a rolling upgrade, store no project or warehouse policy that uses something new in the schema until every replica runs the new version. An older version cannot validate such a policy and denies every request in its project or warehouse. Remove such policies before you downgrade.
+
 **Refresh Behavior:**
 Configure automatic policy refresh using `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS` (default: 5 seconds):
 
@@ -1282,16 +1284,22 @@ A policy can name a group in place of every action in it. Each level has a ladde
 
 | Level | Ladder |
 |---|---|
-| Server, Project, Warehouse, Namespace | `<Level>DescribeActions` < `<Level>CreateActions` < `<Level>ModifyActions` < `<Level>Actions` |
-| Table, View, GenericTable | `<Level>DescribeActions` < `<Level>SelectActions` < `<Level>WriteActions` < `<Level>ModifyActions` < `<Level>Actions` |
-| Tag | `TagDescribeActions` < `TagApplyActions` < `TagModifyActions` < `TagActions` |
+| Server, Project, Warehouse, Namespace | `<Level>DescribeActions` < `<Level>CreateActions` < `<Level>ManageActions` < `<Level>Actions` |
+| Table, View, GenericTable | `<Level>DescribeActions` < `<Level>SelectActions` < `<Level>WriteActions` < `<Level>ManageActions` < `<Level>Actions` |
+| Tag | `TagDescribeActions` < `TagApplyActions` < `TagManageActions` < `TagActions` |
 | Role | `RoleActions` only |
 
-A wider step contains the narrower ones: a permit on `ProjectModifyActions` also allows every create and describe action on the project. Permit the narrowest group that covers what you mean. A `forbid` works the same way.
+A wider step contains the narrower ones: a permit on `ProjectManageActions` also allows every create and describe action on the project. Permit the narrowest group that covers what you mean. A `forbid` works the same way.
+
+`<Level>Actions` holds `<Level>ManageActions` and the level's tag action: `ManageWarehouseTags`, `ManageNamespaceTags`, `ManageTableTags`, `ManageViewTags` and `ManageGenericTableTags` on their objects, and `CreateTag` on a project. Tags can decide access, so no group below `<Level>Actions` holds these actions. On the server and on a tag, `<Level>Actions` holds the same as `<Level>ManageActions`.
+
+For the group names of Plus 0.14, see [Upgrading from Lakekeeper Plus 0.14](#upgrading-from-lakekeeper-plus-014).
 
 Grant administration and policy administration stand outside every `<Level>Actions` group. Name them on their own: see [Grant Administration Actions](#grant-administration-actions) and [Cedar Policy Actions](#cedar-policy-actions). `DataPlaneActions` holds the actions that hand out data or data-access credentials: `ReadTableData`, `WriteTableData`, `SelectView`, `ReadGenericTableData` and `WriteGenericTableData`. A `forbid` on it keeps a principal away from data and leaves their metadata access alone.
 
 The **Group** column below names the narrowest group an action is in. An action marked "none" is in no group: a policy reaches it by naming it, or by leaving `action` unconstrained.
+
+One action is also a group: `UpdateStorage` holds `UpdateStorageCredential`. Replacing the storage credential checks `UpdateStorageCredential`. Changing the storage profile checks both actions, because it replaces the credential too. A permit with `action in [Lakekeeper::Action::"UpdateStorage"]` allows both operations. A permit with `action == Lakekeeper::Action::"UpdateStorageCredential"` allows replacing the credential only. Write `in` for `UpdateStorage`, not `==`: `action == Lakekeeper::Action::"UpdateStorage"` does not match `UpdateStorageCredential`, so a permit written that way allows neither operation, and a forbid written that way does not stop credential replacement.
 
 ### Server Actions
 
@@ -1301,9 +1309,9 @@ At server actions a user carries their groups; see [Role scope at server actions
 |---|---|---|---|
 | `ListUsers` | `list_users` | `ServerDescribeActions` | List the users this server knows about |
 | `CreateProject` | `create_project` | `ServerCreateActions` | Create a project |
-| `ProvisionUsers` | `provision_users` | `ServerModifyActions` | Create a user record, through the API or at the user's first authenticated request |
-| `UpdateUsers` | `update_users` | `ServerModifyActions` | Change what Lakekeeper stores about a user |
-| `DeleteUsers` | `delete_users` | `ServerModifyActions` | Remove a user record |
+| `ProvisionUsers` | `provision_users` | `ServerManageActions` | Create a user record, through the API or at the user's first authenticated request |
+| `UpdateUsers` | `update_users` | `ServerManageActions` | Change what Lakekeeper stores about a user |
+| `DeleteUsers` | `delete_users` | `ServerManageActions` | Remove a user record |
 
 Every user can update and delete their own user record; that needs no policy. Server grants are under [Grant Administration Actions](#grant-administration-actions), and the server's policy sources under [Cedar Policy Actions](#cedar-policy-actions).
 
@@ -1321,15 +1329,15 @@ Every user can update and delete their own user record; that needs no policy. Se
 | `GetProjectTaskQueueConfig` | `get_task_queue_config` | `ProjectDescribeActions` | View task queue configuration for the project |
 | `GetProjectTasks` | `get_project_tasks` | `ProjectDescribeActions` | List background tasks in the project |
 | `CreateWarehouse` | `create_warehouse` | `ProjectCreateActions` | Create a warehouse in the project |
-| `DeleteProject` | `delete` | `ProjectModifyActions` | Delete the project |
-| `RenameProject` | `rename` | `ProjectModifyActions` | Change the project's name |
-| `ModifyProjectTaskQueueConfig` | `modify_task_queue_config` | `ProjectModifyActions` | Update task queue configuration |
-| `ControlProjectTasks` | `control_project_tasks` | `ProjectModifyActions` | Manage background tasks (cancel, retry, etc.) |
+| `DeleteProject` | `delete` | `ProjectManageActions` | Delete the project |
+| `RenameProject` | `rename` | `ProjectManageActions` | Change the project's name |
+| `ModifyProjectTaskQueueConfig` | `modify_task_queue_config` | `ProjectManageActions` | Update task queue configuration |
+| `ControlProjectTasks` | `control_project_tasks` | `ProjectManageActions` | Manage background tasks (cancel, retry, etc.) |
 | `CreateRole` | `create_role` | `ProjectGrantActions` | Create a role in the project |
-| `CreateTag` | `create_tag` | `ProjectModifyActions` | Create a tag definition in the project |
+| `CreateTag` | `create_tag` | `ProjectActions` | Create a tag definition in the project |
 | `ReadUserRoleAssignments` | `read_role_assignments` | none | List the roles a user holds in the project (`GET /management/v1/user/{user_id}/roles` and `/roles/transitive`) |
 
-`ProjectCreateActions` covers places to put data. `CreateTag` shapes how the project is governed, so it is in `ProjectModifyActions`. `CreateRole` is in `ProjectGrantActions`, because a role exists to hold grants. Permit either by name to allow it alone.
+`ProjectCreateActions` covers places to put data. `CreateTag` shapes how the project is governed, so it is in `ProjectActions` and in no group below it. `CreateRole` is in `ProjectGrantActions`, because a role exists to hold grants. Permit either by name to allow it alone.
 
 ### Role Actions
 
@@ -1349,11 +1357,11 @@ Every user can update and delete their own user record; that needs no policy. Se
 | Action | Audit log `action_name` | Group | Description |
 |---|---|---|---|
 | `ReadTag` | `read` | `TagDescribeActions` | Read a tag definition (name, value kind, allowed values) |
-| `ApplyTag` | `apply` | `TagApplyActions` | Attach the tag to an object |
+| `ApplyTag` | `apply` | `TagApplyActions` | Attach the tag to an object, or change its value there |
 | `RemoveTag` | `remove` | `TagApplyActions` | Detach the tag from an object |
-| `UpdateTag` | `update` | `TagModifyActions` | Rename the tag, widen its scope or add values |
-| `DeleteTag` | `delete` | `TagModifyActions` | Delete the tag definition |
-| `ReadTagAttachments` | `read_attachments` | `TagModifyActions` | List every object the tag is attached to |
+| `UpdateTag` | `update` | `TagManageActions` | Rename the tag, widen its scope or add values |
+| `DeleteTag` | `delete` | `TagManageActions` | Delete the tag definition |
+| `ReadTagAttachments` | `read_attachments` | `TagManageActions` | List every object the tag is attached to |
 
 Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the tag, and the object's own tag action (`ManageWarehouseTags`, `ManageNamespaceTags`, `ManageTableTags`, `ManageViewTags` or `ManageGenericTableTags`).
 
@@ -1372,18 +1380,19 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `ListEverythingInWarehouse` | `list_everything` | `WarehouseDescribeActions` | List everything in warehouse-wide listings without the per-item `Include…InList` checks: top-level namespaces, the table and view search, soft-deleted tables and views, and background tasks. Listings inside a namespace need `ListEverythingInNamespace` |
 | `GetWarehouseEndpointStatistics` | `get_endpoint_statistics` | `WarehouseDescribeActions` | View API usage statistics for the warehouse |
 | `CreateNamespaceInWarehouse` | `create_namespace` | `WarehouseCreateActions` | Create a namespace directly in the warehouse |
-| `DeleteWarehouse` | `delete` | `WarehouseModifyActions` | Delete the warehouse |
-| `UpdateStorage` | `update_storage` | `WarehouseModifyActions` | Modify storage configuration |
-| `UpdateStorageCredential` | `update_storage_credential` | `WarehouseModifyActions` | Update storage credentials |
-| `DeactivateWarehouse` | `deactivate` | `WarehouseModifyActions` | Deactivate the warehouse (suspend operations) |
-| `ActivateWarehouse` | `activate` | `WarehouseModifyActions` | Activate a deactivated warehouse |
-| `RenameWarehouse` | `rename` | `WarehouseModifyActions` | Change the warehouse's name |
-| `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseModifyActions` | Configure soft-deletion settings |
-| `ModifyTaskQueueConfig` | `modify_task_queue_config` | `WarehouseModifyActions` | Update task queue configuration |
-| `ControlAllTasks` | `control_all_tasks` | `WarehouseModifyActions` | Manage all background tasks |
-| `SetWarehouseProtection` | `set_protection` | `WarehouseModifyActions` | Enable or disable deletion protection |
-| `SetWarehouseFormatVersionPolicy` | `set_format_version_policy` | `WarehouseModifyActions` | Change the warehouse's Iceberg format-version policy |
-| `ManageWarehouseTags` | `manage_tags` | `WarehouseModifyActions` | Attach or detach tags on the warehouse |
+| `DeleteWarehouse` | `delete` | `WarehouseManageActions` | Delete the warehouse |
+| `UpdateStorage` | `update_storage` | `WarehouseManageActions` | Change or validate the storage profile, or validate the storage the warehouse currently runs with. Changing or validating the profile also checks `UpdateStorageCredential` |
+| `UpdateStorageCredential` | `update_storage_credential` | `UpdateStorage` | Replace, clear or validate the storage credential, and leave the storage profile as it is |
+| `DeactivateWarehouse` | `deactivate` | `WarehouseManageActions` | Deactivate the warehouse (suspend operations) |
+| `ActivateWarehouse` | `activate` | `WarehouseManageActions` | Activate a deactivated warehouse |
+| `RenameWarehouse` | `rename` | `WarehouseManageActions` | Change the warehouse's name |
+| `ModifySoftDeletion` | `modify_soft_deletion` | `WarehouseManageActions` | Configure soft-deletion settings, and [skip soft deletion](./concepts.md#skipping-soft-deletion) |
+| `RegisterTable` | `register_table` | `WarehouseManageActions` | Register a table from an existing metadata file, or create a generic table on a location that already holds files. Asked together with `CreateTable` or `CreateGenericTableInNamespace` on the namespace |
+| `ModifyTaskQueueConfig` | `modify_task_queue_config` | `WarehouseManageActions` | Update task queue configuration |
+| `ControlAllTasks` | `control_all_tasks` | `WarehouseManageActions` | Manage all background tasks |
+| `SetWarehouseProtection` | `set_protection` | `WarehouseManageActions` | Enable or disable deletion protection |
+| `SetWarehouseFormatVersionPolicy` | `set_format_version_policy` | `WarehouseManageActions` | Change the warehouse's Iceberg format-version policy |
+| `ManageWarehouseTags` | `manage_tags` | `WarehouseActions` | Attach or detach tags on the warehouse |
 | `AcceptMovedNamespaceInWarehouse` | `accept_moved_namespace` | none | Accept a namespace moved in at the warehouse root. Asked together with `CreateNamespaceInWarehouse` |
 
 ### Namespace Actions
@@ -1401,10 +1410,10 @@ Attaching or detaching a tag needs two permits: `ApplyTag` or `RemoveTag` on the
 | `CreateView` | `create_view` | `NamespaceCreateActions` | Create a view in the namespace |
 | `CreateGenericTableInNamespace` | `create_generic_table` | `NamespaceCreateActions` | Create a generic table in the namespace |
 | `CreateNamespaceInNamespace` | `create_namespace` | `NamespaceCreateActions` | Create a child namespace |
-| `DeleteNamespace` | `delete` | `NamespaceModifyActions` | Delete the namespace |
-| `SetNamespaceProtection` | `set_protection` | `NamespaceModifyActions` | Enable or disable deletion protection |
-| `ManageNamespaceTags` | `manage_tags` | `NamespaceModifyActions` | Attach or detach tags on the namespace |
-| `UpdateNamespaceProperties` | `update_properties` | `NamespaceModifyActions` | Modify namespace properties |
+| `DeleteNamespace` | `delete` | `NamespaceManageActions` | Delete the namespace |
+| `SetNamespaceProtection` | `set_protection` | `NamespaceManageActions` | Enable or disable deletion protection |
+| `ManageNamespaceTags` | `manage_tags` | `NamespaceActions` | Attach or detach tags on the namespace |
+| `UpdateNamespaceProperties` | `update_properties` | `NamespaceManageActions` | Modify namespace properties |
 | `MoveNamespace` | `move` | none | Move the namespace to a new path: the source half of a move |
 | `AcceptMovedNamespaceInNamespace` | `accept_moved_namespace` | none | Accept a namespace moved in as a child. Asked together with `CreateNamespaceInNamespace` |
 | `AcceptMovedTabularInNamespace` | `accept_moved_tabular` | none | Accept a table, view or generic table moved in from another namespace. Asked together with the matching create action |
@@ -1419,17 +1428,17 @@ A move changes which grants apply to what is moved, so `MoveNamespace`, `MoveTab
 | `IncludeTableInList` | `include_in_list` | `TableDescribeActions` | Include the table in table listings |
 | `GetTableTasks` | `get_tasks` | `TableDescribeActions` | List background tasks for the table |
 | `ReadTableData` | `read_data` | `TableSelectActions` | Read data from the table |
-| `WriteTableData` | `write_data` | `TableWriteActions` | Get write credentials for the table |
-| `CommitTable` | `commit` | `TableWriteActions` | Commit table changes (data, schema, properties) |
-| `DropTable` | `drop` | `TableModifyActions` | Delete the table |
-| `RenameTable` | `rename` | `TableModifyActions` | Change the table's name |
+| `WriteTableData` | `write_data` | `TableWriteActions` | Get write credentials for the table, together with `ReadTableData` |
+| `CommitTable` | `commit` | `TableWriteActions` | Commit table changes (data, schema, properties). `context.data_commit` says whether the commit changes only data |
+| `DropTable` | `drop` | `TableManageActions` | Delete the table |
+| `RenameTable` | `rename` | `TableManageActions` | Change the table's name |
 | `MoveTable` | `move` | none | Move the table to another namespace: the source half of a move. Asked together with `RenameTable` |
-| `UndropTable` | `undrop` | `TableModifyActions` | Restore a soft-deleted table |
-| `ControlTableTasks` | `control_tasks` | `TableModifyActions` | Manage the table's background tasks |
-| `SetTableProtection` | `set_protection` | `TableModifyActions` | Enable or disable deletion protection |
-| `ManageTableTags` | `manage_tags` | `TableModifyActions` | Attach or detach tags on the table |
+| `UndropTable` | `undrop` | `TableManageActions` | Restore a soft-deleted table |
+| `ControlTableTasks` | `control_tasks` | `TableManageActions` | Manage the table's background tasks |
+| `SetTableProtection` | `set_protection` | `TableManageActions` | Enable or disable deletion protection |
+| `ManageTableTags` | `manage_tags` | `TableActions` | Attach or detach tags on the table |
 
-`TableWriteActions` lets a loading job write and commit without dropping, renaming or unprotecting the table. A commit covers schema changes too; policies cannot tell the two apart.
+`TableWriteActions` lets a loading job write and commit without dropping, renaming or unprotecting the table. A commit can also change the schema. To allow only commits that change data, see [What a table commit changes](#what-a-table-commit-changes).
 
 ### View Actions
 
@@ -1440,13 +1449,14 @@ A move changes which grants apply to what is moved, so `MoveNamespace`, `MoveTab
 | `GetViewTasks` | `get_tasks` | `ViewDescribeActions` | List background tasks for the view |
 | `SelectView` | `select` | `ViewSelectActions` | Execute the view to produce rows (also required to traverse the view in a `referenced-by` chain) |
 | `CommitView` | `commit` | `ViewWriteActions` | Commit a new version of the view (definition, properties) |
-| `DropView` | `drop` | `ViewModifyActions` | Delete the view |
-| `RenameView` | `rename` | `ViewModifyActions` | Change the view's name |
+| `DropView` | `drop` | `ViewManageActions` | Delete the view |
+| `RenameView` | `rename` | `ViewManageActions` | Change the view's name |
 | `MoveView` | `move` | none | Move the view to another namespace: the source half of a move. Asked together with `RenameView` |
-| `UndropView` | `undrop` | `ViewModifyActions` | Restore a soft-deleted view |
-| `ControlViewTasks` | `control_tasks` | `ViewModifyActions` | Manage the view's background tasks |
-| `SetViewProtection` | `set_protection` | `ViewModifyActions` | Enable or disable deletion protection |
-| `ManageViewTags` | `manage_tags` | `ViewModifyActions` | Attach or detach tags on the view |
+| `UndropView` | `undrop` | `ViewManageActions` | Restore a soft-deleted view |
+| `ControlViewTasks` | `control_tasks` | `ViewManageActions` | Manage the view's background tasks |
+| `SetViewProtection` | `set_protection` | `ViewManageActions` | Enable or disable deletion protection |
+| `ChangeViewSecurityMode` | `change_security_mode` | `ViewManageActions` | Switch the view between running as its owner and running as the caller: a commit that adds or removes an engine owner property such as `trino.run-as-owner`. A commit that adds one also checks it for the user the property names. See [Property Protection](./view-security.md#property-protection) |
+| `ManageViewTags` | `manage_tags` | `ViewActions` | Attach or detach tags on the view |
 
 ### Generic Table Actions
 
@@ -1456,14 +1466,14 @@ A move changes which grants apply to what is moved, so `MoveNamespace`, `MoveTab
 | `IncludeGenericTableInList` | `include_in_list` | `GenericTableDescribeActions` | Include the generic table in listings |
 | `GetGenericTableTasks` | `get_tasks` | `GenericTableDescribeActions` | List background tasks for the generic table |
 | `ReadGenericTableData` | `read_data` | `GenericTableSelectActions` | Read data from the generic table |
-| `WriteGenericTableData` | `write_data` | `GenericTableWriteActions` | Get write credentials for the generic table |
-| `DropGenericTable` | `drop` | `GenericTableModifyActions` | Delete the generic table |
-| `RenameGenericTable` | `rename` | `GenericTableModifyActions` | Change the generic table's name |
+| `WriteGenericTableData` | `write_data` | `GenericTableWriteActions` | Get write credentials for the generic table, together with `ReadGenericTableData` |
+| `DropGenericTable` | `drop` | `GenericTableManageActions` | Delete the generic table |
+| `RenameGenericTable` | `rename` | `GenericTableManageActions` | Change the generic table's name |
 | `MoveGenericTable` | `move` | none | Move the generic table to another namespace: the source half of a move. Asked together with `RenameGenericTable` |
-| `UndropGenericTable` | `undrop` | `GenericTableModifyActions` | Restore a soft-deleted generic table |
-| `ControlGenericTableTasks` | `control_tasks` | `GenericTableModifyActions` | Manage the generic table's background tasks |
-| `SetGenericTableProtection` | `set_protection` | `GenericTableModifyActions` | Enable or disable deletion protection |
-| `ManageGenericTableTags` | `manage_tags` | `GenericTableModifyActions` | Attach or detach tags on the generic table |
+| `UndropGenericTable` | `undrop` | `GenericTableManageActions` | Restore a soft-deleted generic table |
+| `ControlGenericTableTasks` | `control_tasks` | `GenericTableManageActions` | Manage the generic table's background tasks |
+| `SetGenericTableProtection` | `set_protection` | `GenericTableManageActions` | Enable or disable deletion protection |
+| `ManageGenericTableTags` | `manage_tags` | `GenericTableActions` | Attach or detach tags on the generic table |
 
 ### Grant Administration Actions
 
@@ -1540,13 +1550,15 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | `MoveNamespace`                           | `destination: String`, `force: Bool` |
 | `MoveTable`, `MoveView`, `MoveGenericTable` | `destination: String` |
 | `AcceptMovedNamespaceInWarehouse`, `AcceptMovedNamespaceInNamespace`, `AcceptMovedTabularInNamespace` | `source: String` |
-| `DropTable`, `DropView`                   | `force: Bool`, `purge: Bool` |
+| `DropTable`, `DropView`, `DropGenericTable` | `force: Bool`, `purge: Bool` |
 | `UpdateNamespaceProperties`               | `namespace_properties_updates: ResourceProperties`, `namespace_properties_removal: Set<String>` |
-| `CommitTable`                             | `table_properties_updates: ResourceProperties`, `table_properties_removal: Set<String>` |
+| `CommitTable`                             | `table_properties_updates: ResourceProperties`, `table_properties_removal: Set<String>`, `data_commit: Bool`, `update_kinds: Set<TableUpdateKind>`, `target_refs: Set<String>` |
 | `CommitView`                              | `view_properties_updates: ResourceProperties`, `view_properties_removal: Set<String>` |
 | `Manage<Level>Grants`                     | `privilege: <Level>Privilege`, `grantee: Grantee`, `direction: GrantDirection` |
 | `Read…SubtreeGrants`, `Revoke…SubtreeGrants` | `subtree?: SubtreeGrantScope` |
 | `Toggle…PredefinedPolicy`                 | `policy_id: String`, `enabled: Bool` |
+
+A register with `overwrite` that replaces an active table with another table (a different table UUID) in a warehouse with soft deletion sends `DropTable` for the replaced table with `force: true`, because the table skips soft deletion. The protection of the replaced table still applies.
 
 **Example**: Prevent a table from being created with an `access-owners` property that doesn't include at least one owner from the `oidc~data-governance` role:
 
@@ -1561,4 +1573,26 @@ when {
     !(Lakekeeper::Role::"<project-id>/oidc~data-governance"
         in context.initial_table_properties.getTag("access-owners").roles)
 };
+```
+
+#### What a table commit changes
+
+The `CommitTable` context says what a commit changes:
+
+- `data_commit` is true when the commit changes only data: it adds snapshots, creates or moves branches and tags, turns a branch into a tag and back, sets their retention, or records or removes statistics. Inserting, updating, deleting and merging rows, compacting files and computing statistics are data commits. A data commit can also roll a branch back to an earlier snapshot, and [snapshot expiry](./table-maintenance.md#expire-snapshots) follows the retention it sets. A commit that changes the schema, partitioning, sort order or properties, removes snapshots, or removes a branch or tag is not. `data_commit` is also false for a commit that finishes a staged create, and for a permission check that names no update kinds, such as the checks of the OPA bridge.
+- `update_kinds` names each kind of update in the commit as the [Iceberg REST API](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) spells it, for example `Lakekeeper::TableUpdateKind::"add-schema"`. A misspelled kind fails validation when you load the policy.
+- `target_refs` holds the names of the branches and tags that the commit creates, moves or removes, for example `"main"`.
+
+**Example**: Let the `loaders` group read and write the data of tables, and commit only changes to data:
+
+```cedar
+permit (
+    principal in Lakekeeper::Role::"<project-id>/oidc~loaders",
+    action in
+        [Lakekeeper::Action::"TableSelectActions",
+         Lakekeeper::Action::"WriteTableData",
+         Lakekeeper::Action::"CommitTable"],
+    resource is Lakekeeper::Table
+)
+unless { action == Lakekeeper::Action::"CommitTable" && !context.data_commit };
 ```

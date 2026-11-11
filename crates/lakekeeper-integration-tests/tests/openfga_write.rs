@@ -1,12 +1,12 @@
-//! The `write_data` privilege end-to-end against a real OpenFGA store plus a Postgres catalog: a
-//! principal granted `write_data` on a namespace commits data to a table below it through the
-//! REST endpoints, but cannot change the table's structure or properties, nor drop it, nor
-//! finish another principal's staged create.
+//! The `write` privilege end-to-end against a real OpenFGA store plus a Postgres catalog: a
+//! principal granted `write` on a namespace makes every commit to a table below it through
+//! the REST endpoints, including schema, property and history changes and the commit that
+//! finishes a staged create, but cannot drop or rename the table. Also pins that `create` on
+//! a namespace shows the namespace but not the tables already inside it.
 //!
 //! The model tests pin the relations and `authz-openfga`'s own tests pin the mapping of a
-//! commit to them. This file covers what neither can: that the commit endpoint hands the
-//! authorizer the update kinds a real request carries, that a commit to a staged table needs
-//! `modify`, and how batch-check answers commit checks.
+//! commit to them. This file covers what neither can: that real requests reach the relations
+//! the model tests check, and how batch-check answers commit checks.
 //!
 //! Gated behind the `openfga_integration_tests` module so the default nextest filter
 //! excludes it; runs under `--profile ci` with a live OpenFGA at
@@ -14,7 +14,7 @@
 
 // Nested one level deep so the test path contains `::openfga_integration_tests::`,
 // which the default nextest filter excludes (a root module would not match).
-mod write_data {
+mod write {
     mod openfga_integration_tests {
         use std::{collections::HashMap, sync::Arc};
 
@@ -33,7 +33,8 @@ mod write_data {
                 iceberg::{
                     types::{DropParams, Prefix},
                     v1::{
-                        CreateNamespaceRequest, DataAccess, NamespaceParameters, TableParameters,
+                        CreateNamespaceRequest, DataAccess, ListTablesQuery, NamespaceParameters,
+                        TableParameters,
                         namespace::NamespaceService as _,
                         tables::{
                             LoadTableRequest, LoadTableResultOrNotModified, TablesService as _,
@@ -147,7 +148,7 @@ mod write_data {
             ]
         }
 
-        /// Creates namespace `ns` with the given tables as `admin` and grants `write_data` on the
+        /// Creates namespace `ns` with the given tables as `admin` and grants `write` on the
         /// namespace to a new principal, whose request metadata it returns.
         async fn namespace_with_writer(
             ctx: &Ctx,
@@ -181,15 +182,7 @@ mod write_data {
                 .await
                 .unwrap();
             }
-            principal_with(
-                ctx,
-                admin_md,
-                project_id,
-                warehouse_id,
-                "writer",
-                "write_data",
-            )
-            .await
+            principal_with(ctx, admin_md, project_id, warehouse_id, "writer", "write").await
         }
 
         /// Grants `privilege` on namespace `ns` to a new principal `name`, whose request
@@ -259,33 +252,7 @@ mod write_data {
             loaded
         }
 
-        #[sqlx::test]
-        async fn write_commits_data_but_not_structure(pool: PgPool) {
-            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
-            let admin_md = principal_metadata(&admin, &project_id);
-            let writer_md =
-                namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
-
-            // Reading and appending are what `write_data` is for.
-            CatalogServer::load_table(
-                table_params(warehouse_id),
-                LoadTableRequest::default(),
-                ctx.clone(),
-                writer_md.clone(),
-            )
-            .await
-            .expect("write_data implies select");
-            commit(&ctx, &writer_md, warehouse_id, append(1))
-                .await
-                .expect("an append is a data commit");
-
-            // Spark sends a commit request without updates before a write with
-            // `mergeSchema` that adds no column.
-            commit(&ctx, &writer_md, warehouse_id, vec![])
-                .await
-                .expect("a commit request without updates is a data commit");
-
-            // A new schema and a property need `modify`.
+        fn schema_change() -> Vec<TableUpdate> {
             let schema = Schema::builder()
                 .with_schema_id(1)
                 .with_fields(vec![
@@ -295,30 +262,95 @@ mod write_data {
                 ])
                 .build()
                 .unwrap();
+            vec![
+                TableUpdate::AddSchema { schema },
+                TableUpdate::SetCurrentSchema { schema_id: 1 },
+            ]
+        }
+
+        fn property_change() -> Vec<TableUpdate> {
+            vec![TableUpdate::SetProperties {
+                updates: HashMap::from([("write.format.default".to_string(), "orc".to_string())]),
+            }]
+        }
+
+        #[sqlx::test]
+        async fn write_makes_every_commit_but_never_drops_or_renames(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = principal_metadata(&admin, &project_id);
+            let writer_md =
+                namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
+
+            CatalogServer::load_table(
+                table_params(warehouse_id),
+                LoadTableRequest::default(),
+                ctx.clone(),
+                writer_md.clone(),
+            )
+            .await
+            .expect("write implies select");
             for (what, updates) in [
+                ("an append", append(1)),
+                ("a commit request without updates", vec![]),
+                ("a schema change", schema_change()),
+                ("a property change", property_change()),
+                ("a second append", append(2)),
                 (
-                    "a schema change",
-                    vec![
-                        TableUpdate::AddSchema { schema },
-                        TableUpdate::SetCurrentSchema { schema_id: 1 },
-                    ],
+                    "snapshot expiry",
+                    vec![TableUpdate::RemoveSnapshots {
+                        snapshot_ids: vec![1],
+                    }],
                 ),
                 (
-                    "a property change",
-                    vec![TableUpdate::SetProperties {
-                        updates: HashMap::from([(
-                            "write.format.default".to_string(),
-                            "orc".to_string(),
-                        )]),
+                    "a new branch",
+                    vec![TableUpdate::SetSnapshotRef {
+                        ref_name: "audit".to_string(),
+                        reference: SnapshotReference {
+                            snapshot_id: 2,
+                            retention: SnapshotRetention::Branch {
+                                min_snapshots_to_keep: None,
+                                max_snapshot_age_ms: None,
+                                max_ref_age_ms: None,
+                            },
+                        },
+                    }],
+                ),
+                (
+                    "a branch removal",
+                    vec![TableUpdate::RemoveSnapshotRef {
+                        ref_name: "audit".to_string(),
                     }],
                 ),
             ] {
-                let err = commit(&ctx, &writer_md, warehouse_id, updates)
+                commit(&ctx, &writer_md, warehouse_id, updates)
                     .await
-                    .expect_err(&format!("{what} needs modify"));
-                assert_eq!(err.code, 403, "{what}: {err:?}");
+                    .unwrap_or_else(|e| panic!("{what} is a commit write allows: {e:?}"));
             }
+            let loaded = load(&ctx, &writer_md, table_params(warehouse_id)).await;
+            assert_eq!(loaded.metadata.current_schema_id(), 1);
+            assert_eq!(loaded.metadata.current_snapshot_id(), Some(2));
+            assert_eq!(
+                loaded
+                    .metadata
+                    .properties()
+                    .get("write.format.default")
+                    .map(String::as_str),
+                Some("orc")
+            );
 
+            let err = CatalogServer::rename_table(
+                Some(Prefix(warehouse_id.to_string())),
+                iceberg_ext::catalog::rest::RenameTableRequest {
+                    source: TableIdent::new(namespace(), "t".to_string()),
+                    destination: TableIdent::new(namespace(), "t_renamed".to_string()),
+                },
+                ctx.clone(),
+                writer_md.clone(),
+            )
+            .await
+            .expect_err("renaming needs modify")
+            .error;
+            assert_eq!(err.code, 403, "{err:?}");
             let err = CatalogServer::drop_table(
                 table_params(warehouse_id),
                 DropParams {
@@ -333,26 +365,22 @@ mod write_data {
             .error;
             assert_eq!(err.code, 403, "{err:?}");
 
-            // The same table still takes an append, and `modify` still takes the rest.
-            commit(&ctx, &writer_md, warehouse_id, append(2))
-                .await
-                .expect("a second append is a data commit");
-            commit(
-                &ctx,
-                &admin_md,
-                warehouse_id,
-                vec![TableUpdate::SetProperties {
-                    updates: HashMap::from([("owner".to_string(), "team".to_string())]),
-                }],
+            CatalogServer::drop_table(
+                table_params(warehouse_id),
+                DropParams {
+                    purge_requested: false,
+                    force: false,
+                },
+                ctx.clone(),
+                admin_md.clone(),
             )
             .await
-            .expect("modify changes properties");
+            .expect("modify drops");
         }
 
-        /// Each table of a transaction is checked on its own updates, and one refusal
-        /// refuses the whole transaction.
+        /// A transaction of structural and data commits to several tables needs only `write`.
         #[sqlx::test]
-        async fn a_transaction_with_a_structural_change_is_refused_as_a_whole(pool: PgPool) {
+        async fn a_transaction_with_structural_changes_needs_only_write(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = principal_metadata(&admin, &project_id);
             let writer_md =
@@ -364,63 +392,30 @@ mod write_data {
                 updates,
             };
 
-            let err = CatalogServer::commit_transaction(
-                Some(Prefix(warehouse_id.to_string())),
-                CommitTransactionRequest {
-                    table_changes: vec![
-                        change("t", append(1)),
-                        change(
-                            "t2",
-                            vec![TableUpdate::SetProperties {
-                                updates: HashMap::from([(
-                                    "write.format.default".to_string(),
-                                    "orc".to_string(),
-                                )]),
-                            }],
-                        ),
-                    ],
-                },
-                ctx.clone(),
-                writer_md.clone(),
-            )
-            .await
-            .expect_err("the property change on t2 needs modify")
-            .error;
-            assert_eq!(err.code, 403, "{err:?}");
-
-            let LoadTableResultOrNotModified::LoadTableResult(loaded) = CatalogServer::load_table(
-                table_params(warehouse_id),
-                LoadTableRequest::default(),
-                ctx.clone(),
-                writer_md.clone(),
-            )
-            .await
-            .unwrap() else {
-                panic!("a load without an ETag returns the table");
-            };
-            assert_eq!(
-                loaded.metadata.current_snapshot_id(),
-                None,
-                "nothing was applied to t"
-            );
-
             CatalogServer::commit_transaction(
                 Some(Prefix(warehouse_id.to_string())),
                 CommitTransactionRequest {
-                    table_changes: vec![change("t", append(1)), change("t2", append(2))],
+                    table_changes: vec![change("t", append(1)), change("t2", schema_change())],
                 },
                 ctx.clone(),
                 writer_md.clone(),
             )
             .await
-            .expect("a transaction of data commits needs only write_data");
+            .expect("write commits to both tables");
+            assert_eq!(
+                load(&ctx, &writer_md, table_params(warehouse_id))
+                    .await
+                    .metadata
+                    .current_snapshot_id(),
+                Some(1)
+            );
         }
 
-        /// A commit to a staged table finishes its creation, so it needs `modify`, whatever it
-        /// contains. A principal with only `create` stages a table, owns it, and finishes the
-        /// create; one with `write_data` cannot.
+        /// A commit to a staged table finishes its creation, and `write` makes it like any
+        /// other commit: a principal with `create` stages a table, and one with `write` on the
+        /// namespace finishes the create.
         #[sqlx::test]
-        async fn a_staged_create_is_finished_only_by_its_owner(pool: PgPool) {
+        async fn write_finishes_a_staged_create(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = principal_metadata(&admin, &project_id);
             let writer_md =
@@ -437,101 +432,34 @@ mod write_data {
             stage(&ctx, &creator_md, warehouse_id, "staged").await;
             let staged = || named_table_params(warehouse_id, "staged");
 
-            for (what, updates) in [
-                ("an append", append(1)),
-                (
-                    "a commit that changes neither data nor structure",
-                    vec![TableUpdate::RemoveStatistics { snapshot_id: 1 }],
-                ),
-                ("a commit request without updates", vec![]),
-            ] {
-                let err = commit_to(&ctx, &writer_md, staged(), updates)
-                    .await
-                    .expect_err(&format!("{what} to a staged table needs modify"));
-                assert_eq!(err.code, 403, "{what}: {err:?}");
-            }
-            let err = CatalogServer::load_table(
-                staged(),
-                LoadTableRequest::default(),
-                ctx.clone(),
-                writer_md.clone(),
-            )
-            .await
-            .expect_err("the table is still staged")
-            .error;
-            assert_eq!(err.code, 404, "{err:?}");
-
-            commit_to(&ctx, &creator_md, staged(), append(1))
+            let mut updates = schema_change();
+            updates.extend(append(1));
+            commit_to(&ctx, &writer_md, staged(), updates)
                 .await
-                .expect("the owner finishes the staged create");
-            assert_eq!(
-                load(&ctx, &writer_md, staged())
-                    .await
-                    .metadata
-                    .current_snapshot_id(),
-                Some(1)
-            );
-            commit_to(&ctx, &writer_md, staged(), append(2))
-                .await
-                .expect("once created, the table takes data commits with write_data");
+                .expect("write finishes the staged create");
+            let loaded = load(&ctx, &writer_md, staged()).await;
+            assert_eq!(loaded.metadata.current_snapshot_id(), Some(1));
+            assert_eq!(loaded.metadata.current_schema_id(), 1);
         }
 
-        /// A transaction that commits to a staged table needs `modify` on it, and one refusal
-        /// refuses the whole transaction.
+        /// A commit check asks the write tier, whatever it names and whether the table is
+        /// staged.
         #[sqlx::test]
-        async fn a_transaction_with_a_staged_table_is_refused_as_a_whole(pool: PgPool) {
+        async fn every_commit_check_asks_write(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = principal_metadata(&admin, &project_id);
             let writer_md =
                 namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
-            stage(&ctx, &admin_md, warehouse_id, "staged").await;
-            let change = |table: &str, updates: Vec<TableUpdate>| CommitTableRequest {
-                identifier: Some(TableIdent::new(namespace(), table.to_string())),
-                requirements: vec![],
-                updates,
-            };
-
-            let err = CatalogServer::commit_transaction(
-                Some(Prefix(warehouse_id.to_string())),
-                CommitTransactionRequest {
-                    table_changes: vec![change("t", append(1)), change("staged", append(1))],
-                },
-                ctx.clone(),
-                writer_md.clone(),
-            )
-            .await
-            .expect_err("the append to the staged table needs modify")
-            .error;
-            assert_eq!(err.code, 403, "{err:?}");
-            assert_eq!(
-                load(&ctx, &writer_md, table_params(warehouse_id))
-                    .await
-                    .metadata
-                    .current_snapshot_id(),
-                None,
-                "nothing was applied to t"
-            );
-        }
-
-        /// A check that names no update kinds asks about a commit of any kind, so it needs
-        /// `modify`, and JSON cannot mark a check as a commit request. A commit check on a
-        /// staged table asks about a commit of any kind as well.
-        #[sqlx::test]
-        async fn a_commit_check_without_update_kinds_needs_modify(pool: PgPool) {
-            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
-            let admin_md = principal_metadata(&admin, &project_id);
-            let writer_md =
-                namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
-            let creator_md = principal_with(
+            let reader_md = principal_with(
                 &ctx,
                 &admin_md,
                 &project_id,
                 warehouse_id,
-                "creator",
-                "create",
+                "reader",
+                "select",
             )
             .await;
-            let staged = stage(&ctx, &creator_md, warehouse_id, "staged").await;
+            let staged = stage(&ctx, &admin_md, warehouse_id, "staged").await;
 
             let on_t = |action: serde_json::Value| {
                 serde_json::json!({"operation": {"table": {
@@ -552,9 +480,20 @@ mod write_data {
                 "action": "commit",
                 "update_kinds": ["add-snapshot", "set-snapshot-ref"]
             });
-            let allowed = async |md: &RequestMetadata, checks: Vec<serde_json::Value>| {
+            let checks = vec![
+                on_t(serde_json::json!({"action": "commit"})),
+                on_t(serde_json::json!({"action": "commit", "update_kinds": ["add-schema"]})),
+                on_t(serde_json::json!({
+                    "action": "commit",
+                    "updated_properties": {"owner": "team"}
+                })),
+                on_t(append.clone()),
+                on_staged(append),
+                on_t(serde_json::json!({"action": "drop"})),
+            ];
+            let allowed = async |md: &RequestMetadata| {
                 let request: CatalogActionsBatchCheckRequest = serde_json::from_value(
-                    serde_json::json!({"checks": checks, "error-on-not-found": true}),
+                    serde_json::json!({"checks": checks.clone(), "error-on-not-found": true}),
                 )
                 .unwrap();
                 check_internal(ctx.clone(), md.clone(), request)
@@ -567,28 +506,81 @@ mod write_data {
             };
 
             assert_eq!(
-                allowed(
-                    &writer_md,
-                    vec![
-                        on_t(serde_json::json!({"action": "commit"})),
-                        on_t(serde_json::json!({"action": "commit", "update_kinds": []})),
-                        on_t(serde_json::json!({
-                            "action": "commit",
-                            "update_kinds_listing": {"every_update": true}
-                        })),
-                        on_t(append.clone()),
-                        on_staged(serde_json::json!({"action": "get_metadata"})),
-                        on_staged(append.clone()),
-                    ]
-                )
-                .await,
-                vec![false, false, false, true, true, false]
+                allowed(&writer_md).await,
+                vec![true, true, true, true, true, false]
             );
             assert_eq!(
-                allowed(&creator_md, vec![on_staged(append)]).await,
-                vec![true],
-                "the owner may finish the staged create"
+                allowed(&reader_md).await,
+                vec![false, false, false, false, false, false]
             );
+        }
+
+        /// `create` on a namespace shows the namespace and lets the principal create tables
+        /// there, but does not show the tables already inside it.
+        #[sqlx::test]
+        async fn create_does_not_describe_the_tables_inside(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let admin_md = principal_metadata(&admin, &project_id);
+            namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
+            let creator_md = principal_with(
+                &ctx,
+                &admin_md,
+                &project_id,
+                warehouse_id,
+                "creator",
+                "create",
+            )
+            .await;
+            let params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse_id.to_string())),
+                namespace: namespace(),
+            };
+
+            CatalogServer::load_namespace_metadata(
+                params.clone(),
+                lakekeeper::api::iceberg::v1::namespace::GetNamespacePropertiesQuery {
+                    return_uuid: false,
+                },
+                ctx.clone(),
+                creator_md.clone(),
+            )
+            .await
+            .expect("create shows the namespace");
+            let err = CatalogServer::load_table(
+                table_params(warehouse_id),
+                LoadTableRequest::default(),
+                ctx.clone(),
+                creator_md.clone(),
+            )
+            .await
+            .expect_err("create does not describe a table it did not create")
+            .error;
+            // Without `describe`, the table is hidden.
+            assert_eq!(err.code, 404, "{err:?}");
+
+            CatalogServer::create_table(
+                params.clone(),
+                create_table_request(Some("own".to_string()), Some(false)),
+                DataAccess::not_specified(),
+                ctx.clone(),
+                creator_md.clone(),
+            )
+            .await
+            .expect("create creates tables");
+            load(&ctx, &creator_md, named_table_params(warehouse_id, "own")).await;
+            let listed = CatalogServer::list_tables(
+                params,
+                ListTablesQuery::default(),
+                ctx.clone(),
+                creator_md.clone(),
+            )
+            .await
+            .unwrap()
+            .identifiers
+            .iter()
+            .map(|ident| ident.name.clone())
+            .collect::<Vec<_>>();
+            assert_eq!(listed, vec!["own".to_string()]);
         }
     }
 }

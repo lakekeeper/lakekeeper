@@ -8,17 +8,14 @@ use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
 use lakekeeper_io::Location;
 
 use crate::{
-    api::{
-        ApiContext,
-        iceberg::v1::{DataAccessMode, NamespaceParameters},
-    },
+    api::{ApiContext, iceberg::v1::NamespaceParameters},
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
         io::{delete_on_failure, write_file},
         maybe_get_secret, require_warehouse_id,
         tables::{require_active_warehouse, validate_table_or_view_ident_creation},
-        tabular::determine_tabular_location,
+        tabular::{determine_tabular_location, file_io_if_empty},
         views::{owner_property, validate_view_properties},
     },
     service::{
@@ -33,7 +30,6 @@ use crate::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
-        storage::StoragePermissions,
     },
 };
 
@@ -44,10 +40,8 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     parameters: NamespaceParameters,
     request: CreateViewRequest,
     state: ApiContext<State<A, C, S>>,
-    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
-    let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let NamespaceParameters {
         namespace: provided_ns,
@@ -138,7 +132,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .into_result()?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let view_info = C::create_view(
+    C::create_view(
         warehouse_id,
         ns_hierarchy.namespace_id(),
         &view,
@@ -153,32 +147,11 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
     let storage_secret_ref = storage_secret.as_deref();
 
-    let file_io = warehouse
-        .storage_profile
-        .file_io(storage_secret_ref)
-        .await?;
-    let (config, bootstrap_grants) = delete_on_failure(&file_io, &[&metadata_location], async {
+    let file_io = file_io_if_empty(&warehouse, storage_secret_ref, &view_location).await?;
+    let bootstrap_grants = delete_on_failure(&file_io, &[&metadata_location], async {
         let compression_codec = CompressionCodec::try_from_metadata(&metadata)?;
         write_file(&file_io, &metadata_location, &metadata, compression_codec).await?;
         tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
-
-        // Generate the storage profile. This requires the storage secret
-        // because the table config might contain vended-credentials based
-        // on the `data_access` parameter.
-        // ToDo: There is a small inefficiency here: If storage credentials
-        // are not required because of i.e. remote-signing and if this
-        // is a stage-create, we still fetch the secret.
-        let config = warehouse
-            .storage_profile
-            .generate_table_config(
-                data_access,
-                storage_secret_ref,
-                &view_location,
-                StoragePermissions::Read,
-                &request_metadata,
-                &view_info,
-            )
-            .await?;
 
         let view_id = ViewId::from(metadata.uuid());
         authorizer
@@ -190,10 +163,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-        let committed =
-            commit_created_view::<C, A>(authorizer, &request_metadata, warehouse_id, view_id, t)
-                .await?;
-        Ok((config, committed))
+        commit_created_view::<C, A>(authorizer, &request_metadata, warehouse_id, view_id, t).await
     })
     .await?;
 
@@ -221,7 +191,9 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     let load_view_result = LoadViewResult {
         metadata_location: metadata_location_str,
         metadata: view_metadata,
-        config: Some(config.config.into()),
+        // Views carry no storage access: engines load the tables behind a view with loadTable.
+        config: None,
+        labels: None,
     };
 
     Ok(load_view_result)

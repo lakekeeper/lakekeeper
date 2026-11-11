@@ -42,7 +42,7 @@ _view_rename_input(source, target) := {
 }
 
 _view_operations := [
-	"CreateView", "CreateMaterializedView", "SetViewComment", "DropView",
+	"CreateView", "CreateMaterializedView", "SetViewComment", "SetColumnComment", "DropView",
 	"FilterTables", "ShowColumns", "FilterColumns",
 	"SelectFromColumns", "CreateViewWithSelectFromColumns",
 ]

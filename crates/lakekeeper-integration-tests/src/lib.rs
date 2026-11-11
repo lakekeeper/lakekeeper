@@ -114,9 +114,9 @@ pub async fn load_view_helper(
     .await
 }
 
-/// Wraps [`lakekeeper::server::views::create::create_view`] with default
-/// `DataAccess` and `RequestMetadata` so test files don't have to import
-/// every type at every call site. Mirrors the original
+/// Wraps [`lakekeeper::server::views::create::create_view`] with a default
+/// `RequestMetadata` so test files don't have to import every type at every
+/// call site. Mirrors the original
 /// `crate::server::views::create::test::create_view` test helper.
 pub async fn create_view_helper(
     api_context: lakekeeper::api::ApiContext<
@@ -130,10 +130,7 @@ pub async fn create_view_helper(
     rq: iceberg_ext::catalog::rest::CreateViewRequest,
     prefix: Option<String>,
 ) -> lakekeeper::api::Result<iceberg_ext::catalog::rest::LoadViewResult> {
-    use lakekeeper::api::iceberg::{
-        types::Prefix,
-        v1::{DataAccess, NamespaceParameters},
-    };
+    use lakekeeper::api::iceberg::{types::Prefix, v1::NamespaceParameters};
 
     Box::pin(lakekeeper::server::views::create::create_view(
         NamespaceParameters {
@@ -144,10 +141,6 @@ pub async fn create_view_helper(
         },
         rq,
         api_context,
-        DataAccess {
-            vended_credentials: true,
-            remote_signing: false,
-        },
         lakekeeper::api::RequestMetadata::new_unauthenticated(),
     ))
     .await
@@ -173,6 +166,24 @@ pub fn assert_advertises_client_planning(
         Some("client"),
         "{endpoint} must advertise client-side planning: {config:?}"
     );
+}
+
+/// Assert a view response carries no storage credentials and no storage config. The body has
+/// no `config` field: Iceberg Java up to 1.11 fails on `"config": null`.
+pub fn assert_view_response_without_storage_access(
+    response: &iceberg_ext::catalog::rest::LoadViewResult,
+    endpoint: &str,
+) {
+    assert_eq!(response.config, None, "{endpoint} must carry no config");
+    let body = serde_json::to_value(response).unwrap();
+    let mut fields: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["metadata", "metadata-location"], "{endpoint}");
 }
 
 pub async fn setup_simple<T: lakekeeper::service::authz::Authorizer>(
@@ -330,6 +341,67 @@ impl CapturingAuthzListener {
             events.failed.iter().map(|e| recorded(&e.actions)).collect(),
         )
     }
+
+    /// The entity types each failed record names, in order — so a test can pin which
+    /// resource a refusal was recorded on.
+    ///
+    /// Does not settle on its own; call it after [`Self::settled_counts`].
+    #[must_use]
+    pub fn failed_entity_types(
+        &self,
+    ) -> Vec<Vec<lakekeeper::service::events::context::EntityType>> {
+        self.events
+            .lock()
+            .unwrap()
+            .failed
+            .iter()
+            .map(|e| e.entities.entities.iter().map(|d| d.entity_type).collect())
+            .collect()
+    }
+}
+
+impl CapturingAuthzListener {
+    /// The decisions of each succeeded and each failed record, in order: the action, whom it
+    /// was checked for and the verdict.
+    ///
+    /// Does not settle on its own; call it after [`Self::settled_counts`].
+    #[must_use]
+    pub fn recorded_decisions(&self) -> (Vec<Vec<RecordedDecision>>, Vec<Vec<RecordedDecision>>) {
+        fn recorded(
+            authorizations: &[lakekeeper::service::events::Authorization],
+        ) -> Vec<RecordedDecision> {
+            authorizations
+                .iter()
+                .map(|a| RecordedDecision {
+                    action_name: a.action.action_name.to_string(),
+                    for_principal: a.for_principal.clone(),
+                    allowed: a.allowed,
+                })
+                .collect()
+        }
+        let events = self.events.lock().unwrap();
+        (
+            events
+                .succeeded
+                .iter()
+                .map(|e| recorded(&e.authorizations))
+                .collect(),
+            events
+                .failed
+                .iter()
+                .map(|e| recorded(&e.authorizations))
+                .collect(),
+        )
+    }
+}
+
+/// One decision of a captured authorization record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedDecision {
+    pub action_name: String,
+    /// Whom the action was checked for; `None` for the request's principal.
+    pub for_principal: Option<lakekeeper::service::authz::UserOrRoleId>,
+    pub allowed: Option<bool>,
 }
 
 /// One action of a captured authorization record: its name and its context keys.

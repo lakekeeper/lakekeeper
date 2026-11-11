@@ -48,6 +48,8 @@ nav:
           - monitoring.md
           - opa.md
           - table-maintenance.md
+          - Optimize <span class="lkp"></span>: optimize.md
+          - Optimize Workers <span class="lkp"></span>: optimize-workers.md
           - task-workers.md
           - production.md
           - gotchas.md

@@ -25,11 +25,18 @@ use lakekeeper_io::{Location, s3::S3Location};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::service::events::context::{HandlerContextKey, InvokingOperation};
+use crate::{
+    request_metadata::ArcRequestMetadata,
+    service::events::{
+        EventDispatcher,
+        context::{HandlerContextKey, InvokingOperation},
+    },
+};
 pub mod authorize_load;
 pub mod create_table;
 pub(crate) mod etag;
 pub mod load_table;
+mod register_table;
 mod rename_table;
 
 pub(crate) use authorize_load::*;
@@ -55,8 +62,7 @@ use crate::{
                 ReferencingView, RegisterTableRequest, RenameTableRequest, Result, TableIdent,
                 TableParameters,
                 tables::{
-                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters,
-                    LoadTableRequest, SnapshotsQuery,
+                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters, LoadTableRequest,
                 },
             },
         },
@@ -64,17 +70,20 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
-        self,
+        self, authorize_soft_deletion_skip,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
-        tabular::{authorize_entities, claim_idempotency_key, fetch_entities},
+        tabular::{
+            authorize_entities, claim_idempotency_key, claim_no_content_idempotency_key,
+            fetch_entities,
+        },
     },
     service::{
         ArcResolvedWarehouse, AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
         CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTableOps,
         CatalogTabularOps, CatalogWarehouseOps, LoadTableResponse as CatalogLoadTableResult,
-        NamedEntity, ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId,
-        TableInfo, TabularId, TabularIdentBorrowed, TabularInfo, TabularListFlags, TabularNotFound,
-        Transaction, WarehouseStatus,
+        NamedEntity, NamespaceHierarchy, ResolvedWarehouse, State, TableCommit, TableCreation,
+        TableId, TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed, TabularInfo,
+        TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeTable, AuthZCannotSeeView, AuthZError,
             AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch, Authorizer,
@@ -92,7 +101,7 @@ use crate::{
         idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::{StoragePermissions, credential_revalidate_after_ms},
+        storage::StoragePermissions,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -142,6 +151,7 @@ async fn replay_load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         state,
         request_metadata,
         list_flags,
+        load_table::TableLabels::Omit,
     )
     .await
     // Keep the load's own status. Wrapping everything as internal turned the two
@@ -381,6 +391,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
         // Before any storage read. `CreateTable` is checked after the read: its properties
         // and table id are only known from the metadata file.
+        register_table::authorize_register_on_warehouse(&authorizer, &event_ctx, &warehouse)
+            .await?;
         let namespace = authorizer
             .require_namespace_action(
                 event_ctx.request_metadata(),
@@ -453,60 +465,34 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         });
         let request_metadata = event_ctx.request_metadata();
 
-        // Check if we need to handle overwrite
-        // Drop the existing table to overwrite it
-        // We don't drop the files for the previous table on overwrite
-        let mut previous_table_to_drop = None;
-        if request.overwrite {
-            // Check if table exists
-            let previous_table_info = C::get_table_info(
-                warehouse_id,
-                table_ident.clone(),
-                TabularListFlags::active_and_staged(),
+        ensure_registered_uuid_is_free::<C>(
+            warehouse_id,
+            &table_ident,
+            table_metadata.uuid(),
+            state.v1_state.catalog.clone(),
+        )
+        .await?;
+
+        let previous_table_to_drop = if request.overwrite {
+            authorize_register_overwrite::<C, A>(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                RegisterOverwriteTarget::builder()
+                    .warehouse(&warehouse)
+                    .namespace(&namespace)
+                    .table_ident(&table_ident)
+                    .registered_metadata(&table_metadata)
+                    .build(),
                 state.v1_state.catalog.clone(),
             )
-            .await;
-
-            if let Ok(Some(_)) = &previous_table_info {
-                let mut drop_tbl_event_ctx = APIEventContext::for_table(
-                    event_ctx.request_metadata_arc(),
-                    event_ctx.dispatcher().clone(),
-                    warehouse_id,
-                    table_ident.clone(),
-                    CatalogTableAction::Drop {
-                        force: false,
-                        purge: false,
-                    },
-                );
-                drop_tbl_event_ctx.push_extra_context(HandlerContextKey::InvokedBy(
-                    InvokingOperation::RegisterTableOverwrite.as_wire(),
-                ));
-
-                let authz_result = authorizer
-                    .require_table_action(
-                        drop_tbl_event_ctx.request_metadata(),
-                        &warehouse,
-                        &namespace,
-                        drop_tbl_event_ctx.user_provided_entity().table.clone(),
-                        previous_table_info,
-                        drop_tbl_event_ctx.action().clone(),
-                    )
-                    .await;
-                let (drop_tbl_event_ctx, previous_table_info) =
-                    drop_tbl_event_ctx.emit_authz(authz_result)?;
-
-                // Verify authorization to drop the table first
-                previous_table_to_drop = Some(previous_table_info);
-
-                tracing::debug!(
-                    "Register Table: Dropping existing table '{}' of warehouse '{}' for overwrite operation",
-                    drop_tbl_event_ctx.user_provided_entity().table.to_string(),
-                    warehouse.name
-                );
-            }
-        }
+            .await?
+        } else {
+            None
+        };
         let mut t_write = C::Transaction::begin_write(state.v1_state.catalog).await?;
         if let Some(previous_table_to_drop) = &previous_table_to_drop {
+            // `force = false` even where the drop was authorized as forced: protection holds.
             let _previous_table_location = C::drop_tabular(
                 warehouse_id,
                 previous_table_to_drop.table_id(),
@@ -529,24 +515,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             t_write.transaction(),
         )
         .await?;
-
-        // Bound once and reused for the ETag shape below, so the tag follows the
-        // config the delegation actually produced.
-        let storage_permissions = StoragePermissions::ReadWriteDelete;
-        let config = storage_profile
-            .generate_table_config(
-                data_access,
-                storage_secret_ref,
-                &table_location,
-                storage_permissions,
-                request_metadata,
-                &table_info,
-            )
-            .await?;
-        let storage_credentials = config.storage_credentials(&table_location);
-        let credentials_revalidate_after_ms = config
-            .credentials_expiration_ms
-            .map(credential_revalidate_after_ms);
 
         // Insert idempotency key in the same transaction.
         if let Some(ref key) = idempotency_key
@@ -604,6 +572,21 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // Commit the transaction
         t_write.commit().await?;
 
+        // Keeps the replaced metadata file findable, so an operator can register it back.
+        if let Some(previous_table) = &previous_table_to_drop {
+            tracing::info!(
+                warehouse_id = %warehouse_id,
+                table = %table_ident,
+                previous_table_id = %previous_table.tabular_id,
+                previous_metadata_location = previous_table.metadata_location.as_ref().map(tracing::field::display),
+                previous_table_location = %previous_table.location,
+                table_id = %tabular_id,
+                metadata_location = %metadata_location,
+                table_location = %table_location,
+                "Register with overwrite replaced an existing table"
+            );
+        }
+
         // Held across the register event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
         let grant_request_metadata = event_ctx.request_metadata_arc();
@@ -637,37 +620,28 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             data_access,
         );
 
-        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
+        emit_bootstrap_grants_async(
+            &grant_dispatcher,
+            grant_request_metadata.clone(),
+            bootstrap_grants,
+        );
 
-        // Full snapshot list from the metadata file, tagged with the delegation
-        // and permission scope the config above was built for. A read-only
-        // caller's later load is scoped narrower, so it gets a distinct tag
-        // rather than matching this one. Now that register vends, the tag has to
-        // carry the credential's revalidation point too: without it a vending
-        // response yields a tag that can never produce a 304.
-        let etag = etag::TableETag::new(
-            warehouse_id,
-            &metadata_location_str,
-            etag::TableResponseShape::new(
-                SnapshotsQuery::All,
-                etag::StorageAccess::Config {
-                    delegation: data_access,
-                    permissions: storage_permissions,
-                    warehouse_version: warehouse.version,
-                },
-            ),
-            credentials_revalidate_after_ms,
+        register_table::registered_table_result(
+            register_table::RegisteredTable::builder()
+                .authorizer(&authorizer)
+                .request_metadata(&grant_request_metadata)
+                .dispatcher(&grant_dispatcher)
+                .warehouse(&warehouse)
+                .namespace(&namespace)
+                .table_info(&table_info)
+                .table_metadata(table_metadata)
+                .metadata_location(metadata_location_str)
+                .table_location(&table_location)
+                .data_access(data_access)
+                .storage_secret(storage_secret_ref)
+                .build(),
         )
-        .into_etag();
-
-        Ok(LoadTableResult {
-            metadata_location: Some(metadata_location_str),
-            metadata: table_metadata,
-            remote_signing_config: config.remote_signing.clone(),
-            config: Some(load_response_config(Some(config.config))),
-            storage_credentials,
-            etag: Some(etag),
-        })
+        .await
     }
 
     /// Load a table from the catalog
@@ -899,6 +873,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await;
         let (event_ctx, (warehouse, _ns, table_info)) = event_ctx.emit_authz(authz_result)?;
+        if force && warehouse.tabular_delete_profile.is_soft() {
+            authorize_soft_deletion_skip(
+                &authorizer,
+                event_ctx.request_metadata_arc(),
+                event_ctx.dispatcher().clone(),
+                &warehouse,
+            )
+            .await?;
+        }
 
         let table_id = table_info.table_id();
         let event_ctx = event_ctx.resolve(ResolvedTable {
@@ -917,11 +900,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
-        let delete_profile = if force {
-            TabularDeleteProfile::Hard {}
-        } else {
-            warehouse.tabular_delete_profile
-        };
+        let delete_profile = warehouse.tabular_delete_profile.for_drop(force);
         let project_id = &warehouse.project_id;
 
         match delete_profile {
@@ -989,27 +968,14 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             }
         }
 
-        // Insert idempotency key and commit — shared across both delete profiles.
-        if let Some(ref key) = idempotency_key
-            && !C::try_insert_idempotency_key(
-                warehouse_id,
-                &IdempotencyInfo::builder()
-                    .key(*key)
-                    .endpoint(EndpointFlat::CatalogV1DropTable)
-                    .http_status(StatusCode::NO_CONTENT)
-                    .build(),
-                t.transaction(),
-            )
-            .await?
-        {
-            t.rollback()
-                .await
-                .inspect_err(|e| {
-                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
-                })
-                .ok();
-            return Err(ErrorModel::request_in_progress().into());
-        }
+        // Claim the idempotency key and commit, for both delete profiles.
+        let t = claim_no_content_idempotency_key::<C>(
+            t,
+            warehouse_id,
+            idempotency_key,
+            EndpointFlat::CatalogV1DropTable,
+        )
+        .await?;
         t.commit().await?;
 
         // Post-commit: best-effort authz cleanup for hard deletes
@@ -1134,6 +1100,132 @@ pub(crate) fn load_response_config(
     config.into()
 }
 
+/// Refuses a register whose table UUID belongs to another table, view or generic table of the
+/// warehouse: one with another name, or a dropped one. Runs before anything is dropped. The
+/// error does not name that table, which the caller may not see. Its type matches the conflict
+/// the insert raises when a concurrent register takes the UUID first.
+async fn ensure_registered_uuid_is_free<C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    table_ident: &TableIdent,
+    registered_uuid: Uuid,
+    catalog_state: C::State,
+) -> Result<()> {
+    let Some(holder) = C::get_tabular_info_by_uuid(
+        warehouse_id,
+        registered_uuid,
+        TabularListFlags::all(),
+        catalog_state.clone(),
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    // Names compare by the catalog's collation, so the table at the name is looked up.
+    let table_at_name = C::get_table_info(
+        warehouse_id,
+        table_ident.clone(),
+        TabularListFlags::active_and_staged(),
+        catalog_state,
+    )
+    .await?;
+    if table_at_name.is_some_and(|table| TabularId::Table(table.tabular_id) == holder.tabular_id())
+    {
+        return Ok(());
+    }
+    Err(ErrorModel::conflict(
+        "The table UUID in this metadata file belongs to another table, view or generic table in this warehouse, possibly a dropped one. Register the file under the name of that table with overwrite, or restore the dropped table first.",
+        "AlreadyExistsException",
+        None,
+    )
+    .into())
+}
+
+/// Where a register with `overwrite` puts the table.
+#[derive(typed_builder::TypedBuilder)]
+struct RegisterOverwriteTarget<'a> {
+    warehouse: &'a ResolvedWarehouse,
+    namespace: &'a NamespaceHierarchy,
+    table_ident: &'a TableIdent,
+    /// Metadata file being registered.
+    registered_metadata: &'a TableMetadata,
+}
+
+/// Authorizes dropping the table that a register with `overwrite` replaces, if one exists.
+/// Files of the replaced table are kept.
+///
+/// Replacing an active table with another table (a different table UUID) in a soft-deletion
+/// warehouse skips the window, so the drop is recorded as forced and needs
+/// `ModifySoftDeletion`. Registering a metadata file of the same table keeps the table id; its
+/// drop is recorded with `force: false` and needs no `ModifySoftDeletion`. The caller deletes
+/// the row with `force = false`, so protection still holds.
+async fn authorize_register_overwrite<C: CatalogStore, A: Authorizer>(
+    authorizer: &A,
+    request_metadata: ArcRequestMetadata,
+    dispatcher: EventDispatcher,
+    target: RegisterOverwriteTarget<'_>,
+    catalog_state: C::State,
+) -> Result<Option<TableInfo>> {
+    let RegisterOverwriteTarget {
+        warehouse,
+        namespace,
+        table_ident,
+        registered_metadata,
+    } = target;
+    let previous_table_info = C::get_table_info(
+        warehouse.warehouse_id,
+        table_ident.clone(),
+        TabularListFlags::active_and_staged(),
+        catalog_state,
+    )
+    .await;
+    let Ok(Some(previous_table)) = &previous_table_info else {
+        return Ok(None);
+    };
+    let same_table = previous_table.table_id() == TableId::from(registered_metadata.uuid());
+    let skips_window =
+        warehouse.tabular_delete_profile.is_soft() && !previous_table.is_staged() && !same_table;
+
+    let mut event_ctx = APIEventContext::for_table(
+        request_metadata,
+        dispatcher,
+        warehouse.warehouse_id,
+        table_ident.clone(),
+        CatalogTableAction::Drop {
+            force: skips_window,
+            purge: false,
+        },
+    );
+    event_ctx.push_extra_context(HandlerContextKey::InvokedBy(
+        InvokingOperation::RegisterTableOverwrite.as_wire(),
+    ));
+    let authz_result = authorizer
+        .require_table_action(
+            event_ctx.request_metadata(),
+            warehouse,
+            namespace,
+            event_ctx.user_provided_entity().table.clone(),
+            previous_table_info,
+            event_ctx.action().clone(),
+        )
+        .await;
+    let (event_ctx, previous_table) = event_ctx.emit_authz(authz_result)?;
+    if skips_window {
+        authorize_soft_deletion_skip(
+            authorizer,
+            event_ctx.request_metadata_arc(),
+            event_ctx.dispatcher().clone(),
+            warehouse,
+        )
+        .await?;
+    }
+
+    tracing::debug!(
+        "Register Table: Dropping existing table '{table_ident}' of warehouse '{}' for overwrite operation",
+        warehouse.name
+    );
+    Ok(Some(previous_table))
+}
+
 async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     table: TableIdent,
@@ -1202,7 +1294,8 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     )?;
 
     // 8. Resolve owners and assign the current user for each tabular in the chain.
-    //    DEFINER views switch current_user to the view owner for subsequent tabulars.
+    //    A DEFINER view switches current_user to its owner for the following tabulars,
+    //    an INVOKER view switches it back to the request actor.
     let token_idp_id = request_metadata
         .authentication()
         .and_then(|a| a.subject().idp_id())
@@ -1317,13 +1410,10 @@ pub(crate) fn interpret_authz_results_for_load_table(
         );
     }
 
-    let storage_permissions = if can_write.unwrap_or(false) {
-        Some(StoragePermissions::ReadWriteDelete)
-    } else if can_read.unwrap_or(false) {
-        Some(StoragePermissions::Read)
-    } else {
-        None
-    };
+    let storage_permissions = StoragePermissions::from_data_privileges(
+        can_read.unwrap_or(false),
+        can_write.unwrap_or(false),
+    );
 
     Ok((table_info, storage_permissions))
 }
@@ -1658,13 +1748,7 @@ async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
     let mut required = Vec::with_capacity(table_infos_with_actions.len());
     for (info, action) in table_infos_with_actions.values() {
         let namespace = require_namespace_for_tabular(&namespaces, &**info)?;
-        required.push((namespace, &**info, (**action).clone()));
-        // A commit to a staged table finishes the table's creation, so it also needs the
-        // permission to make a commit of any kind. The audit record lists the actions of
-        // the request.
-        if info.is_staged() {
-            required.push((namespace, &**info, CatalogTableAction::any_commit()));
-        }
+        required.push((namespace, &**info, (**action).clone().on_table(info)));
     }
     authorizer
         .require_table_actions(request_metadata, &warehouse, &namespaces, &required)
@@ -2881,8 +2965,9 @@ mod unit_tests {
         assert_eq!(perms, Some(StoragePermissions::Read));
     }
 
+    /// Write credentials can read, so write without read vends nothing.
     #[test]
-    fn test_interpret_authz_results_table_no_read_no_write() {
+    fn test_interpret_authz_results_table_no_read() {
         let warehouse_id = WarehouseId::new_random();
         let table = TableInfo::new_random(warehouse_id);
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
@@ -2893,17 +2978,19 @@ mod unit_tests {
             &tabulars,
             &table.tabular_ident,
         );
-        let results = LoadChainDecisions::from(vec![true, false, false]);
+        for can_write in [false, true] {
+            let results = LoadChainDecisions::from(vec![true, false, can_write]);
 
-        let (_, perms) = interpret_authz_results_for_load_table(
-            &actions,
-            &results,
-            warehouse_id,
-            &table.tabular_ident,
-        )
-        .unwrap();
+            let (_, perms) = interpret_authz_results_for_load_table(
+                &actions,
+                &results,
+                warehouse_id,
+                &table.tabular_ident,
+            )
+            .unwrap();
 
-        assert_eq!(perms, None);
+            assert_eq!(perms, None, "can_write: {can_write}");
+        }
     }
 
     #[test]

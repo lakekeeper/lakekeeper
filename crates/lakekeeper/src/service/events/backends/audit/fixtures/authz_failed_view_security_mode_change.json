@@ -1,0 +1,57 @@
+{
+  "event_source": "audit",
+  "audit_format": "1.1",
+  "record_type": "authorization",
+  "emitters": {
+    "lakekeeper": "1.1"
+  },
+  "event_id": "019b76da-a800-7000-8000-000000000000",
+  "request_id": "019684ff-0000-7000-8000-000000000005",
+  "time": "2026-01-01T00:00:00.000000Z",
+  "actions": [
+    {
+      "action_name": "change_security_mode"
+    }
+  ],
+  "entities": [
+    {
+      "entity_type": "view",
+      "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+      "namespace": "sales",
+      "view": "orders_by_day"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice"
+  },
+  "privilege_source": "authorizer",
+  "user_agent": "Apache-Spark/3.5.1 (Scala/2.12)",
+  "authorizations": [
+    {
+      "for_principal": {
+        "user": "oidc~bob"
+      },
+      "action": {
+        "action_name": "change_security_mode"
+      },
+      "entity": {
+        "entity_type": "view",
+        "warehouse_id": "019684ff-0000-7000-8000-000000000001",
+        "namespace": "sales",
+        "view": "orders_by_day"
+      },
+      "allowed": false,
+      "determined_by": []
+    }
+  ],
+  "decision": "denied",
+  "failure_reason": "action_forbidden",
+  "error": {
+    "type": "SecurityModeChangeForbidden",
+    "code": 403,
+    "message": "This commit makes query engines run the view as the user in view property 'trino.run-as-owner' ('bob'), where they ran it as the calling user. Switching a view between these two needs the view action 'change_security_mode' for the identity that sends the commit and for the new owner. Lakekeeper checks the new owner as user 'oidc~bob', who does not have it. Keep the security mode of the view, or give 'oidc~bob' this permission on the view. In Trino, keep it with SECURITY INVOKER: SECURITY DEFINER is the default.",
+    "stack": [],
+    "error_id": "019684ff-0000-7000-8000-000000000006"
+  }
+}

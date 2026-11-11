@@ -156,13 +156,18 @@ require_table_replace_access(
 }
 
 # Check that `user` may replace the view called `view_name`, if one exists.
-# Holds if no live view has this name, or if the user may commit to it.
-# Replacing a view commits a new definition to it.
+# Holds if no live view has this name, or if Lakekeeper allows the replace.
+# Replacing a view commits a new definition to it. Trino does not say whether
+# the new definition keeps the security mode, so if the view runs as another
+# user, Lakekeeper also asks whether `user` may switch its security mode. A
+# server that does not know this check answers with an error, and the check
+# denies.
 require_view_replace_access(lakekeeper_id, warehouse_name, namespace_name, view_name, user) if {
-	_require_tabular_access_if_exists(
-		lakekeeper_id, warehouse_name, namespace_name, view_name, user, "view",
-		{"action": "commit"},
-	)
+	_require_check_if_exists(lakekeeper_id, user, "view", {"view-replace": {
+		"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+		"namespace": namespace_name,
+		"table": view_name,
+	}})
 }
 
 # Check that `user` may select from the view called `view_name`, if one exists.
@@ -182,18 +187,24 @@ require_view_select_access_if_exists(lakekeeper_id, warehouse_name, namespace_na
 # at that time. For a read, Trino loads a view while it analyzes the query and
 # asks for the check afterwards; a view dropped in between counts as absent.
 _require_tabular_access_if_exists(lakekeeper_id, warehouse_name, namespace_name, name, user, kind, action) if {
+	_require_check_if_exists(lakekeeper_id, user, kind, {kind: {
+		"action": action,
+		"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+		"namespace": namespace_name,
+		"table": name,
+	}})
+}
+
+# Holds if Lakekeeper allows `operation` for `user`, or if no live `kind`
+# (table or view) has the name that `operation` names.
+_require_check_if_exists(lakekeeper_id, user, kind, operation) if {
 	response := authenticated_http_send(
 		lakekeeper_id,
 		"POST", "/management/v1/action/batch-check",
 		{
 			"error-on-not-found": true,
 			"checks": [{
-				"operation": {kind: {
-					"action": action,
-					"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
-					"namespace": namespace_name,
-					"table": name,
-				}},
+				"operation": operation,
 				"identity": {"user": user},
 			}],
 		},
@@ -340,6 +351,21 @@ require_view_access(lakekeeper_id, warehouse_name, namespace_name, view_name, us
 	_single_check_allowed(lakekeeper_id, {
 		"operation": {"view": {
 			"action": action,
+			"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+			"namespace": namespace_name,
+			"table": view_name,
+		}},
+		"identity": {"user": user},
+	})
+}
+
+# Check that `user`, as the owner of a DEFINER view, may read the view called
+# `view_name` inside the DEFINER view's query. Lakekeeper allows it only if
+# `view_name` has an owner property of its own and `user` may select it. A server
+# that does not know this check answers with an error, and the check denies.
+require_view_in_definer_view_access(lakekeeper_id, warehouse_name, namespace_name, view_name, user) if {
+	_single_check_allowed(lakekeeper_id, {
+		"operation": {"view-in-definer-view": {
 			"warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
 			"namespace": namespace_name,
 			"table": view_name,

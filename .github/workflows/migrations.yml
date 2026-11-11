@@ -1,11 +1,8 @@
 name: Test Lakekeeper migrations
 
+# Called by integration.yml, which builds the `lakekeeper-image` artifact.
 on:
-  push:
-    branches:
-      - main
-      - "rel-*"
-  pull_request:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,28 +10,7 @@ env:
 permissions:
   contents: read  # Needed to checkout code
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
-
 jobs:
-  docker:
-    uses: ./.github/workflows/docker_build.yml
-    with:
-      platform: 'amd64'
-      dockerfile: 'docker/full.Dockerfile'
-      image_name: 'lakekeeper-local'
-
-  # Depends on all actions that are required for a "successful" CI run.
-  tests-pass:
-    name: all migration tests pass
-    runs-on: ubuntu-latest
-    needs:
-      - docker
-      - test-migration
-    steps:
-      - run: exit 0
-
   define-initial-versions:
     runs-on: ubuntu-latest
     outputs:
@@ -61,7 +37,6 @@ jobs:
           - soft-delete-1sec
           - soft-delete-1week
     needs:
-      - docker
       - define-initial-versions
     runs-on: ubuntu-latest
     steps:

@@ -20,9 +20,9 @@
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
 //! `entity` would misread; and the operational family, through the `grant_created` records
 //! of a grant change. Views are reached through the owner property rules, refused before
-//! and after authorization. Not yet reached, cheapest to add first: table commits; the
-//! plural `actions`/`entities` form, since every call here checks one action against one
-//! entity; per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
+//! and after authorization. A storage profile change records two actions on one warehouse.
+//! Not yet reached, cheapest to add first: table commits; several entities in one record;
+//! per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
 //! and a real authorizer with an authenticated actor (`AllowAllAuthorizer` and
 //! `random_request_metadata()` reach neither) — the OpenFGA authorizer is the cheap way in,
 //! because CI already provisions it.
@@ -61,9 +61,16 @@ use lakekeeper::{
             namespace::NamespaceService as _, tables::TablesService as _, views::ViewService as _,
         },
         management::v1::{
-            check::{RoleAssignee, UserOrRole},
+            check::{
+                CatalogActionCheckItem, CatalogActionCheckOperation,
+                CatalogActionsBatchCheckRequest, RoleAssignee, TabularIdentOrUuid, UserOrRole,
+                check_internal,
+            },
             grant::{ApplyGrantsRequest, GrantEntry, ListGrantsQuery, Service as _},
             role::Service as _,
+            warehouse::{
+                Service as _, UpdateWarehouseCredentialRequest, UpdateWarehouseStorageRequest,
+            },
         },
     },
     server::CatalogServer,
@@ -86,7 +93,7 @@ use lakekeeper_integration_tests::{
 /// the test watches for [`SETTLE_WINDOW`] and warns if more turn up, but a record emitted
 /// later than that is invisible to it. So the constant is a reliable floor and only a
 /// best-effort ceiling.
-const EXPECTED_RECORDS: usize = 25;
+const EXPECTED_RECORDS: usize = 33;
 
 /// How long to wait for [`EXPECTED_RECORDS`] before failing.
 ///
@@ -453,6 +460,51 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await;
 
+    // Replacing the view, as the OPA bridge asks for Trino, for a user other than its owner:
+    // one `introspect_permissions` record with one decision, recorded as `commit` (1). Then
+    // the trusted engine switches the view to run as the caller: the commit's record and the
+    // `change_security_mode` record of the identity that sends it (2). Switching it back to
+    // run as its owner adds the owner's own `change_security_mode` record (3).
+    let _ = check_internal(
+        ctx.clone(),
+        random_request_metadata(),
+        CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("replace".to_string()),
+                identity: Some(UserOrRole::User(UserId::new_unchecked("oidc", "bob"))),
+                operation: CatalogActionCheckOperation::ViewReplace {
+                    view: TabularIdentOrUuid::Name {
+                        namespace: namespace.clone(),
+                        table: "definer_view".to_string(),
+                        warehouse_id: warehouse_response.warehouse_id,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        },
+    )
+    .await;
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {"action": "remove-properties", "removals": ["trino.run-as-owner"]}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        trino_engine_request(),
+    )
+    .await;
+    let _ = CatalogServer::commit_view(
+        definer_view(),
+        view_commit(serde_json::json!([
+            {"action": "set-properties", "updates": {"trino.run-as-owner": "bob"}}
+        ])),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        trino_engine_request(),
+    )
+    .await;
+
     // A request that writes several records under one `request_id`: a grant change of two
     // grants writes its `apply_grants` record plus one `grant_created` record per grant. The
     // `event_id` rule below needs it.
@@ -483,6 +535,28 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     )
     .await
     .expect("granting to both roles");
+
+    // Replacing the storage credential records `update_storage_credential`. Changing the
+    // storage profile also replaces the credential, so its record carries both actions.
+    let _ = lakekeeper::api::management::v1::ApiServer::update_storage_credential(
+        warehouse_response.warehouse_id,
+        UpdateWarehouseCredentialRequest {
+            new_storage_credential: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    let _ = lakekeeper::api::management::v1::ApiServer::update_storage(
+        warehouse_response.warehouse_id,
+        UpdateWarehouseStorageRequest {
+            storage_profile: memory_io_profile(),
+            storage_credential: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
 
     // Finally a lookup of something absent, so a genuine denial is in the corpus too.
     let _ = CatalogServer::namespace_exists(

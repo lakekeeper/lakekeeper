@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use http::StatusCode;
 use iceberg::TableIdent;
+use lakekeeper_io::Location;
 use uuid::Uuid;
 
 use crate::{
@@ -14,21 +15,24 @@ use crate::{
         endpoints::EndpointFlat,
         iceberg::v1::namespace::NamespaceParameters,
     },
-    request_metadata::RequestMetadata,
+    request_metadata::{ArcRequestMetadata, RequestMetadata},
     server::{
-        require_warehouse_id, tables::validate_new_tabular_name,
-        tabular::determine_tabular_location,
+        maybe_get_secret, require_warehouse_id,
+        tables::validate_new_tabular_name,
+        tabular::{claim_idempotency_key, determine_tabular_location, location_is_empty},
     },
     service::{
         COMMIT_STATE_UNKNOWN_ERROR_TYPE, CachePolicy, CatalogGenericTableOps,
-        CatalogIdempotencyOps, CatalogStore, GenericTableCreation, GenericTableId, Result,
-        SecretStore, State, TabularId, Transaction, WarehouseId,
+        CatalogIdempotencyOps, CatalogStore, CatalogTabularOps, GenericTableAlreadyExists,
+        GenericTableCreation, GenericTableId, ResolvedWarehouse, Result, SecretStore, State,
+        TabularId, TabularIdentBorrowed, TabularListFlags, Transaction, WarehouseId,
         authz::{
-            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
-            emit_bootstrap_grants_async, write_bootstrap_grants,
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
+            GrantResource, emit_bootstrap_grants_async, require_file_takeover,
+            write_bootstrap_grants,
         },
         events::{
-            APIEventContext,
+            APIEventContext, EventDispatcher,
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
         idempotency::IdempotencyInfo,
@@ -203,6 +207,60 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
     }
 }
 
+/// Creating on a location that already holds files brings them into the catalog, as registering
+/// a table does, so it needs `RegisterTable` on the warehouse. Asked before the write
+/// transaction opens, because an authorizer may read the catalog.
+async fn authorize_location_with_files<C: CatalogStore, A: Authorizer, S: SecretStore>(
+    state: &ApiContext<State<A, C, S>>,
+    (request_metadata, dispatcher): (ArcRequestMetadata, EventDispatcher),
+    warehouse: &ResolvedWarehouse,
+    location: &Location,
+    table_ident: &TableIdent,
+) -> Result<()> {
+    let storage_secret =
+        maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
+    let file_io = warehouse
+        .storage_profile
+        .file_io(storage_secret.as_deref())
+        .await?;
+    if location_is_empty(&file_io, location).await? {
+        return Ok(());
+    }
+    let event_ctx = APIEventContext::for_warehouse(
+        request_metadata,
+        dispatcher,
+        warehouse.warehouse_id,
+        CatalogWarehouseAction::RegisterTable,
+    );
+    let authz_result = require_file_takeover(
+        &state.v1_state.authz,
+        event_ctx.request_metadata(),
+        warehouse,
+    )
+    .await;
+    let Err(refusal) = event_ctx.emit_authz(authz_result) else {
+        return Ok(());
+    };
+    // The insert refuses a name in use with 409 whatever the decision, so a re-create gets that.
+    let same_name = [
+        TabularIdentBorrowed::Table(table_ident),
+        TabularIdentBorrowed::View(table_ident),
+        TabularIdentBorrowed::GenericTable(table_ident),
+    ];
+    let name_in_use = C::get_tabular_infos_by_ident(
+        warehouse.warehouse_id,
+        &same_name,
+        TabularListFlags::active_and_staged(),
+        state.v1_state.catalog.clone(),
+    )
+    .await
+    .is_ok_and(|found| !found.is_empty());
+    if name_in_use {
+        return Err(ErrorModel::from(GenericTableAlreadyExists::new()).into());
+    }
+    Err(refusal.into())
+}
+
 #[allow(clippy::too_many_lines)]
 async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     namespace: &iceberg::NamespaceIdent,
@@ -269,6 +327,17 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
         &table_ident,
         &warehouse.storage_profile,
     )?;
+    authorize_location_with_files(
+        state,
+        (
+            event_ctx.request_metadata_arc(),
+            event_ctx.dispatcher().clone(),
+        ),
+        &warehouse,
+        &location,
+        &table_ident,
+    )
+    .await?;
 
     let creation = GenericTableCreation {
         generic_table_id,
@@ -308,26 +377,14 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
     )
     .await?;
 
-    // Insert idempotency key in the same transaction.
-    if let Some(key) = idempotency_key
-        && !C::try_insert_idempotency_key(
-            warehouse_id,
-            &IdempotencyInfo::builder()
-                .key(*key)
-                .endpoint(EndpointFlat::GenericTableV1CreateGenericTable)
-                .http_status(StatusCode::OK)
-                .build(),
-            t.transaction(),
-        )
-        .await?
-    {
-        t.rollback()
-            .await
-            .inspect_err(|e| tracing::warn!("Rollback after idempotency conflict: {e}"))
-            .ok();
-        return Err(ErrorModel::request_in_progress().into());
-    }
-
+    let idempotency = idempotency_key.map(|key| {
+        IdempotencyInfo::builder()
+            .key(*key)
+            .endpoint(EndpointFlat::GenericTableV1CreateGenericTable)
+            .http_status(StatusCode::OK)
+            .build()
+    });
+    let t = claim_idempotency_key::<C>(t, warehouse_id, idempotency.as_ref()).await?;
     t.commit().await?;
 
     // Held across the create event below, which consumes the context.

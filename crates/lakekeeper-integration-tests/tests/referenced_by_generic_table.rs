@@ -22,7 +22,8 @@ use lakekeeper::{
         AuthZViewInfo as _, CatalogGenericTableOps as _, CatalogNamespaceOps as _, CatalogStore,
         CatalogTabularOps as _, State, TabularListFlags, Transaction as _, UserId,
         authz::{
-            AllowAllAuthorizer, AuthZCannotSeeGenericTable, Authorizer, UserOrRole,
+            AllowAllAuthorizer, AuthZCannotSeeGenericTable, Authorizer, CatalogGenericTableAction,
+            UserOrRole,
             tests::{HidingAuthorizer, RecordedTabularCheck},
         },
         events::AuthorizationFailureSource as _,
@@ -485,6 +486,29 @@ async fn test_load_generic_table_credentials_hidden_generic_table_denied(pool: P
     );
 }
 
+/// Write credentials can read, so a caller allowed to write but not to read gets none.
+#[sqlx::test]
+async fn test_load_generic_table_credentials_need_read_even_with_write(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    authz.block_action(&format!(
+        "generic_table:{:?}",
+        CatalogGenericTableAction::ReadData
+    ));
+
+    let err = load_credentials(&ctx, &wh, "my_gt", None, random_request_metadata())
+        .await
+        .expect_err("write without read must vend nothing");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchGenericTableException", "{err:?}");
+}
+
 // ---- DEFINER delegation ----
 
 /// User A cannot access the generic table directly, but succeeds through a
@@ -558,9 +582,9 @@ async fn test_definer_fails_when_owner_loses_generic_table_access(pool: PgPool) 
 ///
 /// Authorization checks:
 ///   View1: as `User_A`
-///   View2: as B (DEFINER switches)
-///   View3: as B (INVOKER inherits)
-///   GT:    as C (DEFINER switches at View3)
+///   View2: as B (View1 runs as B)
+///   View3: as `User_A` (View2 runs as the caller)
+///   GT:    as C (View3 runs as C)
 ///
 /// We hide the GT for `user_a` AND `owner_b` — only `owner_c` (final DEFINER owner)
 /// must be used for the GT check.
@@ -877,5 +901,59 @@ async fn test_load_generic_table_credentials_referenced_by_itself_is_rejected(po
     assert_eq!(
         err.error.message, "A referenced-by chain must not contain the object being loaded",
         "{err:?}"
+    );
+}
+
+/// DEFINER(`owner_b`) → INVOKER → generic table: the generic table is checked as
+/// `user_a`, so `owner_b`'s access does not reach it through the INVOKER view.
+#[sqlx::test]
+async fn test_generic_table_credentials_below_invoker_view_in_definer_chain_is_checked_as_caller(
+    pool: PgPool,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_b", "owner_b").await;
+    create_invoker_view(&ctx, &wh, "invoker").await;
+    let definer_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_b")).await;
+    let invoker_key = view_object_key(&ctx, whi, &table_ident("ns", "invoker")).await;
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.hide_for_user(&user("user_a"), &gt_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![
+            table_ident("ns", "definer_b"),
+            table_ident("ns", "invoker"),
+        ]),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    let expected = AuthZCannotSeeGenericTable::new_forbidden(whi, table_ident("ns", "my_gt"))
+        .with_delegated_execution(false)
+        .into_error_model();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchGenericTableException", "{err:?}");
+    assert_eq!(err.error.message, expected.message, "{err:?}");
+    assert_eq!(err.error.stack, expected.stack, "{err:?}");
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![
+            checks(&definer_key, &["GetMetadata", "Select"], None),
+            checks(&invoker_key, &["GetMetadata", "Select"], Some("owner_b")),
+            checks(&gt_key, &["GetMetadata", "ReadData", "WriteData"], None),
+        ]
     );
 }

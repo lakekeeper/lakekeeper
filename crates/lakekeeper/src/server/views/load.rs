@@ -1,8 +1,7 @@
-use std::{collections::HashMap, str::FromStr as _, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::LoadViewResult;
-use lakekeeper_io::Location;
 
 use crate::{
     CONFIG, WarehouseId,
@@ -12,6 +11,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
+        labels::load_labels,
         require_warehouse_id,
         tables::{
             LoadChainDecisions, add_namespace_to_tabulars_for_authorize_load_tabular,
@@ -26,16 +26,15 @@ use crate::{
         },
     },
     service::{
-        ArcResolvedWarehouse, AuthZViewInfo as _, CatalogStore, CatalogViewOps,
-        InternalParseLocationError, Result, SecretStore, State, TabularIdentBorrowed,
-        TabularListFlags, Transaction, ViewInfo,
+        ArcResolvedWarehouse, AuthZViewInfo as _, CatalogStore, CatalogViewOps, Result,
+        SecretStore, State, TabularId, TabularIdentBorrowed, TabularListFlags, Transaction,
+        ViewInfo,
         authz::{
             ActionOnTableOrView, AuthZCannotSeeView, AuthZError, AuthorizationCountMismatch,
             Authorizer, AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CatalogViewAction,
         },
         build_namespace_hierarchy,
         events::{APIEventContext, context::ResolvedView},
-        storage::StoragePermissions,
     },
 };
 
@@ -45,7 +44,6 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
-    let data_access = request.data_access;
     // ------------------- VALIDATIONS -------------------
     let ViewParameters { prefix, view } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -84,8 +82,7 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         request.referenced_by.as_deref(),
     )
     .await;
-    let (event_ctx, (warehouse, view_info, storage_permissions)) =
-        event_ctx.emit_authz(authz_result)?;
+    let (event_ctx, (warehouse, view_info)) = event_ctx.emit_authz(authz_result)?;
 
     let event_ctx = event_ctx.resolve(ResolvedView {
         warehouse,
@@ -94,39 +91,17 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
 
     let view_id = event_ctx.resolved().view.view_id();
     // ------------------- BUSINESS LOGIC -------------------
+    // Read before the view transaction opens, so no second connection is held
+    // alongside it.
+    let labels = load_labels::<C>(
+        warehouse_id,
+        TabularId::View(view_id),
+        catalog_state.clone(),
+    )
+    .await?;
     let mut t = C::Transaction::begin_read(catalog_state).await?;
     let view = C::load_view(warehouse_id, view_id, false, t.transaction()).await?;
     t.commit().await?;
-
-    let view_location =
-        Location::from_str(view.metadata.location()).map_err(InternalParseLocationError::from)?;
-
-    let warehouse = &event_ctx.resolved().warehouse;
-    let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
-        Some(
-            state
-                .v1_state
-                .secrets
-                .require_storage_secret_by_id(secret_id)
-                .await?
-                .secret,
-        )
-    } else {
-        None
-    };
-    let storage_secret_ref = storage_secret.as_deref();
-
-    let access = warehouse
-        .storage_profile
-        .generate_table_config(
-            data_access,
-            storage_secret_ref,
-            &view_location,
-            storage_permissions.unwrap_or(StoragePermissions::Read),
-            &request_metadata,
-            &*event_ctx.resolved().view,
-        )
-        .await?;
 
     let metadata_ref = view.metadata;
     let metadata_location_ref = Arc::new(view.metadata_location);
@@ -136,7 +111,9 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     let load_table_result = LoadViewResult {
         metadata_location: metadata_location_ref.to_string(),
         metadata: metadata_ref,
-        config: Some(access.config.into()),
+        // Views carry no storage access: engines load the tables behind a view with loadTable.
+        config: None,
+        labels,
     };
 
     Ok(load_table_result)
@@ -151,7 +128,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     authorizer: &A,
     state: C::State,
     referenced_by: Option<&[ReferencingView]>,
-) -> Result<(ArcResolvedWarehouse, ViewInfo, Option<StoragePermissions>), AuthZError> {
+) -> Result<(ArcResolvedWarehouse, ViewInfo), AuthZError> {
     let engines = request_metadata.engines();
     let list_flags = TabularListFlags::active();
     let referenced_by = effective_referenced_by(referenced_by, engines);
@@ -237,10 +214,10 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     .await?;
 
     // 10. Interpret authorization results
-    let (view_info, storage_permissions) =
+    let view_info =
         interpret_authz_results_for_load_view(&actions, &authz_results, warehouse_id, view)?;
 
-    Ok((warehouse, view_info, storage_permissions))
+    Ok((warehouse, view_info))
 }
 
 fn interpret_authz_results_for_load_view(
@@ -248,7 +225,7 @@ fn interpret_authz_results_for_load_view(
     authz_results: &LoadChainDecisions,
     warehouse_id: WarehouseId,
     view: &TableIdent,
-) -> Result<(ViewInfo, Option<StoragePermissions>), AuthZError> {
+) -> Result<ViewInfo, AuthZError> {
     if actions.len() != authz_results.len() {
         return Err(
             BackendUnavailableOrCountMismatch::from(AuthorizationCountMismatch::new(
@@ -318,6 +295,5 @@ fn interpret_authz_results_for_load_view(
         );
     }
 
-    // Views loaded via loadView always get read storage permissions
-    Ok((view_info, Some(StoragePermissions::Read)))
+    Ok(view_info)
 }
