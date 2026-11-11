@@ -91,11 +91,46 @@ pub(crate) fn ensure_schema_content_stable<'a>(
     Ok(())
 }
 
+/// Rejects table updates references file paths that are malformed or fail [`is_safe_strict_sublocation`].
+fn check_file_in_table_location(update: &TableUpdate, table_location: &Location) -> Result<()> {
+    let (kind, path) = match update {
+        TableUpdate::AddSnapshot { snapshot } => {
+            ("manifest list", snapshot.manifest_list())
+        }
+        TableUpdate::SetStatistics { statistics } => {
+            ("statistics file", statistics.statistics_path.as_str())
+        }
+        TableUpdate::SetPartitionStatistics { partition_statistics } => {
+            ("statistics file", partition_statistics.statistics_path.as_str())
+        }
+        _ => return Ok(()),
+    };
+
+    let file_location = Location::parse_value(path).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Failed to parse {kind} path '{path}' as location"),
+            "FailedToParseFileLocation",
+            Some(Box::new(e)),
+        )
+    })?;
+    if !is_safe_strict_sublocation(&file_location, table_location) {
+        return Err(ErrorModel::bad_request(
+            format!(
+                "Cannot set {kind} whose file '{file_location}' \
+                 is not inside the table location: '{table_location}'"
+            ),
+            "FileOutsideTableLocation",
+            None,
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Apply the commits to table metadata.
 ///
 /// `now_ms` is the server clock, read once per commit attempt; it becomes the new
 /// `last-updated-ms`.
-#[allow(clippy::too_many_lines)]
 pub(super) fn apply_commit(
     metadata: TableMetadata,
     metadata_location: Option<&Location>,
@@ -187,27 +222,10 @@ pub(super) fn apply_commit(
                 check_immutable_properties_not_removed(&previous_immutable_properties, removals)?;
                 builder = TableUpdate::apply(update, builder).map_err(update_error)?;
             }
-            TableUpdate::AddSnapshot { snapshot } => {
-                check_manifest_list_not_outside_table_location(
-                    snapshot.manifest_list(),
-                    &previous_location,
-                )?;
-                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
-            }
-            TableUpdate::SetStatistics { statistics } => {
-                check_statistics_path_not_outside_table_location(
-                    &statistics.statistics_path,
-                    &previous_location,
-                )?;
-                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
-            }
-            TableUpdate::SetPartitionStatistics {
-                partition_statistics,
-            } => {
-                check_statistics_path_not_outside_table_location(
-                    &partition_statistics.statistics_path,
-                    &previous_location,
-                )?;
+            TableUpdate::AddSnapshot { .. }
+            | TableUpdate::SetStatistics { .. }
+            | TableUpdate::SetPartitionStatistics { .. } => {
+                check_file_in_table_location(&update, &previous_location)?;
                 builder = TableUpdate::apply(update, builder).map_err(update_error)?;
             }
             _ => {
@@ -229,54 +247,6 @@ pub(super) fn apply_commit(
         build_result.metadata.last_updated_ms()
     );
     Ok(build_result)
-}
-
-/// Rejects statistics file paths that are malformed or fail [`is_safe_strict_sublocation`].
-fn check_statistics_path_not_outside_table_location(
-    statistics_path: &str,
-    table_location: &Location,
-) -> Result<()> {
-    let statistics_location = Location::parse_value(statistics_path).map_err(|e| {
-        ErrorModel::bad_request(
-            format!(
-                "Failed to parse provided statistics file path '{statistics_path}' as location"
-            ),
-            "FailedToParseStatisticsFileLocation",
-            Some(Box::new(e)),
-        )
-    })?;
-    if !is_safe_strict_sublocation(&statistics_location, table_location) {
-        let msg = format!(
-            "Cannot set statistics whose file '{statistics_path}' \
-             is not inside the table location: '{table_location}'"
-        );
-        return Err(
-            ErrorModel::bad_request(msg, "StatisticsFileOutsideTableLocation", None).into(),
-        );
-    }
-    Ok(())
-}
-
-/// Rejects manifest list paths that are malformed or fail [`is_safe_strict_sublocation`].
-fn check_manifest_list_not_outside_table_location(
-    manifest_list_path: &str,
-    table_location: &Location,
-) -> Result<()> {
-    let manifest_list_location = Location::parse_value(manifest_list_path).map_err(|e| {
-        ErrorModel::bad_request(
-            format!("Failed to parse manifest list file path '{manifest_list_path}' as location"),
-            "FailedToParseManifestsListFileLocation",
-            Some(Box::new(e)),
-        )
-    })?;
-    if !is_safe_strict_sublocation(&manifest_list_location, table_location) {
-        let msg = format!(
-            "Cannot add snapshots whose manifest list '{manifest_list_path}' \
-             is not inside the table location: '{table_location}'"
-        );
-        return Err(ErrorModel::bad_request(msg, "ManifestListOutsideTableLocation", None).into());
-    }
-    Ok(())
 }
 
 /// Answer an update the builder refused.
@@ -665,9 +635,9 @@ mod tests {
             assert_eq!(
                 results,
                 [
-                    Err((400, "ManifestListOutsideTableLocation".to_string())),
-                    Err((400, "StatisticsFileOutsideTableLocation".to_string())),
-                    Err((400, "StatisticsFileOutsideTableLocation".to_string())),
+                    Err((400, "FileOutsideTableLocation".to_string())),
+                    Err((400, "FileOutsideTableLocation".to_string())),
+                    Err((400, "FileOutsideTableLocation".to_string())),
                 ],
                 "file path: {path}; results: add-snapshot, set-statistics, set-partition-statistics",
             );
