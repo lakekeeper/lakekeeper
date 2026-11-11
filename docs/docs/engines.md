@@ -6,7 +6,7 @@ description: "Connect Spark, Trino, StarRocks, DuckDB, Athena, Flink, PyIceberg 
 
 In this page we document how query engines can be configured to connect to Lakekeeper. Please also check the documentation of your query engine to obtain additional information. All Query engines that support the Apache Iceberg REST Catalog (IRC) also support Lakekeeper.
 
-The page also covers tools that load data into Lakekeeper: [OLake Go](https://olake.io/) replicates databases with change data capture, and [RisingWave](#risingwave) and [Apache Fluss](#apache-fluss) write streaming data into Iceberg tables.
+The page also covers tools that load data into Lakekeeper: [OLake Go](#olake) replicates databases with change data capture, and [RisingWave](#risingwave) and [Apache Fluss](#apache-fluss) write streaming data into Iceberg tables.
 
 If Lakekeeper Authorization is enabled, Lakekeeper enforces permissions based on the `sub` field in the received tokens. For query engines used by a single user, the user should use its own credentials to log-in to Lakekeeper.
 
@@ -463,9 +463,9 @@ The following docker compose examples are available for starrocks:
     -- You can also create tables, INSERT INTO them, and query them just like you would any other SQL database.
     ```
 
-## [OLake Go](https://olake.io/) { #olake .engine data-icon="olake" }
+## OLake Go { #olake .engine data-icon="olake" }
 
-[OLake Go](https://olake.io/) is a high-performance, open-source EL (Extract–Load) platform that bridges operational databases and open lakehouse storage, writing Apache Iceberg tables or Parquet files on Amazon S3, enabling organizations to replicate data at scale with minimal overhead. Supporting Incremental Sync, Change Data Capture (CDC), and stateful, resumable syncs, OLake Go ensures your tables remain fresh, organized, and optimized for analytics. OLake Go has a dedicated `lakekeeper` catalog type. For S3 warehouses with STS enabled, OLake Go uses the credentials that Lakekeeper vends, so it needs no storage credentials of its own.
+[OLake Go](https://olake.io/) is an open-source tool for replicating databases to Apache Iceberg or data lakehouses. OLake Go has a dedicated `lakekeeper` catalog type. For S3 warehouses with STS enabled, OLake Go uses the credentials that Lakekeeper vends, so it needs no storage credentials of its own.
 
 For a hands-on setup, the [OLake Go quickstart](https://olake.io/docs/getting-started/quickstart) starts the OLake UI with Docker Compose.
 
