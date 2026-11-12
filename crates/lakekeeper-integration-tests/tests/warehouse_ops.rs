@@ -1530,15 +1530,13 @@ async fn test_create_managed_warehouse_requires_instance_admin(pool: PgPool) {
 }
 
 /// Every spec-mutating management endpoint enforces the managed-by lock. Drives
-/// all nine against a managed warehouse as a non-admin (whom AllowAll would
+/// all seven against a managed warehouse as a non-admin (whom AllowAll would
 /// otherwise authorize) and asserts each is rejected with `WarehouseManaged`.
 /// Guards against a new mutation endpoint silently skipping the lock — the
 /// `is_spec_mutation` classification and the per-handler guard call must not
 /// drift apart.
 #[sqlx::test]
 async fn test_all_spec_mutations_blocked_on_managed_warehouse(pool: PgPool) {
-    use iceberg::spec::FormatVersion;
-
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1606,29 +1604,6 @@ async fn test_all_spec_mutations_blocked_on_managed_warehouse(pool: PgPool) {
         )
     );
     assert_locked!(
-        "update_warehouse_delete_profile",
-        ApiServer::update_warehouse_delete_profile(
-            warehouse_id,
-            UpdateWarehouseDeleteProfileRequest {
-                delete_profile: TabularDeleteProfile::Hard {},
-            },
-            ctx.clone(),
-            non_admin.clone(),
-        )
-    );
-    assert_locked!(
-        "update_warehouse_format_version_policy",
-        ApiServer::update_warehouse_format_version_policy(
-            warehouse_id,
-            UpdateWarehouseFormatVersionPolicyRequest {
-                allowed_format_versions: vec![FormatVersion::V2],
-                default_format_version: None,
-            },
-            ctx.clone(),
-            non_admin.clone(),
-        )
-    );
-    assert_locked!(
         "deactivate_warehouse",
         ApiServer::deactivate_warehouse(warehouse_id, ctx.clone(), non_admin.clone())
     );
@@ -1659,6 +1634,67 @@ async fn test_all_spec_mutations_blocked_on_managed_warehouse(pool: PgPool) {
             non_admin.clone(),
         )
     );
+}
+
+/// The owners of a managed warehouse keep its soft-deletion settings and its
+/// format-version policy: a non-admin whom the authorizer allows changes both.
+#[sqlx::test]
+async fn test_owners_change_soft_deletion_and_format_versions_on_managed_warehouse(pool: PgPool) {
+    use iceberg::spec::FormatVersion;
+
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse_resp.warehouse_id;
+    let non_admin = RequestMetadata::new_unauthenticated();
+
+    ApiServer::set_warehouse_managed_by(
+        warehouse_id,
+        SetWarehouseManagedByRequest {
+            managed_by: ManagedBy::InstanceAdmin,
+        },
+        ctx.clone(),
+        RequestMetadata::test_instance_admin(UserId::new_unchecked("oidc", "admin")),
+    )
+    .await
+    .unwrap();
+
+    let soft = TabularDeleteProfile::Soft {
+        expiration_seconds: chrono::Duration::seconds(3600),
+    };
+    let updated = ApiServer::update_warehouse_delete_profile(
+        warehouse_id,
+        UpdateWarehouseDeleteProfileRequest {
+            delete_profile: soft,
+        },
+        ctx.clone(),
+        non_admin.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.managed_by, ManagedBy::InstanceAdmin);
+    assert_eq!(updated.delete_profile, soft);
+
+    let updated = ApiServer::update_warehouse_format_version_policy(
+        warehouse_id,
+        UpdateWarehouseFormatVersionPolicyRequest {
+            allowed_format_versions: vec![FormatVersion::V2],
+            default_format_version: Some(FormatVersion::V2),
+        },
+        ctx.clone(),
+        non_admin.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.managed_by, ManagedBy::InstanceAdmin);
+    assert_eq!(updated.allowed_format_versions, vec![FormatVersion::V2]);
+    assert_eq!(updated.default_format_version, Some(FormatVersion::V2));
 }
 
 /// A caller-supplied `warehouse-id` is honoured verbatim, and an omitted one is

@@ -65,6 +65,29 @@ Instance admins do **not** bypass authorization for:
 This split keeps a leaked operator credential from being trivially used
 either to exfiltrate data or to write itself the grants it does not hold.
 
+## Managed Warehouses
+
+A warehouse can be managed by the instance. Then only instance admins can delete it or change its name, status, protection, storage profile or storage credential, even if other users hold grants for them. This suits a provider, or a tool such as a Kubernetes operator or Terraform, that creates warehouses and keeps their configuration in place.
+
+An instance admin creates a managed warehouse with `managed-by` set to `instance-admin`. With the `managed-by` endpoint of the management API, an instance admin marks an existing warehouse as managed, or returns it to its owners with `self-managed`.
+
+In a managed warehouse, only instance admins can:
+
+- delete or rename the warehouse,
+- change its storage profile or storage credential,
+- activate or deactivate it,
+- protect it or remove its protection.
+
+The owners of the warehouse keep everything else through their grants, including:
+
+- the [soft-deletion](./concepts.md#soft-deletion) settings,
+- the allowed and default Iceberg format versions,
+- the task queue configuration,
+- namespaces, tables, views and generic tables,
+- managing grants.
+
+A tool that creates managed warehouses should set the soft-deletion settings and the format versions only when it creates a warehouse, so that later changes by the owners stay in place.
+
 ## Configuration
 
 Set `LAKEKEEPER__INSTANCE_ADMINS` to a **TOML inline array** of user IDs. For
