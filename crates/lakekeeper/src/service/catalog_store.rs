@@ -1219,6 +1219,26 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<GrantSpec>, ListGrantsStoreError>;
 
+    /// The entries of `containers` that have a live object strictly below them on which one
+    /// of `principals` holds one of `privileges` as a direct grant.
+    ///
+    /// Below a project are its warehouses and everything in them; below a warehouse, its
+    /// namespaces and tabulars; below a namespace, its descendant namespaces and the tabulars
+    /// in it and in them. Server, project and tag-definition grants are never below anything.
+    /// A grant on a soft-deleted tabular does not count; staged tables and deactivated
+    /// warehouses count. Entries other than projects, warehouses and namespaces are never in
+    /// the answer.
+    ///
+    /// `principals` must be the effective set, as for `list_grants_on_resources_impl`.
+    /// Privileges are matched by name, never interpreted. Unordered, each entry at most once.
+    /// May not yet see a grant written moments before.
+    async fn list_containers_with_grants_below_impl(
+        principals: &[UserOrRoleId],
+        containers: &[GrantResource],
+        privileges: &[&str],
+        catalog_state: Self::State,
+    ) -> Result<Vec<GrantResource>, ListGrantsStoreError>;
+
     // ---------------- Tag Management ----------------
     async fn create_tag_definition_impl<'a>(
         project_id: &ProjectId,

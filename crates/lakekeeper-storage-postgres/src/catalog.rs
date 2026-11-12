@@ -94,8 +94,9 @@ use super::{
     dbutils::DBErrorHandler,
     grant::{
         SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
-        insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
-        resolve_ceiling, revoke_grant_candidates, select_subtree_grant_candidates,
+        insert_grants_bounded, list_containers_with_grants_below, list_grants,
+        list_grants_in_subtree, list_grants_on_resources, resolve_ceiling, revoke_grant_candidates,
+        select_subtree_grant_candidates,
     },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
@@ -574,6 +575,21 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<Vec<GrantSpec>, ListGrantsStoreError> {
         list_grants_on_resources(principals, resources, &catalog_state.read_pool()).await
+    }
+
+    async fn list_containers_with_grants_below_impl(
+        principals: &[UserOrRoleId],
+        containers: &[GrantResource],
+        privileges: &[&str],
+        catalog_state: Self::State,
+    ) -> Result<Vec<GrantResource>, ListGrantsStoreError> {
+        list_containers_with_grants_below(
+            principals,
+            containers,
+            privileges,
+            &catalog_state.read_pool(),
+        )
+        .await
     }
 
     // ---------------- Tag Management ----------------

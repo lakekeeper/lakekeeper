@@ -3393,11 +3393,10 @@ pub mod tests {
 
     /// Applies the migrations whose version `include` accepts, with sqlx's migrator, which runs
     /// no step after the commit.
-    async fn apply_migrations(pool: &sqlx::PgPool, include: impl Fn(i64) -> bool) {
+    pub(crate) async fn apply_migrations(pool: &sqlx::PgPool, include: impl Fn(i64) -> bool) {
         use sqlx::migrate::Migrate as _;
 
         let migrator = sqlx::migrate!();
-        assert!(migrator.iter().any(|m| m.version == KEY_MIGRATION));
         let mut conn = pool.acquire().await.unwrap();
         conn.ensure_migrations_table("_sqlx_migrations")
             .await
@@ -3408,6 +3407,7 @@ pub mod tests {
     }
 
     async fn migrate_to_before_the_key(pool: &sqlx::PgPool) {
+        assert!(sqlx::migrate!().iter().any(|m| m.version == KEY_MIGRATION));
         apply_migrations(pool, |version| version < KEY_MIGRATION).await;
     }
 
