@@ -1245,15 +1245,12 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::Deactivate
             | CatalogWarehouseAction::Activate
             | CatalogWarehouseAction::Rename
-            | CatalogWarehouseAction::ModifySoftDeletion
-            | CatalogWarehouseAction::SetProtection
-            | CatalogWarehouseAction::SetFormatVersionPolicy => true,
-            // `ModifyTaskQueueConfig` is intentionally NOT locked in v1: it is an
-            // operational knob (retention/expiry tuning) rather than part of the
-            // storage/identity spec an operator reconciles, and its write goes
-            // through a helper with its own transaction. Revisit if operators
-            // begin reconciling task-queue config.
-            CatalogWarehouseAction::ModifyTaskQueueConfig
+            | CatalogWarehouseAction::SetProtection => true,
+            // Soft deletion, format versions and task-queue tuning are the owners' choice.
+            // None of them changes where or how the warehouse stores data.
+            CatalogWarehouseAction::ModifySoftDeletion
+            | CatalogWarehouseAction::SetFormatVersionPolicy
+            | CatalogWarehouseAction::ModifyTaskQueueConfig
             | CatalogWarehouseAction::CreateNamespace { .. }
             | CatalogWarehouseAction::AcceptMovedNamespace { .. }
             | CatalogWarehouseAction::GetMetadata
@@ -3394,14 +3391,15 @@ pub mod tests {
             A::Deactivate,
             A::Activate,
             A::Rename,
-            A::ModifySoftDeletion,
             A::SetProtection,
-            A::SetFormatVersionPolicy,
         ] {
             assert!(a.is_spec_mutation(), "{a:?} should be a spec mutation");
         }
-        // Reads, child-resource, and task-queue tuning are NOT locked.
+        // Reads, child resources, soft deletion, format versions and task-queue tuning
+        // are NOT locked.
         for a in [
+            A::ModifySoftDeletion,
+            A::SetFormatVersionPolicy,
             A::CreateNamespace {
                 name: None,
                 properties: Arc::new(BTreeMap::new()),
