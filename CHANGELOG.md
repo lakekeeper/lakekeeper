@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.15.1](https://github.com/lakekeeper/lakekeeper/compare/v0.15.0...v0.15.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **catalog:** a dropped table keeps its location until its purge has finished ([#2270](https://github.com/lakekeeper/lakekeeper/issues/2270)) ([f66f6a5](https://github.com/lakekeeper/lakekeeper/commit/f66f6a500e762a810088c557bb7242393c5eae85))
+* **catalog:** the next-page token of a filtered listing belongs to the last returned item ([#2278](https://github.com/lakekeeper/lakekeeper/issues/2278)) ([199fd12](https://github.com/lakekeeper/lakekeeper/commit/199fd12221d82582e71e8819acab3a5e0d33c1ae))
+* **deps:** pin the iceberg fork that writes manifests with the deflate codec ([#2263](https://github.com/lakekeeper/lakekeeper/issues/2263)) ([e8c835c](https://github.com/lakekeeper/lakekeeper/commit/e8c835ced7d0b8d7d7725a3a2b70a15ad617faac))
+
 ## [0.15.0](https://github.com/lakekeeper/lakekeeper/compare/v0.14.0...v0.15.0) (2026-11-06)
 
 
