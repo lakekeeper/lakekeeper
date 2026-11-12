@@ -1172,4 +1172,98 @@ mod tests {
             );
         }
     }
+
+    /// Tests against the GCS bucket configured via `LAKEKEEPER_TEST__GCS_*`.
+    mod gcs_integration_tests {
+        use super::*;
+        use crate::gcs::{GCSSettings, GcsAuth, GcsServiceAccountKey};
+
+        fn read_error_kind(error: &ReadError) -> Option<ErrorKind> {
+            match error {
+                ReadError::IOError(e) => Some(e.kind()),
+                ReadError::InvalidLocation(_) => None,
+            }
+        }
+
+        async fn storage() -> GcsStorage {
+            let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} not set"));
+            let key: GcsServiceAccountKey =
+                serde_json::from_str(&var("LAKEKEEPER_TEST__GCS_CREDENTIAL")).unwrap();
+            GCSSettings {}
+                .get_storage_client(&GcsAuth::ServiceAccountKey { key })
+                .await
+                .unwrap()
+        }
+
+        fn test_path() -> String {
+            format!(
+                "gs://{}/lakekeeper-io-unit-tests/{}/object",
+                std::env::var("LAKEKEEPER_TEST__GCS_BUCKET").unwrap(),
+                uuid::Uuid::new_v4()
+            )
+        }
+
+        /// Chunks are pinned to a generation. Once an overwrite replaces it, a
+        /// chunk fails with `NotFound`, which the read reports as
+        /// `ConditionNotMatch` rather than as a missing object.
+        #[tokio::test]
+        async fn a_chunk_pinned_to_an_overwritten_generation_fails() {
+            let storage = storage().await;
+            let path = test_path();
+            let location = GcsLocation::try_from_str(&path).unwrap();
+            let generation_of = |read: ObjectRead| -> i64 {
+                read.info
+                    .version()
+                    .expect("GCS reports a generation")
+                    .parse()
+                    .unwrap()
+            };
+
+            storage
+                .write(&path, Bytes::from_static(b"version one"))
+                .await
+                .unwrap();
+            let first = generation_of(storage.read(&path).await.unwrap());
+            storage
+                .write(&path, Bytes::from_static(b"version two"))
+                .await
+                .unwrap();
+
+            let error = parallel_chunked_read_with_fixed_generation(
+                &storage.storage,
+                &location,
+                0,
+                4,
+                first,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                read_error_kind(&error),
+                Some(ErrorKind::NotFound),
+                "{error:?}"
+            );
+            let error = storage.overwrite_error(&location, first, error).await;
+            assert_eq!(
+                read_error_kind(&error),
+                Some(ErrorKind::ConditionNotMatch),
+                "{error:?}"
+            );
+
+            // The same chunk pinned to the current generation reads the new bytes.
+            let current = generation_of(storage.read(&path).await.unwrap());
+            let chunk = parallel_chunked_read_with_fixed_generation(
+                &storage.storage,
+                &location,
+                0,
+                4,
+                current,
+            )
+            .await
+            .unwrap();
+            assert_eq!(&chunk[..], b"vers");
+
+            storage.delete(&path).await.unwrap();
+        }
+    }
 }

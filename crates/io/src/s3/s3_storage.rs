@@ -2923,4 +2923,88 @@ mod tests {
         let error = storage.bucket_policy("my-bucket").await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{error}");
     }
+
+    /// Tests against the S3-compatible store configured via `LAKEKEEPER_TEST__S3_*`.
+    mod s3_compat_integration_tests {
+        use super::*;
+
+        async fn storage() -> S3Storage {
+            let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} not set"));
+            let credential = crate::s3::S3Auth::AccessKey(
+                crate::s3::S3AccessKeyAuth::builder()
+                    .aws_access_key_id(var("LAKEKEEPER_TEST__S3_ACCESS_KEY"))
+                    .aws_secret_access_key(var("LAKEKEEPER_TEST__S3_SECRET_KEY"))
+                    .build(),
+            );
+            crate::s3::S3Settings::builder()
+                .endpoint(Some(var("LAKEKEEPER_TEST__S3_ENDPOINT").parse().unwrap()))
+                .region(var("LAKEKEEPER_TEST__S3_REGION"))
+                .path_style_access(Some(true))
+                .build()
+                .get_storage_client(Some(&credential))
+                .await
+        }
+
+        fn test_path() -> String {
+            format!(
+                "s3://{}/lakekeeper-io-unit-tests/{}/object",
+                std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap(),
+                uuid::Uuid::new_v4()
+            )
+        }
+
+        /// The chunks after the first window are pinned to the window's `ETag`,
+        /// so a chunk of an object overwritten since then must fail rather than
+        /// return the new bytes.
+        #[tokio::test]
+        async fn a_chunk_pinned_to_an_overwritten_etag_fails() {
+            let storage = storage().await;
+            let path = test_path();
+            let location = S3Location::try_from_str(&path, true).unwrap();
+
+            storage
+                .write(&path, Bytes::from_static(b"version one"))
+                .await
+                .unwrap();
+            let first = storage.read(&path).await.unwrap();
+            let first_e_tag = first.info.e_tag().expect("S3 reports an ETag").to_string();
+            storage
+                .write(&path, Bytes::from_static(b"version two"))
+                .await
+                .unwrap();
+
+            let pinned_to = |e_tag: String| {
+                chunk_fetcher(
+                    &storage.client,
+                    &location,
+                    0,
+                    ChunkPin {
+                        version: None,
+                        e_tag: Some(e_tag),
+                    },
+                )
+            };
+
+            let error = pinned_to(first_e_tag)(0, 3, 0).await.unwrap_err();
+            assert_eq!(
+                read_error_kind(&error),
+                Some(ErrorKind::ConditionNotMatch),
+                "{error:?}"
+            );
+
+            // The same chunk pinned to the current `ETag` reads the new bytes.
+            let current_e_tag = storage
+                .read(&path)
+                .await
+                .unwrap()
+                .info
+                .e_tag()
+                .unwrap()
+                .to_string();
+            let (index, chunk) = pinned_to(current_e_tag)(0, 3, 0).await.unwrap();
+            assert_eq!((index, &chunk[..]), (0, &b"vers"[..]));
+
+            storage.delete(&path).await.unwrap();
+        }
+    }
 }

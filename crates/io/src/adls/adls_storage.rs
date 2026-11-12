@@ -1343,4 +1343,94 @@ mod tests {
             .unwrap();
         assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
+
+    /// Tests against the ADLS account configured via `LAKEKEEPER_TEST__AZURE_*`.
+    mod azure_integration_tests {
+        use super::*;
+        use crate::adls::AzureClientCredentialsAuth;
+
+        fn read_error_kind(error: &ReadError) -> Option<ErrorKind> {
+            match error {
+                ReadError::IOError(e) => Some(e.kind()),
+                ReadError::InvalidLocation(_) => None,
+            }
+        }
+
+        /// Storage of the test account and a fresh path in its test filesystem.
+        async fn storage_and_path() -> (AdlsStorage, String) {
+            let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} not set"));
+            let account = var("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME");
+            let filesystem = var("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM");
+            let storage = AzureSettings {
+                authority_host: None,
+                cloud_location: CloudLocation::Public {
+                    account: account.clone(),
+                },
+            }
+            .get_storage_client(&AzureAuth::ClientCredentials(AzureClientCredentialsAuth {
+                client_id: var("LAKEKEEPER_TEST__AZURE_CLIENT_ID"),
+                client_secret: var("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET"),
+                tenant_id: var("LAKEKEEPER_TEST__AZURE_TENANT_ID"),
+            }))
+            .await
+            .unwrap();
+            let path = format!(
+                "abfss://{filesystem}@{account}.dfs.core.windows.net/lakekeeper-io-unit-tests/{}/file",
+                uuid::Uuid::new_v4()
+            );
+            (storage, path)
+        }
+
+        /// The chunks after the first window are pinned to the window's `ETag`,
+        /// so a chunk of a file overwritten since then must fail rather than
+        /// return the new bytes.
+        #[tokio::test]
+        async fn a_chunk_pinned_to_an_overwritten_etag_fails() {
+            let (storage, path) = storage_and_path().await;
+            let location = AdlsLocation::try_from_str(&path, true).unwrap();
+            let client = storage.get_file_client(&location).unwrap();
+
+            storage
+                .write(&path, Bytes::from_static(b"version one"))
+                .await
+                .unwrap();
+            let first_e_tag = storage
+                .read(&path)
+                .await
+                .unwrap()
+                .info
+                .e_tag()
+                .unwrap()
+                .to_string();
+            storage
+                .write(&path, Bytes::from_static(b"version two"))
+                .await
+                .unwrap();
+
+            let error = chunk_fetcher(&client, &location, 0, first_e_tag)(0, 3, 0)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                read_error_kind(&error),
+                Some(ErrorKind::ConditionNotMatch),
+                "{error:?}"
+            );
+
+            // The same chunk pinned to the current `ETag` reads the new bytes.
+            let current_e_tag = storage
+                .read(&path)
+                .await
+                .unwrap()
+                .info
+                .e_tag()
+                .unwrap()
+                .to_string();
+            let (index, chunk) = chunk_fetcher(&client, &location, 0, current_e_tag)(0, 3, 0)
+                .await
+                .unwrap();
+            assert_eq!((index, &chunk[..]), (0, &b"vers"[..]));
+
+            storage.delete(&path).await.unwrap();
+        }
+    }
 }
