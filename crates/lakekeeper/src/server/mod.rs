@@ -190,41 +190,30 @@ impl<Entity, EntityId> UnfilteredPage<Entity, EntityId> {
         }
     }
 
+    /// Takes the first `n` approved entities. A full result ends at its last entity's token:
+    /// a token holds the id and creation time of its row, so it must not point at a hidden one.
     #[must_use]
     pub(crate) fn take_n_authz_approved(
         self,
         n: usize,
     ) -> (Vec<Entity>, Vec<EntityId>, Option<String>) {
-        #[derive(Debug)]
-        enum State {
-            Open,
-            LoopingForLastNextPage,
-        }
-        let (entities, ids, token, _) = self
+        let (entities, ids, token) = self
             .authz_approved
             .into_iter()
             .zip(self.entities)
             .zip(self.entity_ids)
             .zip(self.page_tokens)
             .fold_while(
-                (vec![], vec![], None, State::Open),
-                |(mut entities, mut entity_ids, mut page_token, mut state),
-                 (((authz, entity), id), token)| {
+                (vec![], vec![], None),
+                |(mut entities, mut entity_ids, _), (((authz, entity), id), token)| {
                     if authz {
-                        if matches!(state, State::Open) {
-                            entities.push(entity);
-                            entity_ids.push(id);
-                        } else if matches!(state, State::LoopingForLastNextPage) {
-                            return FoldWhile::Done((entities, entity_ids, page_token, state));
+                        entities.push(entity);
+                        entity_ids.push(id);
+                        if entities.len() == n {
+                            return FoldWhile::Done((entities, entity_ids, Some(token)));
                         }
                     }
-                    page_token = Some(token);
-                    state = if entities.len() == n {
-                        State::LoopingForLastNextPage
-                    } else {
-                        State::Open
-                    };
-                    FoldWhile::Continue((entities, entity_ids, page_token, state))
+                    FoldWhile::Continue((entities, entity_ids, Some(token)))
                 },
             )
             .into_inner();
@@ -329,4 +318,30 @@ async fn read_page<C: CatalogStore, Page>(
     let page = fetch_fn(page_size, page_token, &mut t).await?;
     t.commit().await?;
     Ok(page)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UnfilteredPage;
+
+    #[test]
+    fn test_full_page_ends_at_token_of_last_approved_entity() {
+        let page = UnfilteredPage::new(
+            vec!["a", "b", "c"],
+            vec![1, 2, 3],
+            vec![
+                "token-a".to_string(),
+                "token-b".to_string(),
+                "token-c".to_string(),
+            ],
+            vec![true, false, true],
+            3,
+        );
+
+        let (entities, ids, token) = page.take_n_authz_approved(1);
+
+        assert_eq!(entities, vec!["a"]);
+        assert_eq!(ids, vec![1]);
+        assert_eq!(token.as_deref(), Some("token-a"));
+    }
 }
