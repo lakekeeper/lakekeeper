@@ -734,3 +734,85 @@ async fn set_config_refused_by_check_config_is_not_stored(pool: PgPool) {
     .unwrap();
     assert_eq!(stored.queue_config.config, serde_json::json!({}));
 }
+
+#[sqlx::test]
+async fn get_config_of_unregistered_queue_returns_404(pool: PgPool) {
+    let (ctx, warehouse, _registry) = setup_with_registry(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+        1,
+        None,
+    )
+    .await;
+    let unknown = TaskQueueName::from("never-registered-queue");
+    let expected = (
+        404,
+        "QueueNotFound".to_string(),
+        "Queue 'never-registered-queue' not found! Existing queues: \
+         [soft_deletion, tabular_purge, task_log_cleanup]"
+            .to_string(),
+    );
+
+    let err = ApiServer::get_task_queue_config(
+        warehouse.warehouse_id,
+        &unknown,
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("warehouse route: unknown queue must not return 2xx");
+    assert_eq!(
+        (err.error.code, err.error.r#type, err.error.message),
+        expected
+    );
+
+    let mut project_metadata = random_request_metadata();
+    project_metadata.with_project_id((*warehouse.project_id).clone());
+    let err = ApiServer::get_project_task_queue_config(&unknown, ctx, project_metadata)
+        .await
+        .expect_err("project route: unknown queue must not return 2xx");
+    assert_eq!(
+        (err.error.code, err.error.r#type, err.error.message),
+        expected
+    );
+}
+
+#[sqlx::test]
+async fn get_config_of_registered_queue_without_config_returns_empty_config(pool: PgPool) {
+    let (ctx, warehouse, _registry) = setup_with_registry(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+        1,
+        None,
+    )
+    .await;
+
+    // `tabular_expiration` is the name `soft_deletion` had before a rename.
+    for queue_name in ["soft_deletion", "tabular_expiration"] {
+        let response = ApiServer::get_task_queue_config(
+            warehouse.warehouse_id,
+            &TaskQueueName::from(queue_name),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                response.queue_config.queue_name.as_str(),
+                response.queue_config.config,
+                response.max_seconds_since_last_heartbeat
+            ),
+            ("soft_deletion", serde_json::json!({}), None),
+            "{queue_name}"
+        );
+    }
+}
