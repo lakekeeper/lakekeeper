@@ -2017,6 +2017,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTaskLogCleanupConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -7501,6 +7507,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetSoftDeletionQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -7561,6 +7573,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetPurgeQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
