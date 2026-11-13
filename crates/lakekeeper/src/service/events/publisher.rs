@@ -111,6 +111,48 @@ pub fn maybe_tracing_cloud_event_backend()
 
 #[async_trait::async_trait]
 impl EventListener for CloudEventsPublisher {
+    async fn table_loaded(&self, event: types::LoadTableEvent) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "loadTable",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::Table(event.table.table_id()),
+                warehouse_id: event.warehouse.warehouse_id,
+                name: event.table.tabular_ident.name.clone(),
+                namespace: event.table.tabular_ident.namespace.to_string(),
+                prefix: event.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: event.request_metadata.request_id().clone(),
+                actor: serialize_actor(&event.request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `loadTable` event")
+    }
+
+    async fn view_loaded(&self, event: types::LoadViewEvent) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "loadView",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::View(event.view.view_id()),
+                warehouse_id: event.warehouse.warehouse_id,
+                name: event.view.tabular_ident.name.clone(),
+                namespace: event.view.tabular_ident.namespace.to_string(),
+                prefix: event.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: event.request_metadata.request_id().clone(),
+                actor: serialize_actor(&event.request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `loadView` event")
+    }
+
     async fn transaction_committed(
         &self,
         event: types::CommitTransactionEvent,
@@ -722,7 +764,162 @@ impl CloudEventBackend for TracingPublisher {
 
 #[cfg(test)]
 mod tests {
+    use iceberg::{
+        NamespaceIdent,
+        spec::{FormatVersion, Schema, SortOrder, TableMetadataBuilder, UnboundPartitionSpec},
+    };
+
     use super::{CloudEventActor as Actor, *};
+    use crate::service::{ResolvedWarehouse, TableInfo, ViewInfo};
+
+    #[tokio::test]
+    async fn test_view_loaded_publishes_cloud_event() {
+        use iceberg::spec::{
+            SqlViewRepresentation, ViewFormatVersion, ViewMetadataBuilder, ViewRepresentation,
+            ViewRepresentations, ViewVersion,
+        };
+
+        use crate::service::{
+            authz::{AuthZError, CatalogViewAction},
+            events::{APIEventContext, EventDispatcher, context::ResolvedView},
+        };
+
+        let warehouse = Arc::new(ResolvedWarehouse::new_random());
+        let mut view = ViewInfo::new_random(warehouse.warehouse_id);
+        view.tabular_ident = TableIdent::new(
+            NamespaceIdent::from_vec(vec!["parent".to_string(), "child".to_string()]).unwrap(),
+            "view".to_string(),
+        );
+        let metadata = ViewMetadataBuilder::new(
+            view.location.to_string(),
+            Schema::builder().build().unwrap(),
+            ViewVersion::builder()
+                .with_schema_id(0)
+                .with_timestamp_ms(0)
+                .with_default_namespace(view.tabular_ident.namespace.clone())
+                .with_representations(
+                    ViewRepresentations::builder()
+                        .add_representation(ViewRepresentation::Sql(SqlViewRepresentation {
+                            sql: "SELECT 1".to_string(),
+                            dialect: "trino".to_string(),
+                        }))
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+            ViewFormatVersion::V1,
+            std::collections::HashMap::new(),
+        )
+        .unwrap()
+        .assign_uuid(view.view_id().into())
+        .build()
+        .unwrap()
+        .metadata;
+        let metadata_location = Arc::new(view.metadata_location.clone().unwrap());
+        let request_metadata = Arc::new(RequestMetadata::test_user(
+            UserId::try_from("oidc~reader").unwrap(),
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let dispatcher = EventDispatcher::new(vec![Arc::new(CloudEventsPublisher::new(tx))]);
+        let context = APIEventContext::for_view(
+            request_metadata.clone(),
+            dispatcher,
+            warehouse.warehouse_id,
+            view.tabular_ident.clone(),
+            CatalogViewAction::GetMetadata,
+        );
+        let (context, ()) = context.emit_authz(Ok::<(), AuthZError>(())).unwrap();
+        context
+            .resolve(ResolvedView {
+                warehouse: warehouse.clone(),
+                view: Arc::new(view.clone()),
+            })
+            .emit_view_loaded_async(Arc::new(metadata), metadata_location);
+        let CloudEventsMessage::Event(payload) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("expected a CloudEvent");
+        };
+        assert_eq!(payload.typ, "loadView");
+        assert_eq!(payload.data, serde_json::Value::Null);
+        assert_eq!(payload.metadata.tabular_id, TabularId::View(view.view_id()));
+        assert_eq!(payload.metadata.warehouse_id, warehouse.warehouse_id);
+        assert_eq!(payload.metadata.name, "view");
+        assert_eq!(payload.metadata.namespace, "parent.child");
+        assert_eq!(payload.metadata.prefix, warehouse.warehouse_id.to_string());
+        assert_eq!(payload.metadata.num_events, 1);
+        assert_eq!(payload.metadata.sequence_number, 0);
+        assert_eq!(&payload.metadata.trace_id, request_metadata.request_id());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&payload.metadata.actor).unwrap(),
+            serde_json::json!({"type": "principal", "principal": "oidc~reader"})
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_table_loaded_publishes_cloud_event() {
+        let warehouse = Arc::new(ResolvedWarehouse::new_random());
+        let mut table = TableInfo::new_random(warehouse.warehouse_id);
+        table.tabular_ident = TableIdent::new(
+            NamespaceIdent::from_vec(vec!["parent".to_string(), "child".to_string()]).unwrap(),
+            "table".to_string(),
+        );
+        let metadata = TableMetadataBuilder::new(
+            Schema::builder().build().unwrap(),
+            UnboundPartitionSpec::builder().build(),
+            SortOrder::unsorted_order(),
+            table.location.to_string(),
+            FormatVersion::V2,
+            std::collections::HashMap::new(),
+        )
+        .unwrap()
+        .assign_uuid(table.table_id().into())
+        .build()
+        .unwrap()
+        .metadata;
+        let request_metadata = Arc::new(RequestMetadata::test_user(
+            UserId::try_from("oidc~reader").unwrap(),
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let publisher = CloudEventsPublisher::new(tx);
+        let event = types::LoadTableEvent {
+            warehouse: warehouse.clone(),
+            metadata_location: table.metadata_location.clone().map(Arc::new),
+            table: Arc::new(table.clone()),
+            storage_permissions: None,
+            metadata: Arc::new(metadata),
+            request_metadata: request_metadata.clone(),
+        };
+        publisher.table_loaded(event.clone()).await.unwrap();
+
+        let CloudEventsMessage::Event(payload) = rx.try_recv().unwrap() else {
+            panic!("expected a CloudEvent");
+        };
+        assert_eq!(payload.typ, "loadTable");
+        assert_eq!(payload.data, serde_json::Value::Null);
+        assert_eq!(
+            payload.metadata.tabular_id,
+            TabularId::Table(table.table_id())
+        );
+        assert_eq!(payload.metadata.warehouse_id, warehouse.warehouse_id);
+        assert_eq!(payload.metadata.name, "table");
+        assert_eq!(payload.metadata.namespace, "parent.child");
+        assert_eq!(payload.metadata.prefix, warehouse.warehouse_id.to_string());
+        assert_eq!(payload.metadata.num_events, 1);
+        assert_eq!(payload.metadata.sequence_number, 0);
+        assert_eq!(&payload.metadata.trace_id, request_metadata.request_id());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&payload.metadata.actor).unwrap(),
+            serde_json::json!({"type": "principal", "principal": "oidc~reader"})
+        );
+        assert!(rx.try_recv().is_err());
+        drop(rx);
+        assert!(publisher.table_loaded(event).await.is_err());
+    }
 
     #[test]
     fn test_actor_serde_principal() {
