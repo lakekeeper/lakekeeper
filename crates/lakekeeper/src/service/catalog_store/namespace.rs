@@ -678,6 +678,15 @@ define_transparent_error! {
     ]
 }
 
+/// Outcome of a [`CatalogStore::update_namespace_properties_impl`] call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdatedNamespaceProperties {
+    /// The namespace as it is after the update.
+    pub namespace: NamespaceWithParent,
+    /// The stored properties this update replaced, `None` if there were none.
+    pub previous_properties: Option<HashMap<String, String>>,
+}
+
 /// Outcome of a [`CatalogStore::move_namespace_impl`] call.
 ///
 /// Carries the pre-move identity alongside the new state: the namespace cache has to evict
@@ -1315,21 +1324,25 @@ where
         Ok(drop_info)
     }
 
+    /// Update the properties of a namespace.
+    /// See [`CatalogStore::update_namespace_properties_impl`].
     async fn update_namespace_properties(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
-        properties: HashMap<String, String>,
+        updates: &HashMap<String, String>,
+        removals: &[String],
         transaction: &mut WriteTransaction<Self>,
-    ) -> Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError> {
-        let namespace = Self::update_namespace_properties_impl(
+    ) -> Result<UpdatedNamespaceProperties, CatalogUpdateNamespacePropertiesError> {
+        let outcome = Self::update_namespace_properties_impl(
             warehouse_id,
             namespace_id,
-            properties,
+            updates,
+            removals,
             transaction.transaction(),
         )
         .await?;
         transaction.record(CacheKey::Namespace(namespace_id));
-        Ok(namespace)
+        Ok(outcome)
     }
 
     async fn set_namespace_protected(
