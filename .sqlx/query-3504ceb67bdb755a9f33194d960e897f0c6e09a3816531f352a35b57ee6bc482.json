@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT namespace_properties as \"properties: Json<Option<HashMap<String, String>>>\"\n        FROM namespace\n        WHERE warehouse_id = $1 AND namespace_id = $2\n        AND warehouse_id IN (\n            SELECT warehouse_id FROM warehouse WHERE status = 'active'\n        )\n        FOR NO KEY UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "properties: Json<Option<HashMap<String, String>>>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_properties"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3504ceb67bdb755a9f33194d960e897f0c6e09a3816531f352a35b57ee6bc482"
+}
