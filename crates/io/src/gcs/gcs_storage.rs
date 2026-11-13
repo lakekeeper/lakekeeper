@@ -125,6 +125,36 @@ impl GcsStorage {
     async fn control(&self) -> Arc<StorageControl> {
         self.control.get().await
     }
+
+    /// A read of the current object pinned to `generation` fails with `NotFound`
+    /// once an overwrite replaces that generation. That failure is reported as
+    /// `ErrorKind::ConditionNotMatch`, the error S3 and ADLS return for an
+    /// overwrite during a read. It stays `NotFound` if the object was deleted or
+    /// `generation` is still the current one.
+    async fn overwrite_error(
+        &self,
+        location: &GcsLocation,
+        generation: i64,
+        error: ReadError,
+    ) -> ReadError {
+        let ReadError::IOError(io_error) = error else {
+            return error;
+        };
+        if io_error.kind() != ErrorKind::NotFound {
+            return ReadError::IOError(io_error);
+        }
+        match head(&*self.control().await, location, None).await {
+            Ok(current) if current.generation != generation => ReadError::IOError(
+                IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "The object was overwritten during the read",
+                    location.as_str().to_string(),
+                )
+                .set_source(io_error),
+            ),
+            _ => ReadError::IOError(io_error),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -414,25 +444,37 @@ impl GcsStorage {
         // pinned to its generation, so the metadata describes the bytes.
         let info = file_info(&object, gcs_location.location().clone());
 
+        let pinned_read = async {
+            if reads_in_one_request(&object, file_size) {
+                fetch_range(
+                    &self.storage,
+                    gcs_location,
+                    FetchRange::whole(Some(object.generation), Some(file_size)),
+                )
+                .await
+                .map_err(|e| ReadError::IOError(e.with_context("Failed to download object.")))
+            } else {
+                parallel_chunked_read_with_fixed_generation(
+                    &self.storage,
+                    gcs_location,
+                    0,
+                    file_size,
+                    object.generation,
+                )
+                .await
+            }
+        };
         let bytes = if file_size == 0 {
             Bytes::new()
-        } else if reads_in_one_request(&object, file_size) {
-            fetch_range(
-                &self.storage,
-                gcs_location,
-                FetchRange::whole(Some(object.generation), Some(file_size)),
-            )
-            .await
-            .map_err(|e| ReadError::IOError(e.with_context("Failed to download object.")))?
         } else {
-            parallel_chunked_read_with_fixed_generation(
-                &self.storage,
-                gcs_location,
-                0,
-                file_size,
-                object.generation,
-            )
-            .await?
+            match pinned_read.await {
+                Err(e) if generation.is_none() => {
+                    return Err(self
+                        .overwrite_error(gcs_location, object.generation, e)
+                        .await);
+                }
+                result => result?,
+            }
         };
 
         Ok(ObjectRead { bytes, info })
@@ -478,7 +520,7 @@ impl GcsStorage {
             .map_err(|e| ReadError::IOError(e.with_context("Failed to download byte range.")));
         }
 
-        let generation = match generation {
+        let pinned_generation = match generation {
             Some(generation) => generation,
             None => {
                 head(&*self.control().await, gcs_location, None)
@@ -486,14 +528,20 @@ impl GcsStorage {
                     .generation
             }
         };
-        parallel_chunked_read_with_fixed_generation(
+        let result = parallel_chunked_read_with_fixed_generation(
             &self.storage,
             gcs_location,
             range.start,
             range_size,
-            generation,
+            pinned_generation,
         )
-        .await
+        .await;
+        match result {
+            Err(e) if generation.is_none() => Err(self
+                .overwrite_error(gcs_location, pinned_generation, e)
+                .await),
+            result => result,
+        }
     }
 }
 
@@ -814,6 +862,8 @@ async fn parallel_chunked_read_with_fixed_generation(
     let storage = storage.clone();
     let location = gcs_location.clone();
     crate::parallel_chunked_read(
+        std::future::ready(Ok(Bytes::new())),
+        0,
         range_size,
         CHUNK_SIZE,
         READ_PARALLELISM,
@@ -1120,6 +1170,100 @@ mod tests {
                 error.reason(),
                 format!("`{version}` is not a GCS generation")
             );
+        }
+    }
+
+    /// Tests against the GCS bucket configured via `LAKEKEEPER_TEST__GCS_*`.
+    mod gcs_integration_tests {
+        use super::*;
+        use crate::gcs::{GCSSettings, GcsAuth, GcsServiceAccountKey};
+
+        fn read_error_kind(error: &ReadError) -> Option<ErrorKind> {
+            match error {
+                ReadError::IOError(e) => Some(e.kind()),
+                ReadError::InvalidLocation(_) => None,
+            }
+        }
+
+        async fn storage() -> GcsStorage {
+            let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} not set"));
+            let key: GcsServiceAccountKey =
+                serde_json::from_str(&var("LAKEKEEPER_TEST__GCS_CREDENTIAL")).unwrap();
+            GCSSettings {}
+                .get_storage_client(&GcsAuth::ServiceAccountKey { key })
+                .await
+                .unwrap()
+        }
+
+        fn test_path() -> String {
+            format!(
+                "gs://{}/lakekeeper-io-unit-tests/{}/object",
+                std::env::var("LAKEKEEPER_TEST__GCS_BUCKET").unwrap(),
+                uuid::Uuid::new_v4()
+            )
+        }
+
+        /// Chunks are pinned to a generation. Once an overwrite replaces it, a
+        /// chunk fails with `NotFound`, which the read reports as
+        /// `ConditionNotMatch` rather than as a missing object.
+        #[tokio::test]
+        async fn a_chunk_pinned_to_an_overwritten_generation_fails() {
+            let storage = storage().await;
+            let path = test_path();
+            let location = GcsLocation::try_from_str(&path).unwrap();
+            let generation_of = |read: ObjectRead| -> i64 {
+                read.info
+                    .version()
+                    .expect("GCS reports a generation")
+                    .parse()
+                    .unwrap()
+            };
+
+            storage
+                .write(&path, Bytes::from_static(b"version one"))
+                .await
+                .unwrap();
+            let first = generation_of(storage.read(&path).await.unwrap());
+            storage
+                .write(&path, Bytes::from_static(b"version two"))
+                .await
+                .unwrap();
+
+            let error = parallel_chunked_read_with_fixed_generation(
+                &storage.storage,
+                &location,
+                0,
+                4,
+                first,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                read_error_kind(&error),
+                Some(ErrorKind::NotFound),
+                "{error:?}"
+            );
+            let error = storage.overwrite_error(&location, first, error).await;
+            assert_eq!(
+                read_error_kind(&error),
+                Some(ErrorKind::ConditionNotMatch),
+                "{error:?}"
+            );
+
+            // The same chunk pinned to the current generation reads the new bytes.
+            let current = generation_of(storage.read(&path).await.unwrap());
+            let chunk = parallel_chunked_read_with_fixed_generation(
+                &storage.storage,
+                &location,
+                0,
+                4,
+                current,
+            )
+            .await
+            .unwrap();
+            assert_eq!(&chunk[..], b"vers");
+
+            storage.delete(&path).await.unwrap();
         }
     }
 }

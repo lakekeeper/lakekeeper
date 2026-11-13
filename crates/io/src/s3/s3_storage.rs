@@ -7,7 +7,7 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
 
 use crate::{
     DeleteBatchError, DeleteError, DeleteMarker, ErrorKind, FileInfo, IOError,
@@ -32,6 +32,7 @@ use crate::{
 // Convert MB constants to bytes - these will always be safe conversions from u16
 const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
 const DEFAULT_BYTES_PER_REQUEST: usize = 16 * 1024 * 1024;
+const READ_PARALLELISM: usize = 10;
 const MAX_PARTS_PER_UPLOAD: usize = 10_000; // S3 limit for multipart uploads
 const MAX_DELETE_BATCH_SIZE: usize = 1000;
 /// Upper bound on best-effort cleanup work spawned from `Drop`. The abort
@@ -265,7 +266,49 @@ impl LakekeeperStorage for S3Storage {
 
     async fn read(&self, path: &str) -> Result<ObjectRead, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-        read_object(&self.client, &s3_location, None).await
+
+        // The first window is read in one ranged GET. Its `Content-Range`
+        // carries the object size and its `Last-Modified`/`ETag` describe the
+        // version served, so an object that fits the window costs one request
+        // and `info` describes exactly the bytes returned.
+        let Some(window) =
+            fetch_first_window(&self.client, &s3_location, MAX_BYTES_PER_REQUEST).await?
+        else {
+            // Empty object, or a response without the object size.
+            return read_object(&self.client, &s3_location, None).await;
+        };
+        let info = FileInfo::new(
+            window.last_modified,
+            s3_location.location().clone(),
+            Some(window.total_size),
+        )
+        .with_e_tag(window.e_tag.clone())
+        .with_version(window.version);
+
+        // The bytes after the window are pinned to the window's `ETag`. Without
+        // one, an object larger than the window is read from a `HEAD`.
+        if window.total_size > MAX_BYTES_PER_REQUEST as u64 && window.e_tag.is_none() {
+            return read_object(&self.client, &s3_location, None).await;
+        }
+        let bytes = crate::read_from_window(
+            collect_body(window.body, &s3_location),
+            MAX_BYTES_PER_REQUEST,
+            window.total_size,
+            DEFAULT_BYTES_PER_REQUEST,
+            READ_PARALLELISM,
+            s3_location.as_str(),
+            chunk_fetcher(
+                &self.client,
+                &s3_location,
+                MAX_BYTES_PER_REQUEST as u64,
+                ChunkPin {
+                    version: None,
+                    e_tag: window.e_tag,
+                },
+            ),
+        )
+        .await?;
+        Ok(ObjectRead { bytes, info })
     }
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, ReadError> {
@@ -791,6 +834,12 @@ async fn read_object(
     let content_length = head_response.content_length().unwrap_or(0);
     let file_size = validate_file_size(content_length, s3_location.as_str())?;
 
+    if file_size == 0 {
+        return Ok(ObjectRead {
+            bytes: Bytes::new(),
+            info: head_file_info(s3_location, &head_response),
+        });
+    }
     if file_size >= MAX_BYTES_PER_REQUEST {
         // The chunks are pinned to the object the `head` describes, so its
         // metadata describes the bytes.
@@ -936,8 +985,14 @@ async fn fetch_range(
         .await
         .map_err(|e| version_error(e, version, location.as_str(), parse_get_object_error))?;
     check_version(version, response.version_id(), location)?;
+    collect_body(response.body, location).await
+}
 
-    let body = response.body.collect().await.map_err(|e| {
+async fn collect_body(
+    body: aws_sdk_s3::primitives::ByteStream,
+    location: &S3Location,
+) -> Result<Bytes, ReadError> {
+    let body = body.collect().await.map_err(|e| {
         IOError::new(
             ErrorKind::Unexpected,
             format!("Error collecting S3 range bytestream: {e}"),
@@ -946,6 +1001,70 @@ async fn fetch_range(
         .set_source(anyhow::anyhow!(e))
     })?;
     Ok(body.into_bytes())
+}
+
+/// The first window of an object and the metadata of the response that serves
+/// it. The body is still streaming.
+struct FirstWindow {
+    body: aws_sdk_s3::primitives::ByteStream,
+    total_size: u64,
+    last_modified: Option<DateTime<Utc>>,
+    e_tag: Option<String>,
+    version: Option<String>,
+}
+
+/// Request `[0, window)` of an object in one GET and return once its headers
+/// arrive.
+///
+/// Returns `None` when the response does not give the object size: the range
+/// is unsatisfiable (`416`, an empty object), or `Content-Range` is missing or
+/// has an unknown (`*`) total. The caller sizes the object with a `HEAD` then,
+/// so a server that ignores the range cannot truncate the read.
+async fn fetch_first_window(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    window: usize,
+) -> Result<Option<FirstWindow>, ReadError> {
+    let response = match client
+        .get_object()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()))
+        // range header for s3 client is inclusive
+        .range(format!("bytes=0-{}", window - 1))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(e) if e.raw_response().map(|r| r.status().as_u16()) == Some(416) => return Ok(None),
+        Err(e) => {
+            return Err(ReadError::IOError(parse_get_object_error(
+                e,
+                location.as_str(),
+            )));
+        }
+    };
+
+    let Some(total_size) = response.content_range().and_then(content_range_total) else {
+        return Ok(None);
+    };
+    let last_modified = response.last_modified().and_then(parse_timestamp);
+    let e_tag = response.e_tag().map(ToString::to_string);
+    let version = reported_version(response.version_id());
+
+    Ok(Some(FirstWindow {
+        body: response.body,
+        total_size,
+        last_modified,
+        e_tag,
+        version,
+    }))
+}
+
+/// The complete length from a `Content-Range: bytes <start>-<end>/<length>`
+/// header, or `None` if it is unknown (`*`) or the header is malformed.
+fn content_range_total(header: &str) -> Option<u64> {
+    let (_, total) = header.trim().strip_prefix("bytes ")?.split_once('/')?;
+    total.trim().parse().ok()
 }
 
 async fn head(
@@ -1059,44 +1178,58 @@ async fn parallel_chunked_read(
     if range_size == 0 {
         return Ok(Bytes::new());
     }
-
-    let client = client.clone();
-    let location_for_chunks = s3_location.clone();
-
     crate::parallel_chunked_read(
+        std::future::ready(Ok(Bytes::new())),
+        0,
         range_size,
         DEFAULT_BYTES_PER_REQUEST,
-        10,
+        READ_PARALLELISM,
         s3_location.as_str(),
-        move |rel_start, rel_end, chunk_index| {
-            let client = client.clone();
-            let location = location_for_chunks.clone();
-            let pin = pin.clone();
-            let abs_start = range_start + rel_start as u64;
-            let abs_end = range_start + rel_end as u64 + 1;
-            async move {
-                let chunk = fetch_range(
-                    &client,
-                    &location,
-                    pin.version.as_deref(),
-                    abs_start..abs_end,
-                    pin.e_tag.as_deref(),
-                )
-                .await
-                .map_err(|e| match e {
-                    ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
-                        "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
-                    ))),
-                    invalid_location_error @ ReadError::InvalidLocation(_) => {
-                        invalid_location_error
-                    }
-                })?;
-                Ok((chunk_index, chunk))
-            }
-        },
+        chunk_fetcher(client, s3_location, range_start, pin),
     )
     .await
 }
+
+/// Fetches the chunks of a parallel download that starts at `range_start`,
+/// each pinned by `pin`.
+fn chunk_fetcher(
+    client: &aws_sdk_s3::Client,
+    s3_location: &S3Location,
+    range_start: u64,
+    pin: ChunkPin,
+) -> impl Fn(usize, usize, usize) -> BoxFuture<'static, Result<(usize, Bytes), ReadError>>
++ Send
++ Sync
++ Clone
++ 'static {
+    let client = client.clone();
+    let location = s3_location.clone();
+    move |rel_start, rel_end, chunk_index| {
+        let client = client.clone();
+        let location = location.clone();
+        let pin = pin.clone();
+        let abs_start = range_start + rel_start as u64;
+        let abs_end = range_start + rel_end as u64 + 1;
+        Box::pin(async move {
+            let chunk = fetch_range(
+                &client,
+                &location,
+                pin.version.as_deref(),
+                abs_start..abs_end,
+                pin.e_tag.as_deref(),
+            )
+            .await
+            .map_err(|e| match e {
+                ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                    "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                ))),
+                invalid_location_error @ ReadError::InvalidLocation(_) => invalid_location_error,
+            })?;
+            Ok((chunk_index, chunk))
+        })
+    }
+}
+
 /// Upload a small object in a single PUT request.
 async fn put_object_single(
     client: &aws_sdk_s3::Client,
@@ -2411,6 +2544,176 @@ mod tests {
         assert_eq!(storage.service_scope, "http://127.0.0.1:1");
     }
 
+    /// Storage whose endpoint answers the n-th request with `responses[n]`, a
+    /// raw HTTP response. The request lines it received are collected.
+    async fn storage_serving(
+        responses: Vec<String>,
+    ) -> (S3Storage, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        tokio::spawn(async move {
+            for response in responses {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut request = [0; 4096];
+                let n = socket.read(&mut request).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..n]);
+                let method = request.split(' ').next().unwrap_or_default().to_string();
+                seen.lock().unwrap().push(method);
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+            .region(aws_sdk_s3::config::Region::new("eu01"))
+            .endpoint_url(format!("http://{addr}"))
+            .force_path_style(true)
+            .credentials_provider(aws_sdk_s3::config::Credentials::new(
+                "access", "secret", None, None, "test",
+            ))
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+            .build();
+        (
+            S3Storage::new(aws_sdk_s3::Client::from_conf(config), None),
+            requests,
+        )
+    }
+
+    const LAST_MODIFIED: &str = "Wed, 21 Oct 2015 07:28:00 GMT";
+
+    /// A raw HTTP response with an `ETag` and `Last-Modified` header.
+    fn object_response(status: &str, extra_headers: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nETag: \"v1\"\r\nLast-Modified: {LAST_MODIFIED}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// A raw `HEAD` response for an object of `size` bytes.
+    fn head_response(size: usize) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nLast-Modified: {LAST_MODIFIED}\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+        )
+    }
+
+    const PATH: &str = "s3://bucket/object.bin";
+
+    #[tokio::test]
+    async fn a_small_object_is_read_with_one_get() {
+        let (storage, requests) = storage_serving(vec![object_response(
+            "206 Partial Content",
+            "Content-Range: bytes 0-4/5\r\n",
+            "hello",
+        )])
+        .await;
+
+        let read = storage.read(PATH).await.unwrap();
+
+        assert_eq!(read.bytes, Bytes::from_static(b"hello"));
+        assert_eq!(read.info.size(), Some(5));
+        assert_eq!(read.info.e_tag(), Some("\"v1\""));
+        assert_eq!(
+            read.info.last_modified(),
+            DateTime::from_timestamp(1_445_412_480, 0)
+        );
+        assert_eq!(*requests.lock().unwrap(), ["GET"]);
+    }
+
+    #[tokio::test]
+    async fn a_read_without_content_range_is_sized_with_a_head() {
+        let (storage, requests) = storage_serving(vec![
+            object_response("200 OK", "", "hello"),
+            head_response(5),
+            object_response(
+                "206 Partial Content",
+                "Content-Range: bytes 0-4/5\r\n",
+                "hello",
+            ),
+        ])
+        .await;
+
+        let read = storage.read(PATH).await.unwrap();
+
+        assert_eq!(read.bytes, Bytes::from_static(b"hello"));
+        assert_eq!(read.info.size(), Some(5));
+        assert_eq!(*requests.lock().unwrap(), ["GET", "HEAD", "GET"]);
+    }
+
+    #[tokio::test]
+    async fn a_read_with_an_unknown_total_is_sized_with_a_head() {
+        let (storage, requests) = storage_serving(vec![
+            object_response(
+                "206 Partial Content",
+                "Content-Range: bytes 0-4/*\r\n",
+                "hello",
+            ),
+            head_response(5),
+            object_response(
+                "206 Partial Content",
+                "Content-Range: bytes 0-4/5\r\n",
+                "hello",
+            ),
+        ])
+        .await;
+
+        let read = storage.read(PATH).await.unwrap();
+
+        assert_eq!(read.bytes, Bytes::from_static(b"hello"));
+        assert_eq!(read.info.size(), Some(5));
+        assert_eq!(*requests.lock().unwrap(), ["GET", "HEAD", "GET"]);
+    }
+
+    #[tokio::test]
+    async fn an_empty_object_is_read_after_an_unsatisfiable_range() {
+        let (storage, requests) = storage_serving(vec![
+            object_response(
+                "416 Requested Range Not Satisfiable",
+                "Content-Type: application/xml\r\nContent-Range: bytes */0\r\n",
+                "<Error><Code>InvalidRange</Code><Message>The requested range is not satisfiable</Message></Error>",
+            ),
+            head_response(0),
+        ])
+        .await;
+
+        let read = storage.read(PATH).await.unwrap();
+
+        assert_eq!(read.bytes, Bytes::new());
+        assert_eq!(read.info.size(), Some(0));
+        assert_eq!(read.info.e_tag(), Some("\"v1\""));
+        assert_eq!(*requests.lock().unwrap(), ["GET", "HEAD"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_is_not_retried_with_a_head() {
+        let (storage, requests) = storage_serving(vec![object_response(
+            "403 Forbidden",
+            "Content-Type: application/xml\r\n",
+            "<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>",
+        )])
+        .await;
+
+        let Err(ReadError::IOError(error)) = storage.read(PATH).await else {
+            panic!("expected the read to fail");
+        };
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{error}");
+        assert_eq!(*requests.lock().unwrap(), ["GET"]);
+    }
+
+    #[test]
+    fn content_range_total_reads_the_complete_length() {
+        assert_eq!(content_range_total("bytes 0-4/5"), Some(5));
+        assert_eq!(content_range_total("bytes */0"), Some(0));
+        assert_eq!(content_range_total("bytes 0-4/*"), None);
+        assert_eq!(content_range_total("bytes 0-4"), None);
+        assert_eq!(content_range_total(""), None);
+    }
+
     #[tokio::test]
     async fn a_refused_head_without_a_version_is_unsupported() {
         // Only a request that names a version can hit a delete marker.
@@ -2619,5 +2922,89 @@ mod tests {
         .await;
         let error = storage.bucket_policy("my-bucket").await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{error}");
+    }
+
+    /// Tests against the S3-compatible store configured via `LAKEKEEPER_TEST__S3_*`.
+    mod s3_compat_integration_tests {
+        use super::*;
+
+        async fn storage() -> S3Storage {
+            let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} not set"));
+            let credential = crate::s3::S3Auth::AccessKey(
+                crate::s3::S3AccessKeyAuth::builder()
+                    .aws_access_key_id(var("LAKEKEEPER_TEST__S3_ACCESS_KEY"))
+                    .aws_secret_access_key(var("LAKEKEEPER_TEST__S3_SECRET_KEY"))
+                    .build(),
+            );
+            crate::s3::S3Settings::builder()
+                .endpoint(Some(var("LAKEKEEPER_TEST__S3_ENDPOINT").parse().unwrap()))
+                .region(var("LAKEKEEPER_TEST__S3_REGION"))
+                .path_style_access(Some(true))
+                .build()
+                .get_storage_client(Some(&credential))
+                .await
+        }
+
+        fn test_path() -> String {
+            format!(
+                "s3://{}/lakekeeper-io-unit-tests/{}/object",
+                std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap(),
+                uuid::Uuid::new_v4()
+            )
+        }
+
+        /// The chunks after the first window are pinned to the window's `ETag`,
+        /// so a chunk of an object overwritten since then must fail rather than
+        /// return the new bytes.
+        #[tokio::test]
+        async fn a_chunk_pinned_to_an_overwritten_etag_fails() {
+            let storage = storage().await;
+            let path = test_path();
+            let location = S3Location::try_from_str(&path, true).unwrap();
+
+            storage
+                .write(&path, Bytes::from_static(b"version one"))
+                .await
+                .unwrap();
+            let first = storage.read(&path).await.unwrap();
+            let first_e_tag = first.info.e_tag().expect("S3 reports an ETag").to_string();
+            storage
+                .write(&path, Bytes::from_static(b"version two"))
+                .await
+                .unwrap();
+
+            let pinned_to = |e_tag: String| {
+                chunk_fetcher(
+                    &storage.client,
+                    &location,
+                    0,
+                    ChunkPin {
+                        version: None,
+                        e_tag: Some(e_tag),
+                    },
+                )
+            };
+
+            let error = pinned_to(first_e_tag)(0, 3, 0).await.unwrap_err();
+            assert_eq!(
+                read_error_kind(&error),
+                Some(ErrorKind::ConditionNotMatch),
+                "{error:?}"
+            );
+
+            // The same chunk pinned to the current `ETag` reads the new bytes.
+            let current_e_tag = storage
+                .read(&path)
+                .await
+                .unwrap()
+                .info
+                .e_tag()
+                .unwrap()
+                .to_string();
+            let (index, chunk) = pinned_to(current_e_tag)(0, 3, 0).await.unwrap();
+            assert_eq!((index, &chunk[..]), (0, &b"vers"[..]));
+
+            storage.delete(&path).await.unwrap();
+        }
     }
 }

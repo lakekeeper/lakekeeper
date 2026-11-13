@@ -1,5 +1,12 @@
 use core::panic;
-use std::{future::Future, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use bytes::Bytes;
 use futures::StreamExt;
@@ -423,6 +430,11 @@ test_all_storages!(
     test_write_then_read_single_and_read_impl
 );
 test_all_storages!(test_read_returns_metadata, test_read_returns_metadata_impl);
+test_all_storages!(
+    test_read_window_boundaries,
+    test_read_window_boundaries_impl
+);
+test_all_storages!(test_read_during_overwrite, test_read_during_overwrite_impl);
 test_all_storages!(
     test_write_outcome_identifies_the_object,
     test_write_outcome_identifies_the_object_impl
@@ -1141,18 +1153,20 @@ async fn test_remove_all_treats_input_as_dir_impl(
     Ok(())
 }
 
+/// Whether `storage` is ADLS. The `Adls` variant only exists with `storage-adls`.
+fn is_adls(storage: &StorageBackend) -> bool {
+    match storage {
+        #[cfg(feature = "storage-adls")]
+        StorageBackend::Adls(_) => true,
+        _ => false,
+    }
+}
+
 /// Test with empty files implementation
 async fn test_empty_files_impl(
     storage: &StorageBackend,
     config: &TestConfig,
 ) -> anyhow::Result<()> {
-    // ToDo: Revisit with new Azure storage. Azure blob client currently
-    // can't delete empty files, which fails with: <Error><Code>InvalidRange</Code><Message>The range specified is invalid for the current size of the resource
-    if matches!(storage, StorageBackend::Adls(_)) {
-        println!("Skipping empty files test for ADLS due to known issue with empty file deletion");
-        return Ok(());
-    }
-
     let test_path = config.test_path("empty-file.txt");
     let empty_data = Bytes::new();
 
@@ -1160,9 +1174,19 @@ async fn test_empty_files_impl(
     storage.write(&test_path, empty_data.clone()).await?;
 
     // Read empty file back
-    let read_data = storage.read(&test_path).await?.bytes;
+    let read = storage.read(&test_path).await?;
+    let read_data = read.bytes;
     assert_eq!(read_data.len(), 0, "Empty file should have zero length");
     assert_eq!(read_data, empty_data, "Empty file content should match");
+    assert_eq!(read.info.size(), Some(0), "Empty file should report size 0");
+    let meta = storage.metadata(&test_path).await?;
+    assert_eq!(read.info.e_tag(), meta.e_tag());
+
+    // ToDo: Revisit with new Azure storage. Azure blob client currently
+    // can't delete empty files, which fails with: <Error><Code>InvalidRange</Code><Message>The range specified is invalid for the current size of the resource
+    if is_adls(storage) {
+        storage.write(&test_path, Bytes::from_static(b"x")).await?;
+    }
 
     // Clean up
     storage.delete(&test_path).await?;
@@ -2140,6 +2164,159 @@ async fn test_read_returns_metadata_impl(
     assert_eq!(read.info.size(), meta.size());
     assert_eq!(read.info.last_modified(), meta.last_modified());
     assert_eq!(read.info.e_tag(), meta.e_tag());
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `read` returns every byte and the exact size for objects at and just past
+/// the size a backend reads in its first request (7 MiB for ADLS, 25 MiB for
+/// S3 and GCS).
+async fn test_read_window_boundaries_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    const MIB: usize = 1024 * 1024;
+    let data = generate_test_data(26);
+    for size in [7 * MIB, 7 * MIB + 1, 25 * MIB, 25 * MIB + 1] {
+        let path = config.test_path(&format!("read-window-{size}.bin"));
+        let expected = data.slice(0..size);
+        storage.write(&path, expected.clone()).await?;
+
+        let read = storage.read(&path).await?;
+        assert_eq!(
+            read.bytes.len(),
+            size,
+            "read length for a {size} byte object"
+        );
+        assert!(
+            read.bytes == expected,
+            "read content for a {size} byte object"
+        );
+        assert_eq!(read.info.size(), Some(size as u64));
+        let meta = storage.metadata(&path).await?;
+        assert_eq!(read.info.e_tag(), meta.e_tag());
+        assert_eq!(read.info.last_modified(), meta.last_modified());
+
+        storage.delete(&path).await?;
+    }
+    Ok(())
+}
+
+/// The error a `read` fails with when the object is overwritten between two of
+/// its requests, or `None` if the backend never fails a read that way.
+fn overwritten_during_read_kind(storage: &StorageBackend) -> Option<ErrorKind> {
+    // Every request after the first is pinned to the version the first one
+    // saw. The backend rejects it once an overwrite has replaced that version.
+    match storage {
+        #[cfg(feature = "storage-s3")]
+        StorageBackend::S3(_) => Some(ErrorKind::ConditionNotMatch),
+        #[cfg(feature = "storage-gcs")]
+        StorageBackend::Gcs(_) => Some(ErrorKind::ConditionNotMatch),
+        #[cfg(feature = "storage-adls")]
+        StorageBackend::Adls(_) => Some(ErrorKind::ConditionNotMatch),
+        _ => None,
+    }
+}
+
+/// A `read` that races with overwrites of a multi-request object returns one
+/// written version in full, or fails with the backend's overwrite error. It
+/// never mixes the bytes of two versions, and its `info` describes the bytes
+/// it returns.
+///
+/// An ADLS write creates an empty file and then appends to it, so on ADLS a
+/// read during a write can also return the empty file.
+async fn test_read_during_overwrite_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    const SIZE: usize = 30 * 1024 * 1024;
+    // An even count leaves the first version in place after the last overwrite.
+    const OVERWRITES: usize = 10;
+    const EMPTY: usize = 2;
+    let path = config.test_path("read-during-overwrite.bin");
+    let versions = [Bytes::from(vec![0x11; SIZE]), Bytes::from(vec![0x22; SIZE])];
+    storage.write(&path, versions[0].clone()).await?;
+    let read = storage.read(&path).await?;
+    assert!(read.bytes == versions[0], "the first version is read");
+
+    let returns_empty_file_during_write = is_adls(storage);
+
+    // The writer alternates the two versions. After each write it waits for one
+    // more read, so reads keep running during the writes even on a backend whose
+    // writes are instant.
+    let completed_reads = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let storage = storage.clone();
+        let path = path.clone();
+        let versions = versions.clone();
+        let completed_reads = completed_reads.clone();
+        tokio::spawn(async move {
+            for i in 1..=OVERWRITES {
+                let reads_before = completed_reads.load(Ordering::SeqCst);
+                storage.write(&path, versions[i % 2].clone()).await?;
+                while completed_reads.load(Ordering::SeqCst) == reads_before {
+                    sleep(Duration::from_millis(1)).await;
+                }
+            }
+            anyhow::Ok(())
+        })
+    };
+
+    let expected_error = overwritten_during_read_kind(storage);
+    let mut content_by_e_tag = HashMap::new();
+    let mut reads = 0;
+    let mut raced_reads = 0;
+    while !writer.is_finished() {
+        // Only the overwrite error or the empty file show that a read raced a
+        // write. A clean read of either version can follow a finished write.
+        match storage.read(&path).await {
+            Ok(read) => {
+                let content = if read.bytes == versions[0] {
+                    0
+                } else if read.bytes == versions[1] {
+                    1
+                } else if returns_empty_file_during_write && read.bytes.is_empty() {
+                    raced_reads += 1;
+                    EMPTY
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "read returned {} bytes that are not one written version",
+                        read.bytes.len()
+                    ));
+                };
+                assert_eq!(read.info.size(), Some(read.bytes.len() as u64));
+                if let Some(e_tag) = read.info.e_tag()
+                    && let Some(previous) = content_by_e_tag.insert(e_tag.to_string(), content)
+                {
+                    assert_eq!(
+                        previous, content,
+                        "ETag {e_tag} was returned with two different contents"
+                    );
+                }
+            }
+            Err(ReadError::IOError(e)) if Some(e.kind()) == expected_error => raced_reads += 1,
+            Err(e) => return Err(anyhow::anyhow!("read failed during overwrites: {e:?}")),
+        }
+        reads += 1;
+        completed_reads.store(reads, Ordering::SeqCst);
+    }
+    writer.await??;
+    // S3 PUTs are atomic and in-memory writes are instant, so a run can end
+    // without a race. The count is logged and not asserted.
+    println!("{reads} reads during {OVERWRITES} overwrites, {raced_reads} of them raced a write");
+
+    let read = storage.read(&path).await?;
+    assert!(
+        read.bytes == versions[0],
+        "the last written version is read"
+    );
+    let meta = storage.metadata(&path).await?;
+    assert_eq!(
+        read.info.e_tag(),
+        meta.e_tag(),
+        "the final read reports the ETag of the object"
+    );
 
     storage.delete(&path).await?;
     Ok(())
