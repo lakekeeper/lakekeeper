@@ -49,7 +49,7 @@ Basic setup in DuckDB:
 ```python
 import duckdb
 
-CATALOG_URL = "http://localhost:8181/catalog"
+CATALOG_URL = "http://lakekeeper:8181/catalog"
 WAREHOUSE = "my_warehouse"
 
 # Required if OAuth2 authentication is enabled for Lakekeeper
@@ -123,7 +123,7 @@ Basic setup in trino:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
@@ -152,7 +152,7 @@ Basic setup in trino:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
@@ -182,7 +182,7 @@ Basic setup in trino:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
@@ -216,7 +216,7 @@ Basic setup in Starburst:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
@@ -245,7 +245,7 @@ Basic setup in Starburst:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
@@ -275,7 +275,7 @@ Basic setup in Starburst:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
@@ -327,7 +327,7 @@ Basic setup in spark:
         "spark.sql.defaultCatalog": catalog_name,
         f"spark.sql.catalog.{catalog_name}": "org.apache.iceberg.spark.SparkCatalog",
         f"spark.sql.catalog.{catalog_name}.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
-        f"spark.sql.catalog.{catalog_name}.uri": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+        f"spark.sql.catalog.{catalog_name}.uri": "<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
         # Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
         f"spark.sql.catalog.{catalog_name}.credential": "<Client-ID>:<Client-Secret>", # Client-ID used to access Lakekeeper
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": "<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>",
@@ -358,7 +358,7 @@ import pyiceberg.typedef
 
 catalog = pyiceberg.catalog.rest.RestCatalog(
     name="my_catalog_name",
-    uri="<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+    uri="<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
     warehouse="<Name of the Warehouse in Lakekeeper>",
     #  Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
     credential="<Client-ID>:<Client-Secret>",
@@ -428,7 +428,7 @@ The following docker compose examples are available for starrocks:
     (
         "type" = "iceberg",
         "iceberg.catalog.type" = "rest",
-        "iceberg.catalog.uri" = "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+        "iceberg.catalog.uri" = "<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
         "iceberg.catalog.warehouse" = "<Name of the Warehouse in Lakekeeper>",
         -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
         "iceberg.catalog.security" = "OAUTH2",
@@ -479,7 +479,7 @@ Configure Lakekeeper as the destination in the OLake UI, or in the `destination.
       "writer": {
         "catalog_type": "lakekeeper",
         "rest_auth_type": "none",
-        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
         "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>"
       }
     }
@@ -493,7 +493,7 @@ Configure Lakekeeper as the destination in the OLake UI, or in the `destination.
       "writer": {
         "catalog_type": "lakekeeper",
         "rest_auth_type": "oauth2",
-        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
         "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>",
         "oauth2_uri": "<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>",
         "credential": "<Client-ID>:<Client-Secret>",
@@ -510,12 +510,14 @@ Configure Lakekeeper as the destination in the OLake UI, or in the `destination.
       "writer": {
         "catalog_type": "lakekeeper",
         "rest_auth_type": "token",
-        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+        "rest_catalog_url": "<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
         "iceberg_s3_path": "<Name of the Warehouse in Lakekeeper>",
         "token": "<Access token for Lakekeeper>"
       }
     }
     ```
+
+When running OLake with Docker Compose, `localhost` resolves to the OLake container, not a separate Lakekeeper service. Use the Lakekeeper service hostname reachable from the OLake container, and make sure both services are on the same Docker network.
 
 The OLake UI asks for the same settings. For all options, see the [OLake Go Lakekeeper documentation](https://olake.io/docs/writers/iceberg/catalog/rest?rest-catalog=lakekeeper).
 
