@@ -49,7 +49,7 @@ Basic setup in DuckDB:
 ```python
 import duckdb
 
-CATALOG_URL = "http://lakekeeper:8181/catalog"
+CATALOG_URL = "http://localhost:8181/catalog"
 WAREHOUSE = "my_warehouse"
 
 # Required if OAuth2 authentication is enabled for Lakekeeper
@@ -123,7 +123,7 @@ Basic setup in trino:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
@@ -152,7 +152,7 @@ Basic setup in trino:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
@@ -182,7 +182,7 @@ Basic setup in trino:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
@@ -216,7 +216,7 @@ Basic setup in Starburst:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
@@ -245,7 +245,7 @@ Basic setup in Starburst:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
@@ -275,7 +275,7 @@ Basic setup in Starburst:
     CREATE CATALOG lakekeeper USING iceberg
     WITH (
         "iceberg.catalog.type" = 'rest',
-        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>',
+        "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
@@ -327,7 +327,7 @@ Basic setup in spark:
         "spark.sql.defaultCatalog": catalog_name,
         f"spark.sql.catalog.{catalog_name}": "org.apache.iceberg.spark.SparkCatalog",
         f"spark.sql.catalog.{catalog_name}.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
-        f"spark.sql.catalog.{catalog_name}.uri": "<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
+        f"spark.sql.catalog.{catalog_name}.uri": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
         # Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
         f"spark.sql.catalog.{catalog_name}.credential": "<Client-ID>:<Client-Secret>", # Client-ID used to access Lakekeeper
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": "<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>",
@@ -358,7 +358,7 @@ import pyiceberg.typedef
 
 catalog = pyiceberg.catalog.rest.RestCatalog(
     name="my_catalog_name",
-    uri="<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
+    uri="<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
     warehouse="<Name of the Warehouse in Lakekeeper>",
     #  Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
     credential="<Client-ID>:<Client-Secret>",
@@ -428,7 +428,7 @@ The following docker compose examples are available for starrocks:
     (
         "type" = "iceberg",
         "iceberg.catalog.type" = "rest",
-        "iceberg.catalog.uri" = "<Lakekeeper Catalog URI, i.e. http://lakekeeper:8181/catalog>",
+        "iceberg.catalog.uri" = "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
         "iceberg.catalog.warehouse" = "<Name of the Warehouse in Lakekeeper>",
         -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
         "iceberg.catalog.security" = "OAUTH2",
@@ -469,7 +469,7 @@ The following docker compose examples are available for starrocks:
 
 For a hands-on setup, the [OLake Go quickstart](https://olake.io/docs/getting-started/quickstart) starts the OLake UI with Docker Compose.
 
-Configure Lakekeeper as the destination in the OLake UI, or in the `destination.json` file of the OLake CLI. `iceberg_s3_path` holds the name of the Lakekeeper warehouse:
+Configure Lakekeeper as the destination in the OLake UI, or in the `destination.json` file of the OLake CLI. `iceberg_s3_path` holds the name of the Lakekeeper warehouse. For a warehouse outside the default project, use the `<project-id>/<warehouse-name>` form:
 
 === "Without Authentication"
 
