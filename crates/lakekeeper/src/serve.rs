@@ -279,9 +279,14 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
 
     cancellation_token.cancel();
 
-    endpoint_statistics_tracker_tx
+    // Only processes that serve the HTTP API run the tracker. Elsewhere its channel is closed.
+    if endpoint_statistics_tracker_tx
         .send(EndpointStatisticsMessage::Shutdown)
-        .await?;
+        .await
+        .is_err()
+    {
+        tracing::debug!("Endpoint statistics tracker is not running, nothing to flush");
+    }
     cloud_events_tx.send(CloudEventsMessage::Shutdown).await?;
 
     wait_for_services_to_stop(&mut service_futures, &mut service_ids).await;
@@ -372,6 +377,83 @@ fn spawn_stop_service(
     StopService {
         id: handle.id(),
         task_control,
+    }
+}
+
+/// The background services that only some processes start.
+///
+/// A headless worker starts none of them, so its small database pool serves its tasks. The
+/// processes that serve the HTTP API run them for the whole deployment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessServices {
+    /// Writes the counted API calls to the statistics sinks.
+    endpoint_statistics: bool,
+    /// Samples how long tasks wait. Headless workers come and go with the autoscaler, so they
+    /// add no series or queries.
+    oldest_due_sampler: bool,
+    /// Queues the due runs of task schedules. Due schedules are claimed in the database, so one
+    /// process is enough. It writes, so read-only maintenance skips it.
+    task_schedule_materializer: bool,
+}
+
+impl ProcessServices {
+    fn new(serve_http_api: bool, read_only_maintenance: bool) -> Self {
+        Self {
+            endpoint_statistics: serve_http_api,
+            oldest_due_sampler: serve_http_api,
+            task_schedule_materializer: serve_http_api && !read_only_maintenance,
+        }
+    }
+}
+
+/// Spawns the services that `services` selects. An unused `tracker` is dropped.
+fn spawn_process_services<
+    A: Authorizer,
+    C: CatalogStore,
+    S: SecretStore,
+    H: ::std::hash::BuildHasher,
+>(
+    services: ProcessServices,
+    tracker: EndpointStatisticsTracker,
+    state: &State<A, C, S>,
+    cancellation_token: &CancellationToken,
+    service_futures: &mut JoinSet<Result<(), anyhow::Error>>,
+    service_ids: &mut HashMap<tokio::task::Id, String, H>,
+) {
+    if services.endpoint_statistics {
+        let handle = service_futures.spawn(async move {
+            tracker.run().await;
+            Ok(())
+        });
+        service_ids.insert(handle.id(), "Endpoint Statistics Tracker".to_string());
+    }
+
+    if services.oldest_due_sampler {
+        let sampler = crate::api::task_queue_demand::OldestDueSampler::new::<C>(
+            state.catalog.clone(),
+            state.registered_task_queues.clone(),
+        );
+        let cancellation_token = cancellation_token.clone();
+        let handle = service_futures.spawn(async move {
+            sampler.run(cancellation_token).await;
+            Ok(())
+        });
+        service_ids.insert(handle.id(), "Oldest Due Task Sampler".to_string());
+    }
+
+    if services.task_schedule_materializer {
+        let catalog_state = state.catalog.clone();
+        let cancellation_token = cancellation_token.clone();
+        let handle = service_futures.spawn(async move {
+            crate::service::tasks::task_schedule::task_schedule_materializer::<C>(
+                catalog_state,
+                CONFIG.task_poll_interval,
+                cancellation_token,
+            )
+            .await;
+            Ok(())
+        });
+        service_ids.insert(handle.id(), "Task Schedule Materializer".to_string());
     }
 }
 
@@ -586,23 +668,14 @@ async fn serve_inner<
     ));
     service_ids.insert(metrics_handle.id(), "Metrics Server".to_string());
 
-    // How long tasks wait. Headless workers come and go with the autoscaler, so they add no
-    // series or queries.
-    if CONFIG.serve_http_api {
-        let sampler = crate::api::task_queue_demand::OldestDueSampler::new::<C>(
-            state.v1_state.catalog.clone(),
-            state.v1_state.registered_task_queues.clone(),
-        );
-        let sampler_cancellation_token = cancellation_token.clone();
-        let sampler_abort_handle = service_futures.spawn(async move {
-            sampler.run(sampler_cancellation_token).await;
-            Ok(())
-        });
-        service_ids.insert(
-            sampler_abort_handle.id(),
-            "Oldest Due Task Sampler".to_string(),
-        );
-    }
+    spawn_process_services(
+        ProcessServices::new(CONFIG.serve_http_api, skip_built_in_queues_for_maintenance),
+        tracker,
+        &state.v1_state,
+        &cancellation_token,
+        service_futures,
+        service_ids,
+    );
 
     // Periodic health checks:
     let health_abort_handles =
@@ -619,16 +692,6 @@ async fn serve_inner<
             .map_err(|e| anyhow!(e).context("Event publisher exited with error"))
     });
     service_ids.insert(ce_abort_handle.id(), "Event Publisher".to_string());
-
-    // Endpoint statistics tracker:
-    let tracker_abort_handle = service_futures.spawn(async move {
-        tracker.run().await;
-        Ok(())
-    });
-    service_ids.insert(
-        tracker_abort_handle.id(),
-        "Endpoint Statistics Tracker".to_string(),
-    );
 
     // Cache invalidation: reading and pruning the change log.
     for (service_name, task) in crate::service::cache_invalidation::background_tasks::<C>(
@@ -680,25 +743,6 @@ async fn serve_inner<
             Ok(())
         });
         service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
-    }
-
-    // Writes, so skipped in read-only maintenance. Runs also without task workers.
-    if !skip_built_in_queues_for_maintenance {
-        let materializer_catalog_state = state.v1_state.catalog.clone();
-        let materializer_cancellation_token = cancellation_token.clone();
-        let materializer_abort_handle = service_futures.spawn(async move {
-            crate::service::tasks::task_schedule::task_schedule_materializer::<C>(
-                materializer_catalog_state,
-                CONFIG.task_poll_interval,
-                materializer_cancellation_token,
-            )
-            .await;
-            Ok(())
-        });
-        service_ids.insert(
-            materializer_abort_handle.id(),
-            "Task Schedule Materializer".to_string(),
-        );
     }
 
     // HTTP Server / Axum. Serves the full API, or just `/health` in headless
@@ -881,4 +925,42 @@ fn validate_authenticator_idp_ids(
         result.push(role_provider_id);
     }
     Ok(result.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProcessServices;
+
+    #[test]
+    fn headless_workers_start_no_process_services() {
+        let all = ProcessServices {
+            endpoint_statistics: true,
+            oldest_due_sampler: true,
+            task_schedule_materializer: true,
+        };
+        let none = ProcessServices {
+            endpoint_statistics: false,
+            oldest_due_sampler: false,
+            task_schedule_materializer: false,
+        };
+        for (serve_http_api, read_only_maintenance, expected) in [
+            (true, false, all),
+            (
+                true,
+                true,
+                ProcessServices {
+                    task_schedule_materializer: false,
+                    ..all
+                },
+            ),
+            (false, false, none),
+            (false, true, none),
+        ] {
+            assert_eq!(
+                ProcessServices::new(serve_http_api, read_only_maintenance),
+                expected,
+                "serve_http_api: {serve_http_api}, read-only maintenance: {read_only_maintenance}"
+            );
+        }
+    }
 }
