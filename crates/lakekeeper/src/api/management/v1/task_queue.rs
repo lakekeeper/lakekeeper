@@ -96,11 +96,8 @@ pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
             )
         })?;
     } else {
-        let mut existing_queue_names = task_queues.queue_names().await;
-        existing_queue_names.sort_unstable();
-        let existing_queue_names = existing_queue_names.iter().join(", ");
         return Err(ErrorModel::bad_request(
-            format!("Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]"),
+            queue_not_found_message(&task_queues, queue_name).await,
             "QueueNotFound",
             None,
         )
@@ -168,19 +165,42 @@ impl axum::response::IntoResponse for ScheduleTaskResponse {
     }
 }
 
+/// The current name of the queue registered on this server that answers to `queue_name`.
+/// A pre-rename name resolves to the current name, so a config read against an old path
+/// returns the config the worker uses.
+///
+/// # Errors
+/// `404 QueueNotFound` if no registered queue answers to `queue_name`.
+pub(crate) async fn require_registered_queue(
+    task_queues: &crate::service::tasks::RegisteredTaskQueues,
+    queue_name: &TaskQueueName,
+) -> Result<&'static TaskQueueName> {
+    match task_queues.resolve_queue_name(queue_name).await {
+        Some(queue_name) => Ok(queue_name),
+        None => Err(ErrorModel::not_found(
+            queue_not_found_message(task_queues, queue_name).await,
+            "QueueNotFound",
+            None,
+        )
+        .into()),
+    }
+}
+
+async fn queue_not_found_message(
+    task_queues: &crate::service::tasks::RegisteredTaskQueues,
+    queue_name: &TaskQueueName,
+) -> String {
+    let existing_queue_names = task_queues.queue_names().await.iter().join(", ");
+    format!("Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]")
+}
+
+/// The stored config of the queue, or an empty config if none is stored. `queue_name` is the
+/// current name from [`require_registered_queue`].
 pub(crate) async fn get_task_queue_config<C: CatalogStore, A: Authorizer, S: SecretStore>(
     filter: &TaskQueueConfigFilter,
     queue_name: &TaskQueueName,
     context: ApiContext<State<A, C, S>>,
 ) -> Result<GetTaskQueueConfigResponse> {
-    // Resolve a pre-rename name to the queue's current name so a config read
-    // against an old path returns the config the worker actually uses.
-    let queue_name = context
-        .v1_state
-        .registered_task_queues
-        .resolve_queue_name(queue_name)
-        .await
-        .unwrap_or(queue_name);
     let config = C::get_task_queue_config(filter, queue_name, context.v1_state.catalog)
         .await?
         .unwrap_or_else(|| GetTaskQueueConfigResponse {

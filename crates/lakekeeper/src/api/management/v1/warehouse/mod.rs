@@ -30,6 +30,7 @@ use crate::{
             task_queue::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest,
                 get_task_queue_config as get_task_queue_config_authorized,
+                require_registered_queue,
                 set_task_queue_config as set_task_queue_config_authorized,
             },
         },
@@ -2311,6 +2312,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetTaskQueueConfigResponse> {
+        let queue_name =
+            require_registered_queue(&context.v1_state.registered_task_queues, queue_name).await?;
+
         // ------------------- AuthZ -------------------
         let authorizer = &context.v1_state.authz;
 
