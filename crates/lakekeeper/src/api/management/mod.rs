@@ -4239,6 +4239,7 @@ pub mod v1 {
         params(("warehouse_id" = Uuid,),("queue_name" = String,)),
         responses(
             (status = 200, body = GetTaskQueueConfigResponse),
+            (status = 404, body = IcebergErrorResponse, description = "This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -4420,6 +4421,7 @@ pub mod v1 {
         params(("queue_name" = String,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, body = GetTaskQueueConfigResponse),
+            (status = 404, body = IcebergErrorResponse, description = "This server has no queue of this name (`QueueNotFound`)."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]

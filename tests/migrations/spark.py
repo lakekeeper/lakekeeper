@@ -38,6 +38,8 @@ def spark_session(catalog_url):
         "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         "spark.sql.defaultCatalog": "lakekeeper",
         "spark.jars.packages": f"org.apache.iceberg:iceberg-spark-runtime-{SPARK_MINOR_VERSION}_2.12:{ICEBERG_VERSION},org.apache.iceberg:iceberg-aws-bundle:{ICEBERG_VERSION}",
+        # Tried after Maven Central, so a failing Maven Central falls back to this mirror.
+        "spark.jars.repositories": "https://maven-central.storage-download.googleapis.com/maven2/",
     }
     spark_config = SparkConf().setMaster('local').setAppName("Iceberg-REST")
     for k, v in config.items():

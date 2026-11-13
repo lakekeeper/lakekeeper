@@ -21,7 +21,8 @@ const PRUNE_INTERVAL: Duration = Duration::from_mins(5);
 /// `cancellation_token` is cancelled: reading the change log, if
 /// `cache.invalidation.enabled`, and pruning it. The changes of an extension domain go to its
 /// receiver in `receivers`. The first read of the log runs before this returns, for at most
-/// 10 s. Pruning does not run in read-only maintenance mode.
+/// 10 s. Pruning runs only on processes that serve the HTTP API, and not in read-only
+/// maintenance mode.
 pub async fn background_tasks<C: CatalogStore>(
     catalog_state: C::State,
     receivers: CacheChangeReceivers,
@@ -45,7 +46,9 @@ pub async fn background_tasks<C: CatalogStore>(
     } else {
         tracing::info!("Cache invalidation is disabled");
     }
-    if !CONFIG.maintenance_mode.is_read_only() {
+    // Pruning is housekeeping for the whole deployment: the API processes do it, so a headless
+    // worker keeps its small pool for its tasks.
+    if CONFIG.serve_http_api && !CONFIG.maintenance_mode.is_read_only() {
         tasks.push((
             "Cache Change Log Pruner",
             Box::pin(prune_periodically::<C>(

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT w.warehouse_id AS \"warehouse_id!\"\n        FROM unnest($4::uuid[]) AS w(warehouse_id)\n        WHERE EXISTS (\n            SELECT 1\n            FROM unnest($3::text[]) AS p(privilege)\n            CROSS JOIN LATERAL (\n                SELECT 1\n                FROM (\n                    SELECT ga.warehouse_id, ga.tabular_id FROM grant_assignment ga\n                    WHERE ga.principal_type = 'user' AND ga.user_id = ANY($1::text[]) AND ga.role_id IS NULL\n                      AND ga.resource_type IN ('namespace', 'tabular') AND ga.privilege = p.privilege\n                      AND ga.project_id IS NULL AND ga.warehouse_id = w.warehouse_id\n                    UNION ALL\n                    SELECT ga.warehouse_id, ga.tabular_id FROM grant_assignment ga\n                    WHERE ga.principal_type = 'role' AND ga.user_id IS NULL AND ga.role_id = ANY($2::uuid[])\n                      AND ga.resource_type IN ('namespace', 'tabular') AND ga.privilege = p.privilege\n                      AND ga.project_id IS NULL AND ga.warehouse_id = w.warehouse_id\n                ) g\n                -- A namespace grant joins no tabular row and passes; a tabular grant passes if live.\n                LEFT JOIN tabular t ON t.warehouse_id = g.warehouse_id AND t.tabular_id = g.tabular_id\n                WHERE t.deleted_at IS NULL\n                LIMIT 1\n            ) hit\n        )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "warehouse_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray",
+        "TextArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "028a469d1adde137eecf84167bddd5b2742550db29a1537d486cfdbf415d850d"
+}

@@ -335,9 +335,9 @@ where
     // folds the read into the authorization result, which needs the store's own error
     // type rather than an already-rendered one.
 
-    // Deliberately no wrapper for `list_grants_on_resources_impl`: the
-    // evaluation-path fetch gets its ergonomic surface with its first caller,
-    // shaped by what that caller needs.
+    // Deliberately no wrapper for `list_grants_on_resources_impl` and
+    // `list_containers_with_grants_below_impl`: the evaluation-path fetches get their
+    // ergonomic surface with their first caller, shaped by what that caller needs.
 }
 
 impl<T> CatalogGrantOps for T where T: CatalogStore {}

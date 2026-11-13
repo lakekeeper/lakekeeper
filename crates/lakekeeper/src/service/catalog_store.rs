@@ -768,16 +768,18 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError>;
 
-    /// Update the properties of a namespace.
+    /// Remove `removals` from the stored properties of a namespace, then set `updates`.
+    /// Other keys keep their stored value.
     ///
-    /// The properties are the final key-value properties that should
-    /// be persisted as-is in the catalog.
+    /// Concurrent calls on the same namespace must not lose each other's changes, and the
+    /// returned previous properties must be the ones this call replaced.
     async fn update_namespace_properties_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
-        properties: HashMap<String, String>,
+        updates: &HashMap<String, String>,
+        removals: &[String],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError>;
+    ) -> std::result::Result<UpdatedNamespaceProperties, CatalogUpdateNamespacePropertiesError>;
 
     async fn set_namespace_protected_impl(
         warehouse_id: WarehouseId,
@@ -1218,6 +1220,26 @@ where
         resources: &[GrantResource],
         catalog_state: Self::State,
     ) -> Result<Vec<GrantSpec>, ListGrantsStoreError>;
+
+    /// The entries of `containers` that have a live object strictly below them on which one
+    /// of `principals` holds one of `privileges` as a direct grant.
+    ///
+    /// Below a project are its warehouses and everything in them; below a warehouse, its
+    /// namespaces and tabulars; below a namespace, its descendant namespaces and the tabulars
+    /// in it and in them. Server, project and tag-definition grants are never below anything.
+    /// A grant on a soft-deleted tabular does not count; staged tables and deactivated
+    /// warehouses count. Entries other than projects, warehouses and namespaces are never in
+    /// the answer.
+    ///
+    /// `principals` must be the effective set, as for `list_grants_on_resources_impl`.
+    /// Privileges are matched by name, never interpreted. Unordered, each entry at most once.
+    /// May not yet see a grant written moments before.
+    async fn list_containers_with_grants_below_impl(
+        principals: &[UserOrRoleId],
+        containers: &[GrantResource],
+        privileges: &[&str],
+        catalog_state: Self::State,
+    ) -> Result<Vec<GrantResource>, ListGrantsStoreError>;
 
     // ---------------- Tag Management ----------------
     async fn create_tag_definition_impl<'a>(

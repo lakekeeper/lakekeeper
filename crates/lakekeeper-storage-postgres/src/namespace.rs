@@ -16,8 +16,8 @@ use lakekeeper::{
         NamespaceCannotMoveIntoSelf, NamespaceDropInfo, NamespaceHasChildren,
         NamespaceHasRunningTabularExpirations, NamespaceId, NamespaceIdent, NamespaceNotEmpty,
         NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected,
-        NamespaceWithParent, Result, SerializationError, TabularId, WarehouseIdNotFound,
-        storage::join_location, tasks::TaskId,
+        NamespaceWithParent, Result, SerializationError, TabularId, UpdatedNamespaceProperties,
+        WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
 use lakekeeper_io::Location;
@@ -1384,22 +1384,47 @@ pub(crate) async fn set_namespace_protected(
 pub(crate) async fn update_namespace_properties(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
-    properties: HashMap<String, String>,
+    updates: &HashMap<String, String>,
+    removals: &[String],
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError> {
-    let properties = serde_json::to_value(properties)
+) -> std::result::Result<UpdatedNamespaceProperties, CatalogUpdateNamespacePropertiesError> {
+    let updates = serde_json::to_value(updates)
         .map_err(|e| NamespacePropertiesSerializationError::new(warehouse_id, namespace_id, e))?;
+    let not_found = || NamespaceNotFound::new(warehouse_id, namespace_id);
 
+    // Lock the row, then update it in a second statement: one statement that locks the row and
+    // then updates it can deadlock behind other lockers. The update sees exactly the locked row.
+    let previous = sqlx::query_scalar!(
+        r#"
+        SELECT namespace_properties as "properties: Json<Option<HashMap<String, String>>>"
+        FROM namespace
+        WHERE warehouse_id = $1 AND namespace_id = $2
+        AND warehouse_id IN (
+            SELECT warehouse_id FROM warehouse WHERE status = 'active'
+        )
+        FOR NO KEY UPDATE
+        "#,
+        *warehouse_id,
+        *namespace_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
+    .ok_or_else(not_found)?;
+
+    // A stored JSON `null` counts as no properties.
     let row = sqlx::query_as!(
         NamespaceWithParentVersionRow,
         r#"
         WITH updated_ns AS (
             UPDATE namespace
-            SET namespace_properties = $1
-            WHERE warehouse_id = $2 AND namespace_id = $3
-            AND warehouse_id IN (
-                SELECT warehouse_id FROM warehouse WHERE status = 'active'
-            )
+            SET namespace_properties = (
+                CASE WHEN jsonb_typeof(namespace_properties) = 'object'
+                    THEN namespace_properties
+                    ELSE '{}'::jsonb
+                END - $4::text[]
+            ) || $3::jsonb
+            WHERE warehouse_id = $1 AND namespace_id = $2
             RETURNING
                 namespace_id,
                 namespace_name,
@@ -1435,21 +1460,22 @@ pub(crate) async fn update_namespace_properties(
         FROM updated_ns u
         LEFT JOIN parent_ns p ON TRUE
         "#,
-        properties,
         *warehouse_id,
-        *namespace_id
+        *namespace_id,
+        updates,
+        removals,
     )
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| match e {
-        sqlx::Error::RowNotFound => CatalogUpdateNamespacePropertiesError::from(
-            NamespaceNotFound::new(warehouse_id, namespace_id),
-        ),
+        sqlx::Error::RowNotFound => CatalogUpdateNamespacePropertiesError::from(not_found()),
         _ => e.into_catalog_backend_error().into(),
     })?;
 
-    row.into_namespace_with_parent_version(warehouse_id)
-        .map_err(Into::into)
+    Ok(UpdatedNamespaceProperties {
+        namespace: row.into_namespace_with_parent_version(warehouse_id)?,
+        previous_properties: previous.0.filter(|p| !p.is_empty()),
+    })
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1518,6 +1544,7 @@ pub mod tests {
         let properties = HashMap::from_iter(vec![
             ("key1".to_string(), "value1".to_string()),
             ("key2".to_string(), "value2".to_string()),
+            ("key3".to_string(), "value3".to_string()),
         ]);
 
         let namespace_info = initialize_namespace(
@@ -1598,20 +1625,29 @@ pub mod tests {
             .await
             .unwrap();
 
-        let new_props = HashMap::from_iter(vec![
+        let updates = HashMap::from_iter(vec![
             ("key2".to_string(), "updated_value".to_string()),
             ("new_key".to_string(), "new_value".to_string()),
         ]);
-        PostgresBackend::update_namespace_properties(
+        let outcome = PostgresBackend::update_namespace_properties(
             warehouse_id,
             namespace_id,
-            new_props.clone(),
+            &updates,
+            &["key1".to_string(), "missing_key".to_string()],
             &mut transaction,
         )
         .await
         .unwrap();
 
         transaction.commit().await.unwrap();
+
+        let new_props = HashMap::from_iter(vec![
+            ("key2".to_string(), "updated_value".to_string()),
+            ("key3".to_string(), "value3".to_string()),
+            ("new_key".to_string(), "new_value".to_string()),
+        ]);
+        assert_eq!(outcome.previous_properties, Some(properties.clone()));
+        assert_eq!(outcome.namespace.properties(), Some(&new_props));
 
         let response = PostgresBackend::get_namespace_cache_aware(
             warehouse_id,
@@ -1636,6 +1672,38 @@ pub mod tests {
         )
         .await
         .expect("Error dropping namespace");
+    }
+
+    /// A namespace created without properties stores JSON `null`, which an update treats as
+    /// empty. A key in both `updates` and `removals` is removed first, then set.
+    #[sqlx::test]
+    async fn test_update_namespace_properties_without_stored_properties(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        let outcome = PostgresBackend::update_namespace_properties(
+            warehouse_id,
+            namespace_id,
+            &HashMap::from([("a".to_string(), "1".to_string())]),
+            &["a".to_string()],
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(outcome.previous_properties, None);
+        assert_eq!(
+            outcome.namespace.properties(),
+            Some(&HashMap::from([("a".to_string(), "1".to_string())]))
+        );
     }
 
     #[sqlx::test]
@@ -3869,7 +3937,8 @@ pub mod tests {
         PostgresBackend::update_namespace_properties(
             warehouse_id,
             parent,
-            HashMap::from([("key".to_string(), "value".to_string())]),
+            &HashMap::from([("key".to_string(), "value".to_string())]),
+            &[],
             &mut t,
         )
         .await

@@ -2017,6 +2017,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTaskLogCleanupConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -7501,6 +7507,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetSoftDeletionQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -7561,6 +7573,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetPurgeQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -14028,11 +14046,11 @@ components:
 
         `self-managed` (the default) leaves the spec mutable by the warehouse's own
         owners through the usual grants. When set to `instance-admin`, spec changes —
-        storage profile, credentials, delete profile, rename, status, protection,
-        format-version policy, and deletion — are accepted only from instance
-        administrators; other callers are rejected even when their grants would
-        otherwise allow it. Child resources (namespaces, tables, grants), task-queue
-        configuration, and data access are unaffected.
+        storage profile, credentials, rename, status, protection, and deletion — are
+        accepted only from instance administrators; other callers are rejected even
+        when their grants would otherwise allow it. The delete profile, the
+        format-version policy, task-queue configuration, child resources (namespaces,
+        tables, grants), and data access stay with the usual grants.
       enum:
         - self-managed
         - instance-admin

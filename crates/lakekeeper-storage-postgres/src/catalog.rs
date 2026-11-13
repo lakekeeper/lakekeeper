@@ -60,9 +60,9 @@ use lakekeeper::{
         TagAttachmentFilter, TagDefinition, TagDefinitionId, TagId, TagSource, TagTarget,
         TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
         UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
-        UpdateWarehouseStorageProfileError, UpdatedWarehouseStorage, UserMembershipEntry,
-        UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
-        WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
+        UpdateWarehouseStorageProfileError, UpdatedNamespaceProperties, UpdatedWarehouseStorage,
+        UserMembershipEntry, UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
+        ViewOrTableInfo, WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
             AppliedGrants, GrantCandidate, GrantFilter, GrantResource, GrantRevokeCandidates,
@@ -94,8 +94,9 @@ use super::{
     dbutils::DBErrorHandler,
     grant::{
         SubtreeBounds, apply_grants, count_subtree_namespaces, delete_grants_for_user,
-        insert_grants_bounded, list_grants, list_grants_in_subtree, list_grants_on_resources,
-        resolve_ceiling, revoke_grant_candidates, select_subtree_grant_candidates,
+        insert_grants_bounded, list_containers_with_grants_below, list_grants,
+        list_grants_in_subtree, list_grants_on_resources, resolve_ceiling, revoke_grant_candidates,
+        select_subtree_grant_candidates,
     },
     namespace::{
         create_namespace, drop_namespace, list_namespaces, move_namespace,
@@ -281,10 +282,13 @@ impl CatalogStore for super::PostgresBackend {
     async fn update_namespace_properties_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
-        properties: HashMap<String, String>,
+        updates: &HashMap<String, String>,
+        removals: &[String],
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> std::result::Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError> {
-        update_namespace_properties(warehouse_id, namespace_id, properties, transaction).await
+    ) -> std::result::Result<UpdatedNamespaceProperties, CatalogUpdateNamespacePropertiesError>
+    {
+        update_namespace_properties(warehouse_id, namespace_id, updates, removals, transaction)
+            .await
     }
 
     async fn create_table_impl<'a>(
@@ -574,6 +578,21 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<Vec<GrantSpec>, ListGrantsStoreError> {
         list_grants_on_resources(principals, resources, &catalog_state.read_pool()).await
+    }
+
+    async fn list_containers_with_grants_below_impl(
+        principals: &[UserOrRoleId],
+        containers: &[GrantResource],
+        privileges: &[&str],
+        catalog_state: Self::State,
+    ) -> Result<Vec<GrantResource>, ListGrantsStoreError> {
+        list_containers_with_grants_below(
+            principals,
+            containers,
+            privileges,
+            &catalog_state.read_pool(),
+        )
+        .await
     }
 
     // ---------------- Tag Management ----------------

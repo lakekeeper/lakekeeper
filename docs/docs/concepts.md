@@ -289,8 +289,6 @@ In warehouses with hard deletion, and when deleting a namespace without `recursi
 
 In a warehouse with soft deletion, users without this permission can delete a namespace only when it is empty. Dropped tables, views and generic tables count until they expire.
 
-In a warehouse managed by the instance (`managed-by: instance-admin`), only instance admins can change the soft-deletion settings, but this permission still decides who may skip soft deletion.
-
 ## Upgrades & Migration
 
 Lakekeeper relies on a persistent backend (Postgres) and an optional authorization system (OpenFGA). As Lakekeeper evolves, these systems may need schema or configuration updates to support new features and improvements. The `lakekeeper migrate` command initializes and updates both Postgres schemas (creating necessary tables and structures) and authorization models to ensure compatibility with your current Lakekeeper version.
