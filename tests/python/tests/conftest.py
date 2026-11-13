@@ -106,6 +106,10 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# Spark resolves `spark.jars.packages` at session start and tries Maven Central
+# first. When Maven Central fails, it falls back to this mirror of it.
+SPARK_JARS_REPOSITORIES = "https://maven-central.storage-download.googleapis.com/maven2/"
+
 STORAGE_CONFIGS = []
 
 if settings.s3_access_key is not None:
@@ -816,6 +820,7 @@ def spark(warehouse: Warehouse, storage_config):
     catalog_name = warehouse.normalized_catalog_name
     configuration = {
         "spark.jars.packages": spark_jars_packages,
+        "spark.jars.repositories": SPARK_JARS_REPOSITORIES,
         "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         "spark.sql.defaultCatalog": catalog_name,
         **spark_catalog_configuration(warehouse, storage_config),

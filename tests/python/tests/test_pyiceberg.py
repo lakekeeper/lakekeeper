@@ -287,9 +287,11 @@ def test_drop_purge_table(namespace: conftest.Namespace, storage_config):
     with pytest.raises(exc.NoSuchTableError):
         catalog.load_table((*namespace.name, table_name))
 
-    # sleep to give time for the table to be gone
-    time.sleep(5)
-    inp = file_io.new_input(location)
+    # The purge runs as a background task. Its duration depends on the server:
+    # an emulated architecture takes several times longer.
+    deadline = time.monotonic() + 60
+    while inp.exists() and time.monotonic() < deadline:
+        time.sleep(1)
     assert not inp.exists(), f"Table location {location} still exists"
 
     with pytest.raises(exc.NoSuchTableError):

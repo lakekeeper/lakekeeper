@@ -125,6 +125,7 @@ def kms_spark(kms_warehouse: conftest.Warehouse):
     catalog_name = kms_warehouse.normalized_catalog_name
     configuration = {
         "spark.jars.packages": spark_jars_packages,
+        "spark.jars.repositories": conftest.SPARK_JARS_REPOSITORIES,
         "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         "spark.sql.defaultCatalog": catalog_name,
         f"spark.sql.catalog.{catalog_name}": "org.apache.iceberg.spark.SparkCatalog",
