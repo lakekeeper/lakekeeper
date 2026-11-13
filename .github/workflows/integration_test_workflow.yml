@@ -6,6 +6,11 @@ on:
       test_name:
         required: true
         type: string
+      skip:
+        description: "Report the test as skipped without running it"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,6 +21,7 @@ permissions:
 jobs:
   test:
     name: ${{ inputs.test_name }}
+    if: ${{ !inputs.skip }}
     env:
       current_test: ${{ inputs.test_name }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}

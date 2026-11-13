@@ -88,6 +88,9 @@ jobs:
     uses: ./.github/workflows/integration_test_workflow.yml
     with:
       test_name: ${{ matrix.names }}
+      # Pull requests test the newest Iceberg versions, and every push runs the
+      # whole matrix. Each storage type keeps a version on pull requests.
+      skip: ${{ github.event_name == 'pull_request' && (endsWith(matrix.names, '-1.8.0') || endsWith(matrix.names, '-1.9.2')) }}
     secrets: inherit
 
   lance:
