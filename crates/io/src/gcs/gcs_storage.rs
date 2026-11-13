@@ -33,7 +33,7 @@ use crate::{
     delete_not_found_is_ok, execute_with_parallelism,
     gcs::{
         CHUNK_SIZE, ControlClient, GcsLocation, MAX_ATTEMPTS, REQUEST_TIMEOUT,
-        RESUMABLE_UPLOAD_THRESHOLD, RETRY_TIME_LIMIT, UPLOAD_RETRY_TIME_LIMIT, UPLOAD_TIMEOUT,
+        RESUMABLE_UPLOAD_THRESHOLD, UPLOAD_RETRY_TIME_LIMIT, UPLOAD_TIMEOUT,
         gcs_error::parse_error, gcs_writer::GcsFileWrite,
     },
     safe_usize_to_i32, validate_file_size,
@@ -502,12 +502,13 @@ impl GcsStorage {
     }
 }
 
-/// Errors an upload retries: those of [`RetryableErrors`] and `409 Conflict`.
+/// Errors a resumable upload retries: those of [`RetryableErrors`] and `409 Conflict`.
 ///
 /// On a bucket with hierarchical namespace, an upload creates the missing folders of its path.
 /// Concurrent uploads into a new folder race to create it, and the losers fail with 409 ("The
 /// folder you tried to create already exists"). GCS answers 409 when a concurrent change to
-/// the same resource won; the retry finds the folder in place.
+/// the same resource won; the retry finds the folder in place. The SDK resends the data of a
+/// resumable upload without a deduplication token, so GCS processes the retry anew.
 #[derive(Debug)]
 pub(crate) struct UploadErrors;
 
@@ -520,24 +521,37 @@ impl RetryPolicy for UploadErrors {
     }
 }
 
-/// Uploads `bytes` as one object. Below [`RESUMABLE_UPLOAD_THRESHOLD`] this is a single
-/// request limited to [`REQUEST_TIMEOUT`], above it a resumable upload limited to
-/// [`UPLOAD_TIMEOUT`].
+/// Uploads `bytes` as one object, and repeats an upload that failed with 409 (see
+/// [`UploadErrors`]) as a new request: the SDK retries a single-request upload with the same
+/// deduplication token, which GCS answers with the response to the first attempt.
 pub(crate) async fn upload_bytes(
     storage: &Storage,
     location: &GcsLocation,
     bytes: Bytes,
 ) -> Result<WriteOutcome, WriteError> {
+    let mut attempt = 1;
+    loop {
+        match upload_once(storage, location, bytes.clone()).await {
+            Err(e) if e.http_status() == Some(409) && attempt < MAX_ATTEMPTS => attempt += 1,
+            result => {
+                return result.map_err(|e| e.with_context("Failed to upload object.").into());
+            }
+        }
+    }
+}
+
+/// Below [`RESUMABLE_UPLOAD_THRESHOLD`] a single request limited to [`REQUEST_TIMEOUT`], above
+/// it a resumable upload limited to [`UPLOAD_TIMEOUT`].
+async fn upload_once(
+    storage: &Storage,
+    location: &GcsLocation,
+    bytes: Bytes,
+) -> Result<WriteOutcome, IOError> {
     let resumable = bytes.len() >= RESUMABLE_UPLOAD_THRESHOLD;
     let mut request = storage
         .write_object(bucket_resource(location), location.object_name(), bytes)
         // Objects are written to unique paths, so repeating an upload is safe.
-        .with_idempotency(true)
-        .with_retry_policy(
-            UploadErrors
-                .with_attempt_limit(MAX_ATTEMPTS)
-                .with_time_limit(RETRY_TIME_LIMIT),
-        );
+        .with_idempotency(true);
     let mut limit = REQUEST_TIMEOUT;
     if resumable {
         // All chunks of a resumable upload share one retry budget, so it is time-based.
@@ -551,7 +565,6 @@ pub(crate) async fn upload_bytes(
             .map_err(|e| parse_error(e, location.as_str()))
     })
     .await
-    .map_err(|e| e.with_context("Failed to upload object.").into())
 }
 
 /// Small objects are read in one request, large ones in parallel ranges. Objects stored with
@@ -966,7 +979,8 @@ mod tests {
 
     #[test]
     fn uploads_retry_conflicts_of_idempotent_requests() {
-        let http = |status_code| Error::http(status_code, axum::http::HeaderMap::new(), Bytes::new());
+        let http =
+            |status_code| Error::http(status_code, axum::http::HeaderMap::new(), Bytes::new());
         let idempotent = RetryState::new(true);
         assert!(UploadErrors.on_error(&idempotent, http(409)).is_continue());
         assert!(UploadErrors.on_error(&idempotent, http(503)).is_continue());
@@ -980,23 +994,33 @@ mod tests {
     }
 
     /// Storage whose endpoint answers the first upload as GCS does when a concurrent upload
-    /// created a missing folder first, and every later one with success.
+    /// created a missing folder first. Like GCS, it answers a request that repeats the
+    /// deduplication token of the first upload with the same 409. Other uploads succeed.
     async fn folder_race_storage() -> (GcsStorage, Arc<std::sync::atomic::AtomicUsize>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let uploads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first_token = Arc::new(std::sync::Mutex::new(None::<String>));
         let app = axum::Router::new().fallback({
             let uploads = uploads.clone();
-            move || {
-                let status = if uploads.fetch_add(1, Ordering::SeqCst) == 0 {
-                    axum::http::StatusCode::CONFLICT
+            move |headers: axum::http::HeaderMap| {
+                uploads.fetch_add(1, Ordering::SeqCst);
+                let token = headers
+                    .get("x-goog-gcs-idempotency-token")
+                    .map(|token| token.to_str().unwrap().to_string());
+                let mut first = first_token.lock().unwrap();
+                let conflict = first.is_none() || *first == token;
+                first.get_or_insert(token.unwrap_or_default());
+                let (status, body) = if conflict {
+                    (
+                        axum::http::StatusCode::CONFLICT,
+                        r#"{"error":{"code":409,"message":"The folder you tried to create already exists."}}"#,
+                    )
                 } else {
-                    axum::http::StatusCode::OK
-                };
-                let body = if status == axum::http::StatusCode::CONFLICT {
-                    r#"{"error":{"code":409,"message":"The folder you tried to create already exists."}}"#
-                } else {
-                    r#"{"bucket":"test-bucket","name":"object","generation":"7"}"#
+                    (
+                        axum::http::StatusCode::OK,
+                        r#"{"bucket":"test-bucket","name":"object","generation":"7"}"#,
+                    )
                 };
                 std::future::ready((status, [("content-type", "application/json")], body))
             }

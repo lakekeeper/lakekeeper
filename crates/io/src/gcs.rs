@@ -36,7 +36,7 @@ pub(crate) const CHUNK_SIZE: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_ATTEMPTS: u32 = 4;
 /// Retries of a request stop after this time. It also bounds retries the SDK throttles, which
 /// do not count as attempts.
-pub(crate) const RETRY_TIME_LIMIT: Duration = Duration::from_mins(3);
+const RETRY_TIME_LIMIT: Duration = Duration::from_mins(3);
 /// Retries of an upload stop after this time. One retry budget covers all chunks of a
 /// resumable upload, so it is time-based.
 pub(crate) const UPLOAD_RETRY_TIME_LIMIT: Duration = Duration::from_mins(30);
