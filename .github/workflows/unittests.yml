@@ -22,8 +22,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Required check. It runs even when a job it needs failed: a failed
+  # dependency would otherwise skip it, and a skipped required check passes.
   tests-pass:
     name: all tests pass
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     needs:
       - sqlx-check
@@ -35,7 +38,13 @@ jobs:
       - unused-deps
       - check-audit-format
     steps:
-      - run: exit 0
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            [[ $result == "success" || $result == "skipped" ]] || exit 1
+          done
 
   msrv-check:
     name: MSRV check

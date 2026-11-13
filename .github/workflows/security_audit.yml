@@ -27,7 +27,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install cargo-audit
-        run: cargo install cargo-audit --force
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        with:
+          tool: cargo-audit
       - name: Run audit check
         run: cargo audit
 
