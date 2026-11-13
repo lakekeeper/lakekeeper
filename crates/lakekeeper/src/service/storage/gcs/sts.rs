@@ -153,35 +153,78 @@ impl Options {
         let bucket_cel = escape_for_cel_single_quoted(bucket)?;
         let path_cel = escape_for_cel_single_quoted(&prefixless_location)?;
 
+        let mut access_boundary_rules = vec![AccessBoundaryRule {
+            available_resource: format!(
+                "//storage.googleapis.com/projects/_/buckets/{bucket}",
+            ),
+            available_permissions: match storage_permissions {
+                StoragePermissions::Read => {
+                    vec!["inRole:roles/storage.objectViewer".to_string()]
+                }
+                StoragePermissions::ReadWrite => vec![
+                    "inRole:roles/storage.objectViewer".to_string(),
+                    "inRole:roles/storage.objectCreator".to_string(),
+                ],
+                StoragePermissions::ReadWriteDelete => vec![
+                    "inRole:roles/storage.objectUser".to_string(),
+                ],
+            },
+            availability_condition: AvailabilityCondition {
+                title: "obj-prefixes".to_string(),
+                // getAttribute is needed for Listing operations.
+                expression: format!(
+                    "resource.name.startsWith('projects/_/buckets/{bucket_cel}/objects/{path_cel}') || resource.name.startsWith('projects/_/buckets/{bucket_cel}/folders/{path_cel}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{path_cel}')",
+                ),
+            }.into(),
+        }];
+        if storage_permissions != StoragePermissions::Read
+            && let Some(rule) = ancestor_folders_rule(bucket, &bucket_cel, &prefixless_location)?
+        {
+            access_boundary_rules.push(rule);
+        }
+
         Ok(Options {
             access_boundary: AccessBoundary {
-                access_boundary_rules: vec![AccessBoundaryRule {
-                    available_resource: format!(
-                        "//storage.googleapis.com/projects/_/buckets/{bucket}",
-                    ),
-                    available_permissions: match storage_permissions {
-                        StoragePermissions::Read => {
-                            vec!["inRole:roles/storage.objectViewer".to_string()]
-                        }
-                        StoragePermissions::ReadWrite => vec![
-                            "inRole:roles/storage.objectViewer".to_string(),
-                            "inRole:roles/storage.objectCreator".to_string(),
-                        ],
-                        StoragePermissions::ReadWriteDelete => vec![
-                            "inRole:roles/storage.objectUser".to_string(),
-                        ],
-                    },
-                    availability_condition: AvailabilityCondition {
-                        title: "obj-prefixes".to_string(),
-                        // getAttribute is needed for Listing operations.
-                        expression: format!(
-                            "resource.name.startsWith('projects/_/buckets/{bucket_cel}/objects/{path_cel}') || resource.name.startsWith('projects/_/buckets/{bucket_cel}/folders/{path_cel}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{path_cel}')",
-                        ),
-                    }.into(),
-                }],
+                access_boundary_rules,
             },
         })
     }
+}
+
+/// Lets a writer create the folders above the table location.
+///
+/// On a bucket with hierarchical namespace, an upload creates the missing folders of its path,
+/// and a client may be the first to write below a table location, as after a staged create.
+/// The condition matches these folders by exact name, so of `objectCreator` only
+/// `storage.folders.create` applies; the role holds no permission to delete or rename them.
+fn ancestor_folders_rule(
+    bucket: &str,
+    bucket_cel: &str,
+    prefixless_location: &str,
+) -> Result<Option<AccessBoundaryRule>, TableConfigError> {
+    let conditions = prefixless_location
+        .match_indices('/')
+        .map(|(end, _)| &prefixless_location[..=end])
+        .filter(|ancestor| ancestor.len() < prefixless_location.len())
+        .map(|ancestor| {
+            Ok(format!(
+                "resource.name == 'projects/_/buckets/{bucket_cel}/folders/{}'",
+                escape_for_cel_single_quoted(ancestor)?
+            ))
+        })
+        .collect::<Result<Vec<_>, TableConfigError>>()?;
+    if conditions.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(AccessBoundaryRule {
+        available_resource: format!("//storage.googleapis.com/projects/_/buckets/{bucket}"),
+        available_permissions: vec!["inRole:roles/storage.objectCreator".to_string()],
+        availability_condition: AvailabilityCondition {
+            title: "ancestor-folders".to_string(),
+            expression: conditions.join(" || "),
+        }
+        .into(),
+    }))
 }
 
 /// Escape `value` for interpolation inside a CEL single-quoted literal.
@@ -328,6 +371,46 @@ mod tests {
         assert!(
             expr.contains("/objects/x\\'/data/"),
             "expected escaped `'` in expression, got: {expr}"
+        );
+    }
+
+    fn rules(location: &str, permissions: StoragePermissions) -> Vec<AccessBoundaryRule> {
+        let location: Location = location.parse().unwrap();
+        Options::from_location_and_permissions("my-bucket", &location, permissions)
+            .unwrap()
+            .access_boundary
+            .access_boundary_rules
+    }
+
+    #[test]
+    fn writers_may_create_the_folders_above_the_table_location() {
+        for permissions in [
+            StoragePermissions::ReadWrite,
+            StoragePermissions::ReadWriteDelete,
+        ] {
+            let rules = rules("gs://my-bucket/wh/ns/tbl", permissions);
+            assert_eq!(rules.len(), 2, "{permissions}");
+            assert_eq!(
+                rules[1].available_permissions,
+                vec!["inRole:roles/storage.objectCreator".to_string()]
+            );
+            assert_eq!(
+                rules[1].availability_condition.as_ref().unwrap().expression,
+                "resource.name == 'projects/_/buckets/my-bucket/folders/wh/' || \
+                 resource.name == 'projects/_/buckets/my-bucket/folders/wh/ns/'"
+            );
+        }
+    }
+
+    #[test]
+    fn readers_and_top_level_locations_get_no_folder_rule() {
+        assert_eq!(
+            rules("gs://my-bucket/wh/ns/tbl", StoragePermissions::Read).len(),
+            1
+        );
+        assert_eq!(
+            rules("gs://my-bucket/tbl", StoragePermissions::ReadWriteDelete).len(),
+            1
         );
     }
 

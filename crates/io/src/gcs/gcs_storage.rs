@@ -11,8 +11,12 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use futures::{StreamExt as _, TryStreamExt as _};
 use google_cloud_gax::{
-    options::RequestOptionsBuilder as _, paginator::Paginator as _,
-    retry_policy::RetryPolicyExt as _,
+    error::Error,
+    options::RequestOptionsBuilder as _,
+    paginator::Paginator as _,
+    retry_policy::{RetryPolicy, RetryPolicyExt as _},
+    retry_result::RetryResult,
+    retry_state::RetryState,
 };
 use google_cloud_storage::{
     client::{Storage, StorageControl},
@@ -28,8 +32,9 @@ use crate::{
     delete_limit::{DeleteEndpoint, DeleteLimit},
     delete_not_found_is_ok, execute_with_parallelism,
     gcs::{
-        CHUNK_SIZE, ControlClient, GcsLocation, REQUEST_TIMEOUT, RESUMABLE_UPLOAD_THRESHOLD,
-        UPLOAD_RETRY_TIME_LIMIT, UPLOAD_TIMEOUT, gcs_error::parse_error, gcs_writer::GcsFileWrite,
+        CHUNK_SIZE, ControlClient, GcsLocation, MAX_ATTEMPTS, REQUEST_TIMEOUT,
+        RESUMABLE_UPLOAD_THRESHOLD, RETRY_TIME_LIMIT, UPLOAD_RETRY_TIME_LIMIT, UPLOAD_TIMEOUT,
+        gcs_error::parse_error, gcs_writer::GcsFileWrite,
     },
     safe_usize_to_i32, validate_file_size,
 };
@@ -497,6 +502,24 @@ impl GcsStorage {
     }
 }
 
+/// Errors an upload retries: those of [`RetryableErrors`] and `409 Conflict`.
+///
+/// On a bucket with hierarchical namespace, an upload creates the missing folders of its path.
+/// Concurrent uploads into a new folder race to create it, and the losers fail with 409 ("The
+/// folder you tried to create already exists"). GCS answers 409 when a concurrent change to
+/// the same resource won; the retry finds the folder in place.
+#[derive(Debug)]
+pub(crate) struct UploadErrors;
+
+impl RetryPolicy for UploadErrors {
+    fn on_error(&self, state: &RetryState, error: Error) -> RetryResult {
+        if state.idempotent && error.http_status_code() == Some(409) {
+            return RetryResult::Continue(error);
+        }
+        RetryableErrors.on_error(state, error)
+    }
+}
+
 /// Uploads `bytes` as one object. Below [`RESUMABLE_UPLOAD_THRESHOLD`] this is a single
 /// request limited to [`REQUEST_TIMEOUT`], above it a resumable upload limited to
 /// [`UPLOAD_TIMEOUT`].
@@ -509,12 +532,16 @@ pub(crate) async fn upload_bytes(
     let mut request = storage
         .write_object(bucket_resource(location), location.object_name(), bytes)
         // Objects are written to unique paths, so repeating an upload is safe.
-        .with_idempotency(true);
+        .with_idempotency(true)
+        .with_retry_policy(
+            UploadErrors
+                .with_attempt_limit(MAX_ATTEMPTS)
+                .with_time_limit(RETRY_TIME_LIMIT),
+        );
     let mut limit = REQUEST_TIMEOUT;
     if resumable {
         // All chunks of a resumable upload share one retry budget, so it is time-based.
-        request =
-            request.with_retry_policy(RetryableErrors.with_time_limit(UPLOAD_RETRY_TIME_LIMIT));
+        request = request.with_retry_policy(UploadErrors.with_time_limit(UPLOAD_RETRY_TIME_LIMIT));
         limit = UPLOAD_TIMEOUT;
     }
     within(limit, location, async {
@@ -935,6 +962,61 @@ mod tests {
             error.reason(),
             format!("GCS request did not finish within {limit:?}")
         );
+    }
+
+    #[test]
+    fn uploads_retry_conflicts_of_idempotent_requests() {
+        let http = |status_code| Error::http(status_code, axum::http::HeaderMap::new(), Bytes::new());
+        let idempotent = RetryState::new(true);
+        assert!(UploadErrors.on_error(&idempotent, http(409)).is_continue());
+        assert!(UploadErrors.on_error(&idempotent, http(503)).is_continue());
+        assert!(UploadErrors.on_error(&idempotent, http(412)).is_permanent());
+        assert!(UploadErrors.on_error(&idempotent, http(403)).is_permanent());
+        assert!(
+            UploadErrors
+                .on_error(&RetryState::new(false), http(409))
+                .is_permanent()
+        );
+    }
+
+    /// Storage whose endpoint answers the first upload as GCS does when a concurrent upload
+    /// created a missing folder first, and every later one with success.
+    async fn folder_race_storage() -> (GcsStorage, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let uploads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = axum::Router::new().fallback({
+            let uploads = uploads.clone();
+            move || {
+                let status = if uploads.fetch_add(1, Ordering::SeqCst) == 0 {
+                    axum::http::StatusCode::CONFLICT
+                } else {
+                    axum::http::StatusCode::OK
+                };
+                let body = if status == axum::http::StatusCode::CONFLICT {
+                    r#"{"error":{"code":409,"message":"The folder you tried to create already exists."}}"#
+                } else {
+                    r#"{"bucket":"test-bucket","name":"object","generation":"7"}"#
+                };
+                std::future::ready((status, [("content-type", "application/json")], body))
+            }
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let storage = build_clients(anonymous::Builder::new().build(), Some(&endpoint))
+            .await
+            .unwrap();
+        (storage, uploads)
+    }
+
+    #[tokio::test]
+    async fn an_upload_that_loses_a_folder_race_is_retried() {
+        let (storage, uploads) = folder_race_storage().await;
+        let outcome = storage
+            .write(PATH, Bytes::from_static(b"data"))
+            .await
+            .unwrap();
+        assert_eq!(outcome.version.as_deref(), Some("7"));
+        assert_eq!(uploads.load(Ordering::SeqCst), 2);
     }
 
     #[test]
