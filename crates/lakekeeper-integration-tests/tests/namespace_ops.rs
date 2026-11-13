@@ -1,7 +1,9 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg::NamespaceIdent;
-use iceberg_ext::catalog::rest::UpdateNamespacePropertiesRequest;
+use iceberg_ext::catalog::rest::{
+    UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
+};
 use lakekeeper::{
     WarehouseId,
     api::{
@@ -29,7 +31,7 @@ async fn update_properties_on_another_instance(
     catalog: CatalogState,
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
-    properties: std::collections::HashMap<String, String>,
+    updates: std::collections::HashMap<String, String>,
 ) {
     let mut transaction = WriteTransaction::<PostgresBackend>::begin(catalog)
         .await
@@ -37,7 +39,8 @@ async fn update_properties_on_another_instance(
     PostgresBackend::update_namespace_properties(
         warehouse_id,
         namespace_id,
-        properties,
+        &updates,
+        &[],
         &mut transaction,
     )
     .await
@@ -1173,7 +1176,8 @@ async fn test_parent_version_tracking(pool: PgPool) {
     PostgresBackend::update_namespace_properties(
         warehouse_id,
         parent_id,
-        std::collections::HashMap::from([("version".to_string(), "2".to_string())]),
+        &std::collections::HashMap::from([("version".to_string(), "2".to_string())]),
+        &[],
         &mut transaction,
     )
     .await
@@ -1383,6 +1387,17 @@ async fn create_ns<A: lakekeeper::service::authz::Authorizer>(
     warehouse_id: lakekeeper::WarehouseId,
     parts: &[&str],
 ) -> NamespaceId {
+    create_ns_with_properties(ctx, warehouse_id, &ns_ident(parts), None).await
+}
+
+async fn create_ns_with_properties<A: lakekeeper::service::authz::Authorizer>(
+    ctx: &lakekeeper::api::ApiContext<
+        lakekeeper::service::State<A, PostgresBackend, lakekeeper_storage_postgres::SecretsState>,
+    >,
+    warehouse_id: lakekeeper::WarehouseId,
+    namespace: &NamespaceIdent,
+    properties: Option<HashMap<String, String>>,
+) -> NamespaceId {
     let mut transaction =
         <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
             .await
@@ -1391,9 +1406,8 @@ async fn create_ns<A: lakekeeper::service::authz::Authorizer>(
         warehouse_id,
         NamespaceId::new_random(),
         CreateNamespaceRequest {
-            namespace: NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect())
-                .unwrap(),
-            properties: None,
+            namespace: namespace.clone(),
+            properties,
         },
         transaction.transaction(),
     )
@@ -2291,5 +2305,194 @@ async fn test_create_namespace_under_case_variant_parent_reports_stored_path(poo
     assert_eq!(
         replay.namespace, first.namespace,
         "the replay must report the same path as the first call"
+    );
+}
+
+// Concurrent `update_namespace_properties` calls through the handler. Each call changes only
+// the keys it names, and its response describes the properties it replaced.
+
+type PropertiesTestCtx = lakekeeper::api::ApiContext<
+    lakekeeper::service::State<
+        AllowAllAuthorizer,
+        PostgresBackend,
+        lakekeeper_storage_postgres::SecretsState,
+    >,
+>;
+
+fn string_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
+    entries
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
+}
+
+/// Send all requests at the same time and return the responses in request order.
+async fn update_properties_concurrently(
+    ctx: &PropertiesTestCtx,
+    warehouse_id: WarehouseId,
+    namespace: &NamespaceIdent,
+    requests: Vec<UpdateNamespacePropertiesRequest>,
+) -> Vec<UpdateNamespacePropertiesResponse> {
+    let barrier = Arc::new(tokio::sync::Barrier::new(requests.len()));
+    let tasks: Vec<_> = requests
+        .into_iter()
+        .map(|request| {
+            let (ctx, barrier) = (ctx.clone(), barrier.clone());
+            let parameters = NamespaceParameters {
+                prefix: Some(warehouse_id.to_string().into()),
+                namespace: namespace.clone(),
+            };
+            tokio::spawn(async move {
+                barrier.wait().await;
+                CatalogServer::<PostgresBackend, _, _>::update_namespace_properties(
+                    parameters,
+                    request,
+                    ctx,
+                    random_request_metadata(),
+                )
+                .await
+                .unwrap()
+            })
+        })
+        .collect();
+    let mut responses = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        responses.push(task.await.unwrap());
+    }
+    responses
+}
+
+async fn stored_properties(
+    ctx: &PropertiesTestCtx,
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+) -> Option<HashMap<String, String>> {
+    PostgresBackend::get_namespace_cache_aware(
+        warehouse_id,
+        namespace_id,
+        CachePolicy::Skip,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .properties()
+    .cloned()
+}
+
+fn set_request(key: &str) -> UpdateNamespacePropertiesRequest {
+    UpdateNamespacePropertiesRequest {
+        updates: Some(string_map(&[(key, "1")])),
+        removals: None,
+    }
+}
+
+fn remove_request(key: &str) -> UpdateNamespacePropertiesRequest {
+    UpdateNamespacePropertiesRequest {
+        updates: None,
+        removals: Some(vec![key.to_string()]),
+    }
+}
+
+fn expected_response(
+    updated: &[&str],
+    removed: &[&str],
+    missing: &[&str],
+) -> UpdateNamespacePropertiesResponse {
+    let strings = |keys: &[&str]| keys.iter().map(ToString::to_string).collect::<Vec<_>>();
+    UpdateNamespacePropertiesResponse {
+        updated: strings(updated),
+        removed: strings(removed),
+        missing: (!missing.is_empty()).then(|| strings(missing)),
+    }
+}
+
+#[sqlx::test]
+async fn test_concurrent_property_updates_keep_every_key(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let namespace = ns_ident(&["concurrent_updates"]);
+    let properties = string_map(&[("seed", "0")]);
+    let namespace_id =
+        create_ns_with_properties(&ctx, warehouse_id, &namespace, Some(properties)).await;
+
+    let keys: Vec<String> = (0..20).map(|i| format!("k{i:02}")).collect();
+    let requests = keys.iter().map(|k| set_request(k)).collect();
+    let responses = update_properties_concurrently(&ctx, warehouse_id, &namespace, requests).await;
+
+    for (key, response) in keys.iter().zip(responses) {
+        assert_eq!(response, expected_response(&[key.as_str()], &[], &[]));
+    }
+    let mut expected = string_map(&[("seed", "0")]);
+    expected.extend(keys.iter().map(|k| (k.clone(), "1".to_string())));
+    assert_eq!(
+        stored_properties(&ctx, warehouse_id, namespace_id).await,
+        Some(expected)
+    );
+}
+
+#[sqlx::test]
+async fn test_concurrent_property_removals_and_updates_all_apply(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let namespace = ns_ident(&["removals_and_updates"]);
+    let removed: Vec<String> = (0..10).map(|i| format!("r{i:02}")).collect();
+    let added: Vec<String> = (0..10).map(|i| format!("a{i:02}")).collect();
+    let properties = removed
+        .iter()
+        .map(|k| (k.clone(), "0".to_string()))
+        .collect();
+    let namespace_id =
+        create_ns_with_properties(&ctx, warehouse_id, &namespace, Some(properties)).await;
+
+    // Each removal races an update of another key.
+    let requests = removed
+        .iter()
+        .zip(&added)
+        .flat_map(|(r, a)| [remove_request(r), set_request(a)])
+        .collect();
+    let responses = update_properties_concurrently(&ctx, warehouse_id, &namespace, requests).await;
+
+    let expected_responses: Vec<_> = removed
+        .iter()
+        .zip(&added)
+        .flat_map(|(r, a)| {
+            [
+                expected_response(&[], &[r.as_str()], &[]),
+                expected_response(&[a.as_str()], &[], &[]),
+            ]
+        })
+        .collect();
+    assert_eq!(responses, expected_responses);
+    let expected = added.iter().map(|k| (k.clone(), "1".to_string())).collect();
+    assert_eq!(
+        stored_properties(&ctx, warehouse_id, namespace_id).await,
+        Some(expected)
+    );
+}
+
+/// Each response is computed from the properties its own update replaced.
+#[sqlx::test]
+async fn test_concurrent_removals_of_one_key_report_it_removed_once(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let namespace = ns_ident(&["concurrent_removals"]);
+    let properties = string_map(&[("seed", "0")]);
+    let namespace_id =
+        create_ns_with_properties(&ctx, warehouse_id, &namespace, Some(properties)).await;
+
+    let requests = (0..10).map(|_| remove_request("seed")).collect();
+    let responses = update_properties_concurrently(&ctx, warehouse_id, &namespace, requests).await;
+
+    let removed = responses
+        .iter()
+        .filter(|r| **r == expected_response(&[], &["seed"], &[]))
+        .count();
+    let missing = responses
+        .iter()
+        .filter(|r| **r == expected_response(&[], &[], &["seed"]))
+        .count();
+    assert_eq!((removed, missing), (1, 9));
+    // An empty map is read back as no properties.
+    assert_eq!(
+        stored_properties(&ctx, warehouse_id, namespace_id).await,
+        None
     );
 }

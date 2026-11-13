@@ -667,6 +667,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let mut updates = NamespaceProperties::try_from_maybe_props(updates.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
         remove_managed_namespace_properties(&mut updates);
+        let updates = HashMap::from(updates);
+        let removals = removals.unwrap_or_default();
 
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
@@ -687,8 +689,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 )
                 .await?;
                 let properties = ns.properties.map(|arc| (*arc).clone());
-                let (_props, response) = update_namespace_properties(properties, updates, removals);
-                return Ok(response);
+                return Ok(properties_update_response(properties, &updates, &removals));
             }
         }
 
@@ -697,7 +698,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let action = CatalogNamespaceAction::UpdateProperties {
             updated_properties: Arc::new(updates.clone().into_iter().collect()),
-            removed_properties: Arc::new(removals.clone().unwrap_or_default()),
+            removed_properties: Arc::new(removals.clone()),
         };
         let event_ctx = APIEventContext::for_namespace(
             Arc::new(request_metadata),
@@ -727,15 +728,14 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         });
 
         //  ------------------- BUSINESS LOGIC -------------------
-        let namespace = &event_ctx.resolved().namespace;
-        let namespace_id = namespace.namespace_id();
+        let namespace_id = event_ctx.resolved().namespace.namespace_id();
 
         let mut t = WriteTransaction::<C>::begin(state.v1_state.catalog).await?;
-        let (updated_properties, r) =
-            update_namespace_properties(namespace.properties().cloned(), updates, removals);
-        let updated_namespace =
-            C::update_namespace_properties(warehouse_id, namespace_id, updated_properties, &mut t)
+        let outcome =
+            C::update_namespace_properties(warehouse_id, namespace_id, &updates, &removals, &mut t)
                 .await?;
+        // Describe the change against the properties this update replaced.
+        let r = properties_update_response(outcome.previous_properties, &updates, &removals);
 
         // Insert idempotency key in the same transaction.
         if let Some(ref key) = idempotency_key
@@ -762,7 +762,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         t.commit().await?;
 
-        event_ctx.emit_namespace_properties_updated_async(updated_namespace, Arc::new(r.clone()));
+        event_ctx.emit_namespace_properties_updated_async(outcome.namespace, Arc::new(r.clone()));
 
         Ok(r)
     }
@@ -1213,19 +1213,20 @@ fn set_namespace_location_property(
     Ok(())
 }
 
-fn update_namespace_properties(
+/// The response for removing `removals` from `previous_properties`, then setting `updates`.
+fn properties_update_response(
     previous_properties: Option<HashMap<String, String>>,
-    updates: NamespaceProperties,
-    removals: Option<Vec<String>>,
-) -> (HashMap<String, String>, UpdateNamespacePropertiesResponse) {
+    updates: &HashMap<String, String>,
+    removals: &[String],
+) -> UpdateNamespacePropertiesResponse {
     let mut properties = previous_properties.unwrap_or_default();
 
     let mut changes_updated = vec![];
     let mut changes_removed = vec![];
     let mut changes_missing = vec![];
 
-    for key in removals.unwrap_or_default() {
-        if properties.remove(&key).is_some() {
+    for key in removals {
+        if properties.remove(key).is_some() {
             changes_removed.push(key.clone());
         } else {
             changes_missing.push(key.clone());
@@ -1236,26 +1237,20 @@ fn update_namespace_properties(
         // Push to updated if the value for the key is different.
         // Also push on insert
 
-        if properties.insert(key.clone(), value.clone()) != Some(value) {
-            changes_updated.push(key);
+        if properties.insert(key.clone(), value.clone()).as_ref() != Some(value) {
+            changes_updated.push(key.clone());
         }
     }
 
-    // Remove managed property namespace_id
-    properties.remove(NAMESPACE_ID_PROPERTY);
-
-    (
-        properties,
-        UpdateNamespacePropertiesResponse {
-            updated: changes_updated,
-            removed: changes_removed,
-            missing: if changes_missing.is_empty() {
-                None
-            } else {
-                Some(changes_missing)
-            },
+    UpdateNamespacePropertiesResponse {
+        updated: changes_updated,
+        removed: changes_removed,
+        missing: if changes_missing.is_empty() {
+            None
+        } else {
+            Some(changes_missing)
         },
-    )
+    }
 }
 
 fn namespace_location_may_not_change(
@@ -1330,26 +1325,17 @@ mod tests {
             ("key5".to_string(), "value5".to_string()),
         ]);
 
-        let updates = NamespaceProperties::from_props_unchecked(vec![
+        let updates = HashMap::from_iter(vec![
             ("key1".to_string(), "value1".to_string()),
             ("key2".to_string(), "value12".to_string()),
         ]);
 
-        let removals = Some(vec!["key3".to_string(), "key4".to_string()]);
+        let removals = vec!["key3".to_string(), "key4".to_string()];
 
-        let (new_props, result) =
-            update_namespace_properties(Some(previous_properties), updates, removals);
+        let result = properties_update_response(Some(previous_properties), &updates, &removals);
         assert_eq!(result.updated, vec!["key2".to_string()]);
         assert_eq!(result.removed, vec!["key3".to_string()]);
         assert_eq!(result.missing, Some(vec!["key4".to_string()]));
-        assert_eq!(
-            new_props,
-            HashMap::from_iter(vec![
-                ("key1".to_string(), "value1".to_string()),
-                ("key2".to_string(), "value12".to_string()),
-                ("key5".to_string(), "value5".to_string()),
-            ])
-        );
     }
 
     #[test]
@@ -1464,17 +1450,43 @@ mod tests {
         }
     }
 
+    /// A key in both lists is removed, then set.
+    #[test]
+    fn test_update_ns_properties_key_in_both_lists() {
+        let updates = HashMap::from([("key".to_string(), "new".to_string())]);
+        let removals = vec!["key".to_string()];
+
+        let previous_properties = HashMap::from([("key".to_string(), "old".to_string())]);
+        let result = properties_update_response(Some(previous_properties), &updates, &removals);
+        assert_eq!(
+            result,
+            UpdateNamespacePropertiesResponse {
+                updated: vec!["key".to_string()],
+                removed: vec!["key".to_string()],
+                missing: None,
+            }
+        );
+
+        let result = properties_update_response(None, &updates, &removals);
+        assert_eq!(
+            result,
+            UpdateNamespacePropertiesResponse {
+                updated: vec!["key".to_string()],
+                removed: vec![],
+                missing: Some(vec!["key".to_string()]),
+            }
+        );
+    }
+
     #[test]
     fn test_update_ns_properties_empty_removal() {
         let previous_properties = HashMap::from_iter(vec![]);
-        let updates = NamespaceProperties::from_props_unchecked(vec![]);
-        let removals = Some(vec![]);
+        let updates = HashMap::new();
+        let removals = vec![];
 
-        let (new_props, result) =
-            update_namespace_properties(Some(previous_properties), updates, removals);
+        let result = properties_update_response(Some(previous_properties), &updates, &removals);
         assert!(result.updated.is_empty());
         assert!(result.removed.is_empty());
         assert!(result.missing.is_none());
-        assert!(new_props.is_empty());
     }
 }

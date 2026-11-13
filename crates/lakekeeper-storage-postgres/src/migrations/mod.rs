@@ -2085,16 +2085,17 @@ mod tests {
                 .expect("set_namespace_protected must succeed post-restore");
         assert_eq!(*after_protect.version(), 1);
 
-        let new_props = HashMap::from([("k".to_string(), "v1".to_string())]);
+        let updates = HashMap::from([("k".to_string(), "v1".to_string())]);
         let after_props = PostgresBackend::update_namespace_properties(
             warehouse_id,
             namespace_id,
-            new_props,
+            &updates,
+            &[],
             &mut tx,
         )
         .await
         .expect("update_namespace_properties must succeed post-restore");
-        assert_eq!(*after_props.version(), 2);
+        assert_eq!(*after_props.namespace.version(), 2);
 
         // Unprotect so the namespace doesn't block table/view inserts (it
         // doesn't today, but keeps the test resilient to future tightening).

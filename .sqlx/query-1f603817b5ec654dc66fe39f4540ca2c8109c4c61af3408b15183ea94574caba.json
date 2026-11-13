@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        WITH updated_ns AS (\n            UPDATE namespace\n            SET namespace_properties = $1\n            WHERE warehouse_id = $2 AND namespace_id = $3\n            AND warehouse_id IN (\n                SELECT warehouse_id FROM warehouse WHERE status = 'active'\n            )\n            RETURNING\n                namespace_id,\n                namespace_name,\n                warehouse_id,\n                protected,\n                namespace_properties,\n                created_at,\n                updated_at,\n                version\n        ),\n        parent_ns AS (\n            SELECT\n                p.namespace_id,\n                p.version\n            FROM updated_ns u\n            INNER JOIN namespace p ON p.warehouse_id = u.warehouse_id\n                AND p.namespace_name = u.namespace_name[1:array_length(u.namespace_name, 1) - 1]\n            WHERE array_length(u.namespace_name, 1) > 1\n        )\n        SELECT\n            u.namespace_id as \"namespace_id!\",\n            u.namespace_name as \"namespace_name!\",\n            -- No user-requested case in property update path; return canonical.\n            u.namespace_name as \"requested_name!\",\n            u.warehouse_id as \"warehouse_id!\",\n            u.protected as \"protected!\",\n            u.namespace_properties as \"properties!: Json<Option<HashMap<String, String>>>\",\n            u.created_at as \"created_at!\",\n            u.updated_at,\n            u.version as \"version!\",\n            p.namespace_id as \"parent_namespace_id?\",\n            p.version as \"parent_version?\"\n        FROM updated_ns u\n        LEFT JOIN parent_ns p ON TRUE\n        ",
+  "query": "\n        WITH updated_ns AS (\n            UPDATE namespace\n            SET namespace_properties = (\n                CASE WHEN jsonb_typeof(namespace_properties) = 'object'\n                    THEN namespace_properties\n                    ELSE '{}'::jsonb\n                END - $4::text[]\n            ) || $3::jsonb\n            WHERE warehouse_id = $1 AND namespace_id = $2\n            RETURNING\n                namespace_id,\n                namespace_name,\n                warehouse_id,\n                protected,\n                namespace_properties,\n                created_at,\n                updated_at,\n                version\n        ),\n        parent_ns AS (\n            SELECT\n                p.namespace_id,\n                p.version\n            FROM updated_ns u\n            INNER JOIN namespace p ON p.warehouse_id = u.warehouse_id\n                AND p.namespace_name = u.namespace_name[1:array_length(u.namespace_name, 1) - 1]\n            WHERE array_length(u.namespace_name, 1) > 1\n        )\n        SELECT\n            u.namespace_id as \"namespace_id!\",\n            u.namespace_name as \"namespace_name!\",\n            -- No user-requested case in property update path; return canonical.\n            u.namespace_name as \"requested_name!\",\n            u.warehouse_id as \"warehouse_id!\",\n            u.protected as \"protected!\",\n            u.namespace_properties as \"properties!: Json<Option<HashMap<String, String>>>\",\n            u.created_at as \"created_at!\",\n            u.updated_at,\n            u.version as \"version!\",\n            p.namespace_id as \"parent_namespace_id?\",\n            p.version as \"parent_version?\"\n        FROM updated_ns u\n        LEFT JOIN parent_ns p ON TRUE\n        ",
   "describe": {
     "columns": [
       {
@@ -127,9 +127,10 @@
     ],
     "parameters": {
       "Left": [
-        "Jsonb",
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Jsonb",
+        "TextArray"
       ]
     },
     "nullable": [
@@ -146,5 +147,5 @@
       true
     ]
   },
-  "hash": "11ef42e7d1210142e5a832c6217755e6f772d84b54bfa08b77b6c2f94ce5fd0e"
+  "hash": "1f603817b5ec654dc66fe39f4540ca2c8109c4c61af3408b15183ea94574caba"
 }

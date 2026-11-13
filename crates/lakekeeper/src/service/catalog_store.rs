@@ -768,16 +768,18 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError>;
 
-    /// Update the properties of a namespace.
+    /// Remove `removals` from the stored properties of a namespace, then set `updates`.
+    /// Other keys keep their stored value.
     ///
-    /// The properties are the final key-value properties that should
-    /// be persisted as-is in the catalog.
+    /// Concurrent calls on the same namespace must not lose each other's changes, and the
+    /// returned previous properties must be the ones this call replaced.
     async fn update_namespace_properties_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
-        properties: HashMap<String, String>,
+        updates: &HashMap<String, String>,
+        removals: &[String],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError>;
+    ) -> std::result::Result<UpdatedNamespaceProperties, CatalogUpdateNamespacePropertiesError>;
 
     async fn set_namespace_protected_impl(
         warehouse_id: WarehouseId,
