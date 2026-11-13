@@ -141,3 +141,7 @@ For production workloads, we recommend running remove orphan files workers in de
 
 !!! warning
     Every run performs a full recursive listing of the table's storage location, which can be expensive for tables with many files. The adaptive scheduler stretches the cadence on tables that produce few orphans, but each run still pays the listing cost.
+
+## Compaction
+
+Lakekeeper does not run compaction. To merge small data files and rewrite delete files into full data files, use an external compaction tool that connects to Lakekeeper as a REST catalog.
