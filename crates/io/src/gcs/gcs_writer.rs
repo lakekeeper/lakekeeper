@@ -8,9 +8,7 @@ use google_cloud_gax::{
     retry_state::RetryState,
     throttle_result::ThrottleResult,
 };
-use google_cloud_storage::{
-    client::Storage, retry_policy::RetryableErrors, streaming_source::StreamingSource,
-};
+use google_cloud_storage::{client::Storage, streaming_source::StreamingSource};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::Instrument as _;
 
@@ -19,7 +17,7 @@ use crate::{
     gcs::{
         GcsLocation, RESUMABLE_UPLOAD_THRESHOLD, UPLOAD_TIMEOUT,
         gcs_error::parse_error,
-        gcs_storage::{bucket_resource, upload_bytes, within, write_outcome},
+        gcs_storage::{UploadErrors, bucket_resource, upload_bytes, within, write_outcome},
     },
 };
 
@@ -35,13 +33,13 @@ const STREAMING_UPLOAD_ATTEMPTS: u32 = 10;
 /// When the SDK retries a streaming upload after an error that came before an HTTP response,
 /// such as a reset connection or a failed token refresh, it drops the chunk that was not
 /// confirmed and finalizes the object without it. Such errors therefore end the upload.
-/// Errors with an HTTP status are retried.
+/// Errors with an HTTP status are retried as [`UploadErrors`] decides.
 #[derive(Debug)]
-struct StreamingUploadRetry(LimitedAttemptCount<RetryableErrors>);
+struct StreamingUploadRetry(LimitedAttemptCount<UploadErrors>);
 
 impl StreamingUploadRetry {
     fn new() -> Self {
-        Self(RetryableErrors.with_attempt_limit(STREAMING_UPLOAD_ATTEMPTS))
+        Self(UploadErrors.with_attempt_limit(STREAMING_UPLOAD_ATTEMPTS))
     }
 }
 
