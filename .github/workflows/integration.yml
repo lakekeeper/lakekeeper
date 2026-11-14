@@ -36,7 +36,7 @@ jobs:
     # code. A minor release requires that run to be green (.github/RELEASING.md).
     # Every suite needs this job, so skipping it skips them all, and a skipped
     # required check passes. The repository check keeps a fork branch with that
-    # name from skipping. Patch release PRs on rel-* run everything.
+    # name from skipping. Patch release PRs on rel-* run the image-based suites.
     if: ${{ !(github.base_ref == 'main' && github.head_ref == 'release-please--branches--main' && github.event.pull_request.head.repo.full_name == github.repository) }}
     uses: ./.github/workflows/docker_build.yml
     with:
@@ -101,7 +101,8 @@ jobs:
     with:
       test_name: ${{ matrix.names }}
       # Pull requests run Spark with the newest Iceberg version only, one entry
-      # per storage type. Every push runs all versions.
+      # per storage type. Every push runs all versions. Raise the version here
+      # together with the matrix.
       skip: ${{ github.event_name == 'pull_request' && startsWith(matrix.names, 'spark_') && !endsWith(matrix.names, '-1.12.0') }}
     secrets: inherit
 

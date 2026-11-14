@@ -56,7 +56,9 @@ jobs:
     # newest commit's binaries and `main` image are used. The decision follows
     # release-please: in a run that created a release, the group is unique, so
     # nothing cancels the job and it cancels nothing. build-docker and
-    # test-docker use the same rule.
+    # test-docker use the same rule. The job that joins the group last wins:
+    # when two pushes land within a minute, the older run can cancel the newer
+    # one, and `latest-main` stays on the older commit until the next push.
     concurrency:
       group: ${{ github.workflow }}-build-binary-${{ matrix.target }}-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
       cancel-in-progress: true
