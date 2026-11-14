@@ -521,18 +521,22 @@ impl RetryPolicy for UploadErrors {
     }
 }
 
-/// Uploads `bytes` as one object, and repeats an upload that failed with 409 (see
-/// [`UploadErrors`]) as a new request: the SDK retries a single-request upload with the same
-/// deduplication token, which GCS answers with the response to the first attempt.
+/// Uploads `bytes` as one object. A single-request upload that failed with 409 (see
+/// [`UploadErrors`]) is repeated as a new request: the SDK retries it with the same
+/// deduplication token, which GCS answers with the response to the first attempt. A resumable
+/// upload retries 409 within the SDK.
 pub(crate) async fn upload_bytes(
     storage: &Storage,
     location: &GcsLocation,
     bytes: Bytes,
 ) -> Result<WriteOutcome, WriteError> {
+    let single_request = bytes.len() < RESUMABLE_UPLOAD_THRESHOLD;
     let mut attempt = 1;
     loop {
         match upload_once(storage, location, bytes.clone()).await {
-            Err(e) if e.http_status() == Some(409) && attempt < MAX_ATTEMPTS => attempt += 1,
+            Err(e) if single_request && e.http_status() == Some(409) && attempt < MAX_ATTEMPTS => {
+                attempt += 1;
+            }
             result => {
                 return result.map_err(|e| e.with_context("Failed to upload object.").into());
             }
