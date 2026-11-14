@@ -1331,6 +1331,7 @@ fn include_role_source_id_default() -> bool {
 
 /// The audit log sink.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub(crate) struct AuditLogConfig {
     /// Write audit records to the log.
     pub enabled: bool,
