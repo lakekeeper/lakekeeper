@@ -69,8 +69,42 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for CapturedLogs {
     }
 }
 
-/// The listener as the binary installs it with emails off.
-static LISTENER: LazyLock<AuditEventListener> = LazyLock::new(AuditEventListener::new);
+/// The listener as the binary installs it with emails off, checking every record's JSON.
+static LISTENER: LazyLock<AuditEventListener> = LazyLock::new(checked_listener);
+
+thread_local! {
+    /// The JSON of every record [`JsonCaptureSink`] was handed on this thread.
+    static DELIVERED_JSON: std::cell::RefCell<Vec<serde_json::Value>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A sink that keeps the JSON of every record that reaches the log, so [`emit_and_capture`]
+/// can compare it with the log line.
+#[derive(Debug)]
+struct JsonCaptureSink;
+
+#[async_trait::async_trait]
+impl AuditSink for JsonCaptureSink {
+    fn name(&self) -> &'static str {
+        "json-capture"
+    }
+
+    fn deliver(&self, record: &AuditDelivery<'_>) {
+        if crate::audit::log_enabled() {
+            DELIVERED_JSON.with_borrow_mut(|delivered| delivered.push(record.json().clone()));
+        }
+    }
+}
+
+/// The log sink, then [`JsonCaptureSink`].
+fn checked_dispatch() -> AuditDispatch {
+    AuditDispatch::new(vec![Arc::new(LogSink), Arc::new(JsonCaptureSink)])
+}
+
+/// A listener without a catalog that writes to the log and keeps every record's JSON.
+fn checked_listener() -> AuditEventListener {
+    AuditEventListener::new().with_dispatch(checked_dispatch())
+}
 
 /// Render audit events through the same JSON formatter the binary configures
 /// (`crates/lakekeeper-bin/src/main.rs`), and return the parsed lines.
@@ -83,34 +117,19 @@ static LISTENER: LazyLock<AuditEventListener> = LazyLock::new(AuditEventListener
 /// Returns a `Vec` because `grants_changed` emits one record *per grant
 /// triple*, not one per call. Use [`emit_and_capture_one`] where exactly one
 /// record is expected.
+///
+/// Every audit line must carry what its record's JSON carries: the two are encoded separately,
+/// and only the log line is pinned by a fixture. So the records must reach the log through
+/// [`checked_dispatch`].
 fn emit_and_capture<F, Fut>(emit: F) -> Vec<serde_json::Value>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
-    super::sink::take_delivered_json();
-    let logs = CapturedLogs::default();
-    // The binary's log format, without file and line numbers, which would leak into a
-    // captured record.
-    let subscriber = crate::audit::log_format(false)
-        .with_writer(logs.clone())
-        .finish();
+    DELIVERED_JSON.with_borrow_mut(Vec::clear);
+    let lines = capture_lines(emit);
 
-    tracing::subscriber::with_default(subscriber, || {
-        futures::executor::block_on(emit()).expect("emitting an audit event must not fail");
-    });
-
-    let bytes = logs.0.lock().expect("log buffer poisoned").clone();
-    let text = String::from_utf8(bytes).expect("log output must be utf-8");
-    let lines: Vec<serde_json::Value> = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).expect("log line must be valid json"))
-        .collect();
-
-    // Every audit line must carry what the record's JSON carries: the two are encoded
-    // separately, and only the log line is pinned by a fixture.
-    let delivered = super::sink::take_delivered_json();
+    let delivered = DELIVERED_JSON.with_borrow_mut(std::mem::take);
     let audit_lines: Vec<serde_json::Value> = lines
         .iter()
         .filter(|line| line["event_source"] == "audit")
@@ -125,6 +144,31 @@ where
         assert_json_matches_log_line(json, line);
     }
     lines
+}
+
+/// The parsed log lines `emit` writes, through the binary's log format.
+fn capture_lines<F, Fut>(emit: F) -> Vec<serde_json::Value>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let logs = CapturedLogs::default();
+    // The binary's log format, without file and line numbers, which would leak into a
+    // captured record.
+    let subscriber = crate::audit::log_format(false)
+        .with_writer(logs.clone())
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, || {
+        futures::executor::block_on(emit()).expect("emitting an audit event must not fail");
+    });
+
+    let bytes = logs.0.lock().expect("log buffer poisoned").clone();
+    let text = String::from_utf8(bytes).expect("log output must be utf-8");
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("log line must be valid json"))
+        .collect()
 }
 
 /// [`emit_and_capture`] for the case where exactly one record is expected.
@@ -1602,8 +1646,7 @@ fn the_log_sink_writes_the_fixture_line() {
         actions: Arc::new(vec![fixture_drop_action()]),
         idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
     };
-    let sinks: Vec<ArcAuditSink> = vec![Arc::new(LogSink)];
-    let dispatch = AuditDispatch::new(sinks);
+    let dispatch = checked_dispatch();
 
     let line = emit_and_capture_one(|| async {
         let record = assemble::replay(&event, &Enrichment::default());
@@ -1612,6 +1655,49 @@ fn the_log_sink_writes_the_fixture_line() {
     });
 
     assert_matches_fixture("idempotent_replay", &contract_fields(line));
+}
+
+/// A sink that notes, for every record it is handed, whether its JSON was already built.
+#[derive(Debug, Default)]
+struct JsonBuiltProbe(Mutex<Vec<bool>>);
+
+#[async_trait::async_trait]
+impl AuditSink for JsonBuiltProbe {
+    fn name(&self) -> &'static str {
+        "json-built-probe"
+    }
+
+    fn deliver(&self, record: &AuditDelivery<'_>) {
+        self.0
+            .lock()
+            .expect("sink poisoned")
+            .push(record.json_is_built());
+    }
+}
+
+/// The log sink writes from the typed record and never builds the JSON, so a server that
+/// only logs pays nothing for it.
+#[test]
+fn the_log_sink_builds_no_json() {
+    let probe = Arc::new(JsonBuiltProbe::default());
+    let sinks: Vec<ArcAuditSink> = vec![Arc::new(LogSink), probe.clone()];
+    let dispatch = AuditDispatch::new(sinks);
+    let event = IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        occurred_at: chrono::Utc::now(),
+        entities: Arc::new(EventEntities::one(fixture_table_entity())),
+        actions: Arc::new(vec![fixture_drop_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    };
+
+    let lines = capture_lines(|| async {
+        let record = assemble::replay(&event, &Enrichment::default());
+        dispatch.deliver(AuditRecord::Replay(record), "Idempotent replay served");
+        Ok(())
+    });
+
+    assert_eq!(lines.len(), 1);
+    assert_eq!(*probe.0.lock().expect("sink poisoned"), vec![false]);
 }
 
 /// A listener given a dispatch hands its records to that dispatch's sinks, and to no others.
@@ -1639,7 +1725,7 @@ fn a_listener_hands_each_record_to_its_dispatch() {
 /// would never be written.
 #[test]
 fn a_denial_is_written_before_the_failure_returns() {
-    let dispatcher = EventDispatcher::new(vec![Arc::new(AuditEventListener::new())]);
+    let dispatcher = EventDispatcher::new(vec![Arc::new(checked_listener())]);
     let records = emit_and_capture(|| async {
         let event_ctx = APIEventContext::for_server(
             Arc::new(fixture_metadata()),
@@ -1869,7 +1955,7 @@ fn emit_admission_rejection(
 ) -> serde_json::Value {
     let metadata = fixture_admission_metadata(actor);
     let user_id = metadata.user_id().expect("the fixture actor is a user");
-    let dispatcher = EventDispatcher::new(vec![Arc::new(AuditEventListener::new())]);
+    let dispatcher = EventDispatcher::new(vec![Arc::new(checked_listener())]);
     let records = emit_and_capture(|| async {
         AdmissionGates::new(vec![Arc::new(FixtureGate { rejection })])
             .admit(AdmissionContext::new(
@@ -2050,7 +2136,7 @@ fn an_operational_audit_record_without_context_omits_the_context_key() {
     let user_id =
         crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id");
 
-    let dispatcher = EventDispatcher::new(vec![Arc::new(AuditEventListener::new())]);
+    let dispatcher = EventDispatcher::new(vec![Arc::new(checked_listener())]);
     let record = emit_and_capture_one(|| async {
         crate::audit::OperationRecord::new(
             OperationProbe::ProbeOperation.as_wire(),

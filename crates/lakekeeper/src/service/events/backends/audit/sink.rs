@@ -64,6 +64,12 @@ impl<'a> AuditDelivery<'a> {
         self.json.get_or_init(|| self.record.to_json())
     }
 
+    /// Whether a sink has asked for the JSON yet.
+    #[cfg(test)]
+    pub(super) fn json_is_built(&self) -> bool {
+        self.json.get().is_some()
+    }
+
     /// The typed record, for the sink that writes the log line.
     #[must_use]
     pub(super) fn record(&self) -> &AuditRecord<'a> {
@@ -108,25 +114,7 @@ impl AuditSink for LogSink {
 
     fn deliver(&self, record: &AuditDelivery<'_>) {
         record.record().emit(record.message());
-        #[cfg(test)]
-        if crate::audit::log_enabled() {
-            DELIVERED_JSON.with_borrow_mut(|delivered| delivered.push(record.json().clone()));
-        }
     }
-}
-
-#[cfg(test)]
-thread_local! {
-    /// The JSON of every record the log sink wrote on this thread, so a test can compare it
-    /// with the log lines.
-    static DELIVERED_JSON: std::cell::RefCell<Vec<serde_json::Value>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// Empty the JSON the log sink kept on this thread, and return it.
-#[cfg(test)]
-pub(super) fn take_delivered_json() -> Vec<serde_json::Value> {
-    DELIVERED_JSON.with_borrow_mut(std::mem::take)
 }
 
 /// What the audit gates need to know about the sinks chosen at startup.
