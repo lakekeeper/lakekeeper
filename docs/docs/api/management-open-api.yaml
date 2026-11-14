@@ -15531,10 +15531,8 @@ components:
       properties:
         search:
           type: string
-          description: |-
-            Search string for fuzzy search.
-            Length is truncated to 64 characters.
-          maxLength: 64
+          description: Name, UUID, or storage path of a table or view. A name is cut to 64 characters.
+          maxLength: 4096
     SearchTabularResponse:
       type: object
       description: Search result for tabulars
