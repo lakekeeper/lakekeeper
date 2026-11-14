@@ -526,16 +526,24 @@ paths:
                 summary: Write one policy and delete another, leaving the rest alone
                 value:
                   writes:
-                    - name: allow-all
-                      description: everything, for illustration
+                    - name: analysts-read-tables
+                      description: Analysts may read every table in this scope
                       policy:
                         effect: permit
                         principal:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Role
+                            id: my-project/oidc~analysts
                         action:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Action
+                            id: TableSelectActions
                         resource:
-                          op: All
+                          op: is
+                          entity_type: Lakekeeper::Table
+                        conditions: []
                   deletes:
                     - retired-policy
                   if-scope-version: 7
@@ -543,16 +551,24 @@ paths:
                 summary: State the scope's whole policy set; anything else stored is deleted
                 value:
                   writes:
-                    - name: allow-all
-                      description: everything, for illustration
+                    - name: analysts-read-tables
+                      description: Analysts may read every table in this scope
                       policy:
                         effect: permit
                         principal:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Role
+                            id: my-project/oidc~analysts
                         action:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Action
+                            id: TableSelectActions
                         resource:
-                          op: All
+                          op: is
+                          entity_type: Lakekeeper::Table
+                        conditions: []
                   replace: true
                   if-scope-version: 7
         required: true
@@ -1024,16 +1040,24 @@ paths:
                 summary: Write one policy and delete another, leaving the rest alone
                 value:
                   writes:
-                    - name: allow-all
-                      description: everything, for illustration
+                    - name: analysts-read-tables
+                      description: Analysts may read every table in this scope
                       policy:
                         effect: permit
                         principal:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Role
+                            id: my-project/oidc~analysts
                         action:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Action
+                            id: TableSelectActions
                         resource:
-                          op: All
+                          op: is
+                          entity_type: Lakekeeper::Table
+                        conditions: []
                   deletes:
                     - retired-policy
                   if-scope-version: 7
@@ -1041,16 +1065,24 @@ paths:
                 summary: State the scope's whole policy set; anything else stored is deleted
                 value:
                   writes:
-                    - name: allow-all
-                      description: everything, for illustration
+                    - name: analysts-read-tables
+                      description: Analysts may read every table in this scope
                       policy:
                         effect: permit
                         principal:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Role
+                            id: my-project/oidc~analysts
                         action:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Action
+                            id: TableSelectActions
                         resource:
-                          op: All
+                          op: is
+                          entity_type: Lakekeeper::Table
+                        conditions: []
                   replace: true
                   if-scope-version: 7
         required: true
