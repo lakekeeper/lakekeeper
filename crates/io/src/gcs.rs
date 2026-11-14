@@ -33,7 +33,7 @@ pub(crate) const RESUMABLE_UPLOAD_THRESHOLD: usize = 25 * 1024 * 1024;
 /// Size of each chunk sent in a resumable upload and of each parallel ranged read.
 pub(crate) const CHUNK_SIZE: usize = 16 * 1024 * 1024;
 /// Attempts per request, including the first one.
-const MAX_ATTEMPTS: u32 = 4;
+pub(crate) const MAX_ATTEMPTS: u32 = 4;
 /// Retries of a request stop after this time. It also bounds retries the SDK throttles, which
 /// do not count as attempts.
 const RETRY_TIME_LIMIT: Duration = Duration::from_mins(3);
