@@ -26,6 +26,8 @@ pub enum OpenFGABackendUnavailable {
     BatchCheckError(#[from] BatchCheckError),
     #[error(transparent)]
     MissingItemInBatchCheck(#[from] MissingItemInBatchCheck),
+    #[error(transparent)]
+    InconclusiveWarehouseListing(#[from] InconclusiveWarehouseListing),
 }
 impl From<OpenFGABackendUnavailable> for AuthzBackendErrorOrBadRequest {
     fn from(err: OpenFGABackendUnavailable) -> Self {
@@ -52,6 +54,7 @@ impl From<OpenFGABackendUnavailable> for OpenFGAError {
             OpenFGABackendUnavailable::UnexpectedCorrelationId(e) => e.into(),
             OpenFGABackendUnavailable::BatchCheckError(e) => e.into(),
             OpenFGABackendUnavailable::MissingItemInBatchCheck(e) => e.into(),
+            OpenFGABackendUnavailable::InconclusiveWarehouseListing(e) => e.into(),
         }
     }
 }
@@ -69,6 +72,9 @@ impl From<OpenFGABackendUnavailable> for AuthorizationBackendUnavailable {
                 AuthorizationBackendUnavailable::new(e)
             }
             OpenFGABackendUnavailable::MissingItemInBatchCheck(e) => {
+                AuthorizationBackendUnavailable::new(e)
+            }
+            OpenFGABackendUnavailable::InconclusiveWarehouseListing(e) => {
                 AuthorizationBackendUnavailable::new(e)
             }
         }
@@ -170,6 +176,8 @@ pub enum OpenFGAError {
     #[error(transparent)]
     MissingItemInBatchCheck(#[from] MissingItemInBatchCheck),
     #[error(transparent)]
+    InconclusiveWarehouseListing(#[from] InconclusiveWarehouseListing),
+    #[error(transparent)]
     CannotWriteTupleAlreadyExists(#[from] CannotWriteTupleAlreadyExists),
     #[error(transparent)]
     CannotDeleteTupleNotFound(#[from] CannotDeleteTupleNotFound),
@@ -260,6 +268,9 @@ impl AuthorizationFailureSource for OpenFGAError {
             OpenFGAError::MissingItemInBatchCheck(e) => {
                 OpenFGABackendUnavailable::from(e).into_error_model()
             }
+            OpenFGAError::InconclusiveWarehouseListing(e) => {
+                OpenFGABackendUnavailable::from(e).into_error_model()
+            }
             OpenFGAError::GrantRoleWithAssumedRole => {
                 ErrorModel::bad_request(err_msg, "GrantRoleWithAssumedRole", None)
             }
@@ -285,6 +296,7 @@ impl AuthorizationFailureSource for OpenFGAError {
             | OpenFGAError::UnexpectedCorrelationId(_)
             | OpenFGAError::BatchCheckError(_)
             | OpenFGAError::MissingItemInBatchCheck(_)
+            | OpenFGAError::InconclusiveWarehouseListing(_)
             | OpenFGAError::ActiveAuthModelNotFound(_)
             | OpenFGAError::AuthModel(_)
             | OpenFGAError::StoreNotFound(_)
@@ -360,6 +372,24 @@ impl From<CheckError> for BatchCheckError {
 )]
 pub struct MissingItemInBatchCheck {
     pub(crate) missing_indexes: Vec<usize>,
+}
+
+/// A `StreamedListObjects` warehouse listing ended without every warehouse asked about,
+/// and may have been cut at the `OpenFGA` deadline. `OpenFGA` ends such a stream without
+/// an error, so the missing warehouses may still be visible: the caller answers 503
+/// instead of denying.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InconclusiveWarehouseListing {
+    #[error(
+        "OpenFGA reported that the warehouse listing hit its deadline after {elapsed_ms} ms; \
+         the result may be incomplete"
+    )]
+    DeadlineReported { elapsed_ms: u128 },
+    #[error(
+        "OpenFGA ended the warehouse listing after {elapsed_ms} ms, at or near its \
+         {deadline_ms} ms deadline; the result may be incomplete"
+    )]
+    NearDeadline { elapsed_ms: u128, deadline_ms: u128 },
 }
 
 #[derive(Debug, thiserror::Error)]

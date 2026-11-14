@@ -78,6 +78,42 @@ pub struct OpenFGAConfig {
     /// [configuration option]: https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK
     #[serde(default = "default_openfga_max_batch_check_size")]
     pub max_batch_check_size: usize,
+    /// How the authorizer decides whether the caller can see a warehouse
+    /// (`can_use`, and `can_get_config`, which the model defines the same way).
+    #[serde(default)]
+    pub warehouse_visibility: WarehouseVisibility,
+    /// The `OpenFGA` server's list-objects deadline (`OPENFGA_LIST_OBJECTS_DEADLINE`),
+    /// in milliseconds. `OpenFGA` ends a `StreamedListObjects` stream without an error
+    /// when this deadline passes, so a listing that ends near it is not trusted as a deny.
+    /// Only used with `warehouse_visibility = streamed-list`.
+    #[serde(default = "default_openfga_list_objects_deadline_ms")]
+    pub list_objects_deadline_ms: u64,
+    /// The `OpenFGA` server's request timeout (`OPENFGA_REQUEST_TIMEOUT`), in
+    /// milliseconds. It also ends a `StreamedListObjects` stream without an error.
+    /// Only used with `warehouse_visibility = streamed-list`.
+    #[serde(default = "default_openfga_request_timeout_ms")]
+    pub request_timeout_ms: u64,
+}
+
+impl OpenFGAConfig {
+    /// The first of the `OpenFGA` deadlines that can cut a `StreamedListObjects` stream.
+    pub(crate) fn streamed_list_deadline(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.list_objects_deadline_ms.min(self.request_timeout_ms))
+    }
+}
+
+/// How the `OpenFGA` authorizer decides whether the caller can see a warehouse.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WarehouseVisibility {
+    /// A `Check` per relation. For a principal whose only grants are below the
+    /// warehouse, `OpenFGA` expands the whole warehouse top-down to answer it.
+    #[default]
+    Check,
+    /// One `StreamedListObjects(warehouse, can_use, caller)` per request, read until
+    /// every warehouse asked about has arrived. `OpenFGA` expands from the caller's own
+    /// tuples, so the cost follows the caller's grants, not the size of the warehouse.
+    StreamedList,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, veil::Redact)]
@@ -111,6 +147,9 @@ where
         authorization_model_prefix,
         authorization_model_version,
         max_batch_check_size,
+        warehouse_visibility,
+        list_objects_deadline_ms,
+        request_timeout_ms,
     }) = Option::<OpenFGAConfigSerde>::deserialize(deserializer)?
     else {
         return Ok(None);
@@ -143,6 +182,18 @@ where
         ));
     }
 
+    if list_objects_deadline_ms == 0 {
+        return Err(serde::de::Error::custom(
+            "openfga list_objects_deadline_ms must be greater than zero",
+        ));
+    }
+
+    if request_timeout_ms == 0 {
+        return Err(serde::de::Error::custom(
+            "openfga request_timeout_ms must be greater than zero",
+        ));
+    }
+
     Ok(Some(OpenFGAConfig {
         endpoint,
         store_name,
@@ -150,6 +201,9 @@ where
         authorization_model_prefix,
         authorization_model_version,
         max_batch_check_size,
+        warehouse_visibility,
+        list_objects_deadline_ms,
+        request_timeout_ms,
     }))
 }
 
@@ -193,6 +247,9 @@ where
         authorization_model_prefix: value.authorization_model_prefix.clone(),
         authorization_model_version: value.authorization_model_version.clone(),
         max_batch_check_size: value.max_batch_check_size,
+        warehouse_visibility: value.warehouse_visibility,
+        list_objects_deadline_ms: value.list_objects_deadline_ms,
+        request_timeout_ms: value.request_timeout_ms,
     }
     .serialize(serializer)
 }
@@ -221,6 +278,22 @@ struct OpenFGAConfigSerde {
     token_endpoint: Option<Url>,
     #[serde(default = "default_openfga_max_batch_check_size")]
     max_batch_check_size: usize,
+    #[serde(default)]
+    warehouse_visibility: WarehouseVisibility,
+    #[serde(default = "default_openfga_list_objects_deadline_ms")]
+    list_objects_deadline_ms: u64,
+    #[serde(default = "default_openfga_request_timeout_ms")]
+    request_timeout_ms: u64,
+}
+
+fn default_openfga_list_objects_deadline_ms() -> u64 {
+    // OpenFGA's default `OPENFGA_LIST_OBJECTS_DEADLINE`.
+    3_000
+}
+
+fn default_openfga_request_timeout_ms() -> u64 {
+    // OpenFGA's default `OPENFGA_REQUEST_TIMEOUT`.
+    3_000
 }
 
 fn default_openfga_store_name() -> String {
@@ -239,6 +312,47 @@ fn default_openfga_max_batch_check_size() -> usize {
 #[allow(clippy::result_large_err)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_openfga_config_warehouse_visibility() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
+            let authz_config = get_config().openfga.unwrap();
+            assert_eq!(
+                authz_config.warehouse_visibility,
+                WarehouseVisibility::Check
+            );
+            assert_eq!(authz_config.list_objects_deadline_ms, 3_000);
+            assert_eq!(authz_config.request_timeout_ms, 3_000);
+
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENFGA__WAREHOUSE_VISIBILITY",
+                "streamed-list",
+            );
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__LIST_OBJECTS_DEADLINE_MS", "5000");
+            let authz_config = get_config().openfga.unwrap();
+            assert_eq!(
+                authz_config.warehouse_visibility,
+                WarehouseVisibility::StreamedList
+            );
+            assert_eq!(authz_config.list_objects_deadline_ms, 5_000);
+            // The request timeout cuts the stream first.
+            assert_eq!(
+                authz_config.streamed_list_deadline(),
+                std::time::Duration::from_millis(3_000)
+            );
+
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__REQUEST_TIMEOUT_MS", "10000");
+            let authz_config = get_config().openfga.unwrap();
+            assert_eq!(authz_config.request_timeout_ms, 10_000);
+            assert_eq!(
+                authz_config.streamed_list_deadline(),
+                std::time::Duration::from_millis(5_000)
+            );
+            Ok(())
+        });
+    }
 
     #[test]
     fn test_openfga_config_no_auth() {
