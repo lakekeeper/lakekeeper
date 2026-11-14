@@ -52,6 +52,16 @@ jobs:
     name: Build Binary
     needs:
       - release_please
+    # A newer push to a branch cancels this job of the older run: only the
+    # newest commit's binaries and `main` image are used. The decision follows
+    # release-please: in a run that created a release, the group is unique, so
+    # nothing cancels the job and it cancels nothing. build-docker and
+    # test-docker use the same rule. The job that joins the group last wins:
+    # when two pushes land within a minute, the older run can cancel the newer
+    # one, and `latest-main` stays on the older commit until the next push.
+    concurrency:
+      group: ${{ github.workflow }}-build-binary-${{ matrix.target }}-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     # not supported by windows nor macos
     # services:
     #   postgres:
@@ -166,6 +176,9 @@ jobs:
     needs:
       - build-binary
       - release_please
+    concurrency:
+      group: ${{ github.workflow }}-build-docker-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     services:
       postgres:
         image: postgres:16
@@ -259,6 +272,9 @@ jobs:
     needs:
       - build-docker
       - release_please
+    concurrency:
+      group: ${{ github.workflow }}-test-docker-${{ matrix.arch }}-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     strategy:
       # Every architecture's image test gates publishing; run all of them to report each result.
       fail-fast: false
