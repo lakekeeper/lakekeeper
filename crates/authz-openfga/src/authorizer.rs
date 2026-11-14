@@ -521,14 +521,8 @@ impl Authorizer for OpenFGAAuthorizer {
             |u| u.api_user_or_role().to_openfga(),
         );
 
-        let items: Vec<_> = warehouses_with_actions
-            .iter()
-            .map(|(wh, a)| CheckRequestTupleKey {
-                user: user.clone(),
-                relation: a.to_string(),
-                object: wh.warehouse_id.to_openfga(),
-            })
-            .collect();
+        let (items, answered_by) =
+            warehouse_check_items(is_own_model(), &user, warehouses_with_actions);
 
         let guard_tuples = if for_user.is_some() {
             // Collect unique warehouse objects for permission checks
@@ -549,8 +543,21 @@ impl Authorizer for OpenFGAAuthorizer {
             vec![]
         };
 
-        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
-            .await
+        let decisions = self
+            .check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await?;
+        answered_by
+            .into_iter()
+            .map(|i| {
+                decisions.get(i).cloned().ok_or_else(|| {
+                    IsAllowedActionError::from(OpenFGABackendUnavailable::from(
+                        MissingItemInBatchCheck {
+                            missing_indexes: vec![i],
+                        },
+                    ))
+                })
+            })
+            .collect()
     }
 
     async fn are_allowed_namespace_actions_impl(
@@ -1787,6 +1794,24 @@ fn is_refused_for_role(item: &CheckRequestTupleKey) -> bool {
     item.user.starts_with("role:") && REFUSED.contains(&item.relation)
 }
 
+/// Whether the server uses the model this crate installs (prefix
+/// [`OWN_MODEL_PREFIX`](crate::migration::OWN_MODEL_PREFIX)).
+fn is_own_model() -> bool {
+    AUTH_CONFIG.authorization_model_prefix == crate::migration::OWN_MODEL_PREFIX
+}
+
+/// The relation that answers a warehouse action. Under the model this crate installs,
+/// `can_get_config` is defined exactly like `can_use` (see
+/// `can_get_config_is_defined_like_can_use`), so `can_use` answers both. An externally
+/// managed model may define them differently, so there each action has its own relation.
+fn warehouse_relation_to_check(own_model: bool, action: WarehouseRelation) -> WarehouseRelation {
+    if own_model && action == WarehouseRelation::CanGetConfig {
+        WarehouseRelation::CanUse
+    } else {
+        action
+    }
+}
+
 fn parse_role_subject(subject: &str) -> Result<UserOrRoleId, MalformedRoleAssignment> {
     use lakekeeper::api::management::v1::check::UserOrRole as ApiUserOrRole;
 
@@ -1805,6 +1830,37 @@ fn parse_role_object(object: &str) -> Result<RoleId, MalformedRoleAssignment> {
     RoleId::parse_from_openfga(object).map_err(|e| {
         MalformedRoleAssignment::new("authorization backend returned an unparseable role", e)
     })
+}
+
+/// The checks for `warehouses_with_actions`, each sent once, and for each action the index
+/// of the check that answers it. Each action is answered by the relation that
+/// [`warehouse_relation_to_check`] gives, so under the model this crate installs one
+/// `can_use` check answers both `can_use` and `can_get_config` on a warehouse.
+fn warehouse_check_items(
+    own_model: bool,
+    user: &str,
+    warehouses_with_actions: &[(&ResolvedWarehouse, WarehouseRelation)],
+) -> (Vec<CheckRequestTupleKey>, Vec<usize>) {
+    let mut items: Vec<CheckRequestTupleKey> = Vec::with_capacity(warehouses_with_actions.len());
+    let mut index_of: HashMap<(String, WarehouseRelation), usize> = HashMap::new();
+    let answered_by = warehouses_with_actions
+        .iter()
+        .map(|(wh, action)| {
+            let object = wh.warehouse_id.to_openfga();
+            let relation = warehouse_relation_to_check(own_model, *action);
+            *index_of
+                .entry((object.clone(), relation))
+                .or_insert_with(|| {
+                    items.push(CheckRequestTupleKey {
+                        user: user.to_string(),
+                        relation: relation.to_string(),
+                        object,
+                    });
+                    items.len() - 1
+                })
+        })
+        .collect();
+    (items, answered_by)
 }
 
 fn suffixes_for_user(user: &FgaType) -> Vec<String> {
@@ -3914,6 +3970,143 @@ pub(crate) mod tests {
                 subjects,
                 HashSet::from([UserOrRoleId::User(u1), UserOrRoleId::User(u2)])
             );
+        }
+
+        /// `can_get_config` is answered by the `can_use` check, and every answer is the
+        /// expected one, which is also what a check of the relation asked for returns.
+        #[tokio::test]
+        async fn test_get_config_is_answered_by_the_can_use_check() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let id = || uuid::Uuid::now_v7().to_string();
+            let (w1, w2) = (
+                WarehouseId::from(uuid::Uuid::now_v7()),
+                WarehouseId::from(uuid::Uuid::now_v7()),
+            );
+            let ns = format!("namespace:{}", id());
+            let (below, on_w2, nobody) = (
+                UserId::new_unchecked("oidc", &id()),
+                UserId::new_unchecked("oidc", &id()),
+                UserId::new_unchecked("oidc", &id()),
+            );
+            let role_id = RoleId::new_random();
+            let tuple = |user: String, relation: &str, object: String| TupleKey {
+                user,
+                relation: relation.to_string(),
+                object,
+                condition: None,
+            };
+            authorizer
+                .write(
+                    Some(vec![
+                        tuple(w1.to_openfga(), "parent", ns.clone()),
+                        tuple(ns.clone(), "namespace", w1.to_openfga()),
+                        tuple(below.to_openfga(), "select", ns.clone()),
+                        tuple(on_w2.to_openfga(), "describe", w2.to_openfga()),
+                        tuple(
+                            format!("{}#assignee", role_id.to_openfga()),
+                            "modify",
+                            ns.clone(),
+                        ),
+                    ]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let (rw1, rw2) = (
+                ResolvedWarehouse::new_with_id(w1),
+                ResolvedWarehouse::new_with_id(w2),
+            );
+            let actions = vec![
+                (&rw1, WarehouseRelation::CanUse),
+                (&rw1, WarehouseRelation::CanGetConfig),
+                (&rw2, WarehouseRelation::CanGetConfig),
+                (&rw1, WarehouseRelation::CanListEverything),
+                (&rw2, WarehouseRelation::CanUse),
+                (&rw1, WarehouseRelation::CanGetConfig),
+            ];
+            let w1_only = vec![true, true, false, false, false, true];
+            for (metadata, expected) in [
+                (RequestMetadata::test_user(below), w1_only.clone()),
+                (
+                    RequestMetadata::test_user(on_w2),
+                    vec![false, false, true, false, true, false],
+                ),
+                (RequestMetadata::test_user(nobody.clone()), vec![false; 6]),
+                (
+                    RequestMetadata::test_user_assumed_role(nobody, role_id),
+                    w1_only,
+                ),
+            ] {
+                let results = authorizer
+                    .are_allowed_warehouse_actions_impl(&metadata, None, &actions)
+                    .await
+                    .unwrap();
+                assert_eq!(results, expected, "{}", metadata.actor());
+                for ((wh, a), expected) in actions.iter().zip(&expected) {
+                    let checked = authorizer
+                        .check(CheckRequestTupleKey {
+                            user: metadata.actor().to_openfga(),
+                            relation: a.to_string(),
+                            object: wh.warehouse_id.to_openfga(),
+                        })
+                        .await
+                        .unwrap();
+                    assert_eq!(checked, *expected, "{} {a} on {wh:?}", metadata.actor());
+                }
+            }
+        }
+    }
+
+    mod warehouse_checks {
+        use lakekeeper::service::ResolvedWarehouse;
+        use openfga_client::client::CheckRequestTupleKey;
+
+        use super::super::warehouse_check_items;
+        use crate::{entities::OpenFgaEntity, relations::WarehouseRelation};
+
+        #[test]
+        fn one_check_answers_use_and_get_config_under_the_own_model() {
+            let (w1, w2) = (
+                ResolvedWarehouse::new_with_id(uuid::Uuid::now_v7().into()),
+                ResolvedWarehouse::new_with_id(uuid::Uuid::now_v7().into()),
+            );
+            let item = |relation: WarehouseRelation, wh: &ResolvedWarehouse| CheckRequestTupleKey {
+                user: "user:a".to_string(),
+                relation: relation.to_string(),
+                object: wh.warehouse_id.to_openfga(),
+            };
+            let actions = [
+                (&w1, WarehouseRelation::CanUse),
+                (&w1, WarehouseRelation::CanGetConfig),
+                (&w2, WarehouseRelation::CanGetConfig),
+                (&w1, WarehouseRelation::CanListEverything),
+                (&w1, WarehouseRelation::CanUse),
+            ];
+
+            let (items, answered_by) = warehouse_check_items(true, "user:a", &actions);
+            assert_eq!(
+                items,
+                vec![
+                    item(WarehouseRelation::CanUse, &w1),
+                    item(WarehouseRelation::CanUse, &w2),
+                    item(WarehouseRelation::CanListEverything, &w1),
+                ]
+            );
+            assert_eq!(answered_by, vec![0, 0, 1, 2, 0]);
+
+            // An externally managed model: `can_get_config` is checked on its own.
+            let (items, answered_by) = warehouse_check_items(false, "user:a", &actions);
+            assert_eq!(
+                items,
+                vec![
+                    item(WarehouseRelation::CanUse, &w1),
+                    item(WarehouseRelation::CanGetConfig, &w1),
+                    item(WarehouseRelation::CanGetConfig, &w2),
+                    item(WarehouseRelation::CanListEverything, &w1),
+                ]
+            );
+            assert_eq!(answered_by, vec![0, 1, 2, 3, 0]);
         }
     }
 }
