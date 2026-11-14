@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.16.0](https://github.com/lakekeeper/lakekeeper/compare/v0.15.0...v0.16.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **authn:** identify trusted engines by token claims ([#2266](https://github.com/lakekeeper/lakekeeper/issues/2266))
+* **io:** object versions, version listing and tags in storage ([#2162](https://github.com/lakekeeper/lakekeeper/issues/2162))
+
+### Features
+
+* **authn:** identify trusted engines by token claims ([#2266](https://github.com/lakekeeper/lakekeeper/issues/2266)) ([b012142](https://github.com/lakekeeper/lakekeeper/commit/b012142eaccdb1d61d78d6b5b2cee3eb69eb897e))
+* **catalog:** expose tags as IRC labels ([#2200](https://github.com/lakekeeper/lakekeeper/issues/2200)) ([e9b202d](https://github.com/lakekeeper/lakekeeper/commit/e9b202d1f04c579fdcdc2749ac1fe74b0ab8ca41))
+* **grants:** find the projects, warehouses and namespaces with a grant below them ([#2275](https://github.com/lakekeeper/lakekeeper/issues/2275)) ([179d7a7](https://github.com/lakekeeper/lakekeeper/commit/179d7a74face324d98c6645f5d1448be0ae0e8fa))
+* **io:** object versions, version listing and tags in storage ([#2162](https://github.com/lakekeeper/lakekeeper/issues/2162)) ([d1c38de](https://github.com/lakekeeper/lakekeeper/commit/d1c38de96500205ecb39f00010ae32d332d65c8e))
+* **management:** search finds the table that contains a storage path ([#2276](https://github.com/lakekeeper/lakekeeper/issues/2276)) ([40bc0c7](https://github.com/lakekeeper/lakekeeper/commit/40bc0c70e3475373f3f74f22d86b3f4eee36ab9a))
+* **warehouse:** owners of a managed warehouse can change its soft-deletion settings and format-version policy ([#2279](https://github.com/lakekeeper/lakekeeper/issues/2279)) ([c759d66](https://github.com/lakekeeper/lakekeeper/commit/c759d666324f3b8484a625978af1d782539ffff3))
+
+
+### Bug Fixes
+
+* **catalog:** a dropped table keeps its location until its purge has finished ([#2270](https://github.com/lakekeeper/lakekeeper/issues/2270)) ([5d0ba8b](https://github.com/lakekeeper/lakekeeper/commit/5d0ba8b7bfe31c8a6e5b2fc94b15e33cf75e42bb))
+* **catalog:** concurrent namespace property updates keep each other's changes ([#2283](https://github.com/lakekeeper/lakekeeper/issues/2283)) ([215080e](https://github.com/lakekeeper/lakekeeper/commit/215080e36050b30050dbcee79dd6ee5056d2432d))
+* **catalog:** the next-page token of a filtered listing belongs to the last returned item ([#2278](https://github.com/lakekeeper/lakekeeper/issues/2278)) ([c18bc33](https://github.com/lakekeeper/lakekeeper/commit/c18bc33468d3574a517e476d3be70892e9c8304d))
+* **deps:** pin the iceberg fork that writes manifests with the deflate codec ([#2263](https://github.com/lakekeeper/lakekeeper/issues/2263)) ([9a856f0](https://github.com/lakekeeper/lakekeeper/commit/9a856f0c25c60f8af352d5280fb5c9e5b12abd9c))
+* **tasks:** headless workers leave schedules, endpoint statistics and change-log pruning to the API processes ([#2281](https://github.com/lakekeeper/lakekeeper/issues/2281)) ([04526c4](https://github.com/lakekeeper/lakekeeper/commit/04526c4befd2516d450ba175c65b89023fddad2b))
+* **tasks:** return 404 when reading the config of a queue the server does not have ([#2280](https://github.com/lakekeeper/lakekeeper/issues/2280)) ([050734e](https://github.com/lakekeeper/lakekeeper/commit/050734e4d95e91ca1af25c1877e92a313d228998))
+* **tests:** fall back to a Maven Central mirror for Spark jars, poll for purged locations, and ignore a lockfile-only advisory ([#2285](https://github.com/lakekeeper/lakekeeper/issues/2285)) ([f69b994](https://github.com/lakekeeper/lakekeeper/commit/f69b994f5f29b70b8201fe56dd57c964a1303a85))
+
+
+### Documentation
+
+* **cedar:** navigation from grants ([#2293](https://github.com/lakekeeper/lakekeeper/issues/2293)) ([c5afdba](https://github.com/lakekeeper/lakekeeper/commit/c5afdba374fb6a53b07a735ed7ad8c775cb4b79e))
+* expiry and orphan-file removal skip a table whose location holds a Paimon table ([8ba83d1](https://github.com/lakekeeper/lakekeeper/commit/8ba83d16b02b822aa9728e8b0862d1b562443a9e))
+* optimize skips tables partitioned by the value of a uuid column ([0adf6ae](https://github.com/lakekeeper/lakekeeper/commit/0adf6ae20f28b8278aa68483d390745412736c89))
+* optimize workers follow the chart's keda and spill values ([e230d00](https://github.com/lakekeeper/lakekeeper/commit/e230d0082beeebc98a20e8da9d55d22d611e9dfa))
+* optimize, snapshot expiry and orphan-file removal skip tables that Paimon mirrors ([747f302](https://github.com/lakekeeper/lakekeeper/commit/747f302da8e8d6dec6401e49f3470539301cd8f5))
+* snapshot expiry and orphan-file removal skip tables with a retention value that is not a whole number ([8524b93](https://github.com/lakekeeper/lakekeeper/commit/8524b93346a91bd317de9960c2a1645c211c7b05))
+* update OLake Go integration docs ([#2191](https://github.com/lakekeeper/lakekeeper/issues/2191)) ([5a3c590](https://github.com/lakekeeper/lakekeeper/commit/5a3c5902d76d2d2850faa4a9c29d09e9f22feaf7))
+
+
+### Miscellaneous Chores
+
+* 0.15.x docs ([9124ea8](https://github.com/lakekeeper/lakekeeper/commit/9124ea8188cbebce0904078530310b9f11c60d87))
+* **ci:** build the server image once per push and skip image-based suites on the release PR for main ([#2271](https://github.com/lakekeeper/lakekeeper/issues/2271)) ([08b67d7](https://github.com/lakekeeper/lakekeeper/commit/08b67d7d2a8cd8816ba04a9769e62081f35a5680))
+* **ci:** run fewer Spark versions on pull requests and cancel superseded release runs ([#2291](https://github.com/lakekeeper/lakekeeper/issues/2291)) ([388b768](https://github.com/lakekeeper/lakekeeper/commit/388b768e153fc1e48acfbf681fa168c105123a64))
+* **docs:** Sync documentation from lakekeeper plus ([#2261](https://github.com/lakekeeper/lakekeeper/issues/2261)) ([03cfe3e](https://github.com/lakekeeper/lakekeeper/commit/03cfe3edb4c94a1161db412a79379c1c7912319f))
+* **docs:** Sync documentation from lakekeeper plus ([#2267](https://github.com/lakekeeper/lakekeeper/issues/2267)) ([b73d5f8](https://github.com/lakekeeper/lakekeeper/commit/b73d5f8083a690ca4f533559e6ef3cbc6fbc13d6))
+* **release:** clear the audit format fragments shipped in 0.15.0 ([#2260](https://github.com/lakekeeper/lakekeeper/issues/2260)) ([24bdade](https://github.com/lakekeeper/lakekeeper/commit/24bdaded75a41f2a8da69706e3de9087978e6c55))
+
 ## [0.15.0](https://github.com/lakekeeper/lakekeeper/compare/v0.14.0...v0.15.0) (2026-11-06)
 
 
