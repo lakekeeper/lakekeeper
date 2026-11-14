@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, LazyLock},
+    time::{Duration, Instant},
 };
 
 use futures::future::try_join_all;
@@ -32,9 +33,10 @@ use lakekeeper::{
 use openfga_client::{
     client::{
         BasicOpenFgaClient, BatchCheckItem, CheckRequestTupleKey, ConsistencyPreference,
-        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition, WriteOptions,
-        batch_check_single_result::CheckResult,
+        ReadRequestTupleKey, ReadResponse, StreamedListObjectsRequest, Tuple, TupleKey,
+        TupleKeyWithoutCondition, WriteOptions, batch_check_single_result::CheckResult,
     },
+    error::Error as OpenFGAClientError,
     tonic,
 };
 #[cfg(feature = "open-api")]
@@ -42,10 +44,11 @@ use utoipa::OpenApi as _;
 
 use crate::{
     AUTH_CONFIG, FgaType, MAX_TUPLES_PER_WRITE,
+    config::WarehouseVisibility,
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
     error::{
-        BatchCheckError, MissingItemInBatchCheck, OpenFGABackendUnavailable, OpenFGAError,
-        OpenFGAResult, UnexpectedCorrelationId,
+        BatchCheckError, InconclusiveWarehouseListing, MissingItemInBatchCheck,
+        OpenFGABackendUnavailable, OpenFGAError, OpenFGAResult, UnexpectedCorrelationId,
     },
     models::OpenFgaType,
     relations::{
@@ -516,6 +519,12 @@ impl Authorizer for OpenFGAAuthorizer {
         for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        if uses_streamed_visibility(AUTH_CONFIG.warehouse_visibility, metadata.actor(), for_user) {
+            return self
+                .warehouse_actions_with_streamed_visibility(metadata, warehouses_with_actions)
+                .await;
+        }
+
         let user = for_user.map_or_else(
             || metadata.actor().to_openfga(),
             |u| u.api_user_or_role().to_openfga(),
@@ -1761,6 +1770,211 @@ impl OpenFGAAuthorizer {
             .map_err(Into::into)
             .map(|response| response.into_inner().objects)
     }
+
+    /// Warehouse actions for the caller. `can_use` comes from one
+    /// [`Self::visible_warehouses`] listing, and so does `can_get_config` under the model
+    /// this crate installs, which defines both the same way (an externally managed model
+    /// may not, so there it is checked). Every other action is batch-checked as usual.
+    async fn warehouse_actions_with_streamed_visibility(
+        &self,
+        metadata: &RequestMetadata,
+        warehouses_with_actions: &[(&ResolvedWarehouse, WarehouseRelation)],
+    ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        let actor = metadata.actor();
+        let user = actor.to_openfga();
+        let own_model =
+            AUTH_CONFIG.authorization_model_prefix == crate::migration::OWN_MODEL_PREFIX;
+        let is_visibility = |a: &WarehouseRelation| {
+            matches!(a, WarehouseRelation::CanUse)
+                || (own_model && matches!(a, WarehouseRelation::CanGetConfig))
+        };
+
+        let targets: HashSet<String> = warehouses_with_actions
+            .iter()
+            .filter(|(_, a)| is_visibility(a))
+            .map(|(wh, _)| wh.warehouse_id.to_openfga())
+            .collect();
+        let other_items: Vec<CheckRequestTupleKey> = warehouses_with_actions
+            .iter()
+            .filter(|(_, a)| !is_visibility(a))
+            .map(|(wh, a)| CheckRequestTupleKey {
+                user: user.clone(),
+                relation: a.to_string(),
+                object: wh.warehouse_id.to_openfga(),
+            })
+            .collect();
+
+        let (visible, other_results) = futures::future::try_join(
+            async {
+                if targets.is_empty() {
+                    Ok(HashSet::new())
+                } else {
+                    self.visible_warehouses(&user, &targets)
+                        .await
+                        .map_err(IsAllowedActionError::from)
+                }
+            },
+            async {
+                if other_items.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    self.check_actions_with_permission_guard(actor, other_items, vec![])
+                        .await
+                }
+            },
+        )
+        .await?;
+
+        let other_count = other_results.len();
+        let mut other_results = other_results.into_iter();
+        warehouses_with_actions
+            .iter()
+            .map(|(wh, a)| {
+                if is_visibility(a) {
+                    Ok(AuthorizationDecision::from(
+                        visible.contains(&wh.warehouse_id.to_openfga()),
+                    ))
+                } else {
+                    other_results.next().ok_or_else(|| {
+                        IsAllowedActionError::from(OpenFGABackendUnavailable::from(
+                            MissingItemInBatchCheck {
+                                missing_indexes: vec![other_count],
+                            },
+                        ))
+                    })
+                }
+            })
+            .collect()
+    }
+
+    /// Which of `targets` (warehouse objects) `user` can see (`can_use`).
+    ///
+    /// Reads `StreamedListObjects(warehouse, can_use, user)` until every target has
+    /// arrived, then drops the stream, which cancels the RPC and stops the expansion in
+    /// `OpenFGA`. `OpenFGA` expands from the user's own tuples, so a principal whose only
+    /// grants sit deep below a warehouse does not make it walk the whole warehouse.
+    ///
+    /// A stream that ends without every target is a deny only when it is known to be
+    /// complete (see [`listing_is_complete`]): `OpenFGA` ends a stream cut at its
+    /// list-objects deadline or request timeout without an error, and a deny must never
+    /// come from an incomplete listing. Otherwise the caller gets a 503.
+    pub(crate) async fn visible_warehouses(
+        &self,
+        user: &str,
+        targets: &HashSet<String>,
+    ) -> Result<HashSet<String>, OpenFGABackendUnavailable> {
+        let started = Instant::now();
+        let request = StreamedListObjectsRequest {
+            store_id: self.client.store_id().to_string(),
+            authorization_model_id: self.client.authorization_model_id().to_string(),
+            r#type: FgaType::Warehouse.to_string(),
+            relation: WarehouseRelation::CanUse.to_string(),
+            user: user.to_string(),
+            contextual_tuples: None,
+            context: None,
+            consistency: self.client.consistency().into(),
+        };
+        let to_backend_error = |status: tonic::Status| {
+            OpenFGABackendUnavailable::from(OpenFGAClientError::RequestFailed(Box::new(status)))
+        };
+
+        let response = self
+            .client
+            .client()
+            .streamed_list_objects(request)
+            .await
+            .map_err(to_backend_error)?;
+        let initial_metadata = response.metadata().clone();
+        let mut stream = response.into_inner();
+        let mut found = HashSet::new();
+        while let Some(item) = stream.message().await.map_err(to_backend_error)? {
+            if targets.contains(&item.object) {
+                found.insert(item.object);
+                if found.len() == targets.len() {
+                    return Ok(found);
+                }
+            }
+        }
+
+        let elapsed = started.elapsed();
+        let trailers = stream.trailers().await.map_err(to_backend_error)?;
+        let deadline_reported = deadline_reported(&initial_metadata, trailers.as_ref());
+        listing_is_complete(
+            elapsed,
+            AUTH_CONFIG.streamed_list_deadline(),
+            deadline_reported,
+        )
+        .inspect_err(|e| tracing::warn!("Warehouse listing for {user}: {e}; answering 503"))?;
+        Ok(found)
+    }
+}
+
+/// Whether the caller's warehouse visibility comes from
+/// [`OpenFGAAuthorizer::visible_warehouses`]. Otherwise it is checked.
+///
+/// Only for a principal asking for itself. Introspection for another principal
+/// (`for_user`) keeps the checks and their guards. Assumed roles (`role:…#assignee`) and
+/// anonymous callers (`user:*`) keep the checks too: `OpenFGA` has no fast `ListObjects`
+/// path for these subjects, so a deny can cost more than the check it replaces.
+fn uses_streamed_visibility(
+    setting: WarehouseVisibility,
+    actor: &Actor,
+    for_user: Option<&UserOrRole>,
+) -> bool {
+    setting == WarehouseVisibility::StreamedList
+        && for_user.is_none()
+        && matches!(actor, Actor::Principal(_))
+}
+
+/// Trailer that `OpenFGA` sets when it cut a `StreamedListObjects` stream at its deadline
+/// (openfga/openfga#3399). Older servers do not send it.
+const OPENFGA_WARNING_TRAILER: &str = "x-openfga-warning";
+const OPENFGA_WARNING_DEADLINE_EXCEEDED: &str = "deadline-exceeded";
+
+/// Whether `OpenFGA` reported that it cut the stream at its deadline. A stream that ends
+/// without any object arrives as a trailers-only response: tonic then puts the trailers in
+/// the response metadata, and the stream has none.
+fn deadline_reported(
+    initial_metadata: &tonic::metadata::MetadataMap,
+    trailers: Option<&tonic::metadata::MetadataMap>,
+) -> bool {
+    reports_deadline_exceeded(initial_metadata) || trailers.is_some_and(reports_deadline_exceeded)
+}
+
+fn reports_deadline_exceeded(trailers: &tonic::metadata::MetadataMap) -> bool {
+    trailers
+        .get_all(OPENFGA_WARNING_TRAILER)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|warning| {
+            warning
+                .trim()
+                .eq_ignore_ascii_case(OPENFGA_WARNING_DEADLINE_EXCEEDED)
+        })
+}
+
+/// Whether a stream that ended without every warehouse asked about can be trusted as a
+/// deny. `OpenFGA` ends a stream cut at its deadline like a complete one, so the listing is
+/// trusted only when `OpenFGA` did not report the deadline and the stream ended clearly
+/// before it. The timing rule is the fallback for servers that do not report it.
+fn listing_is_complete(
+    elapsed: Duration,
+    server_deadline: Duration,
+    deadline_reported: bool,
+) -> Result<(), InconclusiveWarehouseListing> {
+    if deadline_reported {
+        return Err(InconclusiveWarehouseListing::DeadlineReported {
+            elapsed_ms: elapsed.as_millis(),
+        });
+    }
+    if elapsed >= server_deadline.mul_f64(0.8) {
+        return Err(InconclusiveWarehouseListing::NearDeadline {
+            elapsed_ms: elapsed.as_millis(),
+            deadline_ms: server_deadline.as_millis(),
+        });
+    }
+    Ok(())
 }
 
 /// Parse an OpenFGA assignee subject (`user:<id>` or `role:<id>#assignee`) into the
@@ -1817,6 +2031,99 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    mod streamed_visibility {
+        use std::time::Duration;
+
+        use lakekeeper::service::{Actor, Role, RoleId, UserId};
+        use openfga_client::tonic::metadata::{MetadataMap, MetadataValue};
+
+        use super::super::{
+            OPENFGA_WARNING_TRAILER, UserOrRole, deadline_reported, listing_is_complete,
+            reports_deadline_exceeded, uses_streamed_visibility,
+        };
+        use crate::{config::WarehouseVisibility, error::InconclusiveWarehouseListing};
+
+        #[test]
+        fn only_a_principal_asking_for_itself_uses_the_listing() {
+            let user = UserId::new_unchecked("oidc", "alice");
+            let principal = Actor::Principal(user.clone());
+            let role = Actor::Role {
+                principal: user.clone(),
+                assumed_role: Role::new_random_with_id(RoleId::new_random()).into(),
+            };
+            let other = UserOrRole::User(user);
+            let streamed = WarehouseVisibility::StreamedList;
+
+            assert!(uses_streamed_visibility(streamed, &principal, None));
+            assert!(!uses_streamed_visibility(streamed, &role, None));
+            assert!(!uses_streamed_visibility(streamed, &Actor::Anonymous, None));
+            assert!(!uses_streamed_visibility(
+                streamed,
+                &principal,
+                Some(&other)
+            ));
+            assert!(!uses_streamed_visibility(
+                WarehouseVisibility::Check,
+                &principal,
+                None
+            ));
+        }
+
+        #[test]
+        fn reads_the_deadline_warning_trailer() {
+            let with = |values: &[&'static str]| {
+                let mut trailers = MetadataMap::new();
+                for value in values {
+                    trailers.append(OPENFGA_WARNING_TRAILER, MetadataValue::from_static(value));
+                }
+                reports_deadline_exceeded(&trailers)
+            };
+            assert!(with(&["deadline-exceeded"]));
+            assert!(with(&["Deadline-Exceeded"]));
+            assert!(with(&["other, deadline-exceeded"]));
+            assert!(with(&["other", "deadline-exceeded"]));
+            assert!(!with(&[]));
+            assert!(!with(&["other"]));
+        }
+
+        #[test]
+        fn reads_the_warning_from_a_trailers_only_response_too() {
+            let mut warning = MetadataMap::new();
+            warning.append(
+                OPENFGA_WARNING_TRAILER,
+                MetadataValue::from_static("deadline-exceeded"),
+            );
+            let empty = MetadataMap::new();
+            // Trailers-only response: the warning is in the response metadata.
+            assert!(deadline_reported(&warning, None));
+            // Stream with objects: the warning is in the trailers.
+            assert!(deadline_reported(&empty, Some(&warning)));
+            assert!(!deadline_reported(&empty, Some(&empty)));
+            assert!(!deadline_reported(&empty, None));
+        }
+
+        #[test]
+        fn an_incomplete_listing_is_never_a_deny() {
+            let deadline = Duration::from_millis(3_000);
+            let ms = Duration::from_millis;
+
+            assert_eq!(listing_is_complete(ms(20), deadline, false), Ok(()));
+            assert_eq!(listing_is_complete(ms(2_399), deadline, false), Ok(()));
+            assert_eq!(
+                listing_is_complete(ms(2_400), deadline, false),
+                Err(InconclusiveWarehouseListing::NearDeadline {
+                    elapsed_ms: 2_400,
+                    deadline_ms: 3_000
+                })
+            );
+            // A reported deadline wins over the timing rule, however early it came.
+            assert_eq!(
+                listing_is_complete(ms(20), deadline, true),
+                Err(InconclusiveWarehouseListing::DeadlineReported { elapsed_ms: 20 })
+            );
+        }
+    }
+
     // Name is important for test profile
     pub(crate) mod openfga_integration_tests {
         use http::StatusCode;
@@ -1848,6 +2155,257 @@ pub(crate) mod tests {
             new_authorizer(client, Some(store_name), TEST_CONSISTENCY, server_id)
                 .await
                 .unwrap()
+        }
+
+        /// Writes `(user, relation, object)` tuples in chunks the server accepts.
+        async fn write_all(
+            authorizer: &OpenFGAAuthorizer,
+            tuples: &[(String, &'static str, String)],
+        ) {
+            for chunk in tuples.chunks(50) {
+                authorizer
+                    .write(
+                        Some(
+                            chunk
+                                .iter()
+                                .map(|(user, relation, object)| TupleKey {
+                                    user: user.clone(),
+                                    relation: (*relation).to_string(),
+                                    object: object.clone(),
+                                    condition: None,
+                                })
+                                .collect(),
+                        ),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        type Tuples = Vec<(String, &'static str, String)>;
+
+        /// Two warehouses of one project. W1 has 30 namespaces of 3 tables, and the objects
+        /// granted below it sit in the last namespace.
+        struct VisibilityFixture {
+            tuples: Tuples,
+            project: String,
+            w1: String,
+            w2: String,
+            last: String,
+            table: String,
+            view: String,
+            generic: String,
+            w2_ns: String,
+            w2_table: String,
+        }
+
+        impl VisibilityFixture {
+            fn new() -> Self {
+                let id = || uuid::Uuid::now_v7().to_string();
+                let project = format!("project:{}", id());
+                let (w1_id, w2_id) = (id(), id());
+                let (w1, w2) = (format!("warehouse:{w1_id}"), format!("warehouse:{w2_id}"));
+                let mut t: Tuples = vec![];
+                for w in [&w1, &w2] {
+                    t.push((project.clone(), "project", w.clone()));
+                    t.push((w.clone(), "warehouse", project.clone()));
+                }
+                let top_ns = |t: &mut Tuples, w: &str| {
+                    let ns = format!("namespace:{}", id());
+                    t.push((w.to_string(), "parent", ns.clone()));
+                    t.push((ns.clone(), "namespace", w.to_string()));
+                    ns
+                };
+                let child = |t: &mut Tuples, wid: &str, parent: &str, ty: &str| {
+                    let obj = if ty == "namespace" {
+                        format!("namespace:{}", id())
+                    } else {
+                        format!("{ty}:{wid}/{}", id())
+                    };
+                    t.push((parent.to_string(), "parent", obj.clone()));
+                    t.push((obj.clone(), "child", parent.to_string()));
+                    obj
+                };
+                let mut last = String::new();
+                for _ in 0..30 {
+                    last = top_ns(&mut t, &w1);
+                    for _ in 0..3 {
+                        child(&mut t, &w1_id, &last, "lakekeeper_table");
+                    }
+                }
+                let nested = child(&mut t, &w1_id, &last, "namespace");
+                let table = child(&mut t, &w1_id, &nested, "lakekeeper_table");
+                let view = child(&mut t, &w1_id, &nested, "lakekeeper_view");
+                let generic = child(&mut t, &w1_id, &last, "lakekeeper_generic_table");
+                let w2_ns = top_ns(&mut t, &w2);
+                let w2_table = child(&mut t, &w2_id, &w2_ns, "lakekeeper_table");
+                Self {
+                    tuples: t,
+                    project,
+                    w1,
+                    w2,
+                    last,
+                    table,
+                    view,
+                    generic,
+                    w2_ns,
+                    w2_table,
+                }
+            }
+
+            /// Adds the principals with their grants and returns `(name, subject)` for each.
+            /// The `revoked` principal's grant is in `tuples` and must be deleted after the
+            /// write; the second value is that principal's subject.
+            fn add_principals(&mut self) -> (Vec<(&'static str, String)>, String) {
+                let role = || format!("role:{}", uuid::Uuid::now_v7());
+                let (r1, r2, r3) = (role(), role(), role());
+                self.tuples
+                    .push((format!("{r2}#assignee"), "assignee", r1.clone()));
+                self.tuples
+                    .push((format!("{r1}#assignee"), "modify", self.last.clone()));
+                self.tuples
+                    .push((format!("{r3}#assignee"), "select", self.w2_table.clone()));
+
+                let grants: Vec<(&'static str, Vec<(&'static str, String)>)> = vec![
+                    (
+                        "create+modify on the last namespace",
+                        vec![("create", self.last.clone()), ("modify", self.last.clone())],
+                    ),
+                    (
+                        "select on a table in a nested namespace",
+                        vec![("select", self.table.clone())],
+                    ),
+                    ("describe on a view", vec![("describe", self.view.clone())]),
+                    (
+                        "select on a generic table",
+                        vec![("select", self.generic.clone())],
+                    ),
+                    ("owner of a table", vec![("ownership", self.table.clone())]),
+                    ("describe on W1", vec![("describe", self.w1.clone())]),
+                    ("create on W1", vec![("create", self.w1.clone())]),
+                    (
+                        "describe on the project",
+                        vec![("describe", self.project.clone())],
+                    ),
+                    (
+                        "project_admin",
+                        vec![("project_admin", self.project.clone())],
+                    ),
+                    ("grant only in W2", vec![("modify", self.w2_ns.clone())]),
+                    ("pass_grants only", vec![("pass_grants", self.last.clone())]),
+                    (
+                        "manage_grants only",
+                        vec![("manage_grants", self.last.clone())],
+                    ),
+                    ("no grant", vec![]),
+                    ("member of R2, nested in R1", vec![("assignee", r2.clone())]),
+                    ("owner of role R3", vec![("ownership", r3)]),
+                    ("revoked", vec![("modify", self.last.clone())]),
+                ];
+                let mut principals = vec![];
+                for (name, grants) in grants {
+                    let user = format!("user:oidc~{}", uuid::Uuid::now_v7());
+                    for (relation, object) in grants {
+                        self.tuples.push((user.clone(), relation, object));
+                    }
+                    principals.push((name, user));
+                }
+                let revoked = principals.last().unwrap().1.clone();
+                principals.push(("assumed role R1", format!("{r1}#assignee")));
+                principals.push(("assumed role R2", format!("{r2}#assignee")));
+                (principals, revoked)
+            }
+        }
+
+        /// The streamed warehouse listing answers exactly like `Check(can_use)` for these
+        /// principal shapes: grants at every level, nested namespaces, views and generic
+        /// tables, nested roles, role owners, assumed roles, grants that do not make
+        /// anything visible, a revoked grant, and no grant at all.
+        #[tokio::test]
+        async fn test_visible_warehouses_matches_check() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let mut fixture = VisibilityFixture::new();
+            let (principals, revoked) = fixture.add_principals();
+            write_all(&authorizer, &fixture.tuples).await;
+            authorizer
+                .write(
+                    None,
+                    Some(vec![TupleKeyWithoutCondition {
+                        user: revoked,
+                        relation: "modify".to_string(),
+                        object: fixture.last.clone(),
+                    }]),
+                )
+                .await
+                .unwrap();
+
+            let (w1, w2) = (&fixture.w1, &fixture.w2);
+            let both: HashSet<String> = [w1.clone(), w2.clone()].into();
+            for (name, user) in &principals {
+                let listed = authorizer.visible_warehouses(user, &both).await.unwrap();
+                for w in [w1, w2] {
+                    let checked = authorizer
+                        .check(CheckRequestTupleKey {
+                            user: user.clone(),
+                            relation: WarehouseRelation::CanUse.to_string(),
+                            object: w.clone(),
+                        })
+                        .await
+                        .unwrap();
+                    let single = authorizer
+                        .visible_warehouses(user, &[w.clone()].into())
+                        .await
+                        .unwrap()
+                        .contains(w);
+                    assert_eq!(
+                        listed.contains(w),
+                        checked,
+                        "{name} on {w}: listing of both"
+                    );
+                    assert_eq!(single, checked, "{name} on {w}: listing of one");
+                }
+            }
+        }
+
+        /// `can_use` and `can_get_config` come from the listing, the other actions from
+        /// checks, and the answers keep the order they were asked in.
+        #[tokio::test]
+        async fn test_streamed_visibility_keeps_order_and_other_actions() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
+            let (w1, w2) = (
+                WarehouseId::from(uuid::Uuid::now_v7()),
+                WarehouseId::from(uuid::Uuid::now_v7()),
+            );
+            let ns = format!("namespace:{}", uuid::Uuid::now_v7());
+            write_all(
+                &authorizer,
+                &[
+                    (w1.to_openfga(), "parent", ns.clone()),
+                    (ns.clone(), "namespace", w1.to_openfga()),
+                    (user_id.to_openfga(), "select", ns.clone()),
+                ],
+            )
+            .await;
+            let metadata = RequestMetadata::test_user(user_id);
+            let (rw1, rw2) = (
+                ResolvedWarehouse::new_with_id(w1),
+                ResolvedWarehouse::new_with_id(w2),
+            );
+            let actions = vec![
+                (&rw1, WarehouseRelation::CanUse),
+                (&rw1, WarehouseRelation::CanListEverything),
+                (&rw2, WarehouseRelation::CanGetConfig),
+                (&rw1, WarehouseRelation::CanGetConfig),
+                (&rw2, WarehouseRelation::CanUse),
+            ];
+            let results = authorizer
+                .warehouse_actions_with_streamed_visibility(&metadata, &actions)
+                .await
+                .unwrap();
+            // select on a namespace makes W1 visible, but not listable as a whole.
+            assert_eq!(results, vec![true, false, false, true, false]);
         }
 
         #[tokio::test]
