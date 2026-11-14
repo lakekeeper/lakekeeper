@@ -266,7 +266,7 @@ A project or a warehouse can switch single predefined policies on or off for its
 
 ### What each privilege allows
 
-A grant on an object reaches everything beneath it: server, project, warehouse, namespace, then tables, views and generic tables. A project grant also reaches the project's tags, but project `manage` reaches them only as `describe` (see the notes below). Policies read this as `principal_privileges.inherited`. Grants reach downward only: a grant on a table does not make its namespace or warehouse visible. A stronger privilege includes the weaker ones on the same ladder: `describe` < `select` < `write` < `manage` on tables, views and generic tables, `describe` < `manage` and `create` < `manage` on containers, and `describe` < `apply` < `manage` on tags (see [How action groups are nested](#how-action-groups-are-nested)). On containers, `create` includes only part of `describe`, as the table shows.
+A grant on an object reaches everything beneath it: server, project, warehouse, namespace, then tables, views and generic tables. A project grant also reaches the project's tags, but project `manage` reaches them only as `describe` (see the notes below). Policies read this as `principal_privileges.inherited`. A grant also makes the path to its object visible, see [Navigation from grants](#navigation-from-grants). A stronger privilege includes the weaker ones on the same ladder: `describe` < `select` < `write` < `manage` on tables, views and generic tables, `describe` < `manage` and `create` < `manage` on containers, and `describe` < `apply` < `manage` on tags (see [How action groups are nested](#how-action-groups-are-nested)). On containers, `create` includes only part of `describe`, as the table shows.
 
 | Privilege | Granted on | Reaches children | What it allows |
 |---|---|---|---|
@@ -285,7 +285,7 @@ A grant on an object reaches everything beneath it: server, project, warehouse, 
 
 Notes:
 
-- **`select` and `write` on a container** act on the tables, views and generic tables beneath it, not on the container. Grant `describe` on the container too, so the holder can reach and list what is in it.
+- **`select` and `write` on a container** act on the tables, views and generic tables beneath it. They also show the container and what is in it, see [Navigation from grants](#navigation-from-grants). Grant `describe` on the container where the holder also needs its tasks, endpoint statistics or soft-deleted tables.
 - **`manage` does not administer grants or policies.** Grant `read_grants`, `pass_grants`, `manage_grants`, `read_policies` or `manage_policies` for those.
 - **Moving** a namespace, table, view or generic table to another namespace needs `manage` and `manage_grants` on it, because a move changes which grants apply to it. The destination needs `create` or `manage`. Renaming a table, view or generic table within its namespace needs `manage` alone; renaming a namespace is a move.
 - **Skipping soft deletion**, such as a forced drop or a recursive namespace delete in a warehouse with soft deletion, needs `manage` on the warehouse. `manage` on a namespace, table, view or generic table is not enough. See [Skipping Soft Deletion](./concepts.md#skipping-soft-deletion).
@@ -303,6 +303,28 @@ Notes:
 - **Grants**: In Plus 0.14, a `manage` grant also allowed tagging the object. On a project or the server, it also allowed creating tag definitions and managing every tag of the project. Where holders still need this, grant `manage_tags` next to `manage` before you upgrade. Plus 0.14 already knows `manage_tags`, so these holders keep tagging during the upgrade. In Plus 0.14, `create` on a project, warehouse or namespace also showed the tables, views and generic tables inside, the tasks and the endpoint statistics. Where holders need these, grant `describe` next to `create` before you upgrade.
 - **Group names**: In Plus 0.14, the step below `<Level>Actions` was called `<Level>ModifyActions`, and it included the level's tag action. Lakekeeper still accepts this name and reads it as `<Level>Actions`, so stored policies keep their meaning. It logs a warning for each loaded policy that uses the name. The policy API refuses the name in new or changed policies, and accepts a stored policy that is sent again unchanged. When you change such a policy, write `<Level>Actions` to keep the level's tag action, or `<Level>ManageActions` to leave it out.
 - **During the upgrade**: Until every replica runs Plus 0.15, store no project or warehouse policy that names something new in 0.15, such as `<Level>ManageActions` or the commit context fields `data_commit`, `update_kinds` and `target_refs`. [Policy and Entity Management](#policy-and-entity-management) explains why, and what to do with your own schema file.
+
+#### Upgrading from Lakekeeper Plus 0.15
+
+- **Hidden namespaces, warehouses and projects**: A grant now shows the path to its object, also where a `forbid` blocks the actions on the tables inside. If such a `forbid` hides a namespace, add `NamespaceActions` to it before you upgrade. For a warehouse, also add `WarehouseActions`; for a project, also `ProjectActions`.
+- **Your own schema file**: If you set `LAKEKEEPER__CEDAR__SCHEMA_FILE`, copy the `principal_has_privilege_below` context field from the built-in schema into your file and deploy it together with the image. Plus 0.16 does not start without it.
+- **Database migration**: Permission checks wait until the migration has finished. It takes about 4 seconds for every 100,000 grants.
+- **During the upgrade**: Until every replica runs Plus 0.16, store no project or warehouse policy that reads `context.principal_has_privilege_below`.
+- **Switched predefined policies**: In a project or warehouse that switched any predefined policy before the upgrade, the new navigate policies start out off. To use them there, switch them on after every replica runs Plus 0.16.
+
+### Navigation from grants
+
+A user with `describe`, `select`, `write`, `create`, `manage` or `manage_tags` on a warehouse, namespace, table, view or generic table can connect to the warehouse and browse to the object. They see the project, the warehouse and the namespaces on the path, not the other objects next to them. `select` and `write` on a project, warehouse or namespace also show it and what is in it. Navigation gives no access to data.
+
+Three predefined policies decide this: `predefined-grants-project-navigate`, `predefined-grants-warehouse-navigate` and `predefined-grants-namespace-navigate`. They allow these actions:
+
+- On a project: `GetProjectMetadata`, `ListWarehouses`, `IncludeProjectInList`
+- On a warehouse: `UseWarehouse`, `ListNamespacesInWarehouse`, `GetWarehouseMetadata`, `GetConfig`, `IncludeWarehouseInList`
+- On a namespace: `GetNamespaceMetadata`, `IncludeNamespaceInList`, `ListTables`, `ListViews`, `ListGenericTables`, `ListNamespacesInNamespace`
+
+To turn navigation from grants off in a project or warehouse, switch these policies off there. A grant shows the path even where a `forbid` blocks what the grant allows. To hide a namespace, warehouse or project, forbid `NamespaceActions`, `WarehouseActions` or `ProjectActions` on it.
+
+Custom policies can read the same fact as `context.principal_has_privilege_below`: it is `true` when the user or one of their roles holds `describe`, `select`, `write`, `create`, `manage` or `manage_tags` on an object below the project, warehouse or namespace. Only the actions listed above carry it.
 
 ### Roles and the project
 
@@ -1557,6 +1579,7 @@ All property contexts use the `ResourceProperties` entity type (same structure a
 | `Manage<Level>Grants`                     | `privilege: <Level>Privilege`, `grantee: Grantee`, `direction: GrantDirection` |
 | `Read…SubtreeGrants`, `Revoke…SubtreeGrants` | `subtree?: SubtreeGrantScope` |
 | `Toggle…PredefinedPolicy`                 | `policy_id: String`, `enabled: Bool` |
+| The actions listed in [Navigation from grants](#navigation-from-grants) | `principal_has_privilege_below: Bool` |
 
 A register with `overwrite` that replaces an active table with another table (a different table UUID) in a warehouse with soft deletion sends `DropTable` for the replaced table with `force: true`, because the table skips soft deletion. The protection of the replaced table still applies.
 
