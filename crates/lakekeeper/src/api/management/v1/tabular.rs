@@ -216,6 +216,7 @@ async fn authorize_search_tabular<C: CatalogStore, A: Authorizer>(
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchTabularRequest {
     /// Name, UUID, or storage path of a table or view. A name is cut to 64 characters.
+    // `max_length` is `MAX_LOCATION_LEN` from `lakekeeper_io::location`.
     #[cfg_attr(feature = "open-api", schema(max_length = 4096))]
     pub search: String,
 }
