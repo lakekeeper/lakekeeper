@@ -593,3 +593,27 @@ pub(crate) mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod warehouse_visibility_model_tests {
+    use super::V4_CURRENT_MODEL_JSON;
+
+    /// The authorizer answers `can_get_config` with the `can_use` result. That is only
+    /// right while the model defines both the same way.
+    #[test]
+    fn can_get_config_is_defined_like_can_use() {
+        let model: serde_json::Value = serde_json::from_str(V4_CURRENT_MODEL_JSON).unwrap();
+        let warehouse = model["type_definitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["type"] == "warehouse")
+            .unwrap();
+        let relations = &warehouse["relations"];
+        assert!(
+            relations["can_use"].is_object(),
+            "can_use is missing from the model"
+        );
+        assert_eq!(relations["can_get_config"], relations["can_use"]);
+    }
+}

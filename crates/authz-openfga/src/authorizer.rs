@@ -521,14 +521,18 @@ impl Authorizer for OpenFGAAuthorizer {
             |u| u.api_user_or_role().to_openfga(),
         );
 
-        let items: Vec<_> = warehouses_with_actions
-            .iter()
-            .map(|(wh, a)| CheckRequestTupleKey {
-                user: user.clone(),
-                relation: a.to_string(),
-                object: wh.warehouse_id.to_openfga(),
-            })
-            .collect();
+        let own_model =
+            AUTH_CONFIG.authorization_model_prefix == crate::migration::OWN_MODEL_PREFIX;
+        let (items, answered_by) = dedup_checks(
+            warehouses_with_actions
+                .iter()
+                .map(|(wh, a)| CheckRequestTupleKey {
+                    user: user.clone(),
+                    relation: warehouse_relation_to_check(own_model, *a).to_string(),
+                    object: wh.warehouse_id.to_openfga(),
+                })
+                .collect(),
+        );
 
         let guard_tuples = if for_user.is_some() {
             // Collect unique warehouse objects for permission checks
@@ -549,8 +553,21 @@ impl Authorizer for OpenFGAAuthorizer {
             vec![]
         };
 
-        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
-            .await
+        let decisions = self
+            .check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await?;
+        answered_by
+            .into_iter()
+            .map(|i| {
+                decisions.get(i).cloned().ok_or_else(|| {
+                    IsAllowedActionError::from(OpenFGABackendUnavailable::from(
+                        MissingItemInBatchCheck {
+                            missing_indexes: vec![i],
+                        },
+                    ))
+                })
+            })
+            .collect()
     }
 
     async fn are_allowed_namespace_actions_impl(
@@ -1772,6 +1789,41 @@ impl OpenFGAAuthorizer {
 /// Managed access is stored as `user:*` and `role:*` wildcards, which a role's assignee
 /// userset does not match, so the model cannot tell whether such a subject is under managed
 /// access. The same reason refuses grants below the warehouse under an assumed role.
+/// The relation to check for a warehouse action. Under the model this crate installs,
+/// `can_get_config` is defined exactly like `can_use` (see
+/// `can_get_config_is_defined_like_can_use`), so it is answered by the `can_use` check.
+/// `GET /config` asks for both. An externally managed model may define them differently,
+/// so there each relation is checked.
+fn warehouse_relation_to_check(own_model: bool, action: WarehouseRelation) -> WarehouseRelation {
+    if own_model && action == WarehouseRelation::CanGetConfig {
+        WarehouseRelation::CanUse
+    } else {
+        action
+    }
+}
+
+/// Removes repeated checks. Returns the checks to send, and for each input the index of
+/// the check that answers it.
+fn dedup_checks(items: Vec<CheckRequestTupleKey>) -> (Vec<CheckRequestTupleKey>, Vec<usize>) {
+    let mut unique: Vec<CheckRequestTupleKey> = Vec::with_capacity(items.len());
+    let mut index_of: HashMap<(String, String, String), usize> = HashMap::new();
+    let answered_by = items
+        .into_iter()
+        .map(|item| {
+            let key = (
+                item.user.clone(),
+                item.relation.clone(),
+                item.object.clone(),
+            );
+            *index_of.entry(key).or_insert_with(|| {
+                unique.push(item);
+                unique.len() - 1
+            })
+        })
+        .collect();
+    (unique, answered_by)
+}
+
 fn is_refused_for_role(item: &CheckRequestTupleKey) -> bool {
     static REFUSED: LazyLock<HashSet<String>> = LazyLock::new(|| {
         HashSet::from([
@@ -1817,6 +1869,62 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    mod warehouse_checks {
+        use openfga_client::client::CheckRequestTupleKey;
+
+        use super::super::{dedup_checks, warehouse_relation_to_check};
+        use crate::relations::WarehouseRelation;
+
+        #[test]
+        fn get_config_is_checked_as_can_use_only_under_the_own_model() {
+            assert_eq!(
+                warehouse_relation_to_check(true, WarehouseRelation::CanGetConfig),
+                WarehouseRelation::CanUse
+            );
+            assert_eq!(
+                warehouse_relation_to_check(false, WarehouseRelation::CanGetConfig),
+                WarehouseRelation::CanGetConfig
+            );
+            for own_model in [true, false] {
+                assert_eq!(
+                    warehouse_relation_to_check(own_model, WarehouseRelation::CanUse),
+                    WarehouseRelation::CanUse
+                );
+                assert_eq!(
+                    warehouse_relation_to_check(own_model, WarehouseRelation::CanListEverything),
+                    WarehouseRelation::CanListEverything
+                );
+            }
+        }
+
+        #[test]
+        fn repeated_checks_are_sent_once() {
+            let item = |user: &str, relation: &str, object: &str| CheckRequestTupleKey {
+                user: user.to_string(),
+                relation: relation.to_string(),
+                object: object.to_string(),
+            };
+            let (unique, answered_by) = dedup_checks(vec![
+                item("user:a", "can_use", "warehouse:1"),
+                item("user:a", "can_use", "warehouse:1"),
+                item("user:a", "can_use", "warehouse:2"),
+                item("user:a", "can_list_everything", "warehouse:1"),
+                item("user:b", "can_use", "warehouse:1"),
+                item("user:a", "can_use", "warehouse:2"),
+            ]);
+            assert_eq!(
+                unique,
+                vec![
+                    item("user:a", "can_use", "warehouse:1"),
+                    item("user:a", "can_use", "warehouse:2"),
+                    item("user:a", "can_list_everything", "warehouse:1"),
+                    item("user:b", "can_use", "warehouse:1"),
+                ]
+            );
+            assert_eq!(answered_by, vec![0, 0, 1, 2, 3, 1]);
+        }
+    }
+
     // Name is important for test profile
     pub(crate) mod openfga_integration_tests {
         use http::StatusCode;
@@ -1848,6 +1956,86 @@ pub(crate) mod tests {
             new_authorizer(client, Some(store_name), TEST_CONSISTENCY, server_id)
                 .await
                 .unwrap()
+        }
+
+        /// `can_get_config` is answered by the `can_use` check, and every answer stays
+        /// what a check of the relation asked for returns, in the order asked.
+        #[tokio::test]
+        async fn test_get_config_is_answered_by_the_can_use_check() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let id = || uuid::Uuid::now_v7().to_string();
+            let (w1, w2) = (
+                WarehouseId::from(uuid::Uuid::now_v7()),
+                WarehouseId::from(uuid::Uuid::now_v7()),
+            );
+            let ns = format!("namespace:{}", id());
+            let (below, on_w2, nobody) = (
+                UserId::new_unchecked("oidc", &id()),
+                UserId::new_unchecked("oidc", &id()),
+                UserId::new_unchecked("oidc", &id()),
+            );
+            let role_id = RoleId::new_random();
+            let tuple = |user: String, relation: &str, object: String| TupleKey {
+                user,
+                relation: relation.to_string(),
+                object,
+                condition: None,
+            };
+            authorizer
+                .write(
+                    Some(vec![
+                        tuple(w1.to_openfga(), "parent", ns.clone()),
+                        tuple(ns.clone(), "namespace", w1.to_openfga()),
+                        tuple(below.to_openfga(), "select", ns.clone()),
+                        tuple(on_w2.to_openfga(), "describe", w2.to_openfga()),
+                        tuple(
+                            format!("{}#assignee", role_id.to_openfga()),
+                            "modify",
+                            ns.clone(),
+                        ),
+                    ]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let (rw1, rw2) = (
+                ResolvedWarehouse::new_with_id(w1),
+                ResolvedWarehouse::new_with_id(w2),
+            );
+            let actions = vec![
+                (&rw1, WarehouseRelation::CanUse),
+                (&rw1, WarehouseRelation::CanGetConfig),
+                (&rw2, WarehouseRelation::CanGetConfig),
+                (&rw1, WarehouseRelation::CanListEverything),
+                (&rw2, WarehouseRelation::CanUse),
+                (&rw1, WarehouseRelation::CanGetConfig),
+            ];
+            for metadata in [
+                RequestMetadata::test_user(below),
+                RequestMetadata::test_user(on_w2),
+                RequestMetadata::test_user(nobody.clone()),
+                RequestMetadata::test_user_assumed_role(nobody, role_id),
+            ] {
+                let results = authorizer
+                    .are_allowed_warehouse_actions_impl(&metadata, None, &actions)
+                    .await
+                    .unwrap();
+                let mut expected = vec![];
+                for (wh, a) in &actions {
+                    expected.push(
+                        authorizer
+                            .check(CheckRequestTupleKey {
+                                user: metadata.actor().to_openfga(),
+                                relation: a.to_string(),
+                                object: wh.warehouse_id.to_openfga(),
+                            })
+                            .await
+                            .unwrap(),
+                    );
+                }
+                assert_eq!(results, expected, "{}", metadata.actor());
+            }
         }
 
         #[tokio::test]
