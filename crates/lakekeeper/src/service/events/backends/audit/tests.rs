@@ -1657,6 +1657,47 @@ fn the_log_sink_writes_the_fixture_line() {
     assert_matches_fixture("idempotent_replay", &contract_fields(line));
 }
 
+/// No shape has a field named like a key the log subscriber adds: on the log line the two
+/// would collide, and the record without its envelope would lose the field.
+#[test]
+fn no_shape_field_is_named_like_a_log_envelope_key() {
+    fn shape_refs(value: &serde_json::Value, refs: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(target) = map.get("then").and_then(|then| then["$ref"].as_str()) {
+                    refs.push(target.trim_start_matches("#/$defs/").to_string());
+                }
+                map.values().for_each(|child| shape_refs(child, refs));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|item| shape_refs(item, refs)),
+            _ => {}
+        }
+    }
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    let mut shapes = Vec::new();
+    shape_refs(
+        &schema["$defs"][crate::audit::schema::AUDIT_RECORD],
+        &mut shapes,
+    );
+    shapes.sort();
+    assert_eq!(
+        shapes,
+        ["AuthorizationRecord", "OperationRecord", "ReplayRecord"]
+    );
+
+    for shape in shapes {
+        let properties = schema["$defs"][&shape]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{shape} has properties"));
+        for key in crate::audit::validate::ENVELOPE_KEYS {
+            assert!(
+                !properties.contains_key(*key),
+                "{shape} has a field named `{key}`, a key the log subscriber adds"
+            );
+        }
+    }
+}
+
 /// A sink that notes, for every record it is handed, whether its JSON was already built.
 #[derive(Debug, Default)]
 struct JsonBuiltProbe(Mutex<Vec<bool>>);

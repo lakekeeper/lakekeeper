@@ -655,6 +655,12 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
                 "`record_type` is stamped from `shape = \"...\"`; the struct holds no such field",
             ));
         }
+        if name == "event_source" || name == "audit_format" {
+            return Err(Error::new_spanned(
+                field,
+                format!("`{name}` is stamped on every record; the struct holds no such field"),
+            ));
+        }
         for attr in field
             .attrs
             .iter()
