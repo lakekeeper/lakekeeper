@@ -49,6 +49,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 ## Authz
 
 - OpenFGA model: `authz/openfga/` — validate with `just test-openfga`, update JSON with `just update-openfga`
+- Don't re-encode the OpenFGA model in Rust: check the relation each action maps to, even where the model defines it like another (`can_get_config` is `can_use` today). Fix slow checks in the model or in how we ask OpenFGA, never by reusing one relation's answer for another.
 - OPA policies: `authz/opa-bridge/` — check with `just check-opa` (requires `opa` and `regal` CLIs)
 
 ## Code Style
