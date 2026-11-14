@@ -266,13 +266,13 @@ A project or a warehouse can switch single predefined policies on or off for its
 
 ### What each privilege allows
 
-A grant on an object reaches everything beneath it: server, project, warehouse, namespace, then tables, views and generic tables. A project grant also reaches the project's tags, but project `manage` reaches them only as `describe` (see the notes below). Policies read this as `principal_privileges.inherited`. A `describe`, `select`, `write`, `create`, `manage` or `manage_tags` grant on a warehouse, namespace, table, view or generic table also makes the path to its object visible: the project, the warehouse and the namespaces above it. Other objects at those levels stay hidden. See [Navigation from grants](#navigation-from-grants). A stronger privilege includes the weaker ones on the same ladder: `describe` < `select` < `write` < `manage` on tables, views and generic tables, `describe` < `manage` and `create` < `manage` on containers, and `describe` < `apply` < `manage` on tags (see [How action groups are nested](#how-action-groups-are-nested)). On containers, `create` includes only part of `describe`, as the table shows.
+A grant on an object reaches everything beneath it: server, project, warehouse, namespace, then tables, views and generic tables. A project grant also reaches the project's tags, but project `manage` reaches them only as `describe` (see the notes below). Policies read this as `principal_privileges.inherited`. A grant also makes the path to its object visible, see [Navigation from grants](#navigation-from-grants). A stronger privilege includes the weaker ones on the same ladder: `describe` < `select` < `write` < `manage` on tables, views and generic tables, `describe` < `manage` and `create` < `manage` on containers, and `describe` < `apply` < `manage` on tags (see [How action groups are nested](#how-action-groups-are-nested)). On containers, `create` includes only part of `describe`, as the table shows.
 
 | Privilege | Granted on | Reaches children | What it allows |
 |---|---|---|---|
 | `describe` | Every level | Yes | `<Level>DescribeActions`: see the object and its metadata, and list what is in it. On a tag, `ReadTag`. |
-| `select` | Server down to table, view, generic table | Yes | `TableSelectActions`, `ViewSelectActions`, `GenericTableSelectActions`: read data and metadata. On the server, a project, a warehouse or a namespace, it also shows the projects, warehouses and namespaces at and beneath the object, see [Navigation from grants](#navigation-from-grants). |
-| `write` | Server down to table, view, generic table | Yes | `TableWriteActions`, `ViewWriteActions`, `GenericTableWriteActions`: read and write data, and commit any change, such as a table's schema, partitioning and properties, expiring snapshots, or a view's definition. On the server, a project, a warehouse or a namespace, it also shows the projects, warehouses and namespaces at and beneath the object, see [Navigation from grants](#navigation-from-grants). |
+| `select` | Server down to table, view, generic table | Yes | `TableSelectActions`, `ViewSelectActions`, `GenericTableSelectActions`: read data and metadata. |
+| `write` | Server down to table, view, generic table | Yes | `TableWriteActions`, `ViewWriteActions`, `GenericTableWriteActions`: read and write data, and commit any change, such as a table's schema, partitioning and properties, expiring snapshots, or a view's definition. |
 | `create` | Server, project, warehouse, namespace | Yes | Part of `<Level>CreateActions`: create warehouses, namespaces, tables, views and generic tables inside the object, and see the object and the warehouses and namespaces inside it. It does not show the tables, views and generic tables inside, including the ones the holder creates, the tasks or the endpoint statistics; grant `describe` too where users need these. |
 | `manage` | Every level | Yes | `<Level>ManageActions`: full control of the object, including deleting it, and everything the weaker privileges allow. It does not attach or remove tags; that needs `manage_tags`. On a tag, full control of that tag. |
 | `manage_tags` | Server down to table, view, generic table | Yes | `Manage<Level>Tags` and `<Level>DescribeActions` on warehouses, namespaces, tables (column tags too), views and generic tables. No data access. |
@@ -285,7 +285,7 @@ A grant on an object reaches everything beneath it: server, project, warehouse, 
 
 Notes:
 
-- **`select` and `write` on a container** act on the tables, views and generic tables beneath it, and let the holder see the container and the containers beneath it and list what is in them. Grant `describe` where the holder also needs the tasks, the endpoint statistics or the soft-deleted tables of the container, or the roles and tags of a project.
+- **`select` and `write` on a container** act on the tables, views and generic tables beneath it. They also show the container and what is in it, see [Navigation from grants](#navigation-from-grants). Grant `describe` on the container where the holder also needs its tasks, endpoint statistics or soft-deleted tables.
 - **`manage` does not administer grants or policies.** Grant `read_grants`, `pass_grants`, `manage_grants`, `read_policies` or `manage_policies` for those.
 - **Moving** a namespace, table, view or generic table to another namespace needs `manage` and `manage_grants` on it, because a move changes which grants apply to it. The destination needs `create` or `manage`. Renaming a table, view or generic table within its namespace needs `manage` alone; renaming a namespace is a move.
 - **Skipping soft deletion**, such as a forced drop or a recursive namespace delete in a warehouse with soft deletion, needs `manage` on the warehouse. `manage` on a namespace, table, view or generic table is not enough. See [Skipping Soft Deletion](./concepts.md#skipping-soft-deletion).
@@ -306,41 +306,25 @@ Notes:
 
 #### Upgrading from Lakekeeper Plus 0.15
 
-- **Hidden namespaces, warehouses and projects**: Users with [grants that show the path](#navigation-from-grants) inside a namespace, warehouse or project, or with `select` or `write` on it or above it, now see it, even where a `forbid` blocks the actions on its tables. If you hide a namespace this way, add `NamespaceActions` to that `forbid` before the upgrade. For a whole warehouse, add `WarehouseActions` and `NamespaceActions`. For a whole project, also add `ProjectActions`. A `forbid` that already names `<Level>DescribeActions` or `<Level>Actions` needs no change.
-- **Your own schema file**: If you replace the built-in schema with `LAKEKEEPER__CEDAR__SCHEMA_FILE`, copy the `principal_has_privilege_below` context field from the built-in schema into your file, on the actions listed in [Navigation from grants](#navigation-from-grants). Deploy the file together with the image: Plus 0.16 does not start while these actions in your file lack the field.
-- **Database migration**: `migrate` copies the namespace path of every grant on a namespace, table, view or generic table into the grant table. Until it finishes, permission checks wait, also on read replicas. We measured about 4 seconds for every 100,000 grants. With many grants, switch the servers of the older version to read-only maintenance mode while `migrate` runs. See [Upgrades & Migration](./concepts.md#upgrades-migration).
-- **During the upgrade**: Until every replica runs Plus 0.16, store no project or warehouse policy that reads `context.principal_has_privilege_below`. [Policy and Entity Management](#policy-and-entity-management) explains why.
-- **Switched predefined policies**: In a project that switched any predefined policy before the upgrade, the three navigate policies start out off. In a warehouse that switched any predefined policy before the upgrade, the warehouse and namespace navigate policies start out off. The predefined-policies listing shows them with `disabled-by: new-since-curated`. To use [navigation from grants](#navigation-from-grants) there, switch them on after every replica runs Plus 0.16.
+- **Hidden namespaces, warehouses and projects**: A grant now shows the path to its object, also where a `forbid` blocks the actions on the tables inside. If such a `forbid` hides a namespace, add `NamespaceActions` to it before you upgrade. For a warehouse, also add `WarehouseActions`; for a project, also `ProjectActions`.
+- **Your own schema file**: If you set `LAKEKEEPER__CEDAR__SCHEMA_FILE`, copy the `principal_has_privilege_below` context field from the built-in schema into your file and deploy it together with the image. Plus 0.16 does not start without it.
+- **Database migration**: Permission checks wait until the migration has finished. It takes about 4 seconds for every 100,000 grants.
+- **During the upgrade**: Until every replica runs Plus 0.16, store no project or warehouse policy that reads `context.principal_has_privilege_below`.
+- **Switched predefined policies**: In a project or warehouse that switched any predefined policy before the upgrade, the new navigate policies start out off. To use them there, switch them on after every replica runs Plus 0.16.
 
 ### Navigation from grants
 
-A user with a `describe`, `select`, `write`, `create`, `manage` or `manage_tags` grant on a warehouse, namespace, table, view or generic table can connect to the warehouse and browse to the object. They see the project; the warehouse with its storage settings, tags and number of tables and views; and the namespaces on the path, with their properties and tags. They do not see the other warehouses, namespaces, tables, views and generic tables next to them. Grants of `read_grants`, `pass_grants`, `manage_grants`, `read_policies` or `manage_policies` show no path. Navigation never gives access to data: to read or write a table, a user still needs a permit for that table.
+A user with `describe`, `select`, `write`, `create`, `manage` or `manage_tags` on a warehouse, namespace, table, view or generic table can connect to the warehouse and browse to the object. They see the project, the warehouse and the namespaces on the path, not the other objects next to them. `select` and `write` on a project, warehouse or namespace also show it and what is in it. Navigation gives no access to data.
 
-Three predefined policies decide this: `predefined-grants-project-navigate`, `predefined-grants-warehouse-navigate` and `predefined-grants-namespace-navigate`. They allow the following actions when the user holds `select` or `write` on the object or above it, or when the user or one of their roles holds one of the six privileges on an object below it:
+Three predefined policies decide this: `predefined-grants-project-navigate`, `predefined-grants-warehouse-navigate` and `predefined-grants-namespace-navigate`. They allow these actions:
 
 - On a project: `GetProjectMetadata`, `ListWarehouses`, `IncludeProjectInList`
 - On a warehouse: `UseWarehouse`, `ListNamespacesInWarehouse`, `GetWarehouseMetadata`, `GetConfig`, `IncludeWarehouseInList`
 - On a namespace: `GetNamespaceMetadata`, `IncludeNamespaceInList`, `ListTables`, `ListViews`, `ListGenericTables`, `ListNamespacesInNamespace`
 
-Grants on soft-deleted tables, views and generic tables do not count.
+To turn navigation from grants off in a project or warehouse, switch these policies off there. A grant shows the path even where a `forbid` blocks what the grant allows. To hide a namespace, warehouse or project, forbid `NamespaceActions`, `WarehouseActions` or `ProjectActions` on it.
 
-To turn navigation from grants off in a project, switch off the three policies there (see [Predefined policies](#predefined-policies)). To turn it off in one warehouse, switch off the warehouse and namespace policies there. Users with `select` or `write` on a project, warehouse or namespace there then also need `describe` on it. Like any switch, this makes predefined policies added in later releases start out off in that project or warehouse.
-
-A grant shows the path even where a `forbid` or a switched-off predefined policy stops the grant from giving access. To hide a project, warehouse or namespace from some users, forbid them `ProjectActions`, `WarehouseActions` or `NamespaceActions` on it. For a namespace, also forbid them `ListEverythingInWarehouse` and `ListEverythingInNamespace` in its warehouse, because a user who may list everything sees every name in a list. Everywhere else, their grants still show the path: if you hide a namespace, users with grants inside it still see the namespaces above it, the warehouse and the project. To hide a namespace and everything in it, also forbid the actions on its tables, views and generic tables.
-
-```cedar
-forbid (principal in Lakekeeper::Role::"<project-id>/oidc~contractors",
-    action in [Lakekeeper::Action::"NamespaceActions", Lakekeeper::Action::"TableActions",
-               Lakekeeper::Action::"ViewActions", Lakekeeper::Action::"GenericTableActions"],
-    resource in Lakekeeper::Namespace::"<namespace-id>");
-forbid (principal in Lakekeeper::Role::"<project-id>/oidc~contractors",
-    action in [Lakekeeper::Action::"ListEverythingInWarehouse", Lakekeeper::Action::"ListEverythingInNamespace"],
-    resource in Lakekeeper::Warehouse::"<warehouse-id>");
-```
-
-Your own policies can read the same fact as `context.principal_has_privilege_below`. It is `true` when the user or one of their roles holds one of the six privileges on an object below the project, warehouse or namespace. Only the actions listed above carry it, so a policy that reads it should name only these actions. Lakekeeper rejects a policy that reads it on any other action.
-
-Access that comes only from your own policies, not from grants, makes no path visible. Give such users navigation with a policy, as in the example "Navigation for users whose access comes from your own policies" under [Policy Examples](#policy-examples).
+Custom policies can read the same fact as `context.principal_has_privilege_below`: it is `true` when the user or one of their roles holds `describe`, `select`, `write`, `create`, `manage` or `manage_tags` on an object below the project, warehouse or namespace. Only the actions listed above carry it.
 
 ### Roles and the project
 
@@ -640,7 +624,7 @@ In this mode Lakekeeper builds no user or role entities: a user is exactly what 
 
 **Schema Reference**: The Lakekeeper Cedar schema defines all available entity types, attributes, and actions. All entities and policies are validated against this schema on startup and refresh. Download the schema above or view it on [GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/docs/docs/api).
 
-## Policy Examples { #policy-examples }
+## Policy Examples
 
 The following examples demonstrate common Cedar policy patterns. Unless otherwise noted, examples assume a single-project setup (the project is not restricted). Note that warehouse names are only guaranteed to be unique within a project.
 
@@ -828,29 +812,6 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
         (resource is Lakekeeper::Warehouse && resource.name == "dev")
     };
     ```
-
-??? example "Navigation for users whose access comes from your own policies"
-
-    Grants make the path to their objects visible, but access from your own policies does not. Give such users navigation with a policy:
-
-    ```cedar
-    permit (principal in Lakekeeper::Role::"<project-id>/oidc~sales-readers",
-        action in [Lakekeeper::Action::"GetProjectMetadata", Lakekeeper::Action::"ListWarehouses",
-                   Lakekeeper::Action::"IncludeProjectInList"],
-        resource == Lakekeeper::Project::"<project-id>");
-    permit (principal in Lakekeeper::Role::"<project-id>/oidc~sales-readers",
-        action in [Lakekeeper::Action::"UseWarehouse", Lakekeeper::Action::"ListNamespacesInWarehouse",
-                   Lakekeeper::Action::"GetWarehouseMetadata", Lakekeeper::Action::"GetConfig",
-                   Lakekeeper::Action::"IncludeWarehouseInList"],
-        resource == Lakekeeper::Warehouse::"<warehouse-id>");
-    permit (principal in Lakekeeper::Role::"<project-id>/oidc~sales-readers",
-        action in [Lakekeeper::Action::"GetNamespaceMetadata", Lakekeeper::Action::"IncludeNamespaceInList",
-                   Lakekeeper::Action::"ListTables", Lakekeeper::Action::"ListViews",
-                   Lakekeeper::Action::"ListGenericTables", Lakekeeper::Action::"ListNamespacesInNamespace"],
-        resource) when { resource in Lakekeeper::Namespace::"<sales-id>" || [Lakekeeper::Namespace::"<parent-id>"].contains(resource) };
-    ```
-
-    `resource in` covers the team's namespace and everything in it. List the namespaces above it by id.
 
 ??? example "ABAC: Role-based table access using static role membership"
 
@@ -1264,7 +1225,7 @@ When `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` is set to `true`, La
 
 This ensures that authorization policies are always valid before serving requests
 
-If you replace the built-in schema with `LAKEKEEPER__CEDAR__SCHEMA_FILE`, merge each release's schema changes into your file and deploy the file together with that release's image. Lakekeeper does not start if your file lacks a privilege, an attribute or a context field that the release sends.
+If you replace the built-in schema with `LAKEKEEPER__CEDAR__SCHEMA_FILE`, merge each release's schema changes into your file before you upgrade. Lakekeeper does not start if your file lacks a privilege, an attribute or a context field that the release sends.
 
 During a rolling upgrade, store no project or warehouse policy that uses something new in the schema until every replica runs the new version. An older version cannot validate such a policy and denies every request in its project or warehouse. Remove such policies before you downgrade.
 
