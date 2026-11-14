@@ -1878,13 +1878,14 @@ impl OpenFGAAuthorizer {
             OpenFGABackendUnavailable::from(OpenFGAClientError::RequestFailed(Box::new(status)))
         };
 
-        let mut stream = self
+        let response = self
             .client
             .client()
             .streamed_list_objects(request)
             .await
-            .map_err(to_backend_error)?
-            .into_inner();
+            .map_err(to_backend_error)?;
+        let initial_metadata = response.metadata().clone();
+        let mut stream = response.into_inner();
         let mut found = HashSet::new();
         while let Some(item) = stream.message().await.map_err(to_backend_error)? {
             if targets.contains(&item.object) {
@@ -1897,7 +1898,7 @@ impl OpenFGAAuthorizer {
 
         let elapsed = started.elapsed();
         let trailers = stream.trailers().await.map_err(to_backend_error)?;
-        let deadline_reported = trailers.as_ref().is_some_and(reports_deadline_exceeded);
+        let deadline_reported = deadline_reported(&initial_metadata, trailers.as_ref());
         listing_is_complete(
             elapsed,
             AUTH_CONFIG.streamed_list_deadline(),
@@ -1909,7 +1910,7 @@ impl OpenFGAAuthorizer {
 }
 
 /// Whether the caller's warehouse visibility comes from
-/// [`OpenFGAAuthorizer::visible_warehouses`] instead of checks.
+/// [`OpenFGAAuthorizer::visible_warehouses`]. Otherwise it is checked.
 ///
 /// Only for a principal asking for itself. Introspection for another principal
 /// (`for_user`) keeps the checks and their guards. Assumed roles (`role:…#assignee`) and
@@ -1929,6 +1930,16 @@ fn uses_streamed_visibility(
 /// (openfga/openfga#3399). Older servers do not send it.
 const OPENFGA_WARNING_TRAILER: &str = "x-openfga-warning";
 const OPENFGA_WARNING_DEADLINE_EXCEEDED: &str = "deadline-exceeded";
+
+/// Whether `OpenFGA` reported that it cut the stream at its deadline. A stream that ends
+/// without any object arrives as a trailers-only response: tonic then puts the trailers in
+/// the response metadata, and the stream has none.
+fn deadline_reported(
+    initial_metadata: &tonic::metadata::MetadataMap,
+    trailers: Option<&tonic::metadata::MetadataMap>,
+) -> bool {
+    reports_deadline_exceeded(initial_metadata) || trailers.is_some_and(reports_deadline_exceeded)
+}
 
 fn reports_deadline_exceeded(trailers: &tonic::metadata::MetadataMap) -> bool {
     trailers
@@ -2027,8 +2038,8 @@ pub(crate) mod tests {
         use openfga_client::tonic::metadata::{MetadataMap, MetadataValue};
 
         use super::super::{
-            OPENFGA_WARNING_TRAILER, UserOrRole, listing_is_complete, reports_deadline_exceeded,
-            uses_streamed_visibility,
+            OPENFGA_WARNING_TRAILER, UserOrRole, deadline_reported, listing_is_complete,
+            reports_deadline_exceeded, uses_streamed_visibility,
         };
         use crate::{config::WarehouseVisibility, error::InconclusiveWarehouseListing};
 
@@ -2073,6 +2084,22 @@ pub(crate) mod tests {
             assert!(with(&["other", "deadline-exceeded"]));
             assert!(!with(&[]));
             assert!(!with(&["other"]));
+        }
+
+        #[test]
+        fn reads_the_warning_from_a_trailers_only_response_too() {
+            let mut warning = MetadataMap::new();
+            warning.append(
+                OPENFGA_WARNING_TRAILER,
+                MetadataValue::from_static("deadline-exceeded"),
+            );
+            let empty = MetadataMap::new();
+            // Trailers-only response: the warning is in the response metadata.
+            assert!(deadline_reported(&warning, None));
+            // Stream with objects: the warning is in the trailers.
+            assert!(deadline_reported(&empty, Some(&warning)));
+            assert!(!deadline_reported(&empty, Some(&empty)));
+            assert!(!deadline_reported(&empty, None));
         }
 
         #[test]
@@ -2131,7 +2158,10 @@ pub(crate) mod tests {
         }
 
         /// Writes `(user, relation, object)` tuples in chunks the server accepts.
-        async fn write_all(authorizer: &OpenFGAAuthorizer, tuples: &[(String, &str, String)]) {
+        async fn write_all(
+            authorizer: &OpenFGAAuthorizer,
+            tuples: &[(String, &'static str, String)],
+        ) {
             for chunk in tuples.chunks(50) {
                 authorizer
                     .write(
@@ -2153,150 +2183,168 @@ pub(crate) mod tests {
             }
         }
 
-        /// The streamed warehouse listing answers exactly like `Check(can_use)` for every
-        /// principal shape the model allows: grants at every level, nested namespaces,
-        /// views and generic tables, nested roles, role owners, assumed roles, grants that
-        /// do not make anything visible, a revoked grant, and no grant at all.
-        #[tokio::test]
-        #[allow(clippy::too_many_lines)]
-        async fn test_visible_warehouses_matches_check() {
-            let authorizer = new_authorizer_in_empty_store().await;
-            let id = || uuid::Uuid::now_v7().to_string();
-            let project = format!("project:{}", id());
-            let (w1_id, w2_id) = (id(), id());
-            let (w1, w2) = (format!("warehouse:{w1_id}"), format!("warehouse:{w2_id}"));
-            let mut t: Vec<(String, &str, String)> = vec![];
-            for w in [&w1, &w2] {
-                t.push((project.clone(), "project", w.clone()));
-                t.push((w.clone(), "warehouse", project.clone()));
-            }
-            let top_ns = |t: &mut Vec<(String, &str, String)>, w: &str| {
-                let ns = format!("namespace:{}", id());
-                t.push((w.to_string(), "parent", ns.clone()));
-                t.push((ns.clone(), "namespace", w.to_string()));
-                ns
-            };
-            let child = |t: &mut Vec<(String, &str, String)>, wid: &str, parent: &str, ty: &str| {
-                let obj = if ty == "namespace" {
-                    format!("namespace:{}", id())
-                } else {
-                    format!("{ty}:{wid}/{}", id())
+        type Tuples = Vec<(String, &'static str, String)>;
+
+        /// Two warehouses of one project. W1 has 30 namespaces of 3 tables, and the objects
+        /// granted below it sit in the last namespace.
+        struct VisibilityFixture {
+            tuples: Tuples,
+            project: String,
+            w1: String,
+            w2: String,
+            last: String,
+            table: String,
+            view: String,
+            generic: String,
+            w2_ns: String,
+            w2_table: String,
+        }
+
+        impl VisibilityFixture {
+            fn new() -> Self {
+                let id = || uuid::Uuid::now_v7().to_string();
+                let project = format!("project:{}", id());
+                let (w1_id, w2_id) = (id(), id());
+                let (w1, w2) = (format!("warehouse:{w1_id}"), format!("warehouse:{w2_id}"));
+                let mut t: Tuples = vec![];
+                for w in [&w1, &w2] {
+                    t.push((project.clone(), "project", w.clone()));
+                    t.push((w.clone(), "warehouse", project.clone()));
+                }
+                let top_ns = |t: &mut Tuples, w: &str| {
+                    let ns = format!("namespace:{}", id());
+                    t.push((w.to_string(), "parent", ns.clone()));
+                    t.push((ns.clone(), "namespace", w.to_string()));
+                    ns
                 };
-                t.push((parent.to_string(), "parent", obj.clone()));
-                t.push((obj.clone(), "child", parent.to_string()));
-                obj
-            };
-            // W1: 30 namespaces of 3 tables; the grants below sit on the last ones.
-            let mut last = String::new();
-            for _ in 0..30 {
-                last = top_ns(&mut t, &w1);
-                for _ in 0..3 {
-                    child(&mut t, &w1_id, &last, "lakekeeper_table");
+                let child = |t: &mut Tuples, wid: &str, parent: &str, ty: &str| {
+                    let obj = if ty == "namespace" {
+                        format!("namespace:{}", id())
+                    } else {
+                        format!("{ty}:{wid}/{}", id())
+                    };
+                    t.push((parent.to_string(), "parent", obj.clone()));
+                    t.push((obj.clone(), "child", parent.to_string()));
+                    obj
+                };
+                let mut last = String::new();
+                for _ in 0..30 {
+                    last = top_ns(&mut t, &w1);
+                    for _ in 0..3 {
+                        child(&mut t, &w1_id, &last, "lakekeeper_table");
+                    }
+                }
+                let nested = child(&mut t, &w1_id, &last, "namespace");
+                let table = child(&mut t, &w1_id, &nested, "lakekeeper_table");
+                let view = child(&mut t, &w1_id, &nested, "lakekeeper_view");
+                let generic = child(&mut t, &w1_id, &last, "lakekeeper_generic_table");
+                let w2_ns = top_ns(&mut t, &w2);
+                let w2_table = child(&mut t, &w2_id, &w2_ns, "lakekeeper_table");
+                Self {
+                    tuples: t,
+                    project,
+                    w1,
+                    w2,
+                    last,
+                    table,
+                    view,
+                    generic,
+                    w2_ns,
+                    w2_table,
                 }
             }
-            let nested = child(&mut t, &w1_id, &last, "namespace");
-            let table = child(&mut t, &w1_id, &nested, "lakekeeper_table");
-            let view = child(&mut t, &w1_id, &nested, "lakekeeper_view");
-            let generic = child(&mut t, &w1_id, &last, "lakekeeper_generic_table");
-            let w2_ns = top_ns(&mut t, &w2);
-            let w2_table = child(&mut t, &w2_id, &w2_ns, "lakekeeper_table");
 
-            let (r1, r2, r3) = (
-                format!("role:{}", id()),
-                format!("role:{}", id()),
-                format!("role:{}", id()),
-            );
-            t.push((format!("{r2}#assignee"), "assignee", r1.clone()));
-            t.push((format!("{r1}#assignee"), "modify", last.clone()));
-            t.push((format!("{r3}#assignee"), "select", w2_table.clone()));
+            /// Adds the principals with their grants and returns `(name, subject)` for each.
+            /// The `revoked` principal's grant is in `tuples` and must be deleted after the
+            /// write; the second value is that principal's subject.
+            fn add_principals(&mut self) -> (Vec<(&'static str, String)>, String) {
+                let role = || format!("role:{}", uuid::Uuid::now_v7());
+                let (r1, r2, r3) = (role(), role(), role());
+                self.tuples
+                    .push((format!("{r2}#assignee"), "assignee", r1.clone()));
+                self.tuples
+                    .push((format!("{r1}#assignee"), "modify", self.last.clone()));
+                self.tuples
+                    .push((format!("{r3}#assignee"), "select", self.w2_table.clone()));
 
-            let mut principals: Vec<(&str, String)> = vec![];
-            let mut principal =
-                |name: &'static str,
-                 grants: Vec<(&'static str, String)>,
-                 t: &mut Vec<(String, &str, String)>| {
-                    let user = format!("user:oidc~{}", id());
+                let grants: Vec<(&'static str, Vec<(&'static str, String)>)> = vec![
+                    (
+                        "create+modify on the last namespace",
+                        vec![("create", self.last.clone()), ("modify", self.last.clone())],
+                    ),
+                    (
+                        "select on a table in a nested namespace",
+                        vec![("select", self.table.clone())],
+                    ),
+                    ("describe on a view", vec![("describe", self.view.clone())]),
+                    (
+                        "select on a generic table",
+                        vec![("select", self.generic.clone())],
+                    ),
+                    ("owner of a table", vec![("ownership", self.table.clone())]),
+                    ("describe on W1", vec![("describe", self.w1.clone())]),
+                    ("create on W1", vec![("create", self.w1.clone())]),
+                    (
+                        "describe on the project",
+                        vec![("describe", self.project.clone())],
+                    ),
+                    (
+                        "project_admin",
+                        vec![("project_admin", self.project.clone())],
+                    ),
+                    ("grant only in W2", vec![("modify", self.w2_ns.clone())]),
+                    ("pass_grants only", vec![("pass_grants", self.last.clone())]),
+                    (
+                        "manage_grants only",
+                        vec![("manage_grants", self.last.clone())],
+                    ),
+                    ("no grant", vec![]),
+                    ("member of R2, nested in R1", vec![("assignee", r2.clone())]),
+                    ("owner of role R3", vec![("ownership", r3)]),
+                    ("revoked", vec![("modify", self.last.clone())]),
+                ];
+                let mut principals = vec![];
+                for (name, grants) in grants {
+                    let user = format!("user:oidc~{}", uuid::Uuid::now_v7());
                     for (relation, object) in grants {
-                        t.push((user.clone(), relation, object));
+                        self.tuples.push((user.clone(), relation, object));
                     }
-                    principals.push((name, user.clone()));
-                    user
-                };
-            principal(
-                "create+modify on the last namespace",
-                vec![("create", last.clone()), ("modify", last.clone())],
-                &mut t,
-            );
-            principal(
-                "select on a table in a nested namespace",
-                vec![("select", table.clone())],
-                &mut t,
-            );
-            principal(
-                "describe on a view",
-                vec![("describe", view.clone())],
-                &mut t,
-            );
-            principal(
-                "select on a generic table",
-                vec![("select", generic.clone())],
-                &mut t,
-            );
-            principal(
-                "owner of a table",
-                vec![("ownership", table.clone())],
-                &mut t,
-            );
-            principal("describe on W1", vec![("describe", w1.clone())], &mut t);
-            principal("create on W1", vec![("create", w1.clone())], &mut t);
-            principal(
-                "describe on the project",
-                vec![("describe", project.clone())],
-                &mut t,
-            );
-            principal(
-                "project_admin",
-                vec![("project_admin", project.clone())],
-                &mut t,
-            );
-            principal("grant only in W2", vec![("modify", w2_ns.clone())], &mut t);
-            principal(
-                "pass_grants only",
-                vec![("pass_grants", last.clone())],
-                &mut t,
-            );
-            principal(
-                "manage_grants only",
-                vec![("manage_grants", last.clone())],
-                &mut t,
-            );
-            principal("no grant", vec![], &mut t);
-            principal(
-                "member of R2, nested in R1",
-                vec![("assignee", r2.clone())],
-                &mut t,
-            );
-            principal("owner of role R3", vec![("ownership", r3.clone())], &mut t);
-            let revoked = principal("revoked", vec![("modify", last.clone())], &mut t);
-            write_all(&authorizer, &t).await;
+                    principals.push((name, user));
+                }
+                let revoked = principals.last().unwrap().1.clone();
+                principals.push(("assumed role R1", format!("{r1}#assignee")));
+                principals.push(("assumed role R2", format!("{r2}#assignee")));
+                (principals, revoked)
+            }
+        }
+
+        /// The streamed warehouse listing answers exactly like `Check(can_use)` for these
+        /// principal shapes: grants at every level, nested namespaces, views and generic
+        /// tables, nested roles, role owners, assumed roles, grants that do not make
+        /// anything visible, a revoked grant, and no grant at all.
+        #[tokio::test]
+        async fn test_visible_warehouses_matches_check() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let mut fixture = VisibilityFixture::new();
+            let (principals, revoked) = fixture.add_principals();
+            write_all(&authorizer, &fixture.tuples).await;
             authorizer
                 .write(
                     None,
                     Some(vec![TupleKeyWithoutCondition {
                         user: revoked,
                         relation: "modify".to_string(),
-                        object: last.clone(),
+                        object: fixture.last.clone(),
                     }]),
                 )
                 .await
                 .unwrap();
-            principals.push(("assumed role R1", format!("{r1}#assignee")));
-            principals.push(("assumed role R2", format!("{r2}#assignee")));
 
+            let (w1, w2) = (&fixture.w1, &fixture.w2);
             let both: HashSet<String> = [w1.clone(), w2.clone()].into();
             for (name, user) in &principals {
                 let listed = authorizer.visible_warehouses(user, &both).await.unwrap();
-                for w in [&w1, &w2] {
+                for w in [w1, w2] {
                     let checked = authorizer
                         .check(CheckRequestTupleKey {
                             user: user.clone(),

@@ -376,8 +376,7 @@ pub struct MissingItemInBatchCheck {
 
 /// A `StreamedListObjects` warehouse listing ended without every warehouse asked about,
 /// and may have been cut at the `OpenFGA` deadline. `OpenFGA` ends such a stream without
-/// an error, so the missing warehouses may still be visible: the caller answers 503
-/// instead of denying.
+/// an error, so the missing warehouses may still be visible: the caller answers 503.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum InconclusiveWarehouseListing {
     #[error(
