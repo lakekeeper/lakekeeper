@@ -27,15 +27,15 @@ use crate::{
         authn::{Actor, UserId},
         authz::{
             ActionDescriptor, AuthZWarehouseActionForbidden, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, ResourceType,
-            RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges,
-            SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
+            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, DeterminingFactor, EventAction as _, GrantResource,
+            PolicyEffect, ResourceType, RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal,
+            SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
         },
         events::{
             Authorization, EventDispatcher,
             context::{
-                APIEventActions as _, EntityDescriptor, EntityType, EventEntities,
+                APIEventActions as _, APIEventContext, EntityDescriptor, EntityType, EventEntities,
                 FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
                 FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID, HandlerContextKey,
                 UserProvidedEntity as _, UserProvidedNamespace, UserProvidedTable,
@@ -1668,6 +1668,27 @@ fn a_listener_hands_each_record_to_its_dispatch() {
 
     assert_eq!(sink.0.lock().expect("sink poisoned").len(), 1);
     assert_eq!(log_lines, Vec::<serde_json::Value>::new());
+}
+
+/// A denial is written before `emit_early_authz_failure` returns, so a shutdown right after
+/// the response cannot lose it. No Tokio runtime runs here: a record left to a spawned task
+/// would never be written.
+#[test]
+fn a_denial_is_written_before_the_failure_returns() {
+    let dispatcher = EventDispatcher::new(vec![Arc::new(AuditEventListener::new())]);
+    let records = emit_and_capture(|| async {
+        let event_ctx = APIEventContext::for_server(
+            Arc::new(fixture_metadata()),
+            dispatcher.clone(),
+            CatalogServerAction::ListUsers,
+            crate::service::ServerId::new_random(),
+        );
+        let _error = event_ctx.emit_early_authz_failure(crate::request_metadata::ProjectIdMissing);
+        Ok(())
+    });
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["decision"], "denied");
 }
 
 /// One `grants_changed` event emits one record per grant triple, revocations

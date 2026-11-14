@@ -4,7 +4,6 @@ use iceberg::TableIdent;
 use iceberg_ext::catalog::{TableUpdateKind, rest::ErrorModel};
 use lakekeeper_io::s3::S3Location;
 use strum::VariantArray;
-use tracing::Instrument;
 
 use crate::{
     ProjectId, WarehouseId,
@@ -34,6 +33,7 @@ use crate::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
             AuthorizationFailureReason, AuthorizationFailureSource, AuthorizationSucceededEvent,
             EventDispatcher, IdempotentReplayEvent, backends::audit::SubjectRecord,
+            dispatch::dispatch_inline_or_spawn,
         },
         idempotency::IdempotencyKey,
         storage::StoragePermissions,
@@ -1424,13 +1424,9 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
                     authorizations,
                 };
                 let dispatcher = self.dispatcher.clone();
-                let span = tracing::Span::current();
-                tokio::spawn(
-                    async move {
-                        let () = dispatcher.authorization_succeeded(event).await;
-                    }
-                    .instrument(span),
-                );
+                dispatch_inline_or_spawn(async move {
+                    dispatcher.authorization_succeeded(event).await;
+                });
                 Ok((self.into(), value))
             }
             Err(e) => Err(self.emit_authz_failure_event(e)),
@@ -1454,13 +1450,9 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
             idempotency_key,
         };
         let dispatcher = self.dispatcher;
-        let span = tracing::Span::current();
-        tokio::spawn(
-            async move {
-                let () = dispatcher.idempotent_replay_served(event).await;
-            }
-            .instrument(span),
-        );
+        dispatch_inline_or_spawn(async move {
+            dispatcher.idempotent_replay_served(event).await;
+        });
     }
 }
 
@@ -1528,13 +1520,9 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
             authorizations,
         };
         let dispatcher = self.dispatcher.clone();
-        let span = tracing::Span::current();
-        tokio::spawn(
-            async move {
-                let () = dispatcher.authorization_failed(event).await;
-            }
-            .instrument(span),
-        );
+        dispatch_inline_or_spawn(async move {
+            dispatcher.authorization_failed(event).await;
+        });
         error
     }
 }
