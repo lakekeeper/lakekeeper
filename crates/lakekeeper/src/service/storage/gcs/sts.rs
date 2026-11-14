@@ -178,7 +178,7 @@ impl Options {
             }.into(),
         }];
         if storage_permissions != StoragePermissions::Read
-            && let Some(rule) = ancestor_folders_rule(bucket, &bucket_cel, &prefixless_location)?
+            && let Some(rule) = ancestor_folders_rule(bucket, &bucket_cel, &path_cel)
         {
             access_boundary_rules.push(rule);
         }
@@ -195,36 +195,30 @@ impl Options {
 ///
 /// On a bucket with hierarchical namespace, an upload creates the missing folders of its path,
 /// and a client may be the first to write below a table location, as after a staged create.
-/// The condition matches these folders by exact name, so of `objectCreator` only
-/// `storage.folders.create` applies; the role holds no permission to delete or rename them.
+/// The condition matches the folders whose names are a prefix of the table location's folder,
+/// so of `objectCreator` only `storage.folders.create` applies; the role holds no permission to
+/// delete or rename them. The expression holds the location once, which keeps the boundary
+/// within the STS size limit for deep locations.
 fn ancestor_folders_rule(
     bucket: &str,
     bucket_cel: &str,
-    prefixless_location: &str,
-) -> Result<Option<AccessBoundaryRule>, TableConfigError> {
-    let conditions = prefixless_location
-        .match_indices('/')
-        .map(|(end, _)| &prefixless_location[..=end])
-        .filter(|ancestor| ancestor.len() < prefixless_location.len())
-        .map(|ancestor| {
-            Ok(format!(
-                "resource.name == 'projects/_/buckets/{bucket_cel}/folders/{}'",
-                escape_for_cel_single_quoted(ancestor)?
-            ))
-        })
-        .collect::<Result<Vec<_>, TableConfigError>>()?;
-    if conditions.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(AccessBoundaryRule {
-        available_resource: format!("//storage.googleapis.com/projects/_/buckets/{bucket}"),
-        available_permissions: vec!["inRole:roles/storage.objectCreator".to_string()],
-        availability_condition: AvailabilityCondition {
-            title: "ancestor-folders".to_string(),
-            expression: conditions.join(" || "),
+    path_cel: &str,
+) -> Option<AccessBoundaryRule> {
+    // A location directly below the bucket has no folder above it.
+    path_cel.trim_end_matches('/').contains('/').then(|| {
+        let folders = format!("projects/_/buckets/{bucket_cel}/folders/");
+        AccessBoundaryRule {
+            available_resource: format!("//storage.googleapis.com/projects/_/buckets/{bucket}"),
+            available_permissions: vec!["inRole:roles/storage.objectCreator".to_string()],
+            availability_condition: AvailabilityCondition {
+                title: "ancestor-folders".to_string(),
+                expression: format!(
+                    "resource.name.startsWith('{folders}') && '{folders}{path_cel}'.startsWith(resource.name)"
+                ),
+            }
+            .into(),
         }
-        .into(),
-    }))
+    })
 }
 
 /// Escape `value` for interpolation inside a CEL single-quoted literal.
@@ -396,10 +390,24 @@ mod tests {
             );
             assert_eq!(
                 rules[1].availability_condition.as_ref().unwrap().expression,
-                "resource.name == 'projects/_/buckets/my-bucket/folders/wh/' || \
-                 resource.name == 'projects/_/buckets/my-bucket/folders/wh/ns/'"
+                "resource.name.startsWith('projects/_/buckets/my-bucket/folders/') && \
+                 'projects/_/buckets/my-bucket/folders/wh/ns/tbl/'.startsWith(resource.name)"
             );
         }
+    }
+
+    #[test]
+    fn the_boundary_of_a_deep_location_fits_the_sts_limit() {
+        let location = format!("gs://my-bucket/{}tbl", "level/".repeat(30));
+        let location: Location = location.parse().unwrap();
+        let options = Options::from_location_and_permissions(
+            "my-bucket",
+            &location,
+            StoragePermissions::ReadWriteDelete,
+        )
+        .unwrap();
+        let boundary = serde_json::to_string(&options.access_boundary).unwrap();
+        assert!(boundary.len() <= 2048, "{} characters", boundary.len());
     }
 
     #[test]
