@@ -1618,27 +1618,12 @@ where
             below.push(GrantResource::Project(project_id.clone()));
         }
     }
-    // One warehouse is the check of a single request, which Postgres keeps on a generic
-    // plan; the batch saves a round trip per warehouse of a listing.
-    let warehouses_below = match warehouses[..] {
-        [] => Vec::new(),
-        [warehouse_id] => {
-            let hit = warehouse_has_grants_below(
-                &user_ids,
-                &role_ids,
-                privileges,
-                warehouse_id,
-                connection,
-            )
-            .await?;
-            if hit { vec![warehouse_id] } else { Vec::new() }
-        }
-        _ => {
+    if !warehouses.is_empty() {
+        let warehouses_below =
             warehouses_with_grants_below(&user_ids, &role_ids, privileges, &warehouses, connection)
-                .await?
-        }
-    };
-    below.extend(warehouses_below.into_iter().map(GrantResource::Warehouse));
+                .await?;
+        below.extend(warehouses_below.into_iter().map(GrantResource::Warehouse));
+    }
     for (warehouse_id, mut namespace_ids) in namespaces {
         namespace_ids.sort_unstable();
         namespace_ids.dedup();
@@ -1677,26 +1662,44 @@ where
     sqlx::query_scalar!(
         r#"
         SELECT EXISTS (
+            -- Namespace and tabular grants: the arms of `warehouses_with_grants_below`, for each
+            -- warehouse of the project.
+            SELECT 1 FROM warehouse w
+            WHERE w.project_id = $4::text
+              AND EXISTS (
+                (SELECT 1 FROM grant_assignment ga
+                 LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
+                 WHERE ga.user_id = ANY($1::text[]) AND ga.warehouse_id = w.warehouse_id
+                   AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])
+                   AND t.deleted_at IS NULL
+                 ORDER BY ga.user_id, ga.warehouse_id, ga.namespace_name LIMIT 1)
+                UNION ALL
+                (SELECT 1 FROM grant_assignment ga
+                 LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
+                 WHERE ga.role_id = ANY($2::uuid[]) AND ga.warehouse_id = w.warehouse_id
+                   AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])
+                   AND t.deleted_at IS NULL
+                 ORDER BY ga.role_id, ga.warehouse_id, ga.namespace_name LIMIT 1)
+              )
+        ) OR EXISTS (
+            -- Warehouse grants: a principal holds few, so read them all on grant_unique, one
+            -- privilege at a time. With `privilege = ANY($3)`, a PG16 generic plan scans the grants
+            -- of every role.
             SELECT 1
             FROM unnest($3::text[]) AS p(privilege)
             CROSS JOIN LATERAL (
-                SELECT 1
-                FROM (
-                    SELECT ga.warehouse_id, ga.tabular_id FROM grant_assignment ga
-                    WHERE ga.principal_type = 'user' AND ga.user_id = ANY($1::text[]) AND ga.role_id IS NULL
-                      AND ga.resource_type IN ('warehouse', 'namespace', 'tabular') AND ga.privilege = p.privilege
-                      AND ga.project_id IS NULL
-                    UNION ALL
-                    SELECT ga.warehouse_id, ga.tabular_id FROM grant_assignment ga
-                    WHERE ga.principal_type = 'role' AND ga.user_id IS NULL AND ga.role_id = ANY($2::uuid[])
-                      AND ga.resource_type IN ('warehouse', 'namespace', 'tabular') AND ga.privilege = p.privilege
-                      AND ga.project_id IS NULL
-                ) g
-                JOIN warehouse w ON w.warehouse_id = g.warehouse_id
-                LEFT JOIN tabular t ON t.warehouse_id = g.warehouse_id AND t.tabular_id = g.tabular_id
-                WHERE w.project_id = $4::text AND t.deleted_at IS NULL
-                LIMIT 1
-            ) hit
+                SELECT ga.warehouse_id FROM grant_assignment ga
+                WHERE ga.principal_type = 'user' AND ga.user_id = ANY($1::text[]) AND ga.role_id IS NULL
+                  AND ga.resource_type = 'warehouse' AND ga.privilege = p.privilege
+                  AND ga.project_id IS NULL
+                UNION ALL
+                SELECT ga.warehouse_id FROM grant_assignment ga
+                WHERE ga.principal_type = 'role' AND ga.user_id IS NULL AND ga.role_id = ANY($2::uuid[])
+                  AND ga.resource_type = 'warehouse' AND ga.privilege = p.privilege
+                  AND ga.project_id IS NULL
+            ) g
+            JOIN warehouse w ON w.warehouse_id = g.warehouse_id
+            WHERE w.project_id = $4::text
         ) AS "below!"
         "#,
         user_ids,
@@ -1710,57 +1713,9 @@ where
     .map_err(ListGrantsStoreError::from)
 }
 
-/// Whether the principals hold one of `privileges` on a namespace or live tabular of
-/// `warehouse_id`. Each privilege is its own index probe, and the first live grant ends it.
-async fn warehouse_has_grants_below<'e, 'c: 'e, E>(
-    user_ids: &[String],
-    role_ids: &[Uuid],
-    privileges: &[&str],
-    warehouse_id: WarehouseId,
-    connection: E,
-) -> Result<bool, ListGrantsStoreError>
-where
-    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
-{
-    sqlx::query_scalar!(
-        r#"
-        SELECT EXISTS (
-            SELECT 1
-            FROM unnest($3::text[]) AS p(privilege)
-            CROSS JOIN LATERAL (
-                SELECT 1
-                FROM (
-                    SELECT ga.warehouse_id, ga.tabular_id FROM grant_assignment ga
-                    WHERE ga.principal_type = 'user' AND ga.user_id = ANY($1::text[]) AND ga.role_id IS NULL
-                      AND ga.resource_type IN ('namespace', 'tabular') AND ga.privilege = p.privilege
-                      AND ga.project_id IS NULL AND ga.warehouse_id = $4::uuid
-                    UNION ALL
-                    SELECT ga.warehouse_id, ga.tabular_id FROM grant_assignment ga
-                    WHERE ga.principal_type = 'role' AND ga.user_id IS NULL AND ga.role_id = ANY($2::uuid[])
-                      AND ga.resource_type IN ('namespace', 'tabular') AND ga.privilege = p.privilege
-                      AND ga.project_id IS NULL AND ga.warehouse_id = $4::uuid
-                ) g
-                -- A namespace grant joins no tabular row and passes; a tabular grant passes if live.
-                LEFT JOIN tabular t ON t.warehouse_id = g.warehouse_id AND t.tabular_id = g.tabular_id
-                WHERE t.deleted_at IS NULL
-                LIMIT 1
-            ) hit
-        ) AS "below!"
-        "#,
-        user_ids,
-        role_ids,
-        privileges as &[&str],
-        *warehouse_id,
-    )
-    .fetch_one(connection)
-    .await
-    .map_err(DBErrorHandler::into_catalog_backend_error)
-    .map_err(ListGrantsStoreError::from)
-}
-
 /// The ids of `warehouse_ids` in which the principals hold one of `privileges` on a
-/// namespace or live tabular: the probes of [`warehouse_has_grants_below`] for each
-/// warehouse, in one round trip.
+/// namespace or live tabular. One path-index range per warehouse and principal id, so a
+/// "no" costs a few index probes however many grants the principals hold.
 async fn warehouses_with_grants_below<'e, 'c: 'e, E>(
     user_ids: &[String],
     role_ids: &[Uuid],
@@ -1777,26 +1732,24 @@ where
         SELECT w.warehouse_id AS "warehouse_id!"
         FROM unnest($4::uuid[]) AS w(warehouse_id)
         WHERE EXISTS (
-            SELECT 1
-            FROM unnest($3::text[]) AS p(privilege)
-            CROSS JOIN LATERAL (
-                SELECT 1
-                FROM (
-                    SELECT ga.warehouse_id, ga.tabular_id FROM grant_assignment ga
-                    WHERE ga.principal_type = 'user' AND ga.user_id = ANY($1::text[]) AND ga.role_id IS NULL
-                      AND ga.resource_type IN ('namespace', 'tabular') AND ga.privilege = p.privilege
-                      AND ga.project_id IS NULL AND ga.warehouse_id = w.warehouse_id
-                    UNION ALL
-                    SELECT ga.warehouse_id, ga.tabular_id FROM grant_assignment ga
-                    WHERE ga.principal_type = 'role' AND ga.user_id IS NULL AND ga.role_id = ANY($2::uuid[])
-                      AND ga.resource_type IN ('namespace', 'tabular') AND ga.privilege = p.privilege
-                      AND ga.project_id IS NULL AND ga.warehouse_id = w.warehouse_id
-                ) g
-                -- A namespace grant joins no tabular row and passes; a tabular grant passes if live.
-                LEFT JOIN tabular t ON t.warehouse_id = g.warehouse_id AND t.tabular_id = g.tabular_id
-                WHERE t.deleted_at IS NULL
-                LIMIT 1
-            ) hit
+            -- Only namespace and tabular grants carry a path. Each arm reads the path index in
+            -- order with LIMIT 1: a seq scan would have to sort every match first, so Postgres keeps
+            -- the index even when one principal holds most grants.
+            (SELECT 1 FROM grant_assignment ga
+             -- A namespace grant joins no tabular row and passes; a tabular grant passes if live.
+             LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
+             WHERE ga.user_id = ANY($1::text[]) AND ga.warehouse_id = w.warehouse_id
+               AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])
+               AND t.deleted_at IS NULL
+             ORDER BY ga.user_id, ga.warehouse_id, ga.namespace_name LIMIT 1)
+            -- Postgres drops ORDER BY and LIMIT from a plain EXISTS, so the arms stay a UNION ALL.
+            UNION ALL
+            (SELECT 1 FROM grant_assignment ga
+             LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
+             WHERE ga.role_id = ANY($2::uuid[]) AND ga.warehouse_id = w.warehouse_id
+               AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])
+               AND t.deleted_at IS NULL
+             ORDER BY ga.role_id, ga.warehouse_id, ga.namespace_name LIMIT 1)
         )
         "#,
         user_ids,
