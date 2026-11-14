@@ -21,16 +21,6 @@ permissions:
   contents: write # Needed for creating releases and uploading assets
   pull-requests: write # Needed for release-please to create/update PRs
 
-# A newer push to a branch cancels the older run of that branch: only the
-# newest commit's binaries and `main` image are used. A run that can publish a
-# release gets a group of its own, so nothing cancels it and it cancels nothing.
-# Those are manual dispatches and pushes of a release-please merge commit,
-# whose title is `chore(<branch>): release <version>`.
-concurrency:
-  group: >-
-    ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, format('chore({0}): release ', github.ref_name))) && github.run_id || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   # Update release PR
   release_please:
@@ -62,6 +52,14 @@ jobs:
     name: Build Binary
     needs:
       - release_please
+    # A newer push to a branch cancels this job of the older run: only the
+    # newest commit's binaries and `main` image are used. The decision follows
+    # release-please: in a run that created a release, the group is unique, so
+    # nothing cancels the job and it cancels nothing. build-docker and
+    # test-docker use the same rule.
+    concurrency:
+      group: ${{ github.workflow }}-build-binary-${{ matrix.target }}-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     # not supported by windows nor macos
     # services:
     #   postgres:
@@ -176,6 +174,9 @@ jobs:
     needs:
       - build-binary
       - release_please
+    concurrency:
+      group: ${{ github.workflow }}-build-docker-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     services:
       postgres:
         image: postgres:16
@@ -269,6 +270,9 @@ jobs:
     needs:
       - build-docker
       - release_please
+    concurrency:
+      group: ${{ github.workflow }}-test-docker-${{ matrix.arch }}-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     strategy:
       # Every architecture's image test gates publishing; run all of them to report each result.
       fail-fast: false
