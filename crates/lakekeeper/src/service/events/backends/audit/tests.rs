@@ -4,7 +4,6 @@ use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
 
 use super::{
-    shapes::OperationWire,
     sink::{ArcAuditSink, AuditDelivery, AuditDispatch, AuditRecord, AuditSink, LogSink},
     *,
 };
@@ -89,6 +88,7 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
+    super::sink::take_delivered_json();
     let logs = CapturedLogs::default();
     // The binary's log format, without file and line numbers, which would leak into a
     // captured record.
@@ -102,10 +102,29 @@ where
 
     let bytes = logs.0.lock().expect("log buffer poisoned").clone();
     let text = String::from_utf8(bytes).expect("log output must be utf-8");
-    text.lines()
+    let lines: Vec<serde_json::Value> = text
+        .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("log line must be valid json"))
-        .collect()
+        .collect();
+
+    // Every audit line must carry what the record's JSON carries: the two are encoded
+    // separately, and only the log line is pinned by a fixture.
+    let delivered = super::sink::take_delivered_json();
+    let audit_lines: Vec<serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["event_source"] == "audit")
+        .cloned()
+        .collect();
+    assert_eq!(
+        delivered.len(),
+        audit_lines.len(),
+        "every audit line must have its record's JSON"
+    );
+    for (json, line) in delivered.iter().zip(audit_lines) {
+        assert_json_matches_log_line(json, line);
+    }
+    lines
 }
 
 /// [`emit_and_capture`] for the case where exactly one record is expected.
@@ -1520,61 +1539,6 @@ fn assert_json_matches_log_line(json: &serde_json::Value, line: serde_json::Valu
     };
     assert_eq!(keys(json), keys(&logged));
     assert_eq!(json, &logged);
-}
-
-/// An authorization record as JSON carries what its log line carries.
-#[test]
-fn an_authorization_record_as_json_matches_its_log_line() {
-    let event = fixture_succeeded_event(
-        fixture_metadata(),
-        EventEntities::one(fixture_table_entity()),
-        vec![fixture_read_action()],
-        fixture_context(&[]),
-    );
-    let record = assemble::authorization_succeeded(&event, &Enrichment::default());
-    let json = record.to_json();
-
-    let line = emit_and_capture_one(|| async {
-        record.emit("Authorization succeeded event");
-        Ok(())
-    });
-
-    assert_json_matches_log_line(&json, line);
-}
-
-/// A replay record as JSON carries what its log line carries.
-#[test]
-fn a_replay_record_as_json_matches_its_log_line() {
-    let event = IdempotentReplayEvent {
-        request_metadata: Arc::new(fixture_metadata()),
-        occurred_at: chrono::Utc::now(),
-        entities: Arc::new(EventEntities::one(fixture_table_entity())),
-        actions: Arc::new(vec![fixture_drop_action()]),
-        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
-    };
-    let record = assemble::replay(&event, &Enrichment::default());
-    let json = record.to_json();
-
-    let line = emit_and_capture_one(|| async {
-        record.emit("Idempotent replay served");
-        Ok(())
-    });
-
-    assert_json_matches_log_line(&json, line);
-}
-
-/// An operation record as JSON carries what its log line carries.
-#[test]
-fn an_operation_record_as_json_matches_its_log_line() {
-    let (record, message) = OperationWire::from_event(record_without_request().into_event());
-    let json = record.to_json();
-
-    let line = emit_and_capture_one(|| async {
-        record.emit(message);
-        Ok(())
-    });
-
-    assert_json_matches_log_line(&json, line);
 }
 
 /// A sink that keeps the address of every JSON object it is handed.
