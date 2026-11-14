@@ -45,6 +45,8 @@ Reacting to changes has two levels, depending on what you need:
 * Implement an **`EventListener`** when you want to run typed Rust logic in-process on specific events (the default trait methods are no-ops, so you override only what you care about). Register it via the `EventDispatcher`.
 * Provide a **`CloudEventBackend`** when you just want changes shipped out as CloudEvents. The built-in CloudEvents publisher is itself an `EventListener` that fans every event out to all configured `cloud_event_sinks`.
 
+When CloudEvent sinks are configured, successful table and view metadata loads also publish `loadTable` and `loadView` events. Each event identifies the object, caller and request; its data is null. These events are delivered on a best-effort basis and cover loads that return metadata. Conditional table loads that return HTTP 304 and failed loads do not publish them.
+
 ## What the hooks are for
 
 A few common reasons to reach for each one:

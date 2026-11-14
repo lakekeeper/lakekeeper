@@ -56,6 +56,7 @@ pub struct LoadViewEvent {
     pub view: Arc<ViewInfo>,
     pub metadata: ViewMetadataRef,
     pub metadata_location: Arc<Location>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 /// View commit metadata containing old and new view states
@@ -82,6 +83,7 @@ impl APIEventContext<UserProvidedView, Resolved<ResolvedView>, CatalogViewAction
             view: self.resolved_entity.data.view.clone(),
             metadata,
             metadata_location,
+            request_metadata: self.request_metadata,
         };
         let dispatcher = self.dispatcher;
         tokio::spawn(async move {
