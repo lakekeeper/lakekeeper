@@ -128,7 +128,7 @@ audit-format-release version:
 # after adding a call: EXPECTED_RECORDS in that file is kept by hand.
 # Run the audit log corpus test on its own
 test-audit-corpus:
-    cargo test -p lakekeeper-integration-tests --all-features --test audit_corpus -- --nocapture
+    cargo test -p lakekeeper-integration-tests --all-features --test integration audit_corpus:: -- --nocapture
 
 # AUDIT_FORMAT is computed from the last release tag and audit-format/unreleased/. Then the
 # fixture writers run, then the whole audit test module verifies them; it also reports a new
@@ -146,8 +146,8 @@ update-audit-fixtures:
 # Recompute AUDIT_FORMAT, then regenerate docs/docs/audit/schema.json from the audit type registry
 update-audit-schema:
     python3 .github/scripts/check-audit-format.py --write-version
-    LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-integration-tests --test audit_schema
-    cargo test -p lakekeeper-integration-tests --test audit_schema
+    LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1 cargo test -p lakekeeper-integration-tests --test integration audit_schema::
+    cargo test -p lakekeeper-integration-tests --test integration audit_schema::
 
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml

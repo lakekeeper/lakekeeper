@@ -1,7 +1,7 @@
 //! Lakekeeper's published audit schema is what the registry of every Lakekeeper crate
 //! generates.
 //!
-//! This binary links every crate that declares audit types for the `lakekeeper` emitter, so
+//! The test binary links every crate that declares audit types for the `lakekeeper` emitter, so
 //! its registry holds all of them. `just update-audit-schema` runs this test with
 //! `LAKEKEEPER_UPDATE_AUDIT_SCHEMA=1` to write `docs/docs/audit/schema.json`, then again to
 //! verify.

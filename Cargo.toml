@@ -241,6 +241,11 @@ veil = "0.2.0"
 webpki-root-certs = "1.0"
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 
+# Backtraces keep file and line numbers. Full debug info doubles the time to rebuild the
+# tests after an edit. For variables in a debugger, set `CARGO_PROFILE_DEV_DEBUG=true`.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.build-override]
 debug-assertions = true
 opt-level = 3
