@@ -1,6 +1,7 @@
 use iceberg::TableIdent;
 use lakekeeper::{
     CONFIG, WarehouseId,
+    api::iceberg::v1::PaginatedMapping,
     service::{
         CatalogBackendError, CreateGenericTableError, DropGenericTableError,
         GenericTableAlreadyExists, GenericTableCreation, GenericTableFormat, GenericTableId,
@@ -302,7 +303,7 @@ pub(crate) async fn list_generic_tables(
     page_size: Option<i64>,
     page_token: Option<&str>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError> {
+) -> Result<PaginatedMapping<GenericTableId, GenericTableListEntry>, ListGenericTablesError> {
     let page_size = CONFIG.page_size_or_pagination_default(page_size);
 
     // A bad token is the caller's mistake, so it keeps its `400` rather than being
@@ -352,33 +353,30 @@ pub(crate) async fn list_generic_tables(
     .await
     .map_err(|e| ListGenericTablesError::from(e.into_catalog_backend_error()))?;
 
-    let mut entries = Vec::with_capacity(rows.len());
-    let mut next_page_token = None;
-
-    for row in &rows {
-        next_page_token = Some(
-            PaginateToken::V1(V1PaginateToken {
-                created_at: row.created_at,
-                id: row.generic_table_id,
-            })
-            .to_string(),
-        );
-
+    let mut entries = PaginatedMapping::with_capacity(rows.len());
+    for row in rows {
+        let generic_table_id = GenericTableId::from(row.generic_table_id);
+        let page_token = PaginateToken::V1(V1PaginateToken {
+            created_at: row.created_at,
+            id: row.generic_table_id,
+        })
+        .to_string();
         let tabular_ident = TableIdent::new(namespace_ident.clone(), row.name.clone());
-        entries.push(GenericTableListEntry {
-            generic_table_id: row.generic_table_id.into(),
+        let entry = GenericTableListEntry {
+            generic_table_id,
             warehouse_id: row.warehouse_id.into(),
             namespace_id: row.namespace_id.into(),
-            name: row.name.clone(),
+            name: row.name,
             tabular_ident,
-            format: GenericTableFormat::from(row.format.clone()),
+            format: GenericTableFormat::from(row.format),
             namespace_ident: namespace_ident.clone(),
             protected: row.protected,
             created_at: row.created_at,
-        });
+        };
+        entries.insert(generic_table_id, entry, page_token);
     }
 
-    Ok((entries, next_page_token))
+    Ok(entries)
 }
 
 pub(crate) async fn drop_generic_table(
@@ -553,48 +551,31 @@ mod tests {
             t.commit().await.unwrap();
         }
 
-        // List with page_size=2
-        let mut t = pool.begin().await.unwrap();
-        let (page1, token) =
-            list_generic_tables(warehouse_id, namespace_id, &ns_ident, Some(2), None, &mut t)
-                .await
-                .unwrap();
-        t.commit().await.unwrap();
-
-        assert_eq!(page1.len(), 2);
-        assert!(token.is_some());
-
-        // Second page
-        let mut t = pool.begin().await.unwrap();
-        let (page2, token2) = list_generic_tables(
-            warehouse_id,
-            namespace_id,
-            &ns_ident,
-            Some(2),
-            token.as_deref(),
-            &mut t,
-        )
-        .await
-        .unwrap();
-        t.commit().await.unwrap();
-
-        assert_eq!(page2.len(), 1);
-        // token2 may be Some (pointing past the last item) — fetch next page to confirm empty
-        if token2.is_some() {
+        let names = |page: &PaginatedMapping<GenericTableId, GenericTableListEntry>| {
+            page.iter()
+                .map(|(_, entry)| entry.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut pages = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..3 {
             let mut t = pool.begin().await.unwrap();
-            let (page3, _) = list_generic_tables(
+            let page = list_generic_tables(
                 warehouse_id,
                 namespace_id,
                 &ns_ident,
                 Some(2),
-                token2.as_deref(),
+                token.as_deref(),
                 &mut t,
             )
             .await
             .unwrap();
             t.commit().await.unwrap();
-            assert!(page3.is_empty());
+            token = page.next_token().map(ToString::to_string);
+            pages.push(names(&page));
         }
+
+        assert_eq!(pages, vec![vec!["a", "b"], vec!["c"], vec![]]);
     }
 
     #[sqlx::test]

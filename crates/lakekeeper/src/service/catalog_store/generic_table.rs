@@ -12,6 +12,7 @@ use super::{
 };
 use crate::{
     WarehouseId,
+    api::iceberg::v1::PaginatedMapping,
     service::{
         CatalogBackendError, ConcurrentUpdateError, GenericTableId, InternalParseLocationError,
         InvalidNamespaceIdentifier, InvalidPaginationToken, LocationAlreadyTaken, NamespaceId,
@@ -316,8 +317,10 @@ where
         page_size: Option<i64>,
         page_token: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError>
-    {
+    ) -> std::result::Result<
+        PaginatedMapping<GenericTableId, GenericTableListEntry>,
+        ListGenericTablesError,
+    > {
         Self::list_generic_tables_impl(
             warehouse_id,
             namespace_id,
