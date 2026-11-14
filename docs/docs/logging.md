@@ -54,7 +54,7 @@ To disable audit logs entirely:
 LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 ```
 
-To stop writing audit records to the log, set the following. Records then go only to the other audit sinks; with none, no audit records are written.
+To stop writing audit records to the log, set the following. No audit records are then written, and denials appear as plain error lines.
 
 ```bash
 LAKEKEEPER__AUDIT__TRACING__LOG__ENABLED=false
