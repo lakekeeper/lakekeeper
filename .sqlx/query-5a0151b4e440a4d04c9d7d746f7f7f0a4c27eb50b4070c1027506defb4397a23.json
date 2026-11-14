@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT EXISTS (\n            -- Namespace and tabular grants: the arms of `warehouses_with_grants_below`, for each\n            -- warehouse of the project.\n            SELECT 1 FROM warehouse w\n            WHERE w.project_id = $4::text\n              AND EXISTS (\n                (SELECT 1 FROM grant_assignment ga\n                 LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id\n                 WHERE ga.user_id = ANY($1::text[]) AND ga.warehouse_id = w.warehouse_id\n                   AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])\n                   AND t.deleted_at IS NULL\n                 ORDER BY ga.user_id, ga.warehouse_id, ga.namespace_name LIMIT 1)\n                UNION ALL\n                (SELECT 1 FROM grant_assignment ga\n                 LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id\n                 WHERE ga.role_id = ANY($2::uuid[]) AND ga.warehouse_id = w.warehouse_id\n                   AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])\n                   AND t.deleted_at IS NULL\n                 ORDER BY ga.role_id, ga.warehouse_id, ga.namespace_name LIMIT 1)\n              )\n        ) OR EXISTS (\n            -- Warehouse grants: a principal holds few, so read them all on grant_unique, one\n            -- privilege at a time. With `privilege = ANY($3)`, a PG16 generic plan scans the grants\n            -- of every role.\n            SELECT 1\n            FROM unnest($3::text[]) AS p(privilege)\n            CROSS JOIN LATERAL (\n                SELECT ga.warehouse_id FROM grant_assignment ga\n                WHERE ga.principal_type = 'user' AND ga.user_id = ANY($1::text[]) AND ga.role_id IS NULL\n                  AND ga.resource_type = 'warehouse' AND ga.privilege = p.privilege\n                  AND ga.project_id IS NULL\n                UNION ALL\n                SELECT ga.warehouse_id FROM grant_assignment ga\n                WHERE ga.principal_type = 'role' AND ga.user_id IS NULL AND ga.role_id = ANY($2::uuid[])\n                  AND ga.resource_type = 'warehouse' AND ga.privilege = p.privilege\n                  AND ga.project_id IS NULL\n            ) g\n            JOIN warehouse w ON w.warehouse_id = g.warehouse_id\n            WHERE w.project_id = $4::text\n        ) AS \"below!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "below!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray",
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5a0151b4e440a4d04c9d7d746f7f7f0a4c27eb50b4070c1027506defb4397a23"
+}

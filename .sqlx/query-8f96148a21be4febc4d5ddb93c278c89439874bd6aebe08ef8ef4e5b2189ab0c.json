@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT w.warehouse_id AS \"warehouse_id!\"\n        FROM unnest($4::uuid[]) AS w(warehouse_id)\n        WHERE EXISTS (\n            -- Only namespace and tabular grants carry a path. Each arm reads the path index in\n            -- order with LIMIT 1: a seq scan would have to sort every match first, so Postgres keeps\n            -- the index even when one principal holds most grants.\n            (SELECT 1 FROM grant_assignment ga\n             -- A namespace grant joins no tabular row and passes; a tabular grant passes if live.\n             LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id\n             WHERE ga.user_id = ANY($1::text[]) AND ga.warehouse_id = w.warehouse_id\n               AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])\n               AND t.deleted_at IS NULL\n             ORDER BY ga.user_id, ga.warehouse_id, ga.namespace_name LIMIT 1)\n            -- Postgres drops ORDER BY and LIMIT from a plain EXISTS, so the arms stay a UNION ALL.\n            UNION ALL\n            (SELECT 1 FROM grant_assignment ga\n             LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id\n             WHERE ga.role_id = ANY($2::uuid[]) AND ga.warehouse_id = w.warehouse_id\n               AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])\n               AND t.deleted_at IS NULL\n             ORDER BY ga.role_id, ga.warehouse_id, ga.namespace_name LIMIT 1)\n        )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "warehouse_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray",
+        "TextArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8f96148a21be4febc4d5ddb93c278c89439874bd6aebe08ef8ef4e5b2189ab0c"
+}
