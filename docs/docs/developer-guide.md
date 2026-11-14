@@ -144,7 +144,7 @@ A `none` fragment is optional. Write one to put a new action in the release note
 - **A value**: add a variant to the value vocabulary of the field and emit `Variant::as_wire()`. The enum already carries `#[audit_part(field = "...")]`, so the variant reaches the schema with no list to update.
 - **A new vocabulary**: put `#[audit_part(field = "...")]` on the enum for a set of values, or `#[audit_part(keys_of = "...")]` for a set of object keys. Nothing else registers it. A variant's doc comment becomes that name's description in the schema; write what the name means to a consumer.
 - **A field**: add it to the part or context struct with a doc comment, or add a variant to the key vocabulary of its object.
-- **A field on a record shape**: add it to the struct in `shapes.rs` with a doc comment. `#[audit_part(shape = "...")]` writes the shape's `emit()` from its fields, so the field reaches the record and the schema under its own name. The attribute rejects `rename`, `skip` and `flatten` on a shape's fields, and a shape outside the `lakekeeper` crate.
+- **A field on a record shape**: add it to the struct in `shapes.rs` with a doc comment. `#[audit_part(shape = "...")]` writes the shape's `emit()` and `to_json()` from its fields, so the field reaches the record and the schema under its own name. The attribute rejects `rename`, `skip` and `flatten` on a shape's fields, and a shape outside the `lakekeeper` crate.
 - **A new kind of operation record, from any crate**: an operations enum, an outcomes enum and a context struct, each with the attribute, then build the record and dispatch it to the event dispatcher:
 
     ```rust

@@ -16,7 +16,7 @@ pub(super) enum AuditRecord<'a> {
 }
 
 impl AuditRecord<'_> {
-    /// This record as one JSON object
+    /// This record as one JSON object.
     pub(super) fn to_json(&self) -> serde_json::Value {
         match self {
             Self::Authorization(record) => record.to_json(),
@@ -58,7 +58,7 @@ impl<'a> AuditDelivery<'a> {
         }
     }
 
-    /// The record as one JSON object. Built on the first call and shared by later callers
+    /// The record as one JSON object. Built on the first call and shared by later callers.
     #[must_use]
     pub fn json(&self) -> &serde_json::Value {
         self.json.get_or_init(|| self.record.to_json())
@@ -89,11 +89,11 @@ pub trait AuditSink: Send + Sync + std::fmt::Debug {
     /// then queue it.
     fn deliver(&self, record: &AuditDelivery<'_>);
 
-    /// Send the records that are still queued. Called once, when the server stops.
+    /// Send the records that are still queued. The default does nothing.
     async fn shutdown(&self) {}
 }
 
-/// Reference to an [`AuditSink`] that can be cheaply cloned and shared.
+/// Reference to [`AuditSink`] that can be cheaply cloned and shared.
 pub type ArcAuditSink = Arc<dyn AuditSink>;
 
 /// Writes every audit record to the log, as one line.
@@ -189,14 +189,14 @@ impl AuditDispatch {
         Self { sinks }
     }
 
-    /// Whether no sink is active
+    /// Whether no sink is active.
     #[cfg(feature = "router")]
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
         self.sinks.is_empty()
     }
 
-    /// Hand `record` to every sink, in order. All sinks share one [`AuditDelivery`]
+    /// Hand `record` to every sink, in order. All sinks share one [`AuditDelivery`].
     pub(super) fn deliver(&self, record: AuditRecord<'_>, message: &'static str) {
         let delivery = AuditDelivery::new(record, message);
         for sink in &self.sinks {
@@ -208,12 +208,5 @@ impl AuditDispatch {
     #[cfg(feature = "router")]
     pub(crate) fn sink_names(&self) -> Vec<&str> {
         self.sinks.iter().map(|sink| sink.name()).collect()
-    }
-
-    /// Let every sink send what it still has queued, one after the other.
-    pub(crate) async fn shutdown(&self) {
-        for sink in &self.sinks {
-            sink.shutdown().await;
-        }
     }
 }

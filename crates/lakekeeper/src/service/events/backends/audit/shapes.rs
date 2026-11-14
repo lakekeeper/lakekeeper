@@ -1,8 +1,8 @@
 //! The three shapes an audit record can have.
 //!
-//! A shape is what a consumer receives. `#[audit_part(shape = "...")]` writes its `emit()`,
-//! the only code that writes an audit record: it stamps `event_source`, `audit_format` and
-//! `record_type`, and puts every field on the line under its own name.
+//! A shape is what a consumer receives. `#[audit_part(shape = "...")]` writes its `emit()` and
+//! `to_json()`, the only code that encodes an audit record: they stamp `event_source`,
+//! `audit_format` and `record_type`, and put every field under its own name.
 //!
 //! Every record names its shape in `record_type` and its producers in `emitters`, carries its
 //! action and entity lists under one name whatever their length, and omits a field it has no
