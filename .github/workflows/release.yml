@@ -21,6 +21,16 @@ permissions:
   contents: write # Needed for creating releases and uploading assets
   pull-requests: write # Needed for release-please to create/update PRs
 
+# A newer push to a branch cancels the older run of that branch: only the
+# newest commit's binaries and `main` image are used. A run that can publish a
+# release gets a group of its own, so nothing cancels it and it cancels nothing.
+# Those are manual dispatches and pushes of a release-please merge commit,
+# whose title is `chore(<branch>): release <version>`.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, format('chore({0}): release ', github.ref_name))) && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Update release PR
   release_please:
