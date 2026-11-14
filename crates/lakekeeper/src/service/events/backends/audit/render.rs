@@ -64,6 +64,12 @@ impl AuditJson {
     pub fn value(&self) -> &serde_json::Value {
         &self.0
     }
+
+    /// The tree, taken out of the wrapper without a copy.
+    #[must_use]
+    pub(crate) fn into_value(self) -> serde_json::Value {
+        self.0
+    }
 }
 
 impl From<serde_json::Value> for AuditJson {

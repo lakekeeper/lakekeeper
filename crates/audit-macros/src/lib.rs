@@ -655,6 +655,12 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
                 "`record_type` is stamped from `shape = \"...\"`; the struct holds no such field",
             ));
         }
+        if name == "event_source" || name == "audit_format" {
+            return Err(Error::new_spanned(
+                field,
+                format!("`{name}` is stamped on every record; the struct holds no such field"),
+            ));
+        }
         for attr in field
             .attrs
             .iter()
@@ -686,7 +692,7 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
             ///
             /// The switch is checked before serializing, so a disabled trail costs nothing,
             /// and it applies to every record whatever built it.
-            pub(crate) fn emit(self, message: &'static str) {
+            pub(crate) fn emit(&self, message: &'static str) {
                 if !crate::audit::log_enabled() {
                     return;
                 }
@@ -700,6 +706,25 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
                     "{}",
                     message
                 );
+            }
+
+            /// This record as one JSON object: the keys and values of its log line, in the
+            /// same order, without the keys the log subscriber adds.
+            pub(crate) fn to_json(&self) -> ::serde_json::Value {
+                let mut map = ::serde_json::Map::new();
+                map.insert(
+                    "event_source".to_string(),
+                    crate::service::events::backends::audit::EVENT_SOURCE.into(),
+                );
+                map.insert(
+                    "audit_format".to_string(),
+                    crate::service::events::backends::audit::AUDIT_FORMAT.into(),
+                );
+                map.insert("record_type".to_string(), #record_type.into());
+                #(if let Some(value) = ::lakekeeper::audit::AuditJson::present(&self.#fields) {
+                    map.insert(stringify!(#fields).to_string(), value.into_value());
+                })*
+                ::serde_json::Value::Object(map)
             }
         }
     })

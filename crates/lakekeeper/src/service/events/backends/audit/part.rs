@@ -506,21 +506,58 @@ pub fn warn_on_retired_audit_filter() {
 
 /// Whether an audit record emitted now reaches the log.
 ///
-/// Two switches must both be open: `LAKEKEEPER__AUDIT__TRACING__ENABLED`, which decides
-/// whether the catalog keeps an audit trail at all, and the `tracing` filter on
-/// [`AUDIT_TARGET`], which decides whether the subscriber records what is written there.
+/// Three switches must all be open: `LAKEKEEPER__AUDIT__TRACING__ENABLED`, which decides
+/// whether the catalog keeps an audit trail at all, the log sink (see `ActiveSinks`), and the
+/// `tracing` filter on [`AUDIT_TARGET`], which decides whether the subscriber records what is
+/// written there.
 ///
-/// It answers for the log only. Every record passes this on its way out, and an operation
-/// record is dispatched to the event listeners only while it holds, so a listener other than
-/// the audit listener receives one only while the audit log records it. Code that suppresses
-/// an ordinary log line because the audit record covers it must ask this first: with either
-/// switch closed the event would be in neither log.
+/// Code that suppresses an ordinary log line because the audit record covers it must ask
+/// this first: with any switch closed the event would be in neither log.
 ///
 /// `tracing` caches its half per call site when the filter is static.
 #[must_use]
 pub fn log_enabled() -> bool {
-    crate::CONFIG.audit.tracing.enabled
-        && tracing::enabled!(target: AUDIT_TARGET, tracing::Level::INFO)
+    current_gates().log
+}
+
+/// Whether audit records are built at all: true while any sink will receive them.
+///
+/// The audit listener and [`super::OperationRecord`] ask it before they do any work.
+#[must_use]
+pub fn enabled() -> bool {
+    current_gates().build
+}
+
+/// The answers of the two audit gates.
+#[derive(Debug, PartialEq, Eq)]
+struct Gates {
+    /// A record reaches the log: what [`log_enabled`] answers.
+    log: bool,
+    /// Records are built: what [`enabled`] answers.
+    build: bool,
+}
+
+/// The gates for the switches as they are now.
+fn current_gates() -> Gates {
+    gates(
+        crate::CONFIG.audit.tracing.enabled,
+        super::sink::active(),
+        || tracing::enabled!(target: AUDIT_TARGET, tracing::Level::INFO),
+    )
+}
+
+/// The gates for one state of their switches. `filter_keeps` asks the `tracing` filter and is
+/// called only when the answer depends on it.
+fn gates(
+    trail: bool,
+    sinks: super::sink::ActiveSinks,
+    filter_keeps: impl FnOnce() -> bool,
+) -> Gates {
+    let log = trail && sinks.log && filter_keeps();
+    Gates {
+        log,
+        build: log || (trail && sinks.others),
+    }
 }
 
 #[cfg(test)]
@@ -713,5 +750,57 @@ mod tests {
             <Lakekeeper as AuditEmitter>::FORMAT,
             super::super::AUDIT_FORMAT
         );
+    }
+
+    /// Every state of the four switches, with the answer each gate must give.
+    #[test]
+    fn the_gates_answer_every_switch_state() {
+        // (trail, log sink, other sinks, filter keeps the audit target) => (log, build)
+        let table = [
+            ((false, false, false, false), (false, false)),
+            ((false, false, false, true), (false, false)),
+            ((false, false, true, false), (false, false)),
+            ((false, false, true, true), (false, false)),
+            ((false, true, false, false), (false, false)),
+            ((false, true, false, true), (false, false)),
+            ((false, true, true, false), (false, false)),
+            ((false, true, true, true), (false, false)),
+            ((true, false, false, false), (false, false)),
+            ((true, false, false, true), (false, false)),
+            ((true, false, true, false), (false, true)),
+            ((true, false, true, true), (false, true)),
+            ((true, true, false, false), (false, false)),
+            ((true, true, false, true), (true, true)),
+            ((true, true, true, false), (false, true)),
+            ((true, true, true, true), (true, true)),
+        ];
+        for ((trail, log, others, filter), (expect_log, expect_build)) in table {
+            let sinks = super::super::sink::ActiveSinks { log, others };
+            assert_eq!(
+                gates(trail, sinks, || filter),
+                Gates {
+                    log: expect_log,
+                    build: expect_build,
+                },
+                "trail {trail}, log sink {log}, other sinks {others}, filter keeps {filter}"
+            );
+        }
+    }
+
+    /// The `tracing` filter is asked only while the trail and the log sink are both on, so a
+    /// closed switch costs no filter lookup.
+    #[test]
+    fn the_gates_ask_the_filter_only_when_the_log_depends_on_it() {
+        let unasked = || -> bool { panic!("the filter must not be asked") };
+        for (trail, log) in [(false, false), (false, true), (true, false)] {
+            let sinks = super::super::sink::ActiveSinks { log, others: true };
+            assert_eq!(
+                gates(trail, sinks, unasked),
+                Gates {
+                    log: false,
+                    build: trail,
+                }
+            );
+        }
     }
 }

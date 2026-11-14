@@ -1,8 +1,8 @@
 //! The three shapes an audit record can have.
 //!
-//! A shape is what a consumer receives. `#[audit_part(shape = "...")]` writes its `emit()`,
-//! the only code that writes an audit record: it stamps `event_source`, `audit_format` and
-//! `record_type`, and puts every field on the line under its own name.
+//! A shape is what a consumer receives. `#[audit_part(shape = "...")]` writes its `emit()` and
+//! `to_json()`, the only code that encodes an audit record: they stamp `event_source`,
+//! `audit_format` and `record_type`, and put every field under its own name.
 //!
 //! Every record names its shape in `record_type` and its producers in `emitters`, carries its
 //! action and entity lists under one name whatever their length, and omits a field it has no
@@ -201,12 +201,12 @@ impl<E: AuditEmitter> OperationRecord<E> {
     /// Attach the operation's `context` object, an audit type of the same emitter.
     ///
     /// Taken by value like every other part of the record. Serialized here, so the record
-    /// carries the tree and needs no second type parameter, and only while the audit log
-    /// records it (see [`crate::audit::log_enabled`]).
+    /// carries the tree and needs no second type parameter, and only while records are built
+    /// (see [`crate::audit::enabled`]).
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub fn context<C: AuditPart<Emitter = E>>(mut self, context: C) -> Self {
-        if crate::audit::log_enabled() {
+        if crate::audit::enabled() {
             self.context = Some(AuditJson::of(&context));
         }
         self
@@ -219,14 +219,12 @@ impl<E: AuditEmitter> OperationRecord<E> {
         self
     }
 
-    /// Hand the record to every listener of `events`, the audit listener among them, which
-    /// writes it to the log.
+    /// Hand the record to every listener of `events`, the audit listener among them.
     ///
-    /// Does nothing while the audit log does not record it (see [`crate::audit::log_enabled`]):
-    /// with the audit trail disabled, or with a `tracing` filter that drops the audit target.
+    /// Does nothing while no sink receives it (see [`crate::audit::enabled`]).
     /// Await it, or spawn it to keep the listeners off the caller's path.
     pub async fn dispatch(self, events: &EventDispatcher) {
-        if !crate::audit::log_enabled() {
+        if !crate::audit::enabled() {
             return;
         }
         events.operation_recorded(self.into_event()).await;
@@ -250,23 +248,6 @@ impl<E: AuditEmitter> OperationRecord<E> {
     }
 }
 
-/// Write `event` as one operation record on the log. The one place an operation record is
-/// written.
-pub(super) fn write_operation_record(event: OperationRecordedEvent) {
-    let record = Arc::unwrap_or_clone(event.record);
-    OperationWire {
-        emitters: record.emitters,
-        event_id: record.event_id,
-        request_id: record.request_id,
-        time: record.time,
-        operation: record.operation,
-        actor: record.actor,
-        outcome: record.outcome,
-        context: record.context,
-    }
-    .emit(record.message);
-}
-
 /// An operation record: something the system did that touches identity or access, with no
 /// permission decision of its own. Any emitter can produce one.
 // Not generic, unlike the builder: the schema is derived from this struct and must not
@@ -274,7 +255,7 @@ pub(super) fn write_operation_record(event: OperationRecordedEvent) {
 #[audit_part(shape = "operation")]
 #[schemars(rename = "OperationRecord")]
 #[derive(Debug)]
-struct OperationWire {
+pub(super) struct OperationWire {
     /// Every product that contributed to this record, keyed by its name, with the version of
     /// what it contributes: the one that assembled it and any whose vocabulary it carries.
     emitters: Emitters,
@@ -295,4 +276,24 @@ struct OperationWire {
     /// emitter; absent for an operation that carries none.
     #[schemars(with = "Option<serde_json::Value>")]
     context: Option<AuditJson>,
+}
+
+impl OperationWire {
+    /// The record `event` carries, and the text of its log line.
+    pub(super) fn from_event(event: OperationRecordedEvent) -> (Self, &'static str) {
+        let record = Arc::unwrap_or_clone(event.record);
+        (
+            Self {
+                emitters: record.emitters,
+                event_id: record.event_id,
+                request_id: record.request_id,
+                time: record.time,
+                operation: record.operation,
+                actor: record.actor,
+                outcome: record.outcome,
+                context: record.context,
+            },
+            record.message,
+        )
+    }
 }

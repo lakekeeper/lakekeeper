@@ -11,6 +11,7 @@ pub mod render;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod schema;
 pub mod shapes;
+pub mod sink;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod validate;
 
@@ -21,7 +22,8 @@ use enrichment::Enrichment;
 pub use enrichment::principal_with_known_email;
 pub use part::{
     AUDIT_TARGET, AnyWireStr, AuditPart, Kind, OperationValues, OutcomeValues, RecordContextKey,
-    Registration, Vocabulary, Wire, WireKey, WireName, log_enabled, warn_on_retired_audit_filter,
+    Registration, Vocabulary, Wire, WireKey, WireName, enabled, log_enabled,
+    warn_on_retired_audit_filter,
 };
 use parts::include_user_email;
 pub use parts::{
@@ -32,6 +34,7 @@ pub use parts::{
 pub use render::{AuditJson, log_format};
 pub use shapes::{AuthorizationRecord, OperationRecord, RecordOrigin, ReplayRecord};
 
+use self::sink::{AuditDispatch, AuditRecord, LogSink};
 use crate::{
     request_metadata::RequestMetadata,
     service::{
@@ -193,29 +196,37 @@ impl Vocabulary for iceberg_ext::catalog::TableUpdateKind {
     }
 }
 
-/// The audit backend: renders events into audit records and writes them as log lines.
+/// The audit backend: renders events into audit records and hands them to its sinks.
 ///
-/// One method per event kind it records. Each asks [`crate::audit::log_enabled`] before it does
-/// any work, then assembles the record's shape from the event ([`assemble`]) and calls the
-/// shape's `emit()`; nothing else in this crate writes an audit record.
+/// One method per event kind it records. Each asks [`crate::audit::enabled`] before it does
+/// any work, then assembles the record's shape from the event ([`assemble`]).
 ///
-/// The gate is asked here as well as inside `emit()` because assembly is the expensive half:
-/// it enriches the event and serializes every nested object. With the audit trail switched
-/// off, a request pays nothing.
-#[derive(Debug, Default, Clone)]
+/// The gate is asked first because assembly is the expensive half: it enriches the event and
+/// serializes every nested object. With the audit trail switched off, a request pays nothing.
+#[derive(Debug, Clone)]
 pub struct AuditEventListener {
     /// Read access to the catalog, set once at startup and never changed: records read the
     /// emails of user principals the token does not cover, and the sources of the roles
     /// they name, from it. `None` puts only the token's email and an assumed role's own
     /// source on a record.
     catalog: Option<Arc<dyn EventCatalog>>,
+    /// The log, unless replaced with [`Self::with_dispatch`].
+    dispatch: AuditDispatch,
+}
+
+/// A dispatch to the log alone.
+fn log_only() -> AuditDispatch {
+    AuditDispatch::new(vec![Arc::new(LogSink)])
 }
 
 impl AuditEventListener {
     /// A listener that puts only the token's email on a record.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { catalog: None }
+    pub fn new() -> Self {
+        Self {
+            catalog: None,
+            dispatch: log_only(),
+        }
     }
 
     /// A listener that reads from `catalog`, such as the emails of user principals when the
@@ -224,7 +235,16 @@ impl AuditEventListener {
     pub fn with_catalog(catalog: Arc<dyn EventCatalog>) -> Self {
         Self {
             catalog: Some(catalog),
+            dispatch: log_only(),
         }
+    }
+
+    /// This listener, handing its records to `dispatch`.
+    #[cfg(any(feature = "router", test))]
+    #[must_use]
+    pub(crate) fn with_dispatch(mut self, dispatch: AuditDispatch) -> Self {
+        self.dispatch = dispatch;
+        self
     }
 
     async fn enrichment<'a>(
@@ -242,6 +262,12 @@ impl AuditEventListener {
     }
 }
 
+impl Default for AuditEventListener {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Display for AuditEventListener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "AuditEventListener")
@@ -250,7 +276,11 @@ impl Display for AuditEventListener {
 
 /// One grant record per triple, not one per request: the batch is a dispatch optimisation,
 /// while the audit trail is answered per grant.
-fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
+fn emit_grant_records(
+    dispatch: &AuditDispatch,
+    event: &GrantsChangedEvent,
+    enrichment: &Enrichment<'_>,
+) {
     let actor = || assemble::actor(&event.request_metadata, enrichment);
     for (specs, operation, message) in [
         (
@@ -277,7 +307,8 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
             ))
             .message(message)
             .into_event();
-            shapes::write_operation_record(record);
+            let (record, message) = shapes::OperationWire::from_event(record);
+            dispatch.deliver(AuditRecord::Operation(record), message);
         }
     }
 }
@@ -285,12 +316,16 @@ fn emit_grant_records(event: &GrantsChangedEvent, enrichment: &Enrichment<'_>) {
 #[async_trait::async_trait]
 impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
-        if !log_enabled() {
+        if !enabled() {
             return Ok(());
         }
         let named = assemble::NamedPrincipals::of(&event.actions, &event.authorizations);
         let enrichment = self.enrichment(&event.request_metadata, &named).await;
-        assemble::authorization_failed(&event, &enrichment).emit("Authorization failed event");
+        let record = assemble::authorization_failed(&event, &enrichment);
+        self.dispatch.deliver(
+            AuditRecord::Authorization(record),
+            "Authorization failed event",
+        );
         Ok(())
     }
 
@@ -306,7 +341,7 @@ impl EventListener for AuditEventListener {
     /// the grants. The records of a deleted user's grants carry no
     /// email for that user: the delete cleared it before they are written.
     async fn grants_changed(&self, event: GrantsChangedEvent) -> anyhow::Result<()> {
-        if !log_enabled() {
+        if !enabled() {
             return Ok(());
         }
         let names_a_role = event
@@ -316,9 +351,10 @@ impl EventListener for AuditEventListener {
             .any(|spec| matches!(spec.principal, UserOrRoleId::Role(_)));
         let needs_lookup = include_user_email() || names_a_role;
         let Some(catalog) = self.catalog.clone().filter(|_| needs_lookup) else {
-            emit_grant_records(&event, &Enrichment::default());
+            emit_grant_records(&self.dispatch, &event, &Enrichment::default());
             return Ok(());
         };
+        let dispatch = self.dispatch.clone();
         tokio::spawn(async move {
             let named = assemble::NamedPrincipals::of_grants(
                 event
@@ -334,7 +370,7 @@ impl EventListener for AuditEventListener {
                 &named.roles,
             )
             .await;
-            emit_grant_records(&event, &enrichment);
+            emit_grant_records(&dispatch, &event, &enrichment);
         });
         Ok(())
     }
@@ -343,13 +379,16 @@ impl EventListener for AuditEventListener {
         &self,
         event: AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
-        if !log_enabled() {
+        if !enabled() {
             return Ok(());
         }
         let named = assemble::NamedPrincipals::of(&event.actions, &event.authorizations);
         let enrichment = self.enrichment(&event.request_metadata, &named).await;
-        assemble::authorization_succeeded(&event, &enrichment)
-            .emit("Authorization succeeded event");
+        let record = assemble::authorization_succeeded(&event, &enrichment);
+        self.dispatch.deliver(
+            AuditRecord::Authorization(record),
+            "Authorization succeeded event",
+        );
         Ok(())
     }
 
@@ -359,21 +398,25 @@ impl EventListener for AuditEventListener {
     /// query finds the original request and every replay of it. No `decision`: no
     /// authorization ran, the mutation had already happened.
     async fn idempotent_replay_served(&self, event: IdempotentReplayEvent) -> anyhow::Result<()> {
-        if !log_enabled() {
+        if !enabled() {
             return Ok(());
         }
         let named = assemble::NamedPrincipals::of(&event.actions, &[]);
         let enrichment = self.enrichment(&event.request_metadata, &named).await;
-        assemble::replay(&event, &enrichment).emit("Idempotent replay served");
+        let record = assemble::replay(&event, &enrichment);
+        self.dispatch
+            .deliver(AuditRecord::Replay(record), "Idempotent replay served");
         Ok(())
     }
 
     /// An operation record, written as it was built: it needs no enrichment.
     async fn operation_recorded(&self, event: OperationRecordedEvent) -> anyhow::Result<()> {
-        if !log_enabled() {
+        if !enabled() {
             return Ok(());
         }
-        shapes::write_operation_record(event);
+        let (record, message) = shapes::OperationWire::from_event(event);
+        self.dispatch
+            .deliver(AuditRecord::Operation(record), message);
         Ok(())
     }
 }
