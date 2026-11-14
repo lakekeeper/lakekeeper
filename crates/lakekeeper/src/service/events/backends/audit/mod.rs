@@ -241,7 +241,7 @@ impl AuditEventListener {
 
     /// This listener, handing its records to `dispatch`.
     #[must_use]
-    pub fn with_dispatch(mut self, dispatch: AuditDispatch) -> Self {
+    pub(crate) fn with_dispatch(mut self, dispatch: AuditDispatch) -> Self {
         self.dispatch = dispatch;
         self
     }

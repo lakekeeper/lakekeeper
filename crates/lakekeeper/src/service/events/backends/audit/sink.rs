@@ -153,21 +153,21 @@ pub(crate) fn assemble(log: bool, others: Vec<ArcAuditSink>) -> AuditDispatch {
 }
 
 /// The sinks every audit record is handed to, fixed at startup.
-#[derive(Debug, Clone, Default)]
-pub struct AuditDispatch {
+#[derive(Debug, Clone)]
+pub(crate) struct AuditDispatch {
     sinks: Vec<ArcAuditSink>,
 }
 
 impl AuditDispatch {
     /// A dispatch to `sinks`, in this order.
     #[must_use]
-    pub fn new(sinks: Vec<ArcAuditSink>) -> Self {
+    pub(crate) fn new(sinks: Vec<ArcAuditSink>) -> Self {
         Self { sinks }
     }
 
     /// Whether no sink is active
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.sinks.is_empty()
     }
 
@@ -180,7 +180,7 @@ impl AuditDispatch {
     }
 
     /// Let every sink send what it still has queued, one after the other.
-    pub async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&self) {
         for sink in &self.sinks {
             sink.shutdown().await;
         }
