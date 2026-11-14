@@ -54,6 +54,12 @@ To disable audit logs entirely:
 LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 ```
 
+To stop writing audit records to the log, set the following. Records then go only to the other audit sinks; with none, no audit records are written.
+
+```bash
+LAKEKEEPER__AUDIT__TRACING__LOG__ENABLED=false
+```
+
 **Note:** Audit logs contain PII: user identities, and a caller-supplied `user_agent` string that some clients fill with host names or OS user names. If you disable them, make sure you have another way to meet compliance and security monitoring needs.
 
 ### User Emails on Audit Records {#audit-user-emails}

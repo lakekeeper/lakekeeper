@@ -28,7 +28,7 @@ use crate::{
         events::{
             CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
             CloudEventsPublisherBackgroundTask, EventDispatcher,
-            backends::audit::AuditEventListener,
+            backends::audit::{AuditEventListener, sink::activate_sinks},
         },
         health::ServiceHealthProvider,
         tasks::{
@@ -841,15 +841,29 @@ async fn register_built_in_listeners<C: CatalogStore>(
         tracing::info!("User cache is disabled");
     }
     if CONFIG.audit.tracing.enabled {
-        tracing::info!("Audit tracing is enabled, registering audit event listener");
-        if CONFIG.audit.tracing.include_user_email {
-            tracing::info!("Audit records carry user emails");
+        let audit_dispatch = activate_sinks(CONFIG.audit.tracing.log.enabled, Vec::new());
+        if audit_dispatch.is_empty() {
+            tracing::warn!(
+                "Audit tracing is enabled, but no audit sink is active: no audit records are \
+                 written, and denials are logged as plain errors"
+            );
+        } else {
+            tracing::info!(
+                "Audit tracing is enabled, registering audit event listener; records go to: {}",
+                audit_dispatch.sink_names().join(", ")
+            );
+            if CONFIG.audit.tracing.include_user_email {
+                tracing::info!("Audit records carry user emails");
+            }
+            dispatcher
+                .append(Arc::new(
+                    AuditEventListener::with_catalog(Arc::new(
+                        crate::service::events::CatalogStoreReader::<C>::new(catalog_state.clone()),
+                    ))
+                    .with_dispatch(audit_dispatch),
+                ))
+                .await;
         }
-        dispatcher
-            .append(Arc::new(AuditEventListener::with_catalog(Arc::new(
-                crate::service::events::CatalogStoreReader::<C>::new(catalog_state.clone()),
-            ))))
-            .await;
     } else {
         tracing::info!("Audit tracing is disabled");
     }

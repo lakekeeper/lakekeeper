@@ -186,6 +186,12 @@ impl AuditDispatch {
         }
     }
 
+    /// The names of the sinks, in order.
+    #[cfg(feature = "router")]
+    pub(crate) fn sink_names(&self) -> Vec<&str> {
+        self.sinks.iter().map(|sink| sink.name()).collect()
+    }
+
     /// Let every sink send what it still has queued, one after the other.
     pub(crate) async fn shutdown(&self) {
         for sink in &self.sinks {
