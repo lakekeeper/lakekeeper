@@ -1547,7 +1547,7 @@ struct JsonAddressSink(Mutex<Vec<usize>>);
 
 #[async_trait::async_trait]
 impl AuditSink for JsonAddressSink {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "json-address"
     }
 

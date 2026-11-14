@@ -102,7 +102,7 @@ pub(crate) struct LogSink;
 
 #[async_trait::async_trait]
 impl AuditSink for LogSink {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "log"
     }
 
