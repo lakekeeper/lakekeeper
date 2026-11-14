@@ -448,7 +448,7 @@ def drop_table_and_assert_that_table_is_gone(
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table((namespace, drop_table_name))
     if storage_config["storage-profile"]["type"] == "s3":
-        if "s3.access-key-id" not in storage_config:
+        if "aws-access-key-id" not in storage_config["storage-credential"]:
             pytest.skip(
                 "S3 purge test requires s3 credentials to be set in the storage profile."
             )
