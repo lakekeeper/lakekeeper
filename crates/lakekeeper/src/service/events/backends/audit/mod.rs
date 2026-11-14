@@ -240,6 +240,7 @@ impl AuditEventListener {
     }
 
     /// This listener, handing its records to `dispatch`.
+    #[cfg(any(feature = "router", test))]
     #[must_use]
     pub(crate) fn with_dispatch(mut self, dispatch: AuditDispatch) -> Self {
         self.dispatch = dispatch;

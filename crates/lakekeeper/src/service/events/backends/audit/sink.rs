@@ -116,7 +116,7 @@ impl AuditSink for LogSink {
 /// The log is the one sink with rules of its own: the `tracing` filter can drop its records,
 /// and only it lets a plain error line be dropped. Every other sink counts only by being
 /// there, so one flag covers them all, whatever crate provides them.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ActiveSinks {
     /// The log sink is active.
     pub(super) log: bool,
@@ -124,7 +124,7 @@ pub(super) struct ActiveSinks {
     pub(super) others: bool,
 }
 
-/// Set once, by [`assemble`].
+/// Set once, by `activate_sinks`.
 static ACTIVE: OnceLock<ActiveSinks> = OnceLock::new();
 
 /// The sinks chosen at startup; the log alone until then, as in unit tests.
@@ -136,19 +136,25 @@ pub(super) fn active() -> ActiveSinks {
 }
 
 /// The dispatch to `others`, after the log sink when `log` is set. Called once, at startup.
-pub(crate) fn assemble(log: bool, others: Vec<ArcAuditSink>) -> AuditDispatch {
-    let others_active = !others.is_empty();
+#[cfg(feature = "router")]
+pub(crate) fn activate_sinks(log: bool, others: Vec<ArcAuditSink>) -> AuditDispatch {
+    let chosen = ActiveSinks {
+        log,
+        others: !others.is_empty(),
+    };
     let mut sinks: Vec<ArcAuditSink> = Vec::new();
     if log {
         sinks.push(Arc::new(LogSink));
     }
     sinks.extend(others);
 
-    // One process has one configuration, so a second call holds the same values.
-    let _ = ACTIVE.set(ActiveSinks {
-        log,
-        others: others_active,
-    });
+    if let Err(rejected) = ACTIVE.set(chosen)
+        && ACTIVE.get() != Some(&rejected)
+    {
+        tracing::warn!(
+            "Audit sinks were chosen twice with different sinks; the audit gates keep the first choice"
+        );
+    }
     AuditDispatch::new(sinks)
 }
 
@@ -166,6 +172,7 @@ impl AuditDispatch {
     }
 
     /// Whether no sink is active
+    #[cfg(feature = "router")]
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
         self.sinks.is_empty()
