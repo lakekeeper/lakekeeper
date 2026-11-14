@@ -716,7 +716,7 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
                 );
                 map.insert("record_type".to_string(), #record_type.into());
                 #(if let Some(value) = ::lakekeeper::audit::AuditJson::present(&self.#fields) {
-                    map.insert(stringify!(#fields).to_string(), value.value().clone());
+                    map.insert(stringify!(#fields).to_string(), value.into_value());
                 })*
                 ::serde_json::Value::Object(map)
             }
