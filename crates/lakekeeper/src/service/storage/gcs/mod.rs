@@ -592,11 +592,14 @@ pub(crate) mod test {
     }
 
     pub(crate) mod gcs_hns_integration_tests {
+        use std::time::Duration;
+
         use crate::{
             api::RequestMetadata,
             service::storage::{
                 StorageCredential, StorageProfile,
                 gcs::{GcsCredential, GcsProfile, GcsServiceKey},
+                validation::{ProbeDeadlines, ValidationCheckName, ValidationCheckStatus},
             },
         };
 
@@ -636,6 +639,54 @@ pub(crate) mod test {
             ))
             .await
             .unwrap();
+        }
+
+        /// Vended credentials are the first to write below a table location, as after a
+        /// staged create: the upload creates the missing folders above the table location.
+        #[tokio::test]
+        async fn test_vended_credentials_write_below_missing_folders() {
+            let (profile, cred) = get_storage_profile();
+            let cred: StorageCredential = cred.into();
+            let mut profile: StorageProfile = profile.into();
+            profile
+                .normalize(Some(&cred))
+                .expect("Failed to normalize profile");
+            let location = profile.validation_test_location(None).unwrap();
+            let deadlines = ProbeDeadlines::from_request_limit(
+                tokio::time::Instant::now(),
+                Duration::from_mins(2),
+            );
+
+            let checks = Box::pin(profile.validate_vended_credentials_access(
+                Some(&cred),
+                &location,
+                &RequestMetadata::new_unauthenticated(),
+                deadlines,
+            ))
+            .await;
+
+            let statuses = checks
+                .iter()
+                .map(|check| (check.name, check.status))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                statuses,
+                vec![
+                    (
+                        ValidationCheckName::VendedCredentialsIssued,
+                        ValidationCheckStatus::Passed
+                    ),
+                    (
+                        ValidationCheckName::VendedCredentialsReadWrite,
+                        ValidationCheckStatus::Passed
+                    ),
+                    (
+                        ValidationCheckName::VendedCredentialsScopeEnforced,
+                        ValidationCheckStatus::Passed
+                    ),
+                ],
+                "{checks:?}"
+            );
         }
     }
 }
