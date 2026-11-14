@@ -2079,8 +2079,6 @@ fn expired_metadata_files_to_delete(
     expired_metadata_logs: Vec<MetadataLog>,
     table_location: &Location,
 ) -> Vec<Location> {
-    let mut table_location = with_canonical_s3_scheme(table_location);
-    table_location.without_trailing_slash();
     expired_metadata_logs
         .into_iter()
         .filter_map(|expired_metadata_log| {
@@ -2093,9 +2091,11 @@ fn expired_metadata_files_to_delete(
                     );
                 })
                 .ok()?;
-            let mut canonical = with_canonical_s3_scheme(&location);
-            canonical.without_trailing_slash();
-            if canonical != table_location && canonical.is_sublocation_of(&table_location) {
+
+            // Registered tables can have metadata-log paths with literal percent escapes
+            // in object keys. Cleanup checks prefix ownership; decoded-suffix restrictions
+            // apply to new manifest-list and statistics-file references.
+            if is_strict_sublocation(&location, table_location) {
                 Some(location)
             } else {
                 tracing::warn!(
@@ -2108,11 +2108,64 @@ fn expired_metadata_files_to_delete(
 }
 
 /// `location` with an `s3a`/`s3n` scheme spelled `s3`, so the aliases compare equal.
-fn with_canonical_s3_scheme(location: &Location) -> Location {
+#[must_use]
+pub fn with_canonical_s3_scheme(location: &Location) -> Location {
     S3Location::try_from_location(location, true).map_or_else(
         |_| location.clone(),
         |s3_location| s3_location.set_s3_scheme().into_location(),
     )
+}
+
+#[must_use]
+fn canonicalize_location(location: &Location) -> Location {
+    let mut location = with_canonical_s3_scheme(location);
+    location.without_trailing_slash();
+    location
+}
+
+/// Returns whether `location` is strictly inside `parent`.
+///
+/// Treats `s3`, `s3a`, and `s3n` as aliases and ignores trailing slashes.
+/// Equal normalized locations return `false`.
+#[must_use]
+fn is_strict_sublocation(location: &Location, parent: &Location) -> bool {
+    let location = canonicalize_location(location);
+    let parent = canonicalize_location(parent);
+    location != parent && location.is_sublocation_of(&parent)
+}
+
+/// Returns whether `location` is a strict sublocation with an unambiguous path suffix.
+///
+/// Uses [`is_strict_sublocation`] and percent-decodes each segment after `parent` once.
+/// Rejects decoded segments equal to `.` or `..`, or containing a slash or backslash.
+pub(crate) fn is_safe_strict_sublocation(location: &Location, parent: &Location) -> bool {
+    if !is_strict_sublocation(location, parent) {
+        return false;
+    }
+
+    let parent = canonicalize_location(parent);
+    location.path_segments()[parent.path_segments().len()..]
+        .iter()
+        .all(|segment| is_unambiguous_path_segment(segment))
+}
+
+/// Returns whether a segment is unambiguous after one percent-decoding pass.
+///
+/// Rejects decoded dot segments and segments containing a slash or backslash.
+fn is_unambiguous_path_segment(value: &str) -> bool {
+    let decoded = percent_encoding::percent_decode_str(value).decode_utf8_lossy();
+
+    // disallow path traversals
+    if decoded == "." || decoded == ".." {
+        return false;
+    }
+
+    // disallow path seperator characters
+    if decoded.chars().any(|c| c == '\\' || c == '/') {
+        return false;
+    }
+
+    true
 }
 
 pub fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
@@ -2794,6 +2847,28 @@ mod unit_tests {
         .unwrap();
         let count = extract_count_from_metadata_location(&location);
         assert!(count.is_none());
+    }
+
+    #[test]
+    fn safe_strict_sublocation_refuses_shorter_unrelated_locations() {
+        let parent: Location = "s3://bucket/warehouse/table".parse().unwrap();
+        let location: Location = "s3://bucket/file.avro".parse().unwrap();
+
+        assert!(
+            !is_safe_strict_sublocation(&location, &parent),
+            "a shorter unrelated location must return false without panicking",
+        );
+    }
+
+    #[test]
+    fn safe_strict_sublocation_checks_suffix_with_trailing_slash_parent() {
+        let parent: Location = "s3://bucket/table/".parse().unwrap();
+        let location: Location = "s3://bucket/table/%2e%2e/other/file.avro".parse().unwrap();
+
+        assert!(
+            !is_safe_strict_sublocation(&location, &parent),
+            "a trailing slash on the parent must not hide an encoded parent segment",
+        );
     }
 
     fn files_to_delete(table_location: &str, metadata_files: &[&str]) -> Vec<String> {
