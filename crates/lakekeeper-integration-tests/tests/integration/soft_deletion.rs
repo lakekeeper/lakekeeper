@@ -33,7 +33,9 @@ use lakekeeper::{
         events::{EventListener, tabular::UndropTabularEvent},
         tasks::{
             ScheduleTaskMetadata, TaskEntity, TaskId, WarehouseTaskEntityId,
-            tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME,
+            tabular_expiration_queue::{
+                QUEUE_NAME as EXPIRATION_QUEUE_NAME, TabularExpirationTask,
+            },
             tabular_purge_queue::{
                 QUEUE_NAME as PURGE_QUEUE_NAME, TabularPurgePayload, TabularPurgeTask,
             },
@@ -491,7 +493,11 @@ async fn drop_tbl(ctx: &HidingCtx, warehouse_id: WarehouseId) {
     .unwrap();
 }
 
-async fn undrop_tbl(ctx: &HidingCtx, warehouse_id: WarehouseId, table_id: TableId) {
+async fn undrop_tbl(
+    ctx: &HidingCtx,
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+) -> lakekeeper::api::Result<()> {
     ApiServer::undrop_tabulars(
         warehouse_id,
         random_request_metadata(),
@@ -501,7 +507,6 @@ async fn undrop_tbl(ctx: &HidingCtx, warehouse_id: WarehouseId, table_id: TableI
         ctx.clone(),
     )
     .await
-    .unwrap();
 }
 
 async fn scheduled_tasks(
@@ -547,12 +552,18 @@ async fn cancel_tasks(
     warehouse_id: WarehouseId,
     task_ids: Vec<TaskId>,
 ) -> lakekeeper::api::Result<()> {
+    control_tasks(ctx, warehouse_id, ControlTaskAction::Cancel, task_ids).await
+}
+
+async fn control_tasks(
+    ctx: &HidingCtx,
+    warehouse_id: WarehouseId,
+    action: ControlTaskAction,
+    task_ids: Vec<TaskId>,
+) -> lakekeeper::api::Result<()> {
     ApiServer::control_tasks(
         warehouse_id,
-        ControlTasksRequest {
-            action: ControlTaskAction::Cancel,
-            task_ids,
-        },
+        ControlTasksRequest { action, task_ids },
         ctx.clone(),
         random_request_metadata(),
     )
@@ -606,6 +617,60 @@ async fn test_cancel_soft_deletion_task_with_undrop_restores_the_table(pool: PgP
         soft_deleted_names(&ctx, warehouse_id).await,
         Vec::<String>::new()
     );
+}
+
+/// A running expiration task would still drop the table, so neither undrop path may restore it.
+#[sqlx::test]
+async fn test_undrop_is_refused_while_the_expiration_task_runs(pool: PgPool) {
+    let SoftDeletedTable {
+        ctx,
+        warehouse_id,
+        table_id,
+        task_id,
+        ..
+    } = soft_deleted_table_with_task(pool.clone()).await;
+    control_tasks(&ctx, warehouse_id, ControlTaskAction::RunNow, vec![task_id])
+        .await
+        .unwrap();
+    let picked =
+        TabularExpirationTask::pick_new_task::<PostgresBackend>(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(picked.task_id(), task_id);
+
+    for status in ["running", "should-stop"] {
+        if status == "should-stop" {
+            control_tasks(&ctx, warehouse_id, ControlTaskAction::Stop, vec![task_id])
+                .await
+                .unwrap();
+        }
+        let err = undrop_tbl(&ctx, warehouse_id, table_id).await.unwrap_err();
+        assert_eq!(
+            err.error.code,
+            http::StatusCode::CONFLICT,
+            "{status}: {err:?}"
+        );
+        assert_eq!(err.error.r#type, "TabularHasRunningExpiration");
+
+        let err = cancel_tasks(&ctx, warehouse_id, vec![task_id])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.error.code,
+            http::StatusCode::CONFLICT,
+            "{status}: {err:?}"
+        );
+        assert_eq!(err.error.r#type, "TabularHasRunningExpiration");
+
+        assert_eq!(soft_deleted_names(&ctx, warehouse_id).await, vec!["tbl"]);
+        let stored: String = sqlx::query_scalar("SELECT status::text FROM task WHERE task_id = $1")
+            .bind(*task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, status);
+    }
 }
 
 /// Forwards every undrop event, so a test can assert what a request announced.
@@ -809,7 +874,7 @@ async fn test_cancel_stale_soft_deletion_task_of_an_active_table(pool: PgPool) {
         ..
     } = soft_deleted_table_with_task(pool).await;
     let mut undrops = capture_undrops(&ctx).await;
-    undrop_tbl(&ctx, warehouse_id, table_id).await;
+    undrop_tbl(&ctx, warehouse_id, table_id).await.unwrap();
     let undrop = the_only_undrop(&mut undrops).await;
     assert_eq!(undrop.request.targets, vec![TabularId::Table(table_id)]);
 
@@ -840,7 +905,7 @@ async fn test_cancel_stale_soft_deletion_task_keeps_a_newer_drop(pool: PgPool) {
         ..
     } = soft_deleted_table_with_task(pool).await;
     let mut undrops = capture_undrops(&ctx).await;
-    undrop_tbl(&ctx, warehouse_id, table_id).await;
+    undrop_tbl(&ctx, warehouse_id, table_id).await.unwrap();
     let undrop = the_only_undrop(&mut undrops).await;
     assert_eq!(undrop.request.targets, vec![TabularId::Table(table_id)]);
     drop_tbl(&ctx, warehouse_id).await;
