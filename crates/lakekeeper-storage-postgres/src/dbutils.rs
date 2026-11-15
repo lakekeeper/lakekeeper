@@ -31,7 +31,8 @@ pub(crate) fn commit_state_unknown(error: &sqlx::Error) -> bool {
     }
 }
 
-pub(crate) trait DBErrorHandler
+/// Maps a database error to the error the catalog reports for it.
+pub trait DBErrorHandler
 where
     Self: ToString + Sized + Send + Sync + std::error::Error + 'static,
 {

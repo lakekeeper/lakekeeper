@@ -34,6 +34,7 @@ use std::{str::FromStr, sync::Arc};
 pub use advisory_lock::PostgresAdvisoryLock;
 use anyhow::anyhow;
 use async_trait::async_trait;
+pub use dbutils::DBErrorHandler;
 pub use endpoint_statistics::sink::PostgresStatisticsSink;
 use lakekeeper::{
     api::{ErrorModel, Result},
@@ -54,7 +55,7 @@ use tokio::sync::RwLock;
 
 use self::{
     config::{CONFIG, DynAppConfig, PgSchema, PgSslMode},
-    dbutils::{DBErrorHandler, commit_state_unknown},
+    dbutils::commit_state_unknown,
 };
 
 /// # Errors
