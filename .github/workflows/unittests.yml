@@ -240,7 +240,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres-version: ["15", "18"]
+        # Pull requests test the oldest supported Postgres, which catches SQL that only newer
+        # versions accept. Pushes also test the newest.
+        postgres-version: ${{ github.event_name == 'pull_request' && fromJSON('["15"]') || fromJSON('["15", "18"]') }}
     services:
       vault:
         # Recent vault images run as non-root and hard-require IPC_LOCK; the
