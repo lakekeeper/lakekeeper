@@ -126,7 +126,7 @@ You can move a Namespace to another parent in the same Warehouse, rename it, or 
 
 ### Tables & Views
 
-Each Namespace can contain multiple Tables and Views. When creating new Tables and Views, we recommend to not specify the `location` explicitly. If locations are specified explicitly, the location must be a valid sub location of the `storage-profile` of the Warehouse - this is validated by Lakekeeper upon creation. Lakekeeper also ensures that there are no Tables or Views that use a parent- or sub-folder as their `location` and that the location is empty on creation. These checks ensure that the credentials Lakekeeper vends for a Table give no access to the files of another Table, and that dropping a Table or View with purge deletes no files of another one. A commit can move a View to a new location that passes the same checks and is neither inside nor above the old location. Lakekeeper then deletes the old location with all files in it.
+Each Namespace can contain multiple Tables and Views. When creating new Tables and Views, we recommend to not specify the `location` explicitly. If locations are specified explicitly, the location must be a valid sub location of the `storage-profile` of the Warehouse - this is validated by Lakekeeper upon creation. Lakekeeper also ensures that there are no Tables or Views that use a parent- or sub-folder as their `location` and that the location is empty on creation. A Table or View dropped with purge keeps its location until the purge of its files has finished. These checks ensure that the credentials Lakekeeper vends for a Table give no access to the files of another Table, and that dropping a Table or View with purge deletes no files of another one. A commit can move a View to a new location that passes the same checks and is neither inside nor above the old location. Lakekeeper then deletes the old location with all files in it.
 
 ### Users
 
@@ -287,8 +287,6 @@ In a warehouse with soft deletion, these calls need this permission in addition 
 In warehouses with hard deletion, and when deleting a namespace without `recursive=true`, `force` only skips protection and needs no extra permission.
 
 In a warehouse with soft deletion, users without this permission can delete a namespace only when it is empty. Dropped tables, views and generic tables count until they expire.
-
-In a warehouse managed by the instance (`managed-by: instance-admin`), only instance admins can change the soft-deletion settings, but this permission still decides who may skip soft deletion.
 
 ## Upgrades & Migration
 

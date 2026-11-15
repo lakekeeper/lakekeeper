@@ -42,7 +42,7 @@ The flow is the same for every format: create the table, load it with *vended* c
 
 To catalog files that are already in storage, such as CSV, JSON or Parquet drops, create the generic table with their location as its `base-location`. The generic table then brings these files into the catalog, as registering an Iceberg table does. This needs the right to create generic tables in the namespace and the right to register tables on the warehouse: `modify` on the warehouse with OpenFGA, or `RegisterTable` with Cedar. A location without files needs only the right to create generic tables.
 
-By default, dropping a generic table also deletes all files under its location, shortly after the drop or, in a warehouse with [soft deletion](./concepts.md#soft-deletion), when the soft deletion expires. To remove only the catalog entry, for example of a landing zone, set `purgeRequested=false` on the drop request.
+By default, dropping a generic table also deletes all files under its location, shortly after the drop or, in a warehouse with [soft deletion](./concepts.md#soft-deletion), when the soft deletion expires. Until these files are deleted, no other table, view or generic table can use the location, a folder inside it, or a parent folder. To remove only the catalog entry, for example of a landing zone, set `purgeRequested=false` on the drop request.
 
 You don't need to hand-roll these HTTP calls:
 
