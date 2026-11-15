@@ -813,8 +813,19 @@ namespace Lakekeeper {
   // allowed to list everything at the level it lists: `ListEverythingInWarehouse`
   // for warehouse-wide listings, `ListEverythingInNamespace` for listings inside
   // that namespace.
-  action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles,
-         SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig,
+  action GetProjectMetadata, ListWarehouses, IncludeProjectInList in ["ProjectDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // True when the principal or one of its roles holds describe, select, write,
+        // create, manage or manage_tags as a direct grant on a live object strictly below
+        // the resource. read_grants, pass_grants, manage_grants, read_policies and
+        // manage_policies do not count.
+        principal_has_privilege_below: Bool,
+      }
+    };
+  action ListRoles, SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig,
          GetProjectTasks, ListTags in ["ProjectDescribeActions"]
     appliesTo {
       principal: [User, Role],
@@ -1019,12 +1030,24 @@ namespace Lakekeeper {
   //     that the warehouse exists.
   //   GetConfig — read the Iceberg REST config endpoint that clients call when
   //     they connect.
+  action UseWarehouse, ListNamespacesInWarehouse, GetWarehouseMetadata, GetConfig,
+         IncludeWarehouseInList in ["WarehouseDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // True when the principal or one of its roles holds describe, select, write,
+        // create, manage or manage_tags as a direct grant on a live object strictly below
+        // the resource. read_grants, pass_grants, manage_grants, read_policies and
+        // manage_policies do not count.
+        principal_has_privilege_below: Bool,
+      }
+    };
   //   ListEverythingInWarehouse — list everything in warehouse-wide listings
   //     without the per-item `IncludeXInList` check: top-level namespaces, the
   //     table and view search, soft-deleted tabulars and tasks. Listings inside a
   //     namespace ask `ListEverythingInNamespace`.
-  action UseWarehouse, ListNamespacesInWarehouse, GetWarehouseMetadata, GetConfig,
-         IncludeWarehouseInList, ListDeletedTabulars, GetTaskQueueConfig, GetAllTasks,
+  action ListDeletedTabulars, GetTaskQueueConfig, GetAllTasks,
          ListEverythingInWarehouse, GetWarehouseEndpointStatistics in ["WarehouseDescribeActions"]
     appliesTo {
       principal: [User, Role],
@@ -1123,14 +1146,25 @@ namespace Lakekeeper {
   // Deprecated; see "How action groups are named and nested".
   action "NamespaceModifyActions" in ["NamespaceActions"];
 
+  action GetNamespaceMetadata, IncludeNamespaceInList, ListTables, ListViews,
+         ListGenericTables, ListNamespacesInNamespace in ["NamespaceDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // True when the principal or one of its roles holds describe, select, write,
+        // create, manage or manage_tags as a direct grant on a live object strictly below
+        // the resource. read_grants, pass_grants, manage_grants, read_policies and
+        // manage_policies do not count.
+        principal_has_privilege_below: Bool,
+      }
+    };
   //   ListEverythingInNamespace — list everything directly in the namespace
   //     without the per-item `IncludeXInList` check: tables, views, generic
   //     tables and child namespaces. Allow it on
   //     `resource in Lakekeeper::Warehouse::"<id>"` to cover every namespace of
   //     a warehouse.
-  action ListEverythingInNamespace, GetNamespaceMetadata, IncludeNamespaceInList,
-         ListTables, ListViews, ListGenericTables,
-         ListNamespacesInNamespace in ["NamespaceDescribeActions"]
+  action ListEverythingInNamespace in ["NamespaceDescribeActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Namespace]
