@@ -3782,7 +3782,7 @@ pub mod tests {
 
     // ── C. Backfill + freeze ─────────────────────────────────────────────────
 
-    #[lakekeeper_storage_postgres::db_test]
+    #[sqlx::test]
     async fn backfill_reproduces_schema_from_jsonb(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;

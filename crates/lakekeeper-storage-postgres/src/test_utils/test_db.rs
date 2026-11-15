@@ -55,6 +55,9 @@ pub fn run_test<Fut: Future<Output = ()>>(test_path: &str, test_fn: impl FnOnce(
             let pool = PgPoolOptions::new()
                 .max_connections(5)
                 .idle_timeout(Some(Duration::from_secs(1)))
+                // Counts against the 20 connections of `master`, so the tests of one process
+                // stay below Postgres' connection limit. Hidden in sqlx; `#[sqlx::test]` uses it.
+                .parent(master.clone())
                 .connect_with(master.connect_options().as_ref().clone().database(&db_name))
                 .await
                 .expect("failed to connect the test pool");
@@ -155,10 +158,12 @@ async fn build_template(conn: &mut PgConnection, master: &PgPool, name: &str) {
     .expect("failed to rename the template database");
 }
 
+/// Fails while another process is connected, so a concurrent run of the same test keeps its
+/// database.
 async fn drop_database(conn: &mut PgConnection, name: &str) {
     if let Err(e) = conn
         .execute(AssertSqlSafe(format!(
-            r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#
+            r#"DROP DATABASE IF EXISTS "{name}""#
         )))
         .await
     {
@@ -166,12 +171,44 @@ async fn drop_database(conn: &mut PgConnection, name: &str) {
     }
 }
 
-/// A new template for every change to the core migrations.
+/// The Rust side of the migrations: a change to a hook changes the template without a new SQL
+/// migration.
+const MIGRATION_SOURCES: [(&str, &str); 6] = [
+    ("mod.rs", include_str!("../migrations/mod.rs")),
+    (
+        "normalize_fs_location.rs",
+        include_str!("../migrations/normalize_fs_location.rs"),
+    ),
+    (
+        "normalize_schema.rs",
+        include_str!("../migrations/normalize_schema.rs"),
+    ),
+    (
+        "patch_migration_hash.rs",
+        include_str!("../migrations/patch_migration_hash.rs"),
+    ),
+    (
+        "split_table_metadata.rs",
+        include_str!("../migrations/split_table_metadata.rs"),
+    ),
+    (
+        "table_snapshot_key.rs",
+        include_str!("../migrations/table_snapshot_key.rs"),
+    ),
+];
+
+/// A new template for every change to the core migrations or to the Rust sources in
+/// `src/migrations`.
+// shortcut: code a hook calls outside `src/migrations` does not change the name; drop the
+// `_lk_test_tpl_*` databases by hand after changing it.
 fn template_name() -> String {
     let mut hasher = Xxh3Default::new();
     for migration in sqlx::migrate!().iter() {
         hasher.update(&migration.version.to_le_bytes());
         hasher.update(&migration.checksum[..]);
+    }
+    for (_, source) in MIGRATION_SOURCES {
+        hasher.update(source.as_bytes());
     }
     format!("_lk_test_tpl_{:016x}", hasher.digest())
 }
@@ -183,4 +220,25 @@ fn test_db_name(test_path: &str) -> String {
         "_lk_test_{:016x}",
         xxhash_rust::xxh3::xxh3_64(test_path.as_bytes())
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATION_SOURCES;
+
+    #[test]
+    fn the_template_name_covers_every_migration_source() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/migrations");
+        let mut files: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(".rs"))
+            .collect();
+        files.sort();
+        let listed: Vec<&str> = MIGRATION_SOURCES.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            files, listed,
+            "MIGRATION_SOURCES must list every Rust file in src/migrations"
+        );
+    }
 }

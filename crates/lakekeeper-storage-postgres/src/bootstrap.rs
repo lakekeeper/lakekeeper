@@ -215,7 +215,7 @@ mod test {
         assert!(success, "bootstrap should succeed after reopen");
     }
 
-    #[lakekeeper_storage_postgres::db_test]
+    #[sqlx::test]
     async fn test_get_or_set_server_id(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 

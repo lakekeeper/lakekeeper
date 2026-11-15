@@ -158,7 +158,7 @@ mod tests {
         lock.rollback().await.unwrap();
     }
 
-    #[lakekeeper_storage_postgres::db_test]
+    #[sqlx::test]
     async fn the_lock_of_a_log_in_another_schema_does_not_block_a_run(pool: PgPool) {
         record(&pool, "secret", "old").await;
         age(&pool, &["old"], 120).await;
