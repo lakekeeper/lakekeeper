@@ -7,7 +7,7 @@ use http::StatusCode;
 use iceberg::NamespaceIdent;
 use lakekeeper::{
     api::{
-        ApiContext,
+        ApiContext, RequestMetadata,
         data::v1::generic_tables::{
             CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
             ListGenericTablesQuery, LoadGenericTableResponse, RenameGenericTableRequest,
@@ -29,7 +29,7 @@ use lakekeeper::{
 };
 use lakekeeper_integration_tests::{
     REFUSED_NEW_TABULAR_NAMES, create_ns, create_table, drop_table, get_api_context,
-    memory_io_profile, random_request_metadata, setup_simple,
+    impl_pagination_tests, memory_io_profile, random_request_metadata, setup_simple,
 };
 use lakekeeper_storage_postgres::{
     PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
@@ -846,10 +846,9 @@ async fn test_list_generic_tables_pagination(pool: PgPool) {
         .unwrap();
     }
 
-    let mut collected: Vec<String> = Vec::new();
+    let mut pages = Vec::new();
     let mut page_token: Option<String> = None;
-    let mut pages: u32 = 0;
-    loop {
+    for _ in 0..3 {
         let res = CatalogServer::list_generic_tables(
             params.clone(),
             ListGenericTablesQuery {
@@ -861,35 +860,102 @@ async fn test_list_generic_tables_pagination(pool: PgPool) {
         )
         .await
         .unwrap();
-        pages += 1;
-        assert!(
-            pages <= 10,
-            "pagination did not terminate (got {pages} pages)"
+        pages.push(
+            res.identifiers
+                .into_iter()
+                .map(|ident| ident.name)
+                .collect::<Vec<_>>(),
         );
+        page_token = res.next_page_token;
+    }
 
-        for ident in &res.identifiers {
-            collected.push(ident.name.clone());
-        }
-        match res.next_page_token {
-            Some(token) if !token.is_empty() && !res.identifiers.is_empty() => {
-                page_token = Some(token);
+    let expected: Vec<Vec<String>> = [0..3, 3..6, 6..total]
+        .into_iter()
+        .map(|range| range.map(|i| format!("page-gt-{i}")).collect())
+        .collect();
+    assert_eq!(pages, expected);
+    assert_eq!(page_token, None);
+}
+
+/// Generic tables named `0` to `n - 1`; those with an index in `hidden_ranges` are hidden.
+async fn pagination_test_setup(
+    pool: PgPool,
+    n_generic_tables: usize,
+    hidden_ranges: &[(usize, usize)],
+) -> (HidingCtx, NamespaceParameters) {
+    let authz = HidingAuthorizer::new();
+    // Prevent hidden generic tables from becoming visible through `can_list_everything`.
+    authz.block_can_list_everything();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "ns1".to_string()).await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(prefix.into()),
+        namespace: ns.namespace,
+    };
+    for i in 0..n_generic_tables {
+        CatalogServer::create_generic_table(
+            ns_params.clone(),
+            create_request(&i.to_string()),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // The create response carries no id, so read the ids from a listing before hiding.
+    let mut page_token = None;
+    loop {
+        let page = CatalogServer::list_generic_tables(
+            ns_params.clone(),
+            ListGenericTablesQuery {
+                page_size: Some(100),
+                page_token,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        for ident in &page.identifiers {
+            let index: usize = ident.name.parse().unwrap();
+            if hidden_ranges
+                .iter()
+                .any(|(start, end)| (*start..*end).contains(&index))
+            {
+                authz.hide(&format!(
+                    "generic_table:{}/{}",
+                    warehouse.warehouse_id,
+                    ident.id.unwrap()
+                ));
             }
-            _ => break,
+        }
+        page_token = page.next_page_token;
+        if page_token.is_none() {
+            break;
         }
     }
 
-    collected.sort();
-    let mut expected: Vec<String> = (0..total).map(|i| format!("page-gt-{i}")).collect();
-    expected.sort();
-    assert_eq!(
-        collected, expected,
-        "all rows must be returned exactly once"
-    );
-    assert!(
-        pages >= 2,
-        "page_size=3 over {total} rows should span >=2 pages"
-    );
+    (ctx, ns_params)
 }
+
+impl_pagination_tests!(
+    generic_table,
+    pagination_test_setup,
+    CatalogServer,
+    ListGenericTablesQuery,
+    identifiers,
+    |ident| { ident.name }
+);
 
 #[sqlx::test]
 async fn test_generic_tables_refuse_invalid_names(pool: PgPool) {

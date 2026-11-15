@@ -1633,8 +1633,10 @@ impl CatalogStore for super::PostgresBackend {
         page_size: Option<i64>,
         page_token: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError>
-    {
+    ) -> std::result::Result<
+        PaginatedMapping<GenericTableId, GenericTableListEntry>,
+        ListGenericTablesError,
+    > {
         super::tabular::generic_table::list_generic_tables(
             warehouse_id,
             namespace_id,

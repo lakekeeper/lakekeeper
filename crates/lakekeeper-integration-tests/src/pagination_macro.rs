@@ -9,6 +9,7 @@
 //! - `test_pagination_first_page_is_hidden`
 //! - `test_pagination_middle_page_is_hidden`
 //! - `test_pagination_last_page_is_hidden`
+//! - `test_pagination_more_hidden_than_one_refill`
 //!
 //! The macro is exported from this crate so per-entity test files
 //! (`tests/pagination_tables.rs`, …) can invoke it independently.
@@ -84,7 +85,7 @@ macro_rules! impl_pagination_tests {
                 )
                 .await
                 .unwrap();
-                let mut idents = std::sync::Arc::unwrap_or_clone(first_page.$entity_ident);
+                let mut idents = first_page.$entity_ident.to_vec();
 
                 assert_eq!(idents.len(), 105);
 
@@ -104,7 +105,7 @@ macro_rules! impl_pagination_tests {
                 )
                 .await
                 .unwrap();
-                let mut idents = std::sync::Arc::unwrap_or_clone(next_page.$entity_ident);
+                let mut idents = next_page.$entity_ident.to_vec();
 
                 assert_eq!(idents.len(), 35);
                 for i in (160..195).rev() {
@@ -128,7 +129,7 @@ macro_rules! impl_pagination_tests {
                 )
                 .await
                 .unwrap();
-                let mut idents = std::sync::Arc::unwrap_or_clone(first_page.$entity_ident);
+                let mut idents = first_page.$entity_ident.to_vec();
 
                 assert_eq!(idents.len(), 10);
                 assert!(first_page.next_page_token.is_some());
@@ -152,7 +153,7 @@ macro_rules! impl_pagination_tests {
                 )
                 .await
                 .unwrap();
-                let mut idents = std::sync::Arc::unwrap_or_clone(first_page.$entity_ident);
+                let mut idents = first_page.$entity_ident.to_vec();
 
                 assert_eq!(idents.len(), 5);
 
@@ -172,7 +173,7 @@ macro_rules! impl_pagination_tests {
                 )
                 .await
                 .unwrap();
-                let mut idents = std::sync::Arc::unwrap_or_clone(next_page.$entity_ident);
+                let mut idents = next_page.$entity_ident.to_vec();
 
                 assert_eq!(idents.len(), 5);
                 for i in (15..20).rev() {
@@ -196,7 +197,7 @@ macro_rules! impl_pagination_tests {
                 )
                 .await
                 .unwrap();
-                let mut idents = std::sync::Arc::unwrap_or_clone(first_page.$entity_ident);
+                let mut idents = first_page.$entity_ident.to_vec();
 
                 assert_eq!(idents.len(), 10);
 
@@ -218,6 +219,46 @@ macro_rules! impl_pagination_tests {
                 .unwrap();
 
                 assert_eq!(next_page.$entity_ident.len(), 0);
+                assert_eq!(next_page.next_page_token, None);
+            }
+
+            /// The first read hides more entities than one refill reads, so the page is
+            /// filled by several refills.
+            #[sqlx::test]
+            async fn test_pagination_more_hidden_than_one_refill(pool: PgPool) {
+                let (ctx, ns_params) = $setup_fn(pool, 304, &[(0, 101)]).await;
+
+                let first_page = $server_typ::[<list_$typ s>](
+                    ns_params.clone(),
+                    serde_json::from_value::<$query_typ>(serde_json::json!({
+                        "pageSize": 202,
+                        "returnUuids": true,
+                    })).unwrap(),
+                    ctx.clone(),
+                    RequestMetadata::new_unauthenticated(),
+                )
+                .await
+                .unwrap();
+                let names: Vec<String> =
+                    first_page.$entity_ident.to_vec().into_iter().map($map_block).collect();
+                let expected: Vec<String> = (101..303).map(|i| format!("{i}")).collect();
+                assert_eq!(names, expected);
+
+                let next_page = $server_typ::[<list_$typ s>](
+                    ns_params.clone(),
+                    serde_json::from_value::<$query_typ>(serde_json::json!({
+                        "pageToken": first_page.next_page_token.unwrap(),
+                        "pageSize": 202,
+                        "returnUuids": true,
+                    })).unwrap(),
+                    ctx.clone(),
+                    RequestMetadata::new_unauthenticated(),
+                )
+                .await
+                .unwrap();
+                let names: Vec<String> =
+                    next_page.$entity_ident.to_vec().into_iter().map($map_block).collect();
+                assert_eq!(names, vec!["303".to_string()]);
                 assert_eq!(next_page.next_page_token, None);
             }
         }
