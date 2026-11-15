@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.15.1](https://github.com/lakekeeper/lakekeeper/compare/v0.15.0...v0.15.1) (2026-11-15)
+
+
+### Features
+
+* **ui:** console v0.30.0 ([#2305](https://github.com/lakekeeper/lakekeeper/issues/2305)) ([e74b3c2](https://github.com/lakekeeper/lakekeeper/commit/e74b3c289a42f1e4ecc1392588e4e6df09f2826e))
+* **ui:** console v0.31.0 ([#2312](https://github.com/lakekeeper/lakekeeper/issues/2312)) ([0f02fa9](https://github.com/lakekeeper/lakekeeper/commit/0f02fa938d0556318680b0e0ee64ecb61ae425ec))
+* **warehouse:** owners of a managed warehouse can change its soft-deletion settings and format-version policy ([#2279](https://github.com/lakekeeper/lakekeeper/issues/2279)) ([7562a61](https://github.com/lakekeeper/lakekeeper/commit/7562a61eb7399c3592434b416a56c41a905d157d))
+
+
+### Bug Fixes
+
+* **catalog:** a dropped table keeps its location until its purge has finished ([#2270](https://github.com/lakekeeper/lakekeeper/issues/2270)) ([f66f6a5](https://github.com/lakekeeper/lakekeeper/commit/f66f6a500e762a810088c557bb7242393c5eae85))
+* **catalog:** a filtered listing keeps reading until its page is full, also for generic tables ([#2304](https://github.com/lakekeeper/lakekeeper/issues/2304)) ([9be9e50](https://github.com/lakekeeper/lakekeeper/commit/9be9e5002d40a5019be5209ccca8c8bbdf89de16))
+* **catalog:** concurrent namespace property updates keep each other's changes ([#2283](https://github.com/lakekeeper/lakekeeper/issues/2283)) ([6f1311e](https://github.com/lakekeeper/lakekeeper/commit/6f1311e186cdf0bc5877041d0bebbaabb052d907))
+* **catalog:** the next-page token of a filtered listing belongs to the last returned item ([#2278](https://github.com/lakekeeper/lakekeeper/issues/2278)) ([199fd12](https://github.com/lakekeeper/lakekeeper/commit/199fd12221d82582e71e8819acab3a5e0d33c1ae))
+* **deps:** pin the iceberg fork that writes manifests with the deflate codec ([#2263](https://github.com/lakekeeper/lakekeeper/issues/2263)) ([e8c835c](https://github.com/lakekeeper/lakekeeper/commit/e8c835ced7d0b8d7d7725a3a2b70a15ad617faac))
+* **deps:** update quinn-udp to 0.5.16 (RUSTSEC-2026-0538) ([#2299](https://github.com/lakekeeper/lakekeeper/issues/2299)) ([bf8388f](https://github.com/lakekeeper/lakekeeper/commit/bf8388f548fe1326f0a9ebbd79dfb460e27facc8))
+* **gcs:** writes to buckets with hierarchical namespace no longer fail on new folders ([#2289](https://github.com/lakekeeper/lakekeeper/issues/2289)) ([57735a7](https://github.com/lakekeeper/lakekeeper/commit/57735a78ea1125eb67d7312b8dacbc5121347a69))
+* **tasks:** headless workers leave schedules, endpoint statistics and change-log pruning to the API processes ([#2281](https://github.com/lakekeeper/lakekeeper/issues/2281)) ([f982e19](https://github.com/lakekeeper/lakekeeper/commit/f982e195683b6da7c8f20fa6088da66e544c1aea))
+* **tasks:** return 404 when reading the config of a queue the server does not have ([#2280](https://github.com/lakekeeper/lakekeeper/issues/2280)) ([f95e1d6](https://github.com/lakekeeper/lakekeeper/commit/f95e1d67245fa8e3ed55403b4b37dff4d9db7a86))
+* **tests:** fall back to a Maven Central mirror for Spark jars, poll for purged locations, and ignore a lockfile-only advisory ([#2285](https://github.com/lakekeeper/lakekeeper/issues/2285)) ([e5ba7f7](https://github.com/lakekeeper/lakekeeper/commit/e5ba7f7a3788e015a72fdf47f82d52224645ca12))
+
 ## [0.15.0](https://github.com/lakekeeper/lakekeeper/compare/v0.14.0...v0.15.0) (2026-11-06)
 
 
