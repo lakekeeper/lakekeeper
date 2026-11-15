@@ -282,6 +282,8 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+          # A pull request checks out its merge commit; the first parent is the base branch.
+          fetch-depth: 2
 
       - name: Start Minio Docker Container
         run: |
@@ -337,14 +339,22 @@ jobs:
 
       - name: Determine nextest profile
         run: |
-          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
-            # PR is made off this repo, so workflows have access to secrets and the entire suite
-            # can be run.
-            echo "NEXTEST_PROFILE=ci" >> $GITHUB_ENV
+          # The live cloud storage tests read repository secrets, which pull requests from forks
+          # don't get. Pushes run them in one job; pull requests run them when they change storage
+          # code, its tests or the test setup.
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            cloud=${{ matrix.postgres-version == '15' }}
+          elif [[ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]]; then
+            cloud=false
+          elif git diff --quiet HEAD^1 HEAD -- \
+              Cargo.lock .config/nextest.toml .github/workflows/unittests.yml \
+              crates/io crates/lakekeeper/src/service/storage crates/lakekeeper/src/server/io.rs \
+              crates/lakekeeper-integration-tests/tests/integration/namespace_storage_cleanup.rs; then
+            cloud=false
           else
-            # PR is made off a fork, so secrets are not available in ci workflows.
-            echo "NEXTEST_PROFILE=ci_no_secrets" >> $GITHUB_ENV
+            cloud=true
           fi
+          echo "NEXTEST_PROFILE=$([[ $cloud == true ]] && echo ci || echo ci_no_secrets)" >> "$GITHUB_ENV"
 
       - name: Migrate database
         run: |
