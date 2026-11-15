@@ -213,7 +213,7 @@ mod test {
         task_id
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cleanup_task_logs_older_than_removes_project_task_logs_older_than_retention_time(
         pool: PgPool,
     ) {
@@ -251,7 +251,7 @@ mod test {
         assert_eq!(new_task_id, remaining_task_logs[0]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cleanup_task_logs_older_than_removes_warehouse_task_logs_older_than_retention_time(
         pool: PgPool,
     ) {
@@ -290,7 +290,7 @@ mod test {
         assert_eq!(new_task_id, remaining_task_logs[0]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cleanup_task_logs_older_than_removes_ignores_task_logs_of_other_projects(
         pool: PgPool,
     ) {

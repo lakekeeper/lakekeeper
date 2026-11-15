@@ -110,7 +110,7 @@ async fn assert_view_doesnt_exist(
 //
 // - PostgresCatalog: required for specifying id of table to be created
 // - CatalogServer: required for taking TabularDeleteProfile into account
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_reuse_view_ids_hard_delete(pool: PgPool) {
     let delete_profile = TabularDeleteProfile::Hard {};
     let (ctx, mut wh_ns_data, _base_loc) =
@@ -228,7 +228,7 @@ async fn test_reuse_view_ids_hard_delete(pool: PgPool) {
     .await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_reuse_view_ids_soft_delete(pool: PgPool) {
     let delete_profile = TabularDeleteProfile::Soft {
         expiration_seconds: chrono::Duration::seconds(10),
@@ -359,7 +359,7 @@ mod s3_compat_integration_tests {
         remote_signing: false,
     };
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_view_responses_carry_no_storage_access(pool: PgPool) {
         let (profile, cred) = s3_compatible_profile();
         let (ctx, warehouse) = setup_simple(

@@ -4259,7 +4259,7 @@ mod tests {
         /// The second call is byte-identical to the first, so the authorization
         /// check passes again while OpenFGA rejects the duplicate tuple - a write
         /// failure reachable only once authorization has already been decided.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn test_endpoint_audits_authz_before_failing_write(pool: sqlx::PgPool) {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let authorizer = authorizer_for_empty_store().await.1;

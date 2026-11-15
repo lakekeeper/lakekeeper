@@ -91,7 +91,7 @@ impl_pagination_tests!(
     |ns| ns.inner()[0].clone()
 );
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn cannot_drop_protected_namespace(pool: sqlx::PgPool) {
     let (ctx, warehouse) = setup(
         pool.clone(),
@@ -190,7 +190,7 @@ async fn cannot_drop_protected_namespace(pool: sqlx::PgPool) {
     .unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_namespaces(pool: PgPool) {
     let authz = HidingAuthorizer::new();
 
@@ -274,7 +274,7 @@ async fn test_list_namespaces(pool: PgPool) {
     assert_eq!(all.namespaces.len(), 10);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_ns_pagination(pool: sqlx::PgPool) {
     let authz = HidingAuthorizer::new();
     // Prevent hidden namespaces from becoming visible through `can_list_everything`.

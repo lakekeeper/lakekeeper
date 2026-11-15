@@ -304,7 +304,7 @@ fn assert_commit_state_unknown(error: &IcebergErrorResponse) {
     assert_eq!(error.error.r#type, "CommitStateUnknownException");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn update_table_keeps_metadata_file_when_commit_reply_is_lost(pool: PgPool) {
     let (ctx, ns_params, reply_rx) = setup(&pool, Fault::DropCommitReply).await;
     let created = create_table_with_properties(&ctx, &ns_params, false)
@@ -331,7 +331,7 @@ async fn update_table_keeps_metadata_file_when_commit_reply_is_lost(pool: PgPool
 }
 
 /// Positive control for the test above: in the same window, a failed commit's delete is seen.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn update_table_deletes_metadata_file_when_commit_fails(pool: PgPool) {
     let (ctx, ns_params, reply_rx) = setup(&pool, Fault::CloseAtMarker).await;
     let created = create_table_with_properties(&ctx, &ns_params, false)
@@ -352,7 +352,7 @@ async fn update_table_deletes_metadata_file_when_commit_fails(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn create_table_keeps_metadata_file_when_commit_reply_is_lost(pool: PgPool) {
     let (ctx, ns_params, reply_rx) = setup(&pool, Fault::DropCommitReply).await;
 
@@ -368,7 +368,7 @@ async fn create_table_keeps_metadata_file_when_commit_reply_is_lost(pool: PgPool
     assert_eq!(metadata.properties().get(MARKER_KEY).unwrap(), MARKER_VALUE);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn commit_view_keeps_metadata_file_when_commit_reply_is_lost(pool: PgPool) {
     let (ctx, ns_params, reply_rx) = setup(&pool, Fault::DropCommitReply).await;
     let prefix = ns_params.prefix.clone().unwrap();

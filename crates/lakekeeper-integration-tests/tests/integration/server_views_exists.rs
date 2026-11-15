@@ -12,7 +12,7 @@ use lakekeeper_integration_tests::{create_view_helper, create_view_request, view
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_view_exists(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 

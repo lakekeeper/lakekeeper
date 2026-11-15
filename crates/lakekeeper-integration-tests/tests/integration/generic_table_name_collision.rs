@@ -52,7 +52,7 @@ async fn make_ns(pool: PgPool) -> (TestApiContext, String, String) {
     (ctx, prefix, ns_name)
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_iceberg_table_blocks_generic_table_with_same_name(pool: PgPool) {
     let (ctx, prefix, ns_name) = make_ns(pool).await;
     let name = "collide";
@@ -77,7 +77,7 @@ async fn test_iceberg_table_blocks_generic_table_with_same_name(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_blocks_iceberg_table_with_same_name(pool: PgPool) {
     let (ctx, prefix, ns_name) = make_ns(pool).await;
     let name = "collide";
@@ -101,7 +101,7 @@ async fn test_generic_table_blocks_iceberg_table_with_same_name(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_view_blocks_generic_table_with_same_name(pool: PgPool) {
     let (ctx, prefix, ns_name) = make_ns(pool).await;
     let name = "collide";
@@ -120,7 +120,7 @@ async fn test_view_blocks_generic_table_with_same_name(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_blocks_view_with_same_name(pool: PgPool) {
     let (ctx, prefix, ns_name) = make_ns(pool).await;
     let name = "collide";
@@ -147,7 +147,7 @@ async fn test_generic_table_blocks_view_with_same_name(pool: PgPool) {
 /// After hard-dropping the prior tabular, the name should be reusable by a
 /// different kind. Catches over-eager unique constraints that linger past
 /// deletion.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_name_reusable_after_hard_drop(pool: PgPool) {
     let (ctx, prefix, ns_name) = make_ns(pool).await;
     let name = "reuse";

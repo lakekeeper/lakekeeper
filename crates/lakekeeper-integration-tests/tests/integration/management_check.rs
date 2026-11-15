@@ -46,7 +46,7 @@ use lakekeeper_integration_tests::{
 };
 use lakekeeper_storage_postgres::{CatalogState, PostgresBackend, SecretsState};
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_basic_permissions(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -308,7 +308,7 @@ async fn test_check_internal_basic_permissions(pool: sqlx::PgPool) {
     assert_eq!(response.results[2].id, Some("batch-3".to_string()));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_hidden_warehouse(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -370,7 +370,7 @@ async fn test_check_internal_hidden_warehouse(pool: sqlx::PgPool) {
     assert!(!response.results[0].allowed); // Should now be denied
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_hidden_namespace(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -519,7 +519,7 @@ async fn test_check_internal_hidden_namespace(pool: sqlx::PgPool) {
     assert!(!response.results[0].allowed); // Should now be denied
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_hidden_table(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -664,7 +664,7 @@ async fn test_check_internal_hidden_table(pool: sqlx::PgPool) {
     assert!(!response.results[0].allowed); // Should now be denied
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_mixed_visibility(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -767,7 +767,7 @@ async fn test_check_internal_mixed_visibility(pool: sqlx::PgPool) {
     assert!(!response.results[1].allowed); // Hidden namespace should be denied
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_error_on_not_found(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -828,7 +828,7 @@ async fn test_check_internal_error_on_not_found(pool: sqlx::PgPool) {
     assert!(result.is_err()); // Should return an error
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_no_id_defaults_to_index(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -881,7 +881,7 @@ async fn test_check_internal_no_id_defaults_to_index(pool: sqlx::PgPool) {
     assert!(response.results[1].allowed);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_max_checks_limit(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -983,7 +983,7 @@ fn test_table_action_update_property_serde() {
     assert_eq!(request, deserialized);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_role_based_identity(pool: sqlx::PgPool) {
     use lakekeeper::api::management::v1::{
         ApiServer,
@@ -1139,7 +1139,7 @@ async fn test_check_internal_role_based_identity(pool: sqlx::PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_generic_table_operation(pool: sqlx::PgPool) {
     use lakekeeper::{
         api::data::v1::generic_tables::{GenericTableService as _, ListGenericTablesQuery},
@@ -1528,32 +1528,32 @@ async fn assert_by_name_check_ignores_dropped(
     assert_eq!(allowed, vec![false]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_decides_on_live_table(pool: sqlx::PgPool) {
     assert_by_name_check_decides_on_live(pool, TabularKind::Table).await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_decides_on_live_view(pool: sqlx::PgPool) {
     assert_by_name_check_decides_on_live(pool, TabularKind::View).await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_ignores_dropped_table(pool: sqlx::PgPool) {
     assert_by_name_check_ignores_dropped(pool, TabularKind::Table, "NoSuchTableException").await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_ignores_dropped_view(pool: sqlx::PgPool) {
     assert_by_name_check_ignores_dropped(pool, TabularKind::View, "NoSuchViewException").await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_decides_on_live_generic_table(pool: sqlx::PgPool) {
     assert_by_name_check_decides_on_live(pool, TabularKind::GenericTable).await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_ignores_dropped_generic_table(pool: sqlx::PgPool) {
     assert_by_name_check_ignores_dropped(
         pool,
@@ -1596,7 +1596,7 @@ async fn assert_by_name_check_reports_free_names(
     assert_eq!((err.code, err.r#type.as_str()), (404, not_found_type));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_reports_free_table_names(pool: sqlx::PgPool) {
     assert_by_name_check_reports_free_names(
         pool,
@@ -1607,7 +1607,7 @@ async fn test_check_internal_by_name_reports_free_table_names(pool: sqlx::PgPool
     .await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_reports_free_view_names(pool: sqlx::PgPool) {
     assert_by_name_check_reports_free_names(
         pool,
@@ -1618,7 +1618,7 @@ async fn test_check_internal_by_name_reports_free_view_names(pool: sqlx::PgPool)
     .await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_reports_free_generic_table_names(pool: sqlx::PgPool) {
     assert_by_name_check_reports_free_names(
         pool,
@@ -1630,7 +1630,7 @@ async fn test_check_internal_by_name_reports_free_generic_table_names(pool: sqlx
 }
 
 /// A staged table that was not committed yet is addressed by its id only.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_by_name_ignores_staged_table(pool: sqlx::PgPool) {
     let setup = DroppedTabulars::new(pool, TabularKind::Table, "staged_name").await;
     let mut request = create_table_request(Some(setup.name.to_string()), None);
@@ -1803,7 +1803,7 @@ fn set_owner() -> TableUpdate {
 
 /// A commit check on a staged table asks the authorizer what the server asks for a commit
 /// request with the same content. This authorizer allows a commit only if it sets a property.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: sqlx::PgPool) {
     let setup = StagedAndLive::new(pool).await;
     setup
@@ -1823,7 +1823,7 @@ async fn test_check_internal_commit_on_staged_table_decides_as_the_server(pool: 
 /// With an authorizer that allows data commits only, as a policy on the data-commit context
 /// can, batch-check and the server agree: a data commit to a live table is allowed, and the
 /// same commit to a staged table is refused, because it finishes the table's creation.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_data_commit_decides_as_the_server(pool: sqlx::PgPool) {
     let setup = StagedAndLive::new(pool).await;
     setup.authz.block_structural_commits();
@@ -1843,7 +1843,7 @@ async fn test_check_internal_data_commit_decides_as_the_server(pool: sqlx::PgPoo
 /// `view-in-definer-view` allows a view only if it has an engine owner property and the
 /// identity may select it. The authorizer is asked about `Select`, outside delegated
 /// execution, and never about a view without an owner.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_view_in_definer_view_needs_an_owner(pool: sqlx::PgPool) {
     let authz = HidingAuthorizer::new();
     let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(
@@ -1950,7 +1950,7 @@ async fn test_check_internal_view_in_definer_view_needs_an_owner(pool: sqlx::PgP
 
 /// `view-replace` asks `commit`, and `change_security_mode` too for a view that runs as a user
 /// other than the identity. A free name is reported as not found.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_internal_view_replace_of_another_users_definer_view(pool: sqlx::PgPool) {
     let authz = HidingAuthorizer::new();
     let (api_context, test_warehouse) = lakekeeper_integration_tests::setup_simple(

@@ -1463,7 +1463,7 @@ mod pg_enum_db_test {
     // PG-side guard (DB test): the `iceberg_type_kind` enum must contain every kind Rust can
     // emit. It is a SUPERSET — it also pre-includes released v3 types (geometry/geography/unknown)
     // not yet in iceberg-rust, so adopting those is a pure-Rust change with no enum migration.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn pg_enum_covers_all_type_kinds(pool: sqlx::PgPool) {
         let labels: Vec<String> = sqlx::query_scalar(
             "SELECT enumlabel FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid \

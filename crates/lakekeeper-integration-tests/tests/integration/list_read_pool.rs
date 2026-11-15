@@ -91,7 +91,7 @@ fn list_tables_query() -> ListTablesQuery {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_namespaces_with_more_requests_than_read_connections(pool: PgPool) {
     let (ctx, authz, warehouse) =
         setup_with_small_read_pool(pool, TabularDeleteProfile::Hard {}).await;
@@ -133,7 +133,7 @@ async fn list_namespaces_with_more_requests_than_read_connections(pool: PgPool) 
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_tables_with_more_requests_than_read_connections(pool: PgPool) {
     let (ctx, authz, warehouse) =
         setup_with_small_read_pool(pool, TabularDeleteProfile::Hard {}).await;
@@ -172,7 +172,7 @@ async fn list_tables_with_more_requests_than_read_connections(pool: PgPool) {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_views_with_more_requests_than_read_connections(pool: PgPool) {
     let (ctx, authz, warehouse) =
         setup_with_small_read_pool(pool, TabularDeleteProfile::Hard {}).await;
@@ -217,7 +217,7 @@ async fn list_views_with_more_requests_than_read_connections(pool: PgPool) {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_soft_deleted_tabulars_with_more_requests_than_read_connections(pool: PgPool) {
     let (ctx, authz, warehouse) = setup_with_small_read_pool(
         pool,

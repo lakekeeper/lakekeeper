@@ -990,7 +990,7 @@ mod openfga_integration_tests {
 
     // ---- Additive (rebuild) regressions ----------------------------------
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rebuild_is_idempotent(pool: sqlx::PgPool) {
         let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
         let (_svc_client, authorizer) = authorizer_for_empty_store().await;
@@ -1028,7 +1028,7 @@ mod openfga_integration_tests {
         assert_eq!(state_after_first, state_after_second);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rebuild_preserves_existing_grants_and_ownership(pool: sqlx::PgPool) {
         let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
         let (_svc_client, authorizer) = authorizer_for_empty_store().await;
@@ -1071,7 +1071,7 @@ mod openfga_integration_tests {
         assert!(state_after.contains(&ident(&grant_tuple)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rebuild_repairs_missing_root_namespace_edge(pool: sqlx::PgPool) {
         let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
         let (_svc_client, authorizer) = authorizer_for_empty_store().await;
@@ -1115,7 +1115,7 @@ mod openfga_integration_tests {
         assert!(state_after_rebuild.contains(&ident(&parent_edge)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rebuild_into_fresh_store_emits_only_hierarchy(pool: sqlx::PgPool) {
         let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
         let (_client, source_authorizer) = authorizer_for_empty_store().await;
@@ -1179,7 +1179,7 @@ mod openfga_integration_tests {
 
     // ---- Reconcile-with-deletion: drift cleanup --------------------------
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_reconcile_deletes_drifted_namespace_parent_edge(pool: sqlx::PgPool) {
         let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
         let (_svc_client, authorizer) = authorizer_for_empty_store().await;
@@ -1251,7 +1251,7 @@ mod openfga_integration_tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_reconcile_preserves_unmanaged_and_orphan_unknown(pool: sqlx::PgPool) {
         let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
         let (_svc_client, authorizer) = authorizer_for_empty_store().await;
@@ -1314,7 +1314,7 @@ mod openfga_integration_tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_reconcile_dry_run_reports_without_mutating(pool: sqlx::PgPool) {
         let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
         let (_svc_client, authorizer) = authorizer_for_empty_store().await;
@@ -1370,7 +1370,7 @@ mod openfga_integration_tests {
 
     // ---- Generic-table regressions --------------------------------------
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rebuild_restores_missing_generic_table_parent_edge(pool: sqlx::PgPool) {
         use std::collections::HashMap;
 
@@ -1496,7 +1496,7 @@ mod openfga_integration_tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_reconcile_deletes_drifted_generic_table_parent_edge(pool: sqlx::PgPool) {
         let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
         let (_svc_client, authorizer) = authorizer_for_empty_store().await;

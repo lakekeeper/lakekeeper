@@ -4,7 +4,7 @@ use lakekeeper_integration_tests::{
 };
 use sqlx::PgPool;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
 

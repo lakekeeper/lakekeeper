@@ -31,7 +31,7 @@ macro_rules! impl_pagination_tests {
     ($typ:ident, $setup_fn:ident, $server_typ:ident, $query_typ:ident, $entity_ident:ident, $map_block:expr) => {
         use pastey::paste;
         paste! {
-            #[sqlx::test]
+            #[lakekeeper_storage_postgres::db_test]
             async fn [<test_$typ _pagination_with_no_items>](pool: sqlx::PgPool) {
                 let (ctx, ns_params) = $setup_fn(pool, 0, &[]).await;
                 let all = $server_typ::[<list_ $typ s>](
@@ -52,7 +52,7 @@ macro_rules! impl_pagination_tests {
             }
         }
         paste! {
-            #[sqlx::test]
+            #[lakekeeper_storage_postgres::db_test]
             async fn [<test_$typ _pagination_with_all_items_hidden>](pool: PgPool) {
                 let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 20)]).await;
                 let all = $server_typ::[<list_$typ s>](
@@ -70,7 +70,7 @@ macro_rules! impl_pagination_tests {
                 assert!(all.next_page_token.is_none());
             }
 
-            #[sqlx::test]
+            #[lakekeeper_storage_postgres::db_test]
             async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
                 let (ctx, ns_params) = $setup_fn(pool, 200, &[(95, 150), (195, 200)]).await;
 
@@ -114,7 +114,7 @@ macro_rules! impl_pagination_tests {
                 assert_eq!(next_page.next_page_token, None);
             }
 
-            #[sqlx::test]
+            #[lakekeeper_storage_postgres::db_test]
             async fn test_pagination_first_page_is_hidden(pool: PgPool) {
                 let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 10)]).await;
 
@@ -138,7 +138,7 @@ macro_rules! impl_pagination_tests {
                 }
             }
 
-            #[sqlx::test]
+            #[lakekeeper_storage_postgres::db_test]
             async fn test_pagination_middle_page_is_hidden(pool: PgPool) {
                 let (ctx, ns_params) = $setup_fn(pool, 20, &[(5, 15)]).await;
 
@@ -182,7 +182,7 @@ macro_rules! impl_pagination_tests {
                 assert_eq!(next_page.next_page_token, None);
             }
 
-            #[sqlx::test]
+            #[lakekeeper_storage_postgres::db_test]
             async fn test_pagination_last_page_is_hidden(pool: PgPool) {
                 let (ctx, ns_params) = $setup_fn(pool, 20, &[(10, 20)]).await;
 
@@ -224,7 +224,7 @@ macro_rules! impl_pagination_tests {
 
             /// The first read hides more entities than one refill reads, so the page is
             /// filled by several refills.
-            #[sqlx::test]
+            #[lakekeeper_storage_postgres::db_test]
             async fn test_pagination_more_hidden_than_one_refill(pool: PgPool) {
                 let (ctx, ns_params) = $setup_fn(pool, 304, &[(0, 101)]).await;
 

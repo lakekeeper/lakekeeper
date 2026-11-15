@@ -280,7 +280,7 @@ fn assert_view_changed_during_commit(err: &IcebergErrorResponse) {
     assert_eq!(err.error.r#type, "CommitFailedException");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn setting_the_owner_needs_change_security_mode(pool: PgPool) {
     let setup = Setup::new(pool).await;
     setup.create(None).await;
@@ -300,7 +300,7 @@ async fn setting_the_owner_needs_change_security_mode(pool: PgPool) {
     assert_eq!(setup.owner().await, None);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn setting_the_owner_asks_the_principal_and_the_owner(pool: PgPool) {
     let setup = Setup::new(pool).await;
     let view_id = setup.create(None).await;
@@ -346,7 +346,7 @@ async fn setting_the_owner_asks_the_principal_and_the_owner(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn setting_an_owner_without_the_permission_is_refused(pool: PgPool) {
     let setup = Setup::new(pool).await;
     let view_id = setup.create(None).await;
@@ -390,7 +390,7 @@ async fn setting_an_owner_without_the_permission_is_refused(pool: PgPool) {
     assert_eq!(setup.owner().await, Some("bob".to_string()));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn removing_the_owner_needs_change_security_mode(pool: PgPool) {
     let setup = Setup::new(pool).await;
     setup.create(Some("alice")).await;
@@ -411,7 +411,7 @@ async fn removing_the_owner_needs_change_security_mode(pool: PgPool) {
     assert_eq!(setup.owner().await, Some("alice".to_string()));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn removing_the_owner_asks_only_the_principal(pool: PgPool) {
     let setup = Setup::new(pool).await;
     let view_id = setup.create(Some("alice")).await;
@@ -435,7 +435,7 @@ async fn removing_the_owner_asks_only_the_principal(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn commits_that_keep_the_mode_need_no_switch_permission(pool: PgPool) {
     let setup = Setup::new(pool).await;
     setup.create(Some("alice")).await;
@@ -470,7 +470,7 @@ async fn commits_that_keep_the_mode_need_no_switch_permission(pool: PgPool) {
 
 /// The stored view becomes a DEFINER view after Lakekeeper read it for the authorization of an
 /// INVOKER replacement with new SQL, which would remove the new owner without asking.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_view_that_becomes_definer_during_the_decision_is_not_switched_back(pool: PgPool) {
     let setup = Setup::new(pool).await;
     setup.create(None).await;
@@ -505,7 +505,7 @@ async fn a_view_that_becomes_definer_during_the_decision_is_not_switched_back(po
 
 /// The stored view gets another owner after Lakekeeper decided that the commit makes it run as
 /// alice: the commit would then only change the owner, which nobody decided.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_switch_decided_on_an_older_view_is_not_committed(pool: PgPool) {
     let setup = Setup::new(pool).await;
     setup.create(None).await;
@@ -531,7 +531,7 @@ async fn a_switch_decided_on_an_older_view_is_not_committed(pool: PgPool) {
     assert_eq!(setup.owner().await, Some("carol".to_string()));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn untrusted_clients_replace_invoker_views_without_switch_permission(pool: PgPool) {
     let setup = Setup::new(pool).await;
     setup.create(None).await;

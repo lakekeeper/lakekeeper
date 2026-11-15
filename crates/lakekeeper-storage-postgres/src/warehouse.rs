@@ -1216,7 +1216,7 @@ pub mod test {
         (project_id, warehouse.warehouse_id)
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_warehouse_by_name(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         // A project of its own: the warehouse caches are shared by every test in the process.
@@ -1239,7 +1239,7 @@ pub mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_managed_by_locks_spec(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -1370,7 +1370,7 @@ pub mod test {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_projects(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1425,7 +1425,7 @@ pub mod test {
         assert!(projects.contains(&project_id_1));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_warehouses(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1439,7 +1439,7 @@ pub mod test {
         assert!(warehouses.iter().any(|w| w.warehouse_id == warehouse_id_1));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_warehouses_active_filter(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1487,7 +1487,7 @@ pub mod test {
         assert!(warehouses.iter().any(|w| w.warehouse_id == warehouse_id_2));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1509,7 +1509,7 @@ pub mod test {
         assert_eq!(warehouse.unwrap().name, "new_name");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_project(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1542,7 +1542,7 @@ pub mod test {
         assert_eq!(project.unwrap().name, "new_name");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_same_project_id(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1560,7 +1560,7 @@ pub mod test {
         t.commit().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_drop_protected_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1597,7 +1597,7 @@ pub mod test {
         trx.commit().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_force_drop_protected_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1620,7 +1620,7 @@ pub mod test {
         trx.commit().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_warehouse_statistics_pagination(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1722,7 +1722,7 @@ pub mod test {
     /// The delete reports the secret of the row it removed, so the caller cleans up
     /// the right credential. Sourced from the DELETE's own RETURNING rather than a
     /// prior read, which a concurrent credential rotation could invalidate.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_warehouse_reports_the_deleted_rows_secret(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1774,7 +1774,7 @@ pub mod test {
 
     /// Every warehouse write records the cache keys it changes: the warehouse, the name it
     /// had, and the storage secret it replaced or removed.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn warehouse_writes_record_their_cache_keys(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -1920,7 +1920,7 @@ pub mod test {
 
     /// Committing a write evicts the changed warehouse from this instance's cache; a rollback
     /// records nothing and keeps the cached entry.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn committed_writes_evict_locally_and_rolled_back_writes_do_not(pool: sqlx::PgPool) {
         use lakekeeper::service::warehouse_cache::WAREHOUSE_CACHE;
 
@@ -1972,7 +1972,7 @@ pub mod test {
 
     /// A commit that fails also evicts the written warehouse locally: whether the change
     /// landed is unknown, and an eviction only costs a reload.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_failed_commit_still_evicts_locally(pool: sqlx::PgPool) {
         use lakekeeper::service::warehouse_cache::WAREHOUSE_CACHE;
 
@@ -2024,7 +2024,7 @@ pub mod test {
 
     /// A task committed after the unfinished-task check, while the DELETE waits for the
     /// warehouse row, fails the DELETE on `task_warehouse_id_fk`.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_warehouse_with_concurrently_inserted_task(pool: sqlx::PgPool) {
         use lakekeeper::service::tasks::{
             ScheduleTaskMetadata, TaskEntity, TaskInput, TaskQueueName, WarehouseTaskEntityId,
@@ -2088,7 +2088,7 @@ pub mod test {
 
     /// A transaction that sets `protected` while the delete waits for the warehouse row makes
     /// the delete see the protection; the warehouse is kept and the caller gets a 409.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_warehouse_protected_concurrently(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2154,7 +2154,7 @@ pub mod test {
 
     /// Schedules are deleted before the project row is locked, so a materializer that holds a
     /// schedule row and then inserts its task finishes without deadlocking.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_project_deletes_schedules_before_locking_the_project(pool: sqlx::PgPool) {
         use lakekeeper::service::{
             CatalogTaskOps as _,
@@ -2234,7 +2234,7 @@ pub mod test {
         assert_eq!(left, (0, 0));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_warehouse_with_namespace_is_not_empty(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2260,7 +2260,7 @@ pub mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_non_existing_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::from(uuid::Uuid::new_v4());
@@ -2291,7 +2291,7 @@ pub mod test {
 
     // ── create_roles `OnRoleConflict::UpdateMetadata` semantics ────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_roles_update_metadata_is_noop_when_unchanged(pool: sqlx::PgPool) {
         // The IS DISTINCT FROM guard in the ON CONFLICT clause must keep
         // re-runs with identical values from bumping `version` (which the
@@ -2370,7 +2370,7 @@ pub mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_roles_update_metadata_refreshes_existing_row(pool: sqlx::PgPool) {
         // Locks in `OnRoleConflict::UpdateMetadata`: re-running create_roles
         // with the same `(project, provider, source_id)` but a new

@@ -236,7 +236,7 @@ fn create_snapshot_reference(snapshot_id: i64) -> SnapshotReference {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_set_properties_commit_table(pool: sqlx::PgPool) {
     let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
 
@@ -391,7 +391,7 @@ fn assert_table_metadata_are_equal(expected: &TableMetadata, actual: &TableMetad
     assert_eq!(actual.last_partition_id(), expected.last_partition_id());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_add_partition_spec_commit_table(pool: sqlx::PgPool) {
     let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
 
@@ -473,7 +473,7 @@ async fn test_add_partition_spec_commit_table(pool: sqlx::PgPool) {
     assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_set_default_partition_spec(pool: PgPool) {
     let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
 
@@ -549,7 +549,7 @@ async fn test_set_default_partition_spec(pool: PgPool) {
     assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_set_ref(pool: PgPool) {
     let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
     let last_updated = table.metadata.last_updated_ms();
@@ -640,7 +640,7 @@ async fn test_set_ref(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_expire_metadata_log(pool: PgPool) {
     let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
     let table_ident = TableIdent {
@@ -796,7 +796,7 @@ async fn test_expire_metadata_log(pool: PgPool) {
 
 /// A registered table's metadata log is client-supplied: expiring it deletes only the entries
 /// inside the table location.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_expire_registered_metadata_log_stays_in_table_location(pool: PgPool) {
     let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
     let io = memory_io_profile().file_io(None).await.unwrap();
@@ -906,7 +906,7 @@ async fn test_expire_registered_metadata_log_stays_in_table_location(pool: PgPoo
         .expect("a file outside the table location must not be deleted");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_default_format_version_is_v2(pg_pool: PgPool) {
     let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
     let create_request = create_table_request_with_format("my_table", None);
@@ -928,7 +928,7 @@ async fn test_default_format_version_is_v2(pg_pool: PgPool) {
 
 /// `createTable` returns a `LoadTableResult`, so it carries the same advertisement
 /// `loadTable` does.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_table_advertises_client_side_scan_planning(pg_pool: PgPool) {
     let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
     let table = CatalogServer::create_table(
@@ -947,7 +947,7 @@ async fn test_create_table_advertises_client_side_scan_planning(pg_pool: PgPool)
     assert_advertises_client_planning(table.config.as_ref(), "createTable");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 #[allow(clippy::too_many_lines)]
 async fn test_table_v3(pg_pool: PgPool) {
     let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
@@ -1113,7 +1113,7 @@ async fn test_table_v3(pg_pool: PgPool) {
     assert_eq!(snapshot.manifest_list(), "/snap-3-valid.avro");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_v2_to_v3_migration(pg_pool: PgPool) {
     let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
 
@@ -1333,7 +1333,7 @@ async fn test_v2_to_v3_migration(pg_pool: PgPool) {
     assert_eq!(final_table.metadata.next_row_id(), 50);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_remove_snapshot_commit(pg_pool: PgPool) {
     let (ctx, ns, ns_params, table) = commit_test_setup(pg_pool).await;
     let table_ident = TableIdent {
@@ -1613,7 +1613,7 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
 /// Expiry plans its `RemoveSnapshots` on a table state; a tag created on one of those snapshots
 /// before the expiry commits must survive. The server refuses the stale expiry with a conflict,
 /// so the client reloads and plans again, and the tag and its snapshot stay.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_pool: PgPool) {
     let (ctx, ns, ns_params, table) = commit_test_setup(pg_pool).await;
     let table_ident = TableIdent {
@@ -1824,7 +1824,7 @@ async fn load_as_client(
 
 /// Every table of a commit gets the server clock as `last-updated-ms`; snapshot times and
 /// snapshot-log entries keep the client's time.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_stamps_last_updated_ms_with_the_server_clock(pool: PgPool) {
     let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
     CatalogServer::create_table(
@@ -1873,7 +1873,7 @@ async fn test_commit_stamps_last_updated_ms_with_the_server_clock(pool: PgPool) 
 
 /// A client clock two hours ahead on a branch or a staged (WAP) snapshot leaves every stored
 /// metadata file loadable, and a client with a correct clock commits next.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadable(pool: PgPool) {
     let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
     try_commit_tab_1(
@@ -1943,7 +1943,7 @@ async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadabl
 
 /// A writer whose clock is two minutes behind the server commits back to back on `main` and
 /// on a branch, as with Iceberg Java's REST catalog, and every stored file loads.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_slow_writer_commits(pool: PgPool) {
     let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
     let slow_ms = || now_ms() - 2 * 60 * 1000;
@@ -1980,7 +1980,7 @@ async fn test_slow_writer_commits(pool: PgPool) {
 
 /// A new `main` snapshot more than a minute ahead of the server clock is refused with 400, as
 /// Iceberg Java refuses it, and the table does not change.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_fast_client_on_main_is_refused(pool: PgPool) {
     let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
     try_commit_tab_1(
@@ -2019,7 +2019,7 @@ async fn test_fast_client_on_main_is_refused(pool: PgPool) {
 
 /// Setting `main` to a tag is refused with 400, as Iceberg Java refuses it, and the table does
 /// not change. Clients cannot append to a table whose `main` is a tag.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_main_as_tag_is_refused(pool: PgPool) {
     let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
     try_commit_tab_1(
@@ -2074,7 +2074,7 @@ async fn test_main_as_tag_is_refused(pool: PgPool) {
 
 /// Registered metadata whose `last-updated-ms` is two hours ahead of the server clock: a
 /// commit is refused with 400, and the stored metadata stays loadable.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_to_registered_metadata_ahead_of_the_server_clock_is_refused(pool: PgPool) {
     let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
     let created = load_table(&ctx, &ns_params, "tab-1").await;
@@ -2140,7 +2140,7 @@ async fn test_commit_to_registered_metadata_ahead_of_the_server_clock_is_refused
 /// A snapshot for `main` computed before another branch's commit carries an outdated
 /// sequence number: the commit is a conflict, and the client's retry from the reloaded
 /// table commits.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_stale_snapshot_after_a_branch_commit_is_a_conflict(pool: PgPool) {
     let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
     let table_ident = TableIdent {
@@ -2291,7 +2291,7 @@ async fn table_test_setup(
     (ctx, ns, ns_params, base_loc)
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_can_create_tables_with_same_prefix_1(pool: PgPool) {
     let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
     let tmp_id = Uuid::now_v7();
@@ -2321,7 +2321,7 @@ async fn test_can_create_tables_with_same_prefix_1(pool: PgPool) {
     .unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_can_create_tables_with_same_prefix_2(pool: PgPool) {
     let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
     let tmp_id = Uuid::now_v7();
@@ -2351,7 +2351,7 @@ async fn test_can_create_tables_with_same_prefix_2(pool: PgPool) {
     .unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cannot_create_table_at_same_location(pool: PgPool) {
     let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
     let tmp_id = Uuid::now_v7();
@@ -2383,7 +2383,7 @@ async fn test_cannot_create_table_at_same_location(pool: PgPool) {
     assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cannot_create_staged_tables_at_sublocations_1(pool: PgPool) {
     let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
     let tmp_id = Uuid::now_v7();
@@ -2416,7 +2416,7 @@ async fn test_cannot_create_staged_tables_at_sublocations_1(pool: PgPool) {
     assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cannot_create_staged_tables_at_sublocations_2(pool: PgPool) {
     let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
     let tmp_id = Uuid::now_v7();
@@ -2449,7 +2449,7 @@ async fn test_cannot_create_staged_tables_at_sublocations_2(pool: PgPool) {
     assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cannot_create_tables_at_sublocations_1(pool: PgPool) {
     let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
     let tmp_id = Uuid::now_v7();
@@ -2549,7 +2549,7 @@ impl_pagination_tests!(
     |tid| { tid.name }
 );
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_table_pagination(pool: sqlx::PgPool) {
     let prof = memory_io_profile();
 
@@ -2757,7 +2757,7 @@ async fn test_table_pagination(pool: sqlx::PgPool) {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_tables(pool: sqlx::PgPool) {
     let prof = memory_io_profile();
 
@@ -2833,7 +2833,7 @@ async fn test_list_tables(pool: sqlx::PgPool) {
     assert_eq!(all.identifiers.len(), 10);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cannot_drop_protected_table(pool: PgPool) {
     let (ctx, _, ns_params, _) = table_test_setup(pool).await;
     let table_ident = TableIdent {
@@ -2902,7 +2902,7 @@ async fn test_cannot_drop_protected_table(pool: PgPool) {
     .unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_can_force_drop_protected_table(pool: PgPool) {
     let (ctx, _, ns_params, _) = table_test_setup(pool).await;
     let table_ident = TableIdent {
@@ -2945,7 +2945,7 @@ async fn test_can_force_drop_protected_table(pool: PgPool) {
     .expect("Table couldn't be force dropped which should be possible");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_table_without_can_rename(pool: sqlx::PgPool) {
     let prof = memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -3027,7 +3027,7 @@ async fn test_rename_table_without_can_rename(pool: sqlx::PgPool) {
     assert_eq!(response.error.code, StatusCode::NOT_FOUND, "{response:?}");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_table_without_can_create(pool: sqlx::PgPool) {
     let prof = memory_io_profile();
     let authz = HidingAuthorizer::new();
@@ -3160,7 +3160,7 @@ async fn table_exists(
 }
 
 /// Moving a table into another namespace needs `move` on the table, not just `rename`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_table_without_move_on_source(pool: sqlx::PgPool) {
     let (ctx, authz, warehouse_id) = move_table_setup(pool).await;
     authz.block_action("table:Move");
@@ -3176,7 +3176,7 @@ async fn test_move_table_without_move_on_source(pool: sqlx::PgPool) {
 
 /// Moving a table into another namespace needs `accept_moved_tabular` on the destination,
 /// not just `create_table`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_table_without_accept_moved_tabular_on_destination(pool: sqlx::PgPool) {
     let (ctx, authz, warehouse_id) = move_table_setup(pool).await;
     authz.block_action("namespace:AcceptMovedTabular");
@@ -3193,7 +3193,7 @@ async fn test_move_table_without_accept_moved_tabular_on_destination(pool: sqlx:
 /// A rename into another namespace is recorded as `move` with its destination, whether it is
 /// allowed or refused; a rename within one namespace, however its path is cased, is recorded
 /// as `rename`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_table_is_recorded_as_move(pool: sqlx::PgPool) {
     use lakekeeper::service::events::{EventListener, context::ActionContextKey};
     use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
@@ -3238,7 +3238,7 @@ async fn test_move_table_is_recorded_as_move(pool: sqlx::PgPool) {
 }
 
 /// With both move permissions a table moves; a rename within one namespace asks neither.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_table_with_move_permissions_and_in_place_rename_without(pool: sqlx::PgPool) {
     let (ctx, authz, warehouse_id) = move_table_setup(pool).await;
 
@@ -3256,7 +3256,7 @@ async fn test_move_table_with_move_permissions_and_in_place_rename_without(pool:
     assert!(table_exists(&ctx, warehouse_id, "to_ns", "renamed").await);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_table_without_target_namespace(pool: sqlx::PgPool) {
     let prof = memory_io_profile();
     let (ctx, warehouse) = setup_simple(
@@ -3317,7 +3317,7 @@ async fn test_rename_table_without_target_namespace(pool: sqlx::PgPool) {
     assert_eq!(response.error.r#type, "NoSuchNamespaceException");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_table_without_source_table(pool: sqlx::PgPool) {
     let prof = memory_io_profile();
     let (ctx, warehouse) = setup_simple(
@@ -3369,7 +3369,7 @@ async fn test_rename_table_without_source_table(pool: sqlx::PgPool) {
 
 /// Tables, views and generic tables share one name space, so the spec's
 /// "already exists as a table **or view**" applies across types.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_table_onto_a_view_name_conflicts(pool: sqlx::PgPool) {
     let (ctx, warehouse) = setup_simple(
         pool.clone(),
@@ -3429,7 +3429,7 @@ async fn test_rename_table_onto_a_view_name_conflicts(pool: sqlx::PgPool) {
 /// used as given rather than re-resolved from the name, cannot be reached from here once the
 /// read is fresh; `test_rename_into_a_namespace_that_no_longer_bears_the_destination_name_fails`
 /// covers it directly.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_table_into_a_namespace_that_took_the_name_from_another(pool: sqlx::PgPool) {
     let (ctx, warehouse) = setup_simple(
         pool.clone(),
@@ -3537,7 +3537,7 @@ async fn test_rename_table_into_a_namespace_that_took_the_name_from_another(pool
 
 /// A soft-deleted table does not hold its name — `createTable` reuses it, so
 /// `renameTable` must too.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_table_onto_a_soft_deleted_name_succeeds(pool: sqlx::PgPool) {
     let (ctx, warehouse) = setup_simple(
         pool.clone(),
@@ -3616,7 +3616,7 @@ async fn test_rename_table_onto_a_soft_deleted_name_succeeds(pool: sqlx::PgPool)
     .expect("the renamed table must be loadable under the reused name");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_advertises_client_side_scan_planning(pool: PgPool) {
     let (ctx, _ns, ns_params, _) = table_test_setup(pool).await;
 
@@ -3689,7 +3689,7 @@ async fn register_table_setup(
 
 /// Register checks that the caller can see the namespace before it reads the metadata file:
 /// a missing file is reported as a namespace the caller cannot see, not as a storage error.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: PgPool) {
     let (ctx, authz, ns_params, _, missing_location) = register_table_setup(pool).await;
 
@@ -3710,7 +3710,7 @@ async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: 
     assert_eq!(err.error.r#type, "NoSuchNamespaceException");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_refuses_invalid_names(pool: PgPool) {
     let (ctx, _, ns_params, existing_location, _) = register_table_setup(pool).await;
 
@@ -3734,7 +3734,7 @@ async fn test_register_table_refuses_invalid_names(pool: PgPool) {
 
 /// `create_table` is checked after the metadata file is read: a caller who can see the
 /// namespace but may not create tables in it is refused.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_requires_create_table(pool: PgPool) {
     let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
 
@@ -3769,7 +3769,7 @@ async fn test_register_table_requires_create_table(pool: PgPool) {
 
 /// `create_table` is checked before the file's contents are validated: a caller who may
 /// not create tables learns nothing about a file the warehouse would refuse.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_checks_create_table_before_validating_the_file(pool: PgPool) {
     let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
     let warehouse_id: WarehouseId = ns_params
@@ -3818,7 +3818,7 @@ async fn test_register_table_checks_create_table_before_validating_the_file(pool
 /// besides `create_table` on the namespace. It is checked before the metadata file is read. A
 /// refusal is recorded on the warehouse and, by the requested name, as a refused
 /// `create_table` on the namespace.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_requires_the_register_right(pool: PgPool) {
     use lakekeeper::service::events::{
         AuthorizationFailureReason, EventListener, context::ActionContextKey,
@@ -3996,7 +3996,7 @@ async fn assert_register_vends_as_load(pool: PgPool, blocked: &[CatalogTableActi
 /// A caller who may register and create a table but not see it gets what `loadTable` gives
 /// them: not found, with neither metadata nor credentials. The table stays registered, and
 /// the refusal is recorded on the table.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_returns_not_found_to_a_caller_who_cannot_see_the_table(pool: PgPool) {
     use lakekeeper::service::events::{
         AuthorizationFailureReason, EventListener, context::EntityType,
@@ -4079,7 +4079,7 @@ async fn test_register_table_returns_not_found_to_a_caller_who_cannot_see_the_ta
 
 /// A register that fails after its commit leaves the table registered. A replay with the same
 /// idempotency key returns what `loadTable` returns, and a retry without a key is a conflict.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_replay_after_a_failure_after_the_commit(pool: PgPool) {
     use lakekeeper::service::idempotency::IdempotencyKey;
 
@@ -4152,23 +4152,23 @@ async fn test_register_table_replay_after_a_failure_after_the_commit(pool: PgPoo
     assert_eq!(replayed.etag, loaded.etag);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_vends_read_write_to_a_reader_and_writer(pool: PgPool) {
     assert_register_vends_as_load(pool, &[]).await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_vends_read_only_to_a_reader(pool: PgPool) {
     assert_register_vends_as_load(pool, &[CatalogTableAction::WriteData]).await;
 }
 
 /// Write credentials can read, so a caller who may write but not read gets none, as on load.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_vends_nothing_without_read(pool: PgPool) {
     assert_register_vends_as_load(pool, &[CatalogTableAction::ReadData]).await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_with_overwrite(pool: PgPool) {
     let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
 
@@ -4297,7 +4297,7 @@ async fn test_register_table_with_overwrite(pool: PgPool) {
 //
 // - PostgresCatalog: required for specifying id of table to be created
 // - CatalogServer: required for taking TabularDeleteProfile into account
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_reuse_table_ids_hard_delete(pool: PgPool) {
     let delete_profile = TabularDeleteProfile::Hard {};
     let (ctx, mut wh_ns_data, _base_loc) =
@@ -4392,7 +4392,7 @@ async fn test_reuse_table_ids_hard_delete(pool: PgPool) {
 //
 // - PostgresCatalog: required for specifying id of table to be created
 // - CatalogServer: required for taking TabularDeleteProfile into account
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
     let delete_profile = TabularDeleteProfile::Soft {
         expiration_seconds: chrono::Duration::seconds(10),
@@ -4488,7 +4488,7 @@ async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
 /// Otherwise the setting is advisory: a warehouse restricted to v1/v2 quietly
 /// acquires a v3 table, and the failure surfaces later in whichever engine
 /// cannot read it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_register_table_enforces_the_format_version_policy(pg_pool: PgPool) {
     let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
     let warehouse_id: WarehouseId = ns_params
@@ -4630,7 +4630,7 @@ mod register_data_access {
             .unwrap()
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn test_register_honors_the_requested_data_access(pool: PgPool) {
             let (profile, cred) = s3_compatible_profile();
             let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(
@@ -4725,7 +4725,7 @@ mod register_data_access {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_table_refuses_invalid_destination_names(pool: sqlx::PgPool) {
     let (ctx, warehouse) = setup_simple(
         pool,

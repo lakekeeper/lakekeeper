@@ -282,7 +282,7 @@ mod tests {
 
     /// Seed a legacy `view_schema` JSONB row (no schema_field yet), run the backfill,
     /// assert schema_field is populated and load_view reconstructs the schema exactly.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn view_backfill_reproduces_schema_from_jsonb(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -478,7 +478,7 @@ mod tests {
     /// reuse path.
     ///
     /// Strategy: 1 seed field + 100 schemas × 100 fields = 10_001 field rows (> FIELD_FLUSH_THRESHOLD).
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn batched_backfill_exceeds_flush_threshold(pool: PgPool) {
         // We need a real table row as a FK anchor. Use `create_table_with_schema` to
         // create one seed table, then insert extra schema versions directly.
@@ -600,7 +600,7 @@ mod tests {
     /// A legacy JSONB whose embedded schema-id disagrees with its anchor `schema_id` column is
     /// corrupt source data. The backfill must reject it loud (naming both ids) rather than silently
     /// normalize under the column id, because the migration then drops the JSONB irreversibly.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn backfill_rejects_schema_id_mismatch(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -658,7 +658,7 @@ mod tests {
     ///
     /// Seeding uses set-based SQL (generate_series) to avoid 100k round-trips.
     #[ignore]
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn bench_backfill_100k(pool: PgPool) {
         use std::time::Instant;
 

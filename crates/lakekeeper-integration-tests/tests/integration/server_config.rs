@@ -20,7 +20,7 @@ fn config_query(project: &ProjectId, warehouse_name: &str) -> GetConfigQueryPara
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_config_visible_warehouse(pool: PgPool) {
     let (ctx, warehouse) = setup(
         pool,
@@ -52,7 +52,7 @@ async fn test_get_config_visible_warehouse(pool: PgPool) {
 /// server supports `Idempotency-Key` at all. Advertised inside `overrides`, a
 /// conformant client concludes idempotency is unsupported and additionally
 /// applies an unrecognized property to its own configuration.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_config_advertises_idempotency_at_the_top_level(pool: PgPool) {
     let (ctx, warehouse) = setup(
         pool,
@@ -100,7 +100,7 @@ async fn test_get_config_advertises_idempotency_at_the_top_level(pool: PgPool) {
 /// See issue #1780: the project-level `list_warehouses` gate that previously
 /// blocked this was removed because it forced an OpenFGA fan-out across every
 /// warehouse in the project.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_config_hidden_warehouse_indistinguishable_from_missing(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse) = setup(

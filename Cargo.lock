@@ -4271,6 +4271,7 @@ dependencies = [
  "chrono",
  "crc",
  "derive_more",
+ "dotenvy",
  "fastrand",
  "figment",
  "futures",
@@ -4282,6 +4283,7 @@ dependencies = [
  "lakekeeper",
  "lakekeeper-io",
  "lakekeeper-storage-postgres",
+ "lakekeeper-test-macros",
  "metrics",
  "pretty_assertions",
  "serde",
@@ -4299,6 +4301,15 @@ dependencies = [
  "url",
  "uuid",
  "xxhash-rust",
+]
+
+[[package]]
+name = "lakekeeper-test-macros"
+version = "0.15.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

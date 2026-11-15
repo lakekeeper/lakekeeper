@@ -5,6 +5,10 @@
 //! backend, [`PostgresAdvisoryLock`] for cross-replica maintenance
 //! coordination, and the migrations runner used at startup.
 
+// `#[lakekeeper_storage_postgres::db_test]` expands to paths through the crate name.
+#[cfg(any(test, feature = "test-utils"))]
+extern crate self as lakekeeper_storage_postgres;
+
 mod advisory_lock;
 mod bootstrap;
 mod cache_change_log;
@@ -43,6 +47,8 @@ use lakekeeper::{
         health::{Health, HealthExt, HealthStatus},
     },
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use lakekeeper_test_macros::db_test;
 pub use secrets::SecretsState;
 use sqlx::{
     ConnectOptions, PgPool,
@@ -462,7 +468,7 @@ mod transaction_tests {
 
     use super::*;
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn read_transactions_refuse_writes(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool);
         let mut transaction = PostgresTransaction::begin_read(state).await.unwrap();

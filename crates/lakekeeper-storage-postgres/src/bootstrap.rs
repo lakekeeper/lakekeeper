@@ -154,7 +154,7 @@ mod test {
     use super::*;
     use crate::{CatalogState, migrations::migrate_core_only};
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_bootstrap(pool: PgPool) {
         migrate_core_only(&pool).await.unwrap();
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -173,7 +173,7 @@ mod test {
         assert!(!success);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_reopen_for_bootstrap_round_trip(pool: PgPool) {
         migrate_core_only(&pool).await.unwrap();
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -215,7 +215,7 @@ mod test {
         assert!(success, "bootstrap should succeed after reopen");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_or_set_server_id(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 

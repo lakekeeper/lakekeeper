@@ -144,7 +144,7 @@ fn audit_records(logs: &CapturedLogs) -> Vec<serde_json::Value> {
         .collect()
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: PgPool) {
     let logs = CapturedLogs::default();
     // Thread-local, not global: `sqlx::test` runs on a current-thread runtime, so the

@@ -118,7 +118,7 @@ fn sorted(ids: &[WarehouseId]) -> Vec<String> {
 }
 
 /// Baseline: with no filter, only active warehouses are listed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn unfiltered_listing_returns_only_active_warehouses(pool: PgPool) {
     let (ctx, active, _inactive) = setup(pool).await;
     assert_eq!(list_warehouses(&ctx, "").await, (200, sorted(&[active])));
@@ -129,7 +129,7 @@ async fn unfiltered_listing_returns_only_active_warehouses(pool: PgPool) {
 /// must be accepted *and* applied — a single value, and several repeated keys
 /// forming a union. This returned 400 before the `Query` extractor was swapped
 /// to `axum_extra`'s.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_oas_default_encoding_is_accepted_and_applied(pool: PgPool) {
     let (ctx, active, inactive) = setup(pool).await;
 
@@ -154,7 +154,7 @@ async fn the_oas_default_encoding_is_accepted_and_applied(pool: PgPool) {
 /// that distinguishes "the filter was applied" from "the filter was silently
 /// dropped": a dropped filter yields the default listing instead of an empty
 /// one.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_filter_matching_nothing_returns_an_empty_list(pool: PgPool) {
     let (ctx, _active, inactive) = setup(pool).await;
 
@@ -174,7 +174,7 @@ async fn a_filter_matching_nothing_returns_an_empty_list(pool: PgPool) {
 }
 
 /// An unparseable element must fail loudly rather than be dropped.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_unknown_status_is_rejected(pool: PgPool) {
     let (ctx, _active, _inactive) = setup(pool).await;
     assert_eq!(
@@ -187,7 +187,7 @@ async fn an_unknown_status_is_rejected(pool: PgPool) {
 
 /// An explicitly empty value means "not supplied" rather than "an empty list",
 /// so it must behave like an omitted parameter instead of erroring.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_empty_value_is_treated_as_absent(pool: PgPool) {
     let (ctx, active, _inactive) = setup(pool).await;
     assert_eq!(
@@ -203,7 +203,7 @@ async fn an_empty_value_is_treated_as_absent(pool: PgPool) {
 /// exclude. This is pinned to document why the spec must never advertise
 /// `deepObject` — and to prove the fix left this path untouched, so existing
 /// clients see no behaviour change.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn bracket_notation_is_still_silently_ignored(pool: PgPool) {
     let (ctx, active, _inactive) = setup(pool).await;
 

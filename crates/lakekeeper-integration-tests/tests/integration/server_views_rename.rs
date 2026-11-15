@@ -17,7 +17,7 @@ use lakekeeper_integration_tests::{
 use lakekeeper_storage_postgres::namespace::tests::initialize_namespace;
 use sqlx::PgPool;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_view_without_namespace(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 
@@ -77,7 +77,7 @@ async fn test_rename_view_without_namespace(pool: PgPool) {
     assert_eq!(StatusCode::NOT_FOUND, not_exists.error.code);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_view_with_namespace(pool: PgPool) {
     let (api_context, _, whi, _) = views_test_setup(pool, None).await;
     let namespace = NamespaceIdent::from_vec(vec!["Someother-ns".to_string()]).unwrap();
@@ -180,7 +180,7 @@ fn view_ident(namespace: &str, name: &str) -> TableIdent {
 }
 
 /// Moving a view into another namespace needs `move` on the view, not just `rename`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_view_without_move_on_source(pool: PgPool) {
     let (ctx, authz, prefix) = move_view_setup(pool).await;
     authz.block_action("view:Move");
@@ -215,7 +215,7 @@ async fn test_move_view_without_move_on_source(pool: PgPool) {
 
 /// Moving a view into another namespace needs `accept_moved_tabular` on the destination,
 /// not just `create_view`; the refusal is recorded as `move`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_view_without_accept_moved_tabular_on_destination(pool: PgPool) {
     use lakekeeper::service::events::{EventListener, context::ActionContextKey};
     use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
@@ -255,7 +255,7 @@ async fn test_move_view_without_accept_moved_tabular_on_destination(pool: PgPool
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_view_refuses_invalid_destination_names(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = Prefix(whi.to_string());

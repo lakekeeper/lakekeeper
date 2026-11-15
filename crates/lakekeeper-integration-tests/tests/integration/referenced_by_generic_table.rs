@@ -217,7 +217,7 @@ async fn load_credentials<A: Authorizer + Clone>(
 
 // ---- Basic tests ----
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_with_referenced_by_succeeds(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -244,7 +244,7 @@ async fn test_load_generic_table_credentials_with_referenced_by_succeeds(pool: P
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_referenced_by_without_engine_ignores_views(
     pool: PgPool,
 ) {
@@ -274,7 +274,7 @@ async fn test_load_generic_table_credentials_referenced_by_without_engine_ignore
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_with_engine_rejects_missing_view(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -323,7 +323,7 @@ async fn create_chain_views<A: Authorizer>(
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_referenced_by_at_limit_succeeds(pool: PgPool) {
     assert_eq!(
         lakekeeper::CONFIG.referenced_by.max_nesting_depth,
@@ -355,7 +355,7 @@ async fn test_load_generic_table_credentials_referenced_by_at_limit_succeeds(poo
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_referenced_by_over_limit_rejected(pool: PgPool) {
     assert_eq!(
         lakekeeper::CONFIG.referenced_by.max_nesting_depth,
@@ -388,7 +388,7 @@ async fn test_load_generic_table_credentials_referenced_by_over_limit_rejected(p
 
 /// Untrusted-engine counterpart: the cap is a property of the request at this
 /// call site too, not a consequence of engine trust.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_referenced_by_over_limit_rejected_without_trusted_engine(
     pool: PgPool,
 ) {
@@ -422,7 +422,7 @@ async fn test_load_generic_table_credentials_referenced_by_over_limit_rejected_w
 
 // ---- Hiding tests (global) ----
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_hidden_view_in_chain_denied(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -454,7 +454,7 @@ async fn test_load_generic_table_credentials_hidden_view_in_chain_denied(pool: P
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_hidden_generic_table_denied(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -487,7 +487,7 @@ async fn test_load_generic_table_credentials_hidden_generic_table_denied(pool: P
 }
 
 /// Write credentials can read, so a caller allowed to write but not to read gets none.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_need_read_even_with_write(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -513,7 +513,7 @@ async fn test_load_generic_table_credentials_need_read_even_with_write(pool: PgP
 
 /// User A cannot access the generic table directly, but succeeds through a
 /// DEFINER view because owner B's permissions are used for the GT check.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_definer_delegates_generic_table_access_to_owner(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -546,7 +546,7 @@ async fn test_definer_delegates_generic_table_access_to_owner(pool: PgPool) {
 }
 
 /// When the DEFINER view owner loses generic-table access, load fails.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_definer_fails_when_owner_loses_generic_table_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -588,7 +588,7 @@ async fn test_definer_fails_when_owner_loses_generic_table_access(pool: PgPool) 
 ///
 /// We hide the GT for `user_a` AND `owner_b` — only `owner_c` (final DEFINER owner)
 /// must be used for the GT check.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_chain_definer_invoker_definer_succeeds_for_generic_table(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -628,7 +628,7 @@ async fn test_chain_definer_invoker_definer_succeeds_for_generic_table(pool: PgP
 }
 
 /// INVOKER view checks the calling user (`user_a`), not any owner.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_invoker_view_checks_calling_user_for_generic_table(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -663,7 +663,7 @@ async fn test_invoker_view_checks_calling_user_for_generic_table(pool: PgPool) {
 /// Instance admins bypass control-plane authz on generic tables, but MUST NOT
 /// traverse a DEFINER view they lack `Select` on into the owner's context.
 /// Regression guard for the data-plane carve-out.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_instance_admin_cannot_traverse_definer_chain_to_generic_table(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -697,7 +697,7 @@ async fn test_instance_admin_cannot_traverse_definer_chain_to_generic_table(pool
 
 /// A caller refused on the DEFINER entry view never makes the authorizer
 /// decide anything for the view's owner, even one whose lookup would fail.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_credentials_refused_caller_never_sends_owner_checks(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -758,7 +758,7 @@ fn checks(object: &str, actions: &[&str], owner: Option<&str>) -> Vec<RecordedTa
 
 /// The caller may traverse, the owner may not read the generic table: the owner
 /// is decided in a second call and the refusal is reported for delegated execution.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_credentials_refused_owner_is_decided_after_the_caller(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -812,7 +812,7 @@ async fn test_generic_table_credentials_refused_owner_is_decided_after_the_calle
 
 /// A caller allowed to traverse reaches the owner, whose failing lookup
 /// surfaces as 503.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_credentials_failing_owner_lookup_surfaces_when_caller_allowed(
     pool: PgPool,
 ) {
@@ -875,7 +875,7 @@ async fn test_generic_table_credentials_failing_owner_lookup_surfaces_when_calle
 }
 
 /// The generic table being loaded cannot appear in its own referenced-by chain.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table_credentials_referenced_by_itself_is_rejected(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -906,7 +906,7 @@ async fn test_load_generic_table_credentials_referenced_by_itself_is_rejected(po
 
 /// DEFINER(`owner_b`) → INVOKER → generic table: the generic table is checked as
 /// `user_a`, so `owner_b`'s access does not reach it through the INVOKER view.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_credentials_below_invoker_view_in_definer_chain_is_checked_as_caller(
     pool: PgPool,
 ) {

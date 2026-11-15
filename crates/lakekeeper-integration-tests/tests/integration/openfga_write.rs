@@ -274,7 +274,7 @@ mod write {
             }]
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn write_makes_every_commit_but_never_drops_or_renames(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = principal_metadata(&admin, &project_id);
@@ -379,7 +379,7 @@ mod write {
         }
 
         /// A transaction of structural and data commits to several tables needs only `write`.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn a_transaction_with_structural_changes_needs_only_write(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = principal_metadata(&admin, &project_id);
@@ -414,7 +414,7 @@ mod write {
         /// A commit to a staged table finishes its creation, and `write` makes it like any
         /// other commit: a principal with `create` stages a table, and one with `write` on the
         /// namespace finishes the create.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn write_finishes_a_staged_create(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = principal_metadata(&admin, &project_id);
@@ -444,7 +444,7 @@ mod write {
 
         /// A commit check asks the write tier, whatever it names and whether the table is
         /// staged.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn every_commit_check_asks_write(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = principal_metadata(&admin, &project_id);
@@ -517,7 +517,7 @@ mod write {
 
         /// `create` on a namespace shows the namespace and lets the principal create tables
         /// there, but does not show the tables already inside it.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn create_does_not_describe_the_tables_inside(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = principal_metadata(&admin, &project_id);

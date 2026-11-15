@@ -317,7 +317,7 @@ mod rename_tabular {
 
         /// The reported bug, as a test: a developer granted `select` on `before` only must
         /// not keep reading the table after an operator moves it to `after`.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn renaming_a_table_across_namespaces_moves_its_inherited_grants(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -376,7 +376,7 @@ mod rename_tabular {
         /// The other direction: moving *into* a namespace must hand over that namespace's
         /// grants. A hook that only deleted the old edge would pass the test above while
         /// leaving the table unreachable by anyone but its owner.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn renaming_a_table_into_a_namespace_grants_that_namespaces_privileges(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -417,7 +417,7 @@ mod rename_tabular {
         /// Moving a table into another namespace needs grant authority on the table, as
         /// moving a namespace does: `modify` on the table and `create` at the destination
         /// are not enough.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn moving_a_table_needs_grant_authority_on_the_table(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -466,7 +466,7 @@ mod rename_tabular {
 
         /// The owner of a table may move it into a namespace where they hold `create`. Into
         /// a namespace under managed access, they also need `manage_grants` there.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn moving_a_table_into_a_managed_namespace_needs_grant_authority_there(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -521,7 +521,7 @@ mod rename_tabular {
 
         /// Inside a `managed_access` namespace ownership confers no `manage_grants`, so the
         /// owner of a table cannot move it out to a namespace where they could grant on it.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn the_owner_cannot_move_a_table_out_of_a_managed_namespace(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -563,7 +563,7 @@ mod rename_tabular {
         /// Under an assumed role, managed access cannot be evaluated, so moving a table out
         /// of or into a managed namespace and changing a namespace's managed access are
         /// refused. A user holding the same grants acts as the model says.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn an_assumed_role_cannot_move_tables_or_change_managed_access(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -681,7 +681,7 @@ mod rename_tabular {
         /// authority alone reports neither, write access alone reports `rename` but not
         /// `move`, and `create` alone reports `accept_moved_tabular` only outside managed
         /// access.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn move_is_reported_only_with_grant_authority_and_write_access(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -768,7 +768,7 @@ mod rename_tabular {
         /// the hook pair — detach then attach of the same namespace converges. What it
         /// pins is that an in-place rename does not cost the table its grants, under any
         /// of those implementations.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn renaming_a_table_within_its_namespace_keeps_its_grants(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -803,7 +803,7 @@ mod rename_tabular {
 
         /// Views ride the same hook through a different endpoint and a different OpenFGA
         /// object type, so they get their own round trip.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn renaming_a_view_across_namespaces_moves_its_inherited_grants(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -872,7 +872,7 @@ mod rename_tabular {
         /// the table inheriting from *both* namespaces. Only `--mode add-and-delete-drift`
         /// closes it. This is asserted rather than documented because the guidance we give
         /// operators is only as good as the mode actually being able to do it.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn reconcile_repairs_legacy_rename_drift_only_in_delete_mode(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -958,7 +958,7 @@ mod rename_tabular {
         /// object type. They get their own round trip because the wiring is per-endpoint:
         /// this is the copy that reads the source namespace from a struct field rather than
         /// a trait method, so a wrong field here is invisible to the other two tests.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn renaming_a_generic_table_across_namespaces_moves_its_inherited_grants(
             pool: PgPool,
         ) {
@@ -1048,7 +1048,7 @@ mod rename_tabular {
         /// the destination before detaching the source would, on this input, attach the
         /// namespace and then immediately delete the edge it just wrote, silently revoking
         /// everyone's inherited access.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn renaming_a_table_under_a_differently_cased_namespace_keeps_its_grants(
             pool: PgPool,
         ) {

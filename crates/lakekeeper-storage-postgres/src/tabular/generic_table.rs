@@ -479,7 +479,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_and_load(pool: PgPool) {
         let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
         let creation = test_creation(warehouse_id, namespace_id, "test-gt");
@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(loaded.properties.get("key").unwrap(), "value");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_duplicate_fails(pool: PgPool) {
         let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
 
@@ -537,7 +537,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_with_pagination(pool: PgPool) {
         let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
         let ns_ident = NamespaceIdent::new("test".to_string());
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(pages, vec![vec!["a", "b"], vec!["c"], vec![]]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_and_verify_gone(pool: PgPool) {
         let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
 
@@ -608,7 +608,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_not_found(pool: PgPool) {
         let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
 
@@ -624,7 +624,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_load_not_found(pool: PgPool) {
         let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
 

@@ -84,7 +84,7 @@ impl_pagination_tests!(
     |tid| { tid.name }
 );
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_view_pagination(pool: sqlx::PgPool) {
     let authz: HidingAuthorizer = HidingAuthorizer::new();
     // Prevent hidden views from becoming visible through `can_list_everything`.
@@ -290,7 +290,7 @@ async fn test_view_pagination(pool: sqlx::PgPool) {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_views(pool: sqlx::PgPool) {
     let authz: HidingAuthorizer = HidingAuthorizer::new();
 
@@ -366,7 +366,7 @@ async fn test_list_views(pool: sqlx::PgPool) {
 }
 
 /// Regression test: paginated list must not return duplicate views across pages.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_view_pagination_no_duplicates(pool: sqlx::PgPool) {
     let authz: HidingAuthorizer = HidingAuthorizer::new();
     authz.block_can_list_everything();

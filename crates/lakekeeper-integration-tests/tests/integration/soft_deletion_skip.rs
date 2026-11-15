@@ -425,7 +425,7 @@ fn sorted(mut records: Vec<Vec<RecordedAction>>) -> Vec<Vec<RecordedAction>> {
     records
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn forced_drop_in_soft_deletion_warehouse_needs_modify_soft_deletion(pool: PgPool) {
     let s = Setup::new(pool, soft()).await;
     let all = [Kind::Table, Kind::View, Kind::GenericTable];
@@ -476,7 +476,7 @@ async fn forced_drop_in_soft_deletion_warehouse_needs_modify_soft_deletion(pool:
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn skipping_soft_deletion_in_a_managed_warehouse_is_decided_by_the_authorizer(pool: PgPool) {
     let s = Setup::new(pool, soft()).await;
     ApiServer::set_warehouse_managed_by(
@@ -499,7 +499,7 @@ async fn skipping_soft_deletion_in_a_managed_warehouse_is_decided_by_the_authori
     assert_eq!(s.state(Kind::Table, "t").await, Found::Gone);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn forced_drop_in_hard_deletion_warehouse_needs_no_extra_right(pool: PgPool) {
     let s = Setup::new(pool, TabularDeleteProfile::Hard {}).await;
     let table_id = s.table("t").await;
@@ -517,7 +517,7 @@ async fn forced_drop_in_hard_deletion_warehouse_needs_no_extra_right(pool: PgPoo
     assert_eq!(s.state(Kind::GenericTable, "g").await, Found::Gone);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn recursive_namespace_delete_in_soft_deletion_warehouse_needs_modify_soft_deletion(
     pool: PgPool,
 ) {
@@ -565,7 +565,7 @@ async fn recursive_namespace_delete_in_soft_deletion_warehouse_needs_modify_soft
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn forced_delete_of_an_empty_namespace_needs_no_extra_right(pool: PgPool) {
     let s = Setup::new(pool, soft()).await;
     let namespace_id = PostgresBackend::get_namespace(
@@ -592,7 +592,7 @@ async fn forced_delete_of_an_empty_namespace_needs_no_extra_right(pool: PgPool) 
     assert!(!s.namespace_exists().await);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn recursive_namespace_delete_in_hard_deletion_warehouse_needs_no_extra_right(pool: PgPool) {
     let s = Setup::new(pool, TabularDeleteProfile::Hard {}).await;
     let table_id = s.table("t").await;
@@ -604,7 +604,7 @@ async fn recursive_namespace_delete_in_hard_deletion_warehouse_needs_no_extra_ri
     assert_eq!(s.state(Kind::Table, "t").await, Found::Gone);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn running_a_soft_deletion_task_early_needs_modify_soft_deletion(pool: PgPool) {
     let s = Setup::new(pool, soft()).await;
     s.table("t").await;
@@ -644,7 +644,7 @@ async fn running_a_soft_deletion_task_early_needs_modify_soft_deletion(pool: PgP
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn running_a_leftover_soft_deletion_task_after_switch_to_hard_deletion_needs_no_extra_right(
     pool: PgPool,
 ) {
@@ -668,7 +668,7 @@ async fn running_a_leftover_soft_deletion_task_after_switch_to_hard_deletion_nee
     s.control(ControlTaskAction::RunNow, tasks).await.unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn cancelling_a_soft_deletion_task_needs_no_extra_right(pool: PgPool) {
     let s = Setup::new(pool, soft()).await;
     s.table("t").await;
@@ -680,7 +680,7 @@ async fn cancelling_a_soft_deletion_task_needs_no_extra_right(pool: PgPool) {
     assert_eq!(s.state(Kind::Table, "t").await, Found::Active);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_modify_soft_deletion(
     pool: PgPool,
 ) {
@@ -721,7 +721,7 @@ async fn register_overwrite_of_an_active_table_in_soft_deletion_warehouse_needs_
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn register_overwrite_with_the_same_table_in_soft_deletion_warehouse_needs_no_extra_right(
     pool: PgPool,
 ) {
@@ -745,7 +745,7 @@ async fn register_overwrite_with_the_same_table_in_soft_deletion_warehouse_needs
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn register_overwrite_of_a_staged_table_needs_no_extra_right(pool: PgPool) {
     let s = Setup::new(pool, soft()).await;
     let (_, source_location) = s.source("source").await;
@@ -777,7 +777,7 @@ async fn register_overwrite_of_a_staged_table_needs_no_extra_right(pool: PgPool)
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn register_overwrite_in_hard_deletion_warehouse_needs_no_extra_right(pool: PgPool) {
     let s = Setup::new(pool, TabularDeleteProfile::Hard {}).await;
     s.table("t").await;
@@ -808,12 +808,12 @@ async fn assert_register_overwrite_keeps_protection(pool: PgPool, profile: Tabul
     assert_eq!(s.table_id("t").await, table_id);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn register_overwrite_keeps_protection_in_soft_deletion_warehouse(pool: PgPool) {
     assert_register_overwrite_keeps_protection(pool, soft()).await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn register_overwrite_keeps_protection_in_hard_deletion_warehouse(pool: PgPool) {
     assert_register_overwrite_keeps_protection(pool, TabularDeleteProfile::Hard {}).await;
 }
@@ -897,7 +897,7 @@ async fn uuid_setup(pool: PgPool) -> (Setup, TableId, TableId, String) {
     )
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn registering_the_uuid_of_an_active_table_under_another_name_is_refused(pool: PgPool) {
     let (s, holder, t, holder_location) = uuid_setup(pool).await;
 
@@ -905,7 +905,7 @@ async fn registering_the_uuid_of_an_active_table_under_another_name_is_refused(p
     assert_eq!(s.table_id("holder").await, holder);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn registering_the_uuid_of_a_dropped_table_is_refused(pool: PgPool) {
     let (s, _, t, holder_location) = uuid_setup(pool).await;
     s.drop(Kind::Table, "holder", false).await.unwrap();

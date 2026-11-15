@@ -227,7 +227,7 @@ fn subject_emails(record: &Value) -> HashMap<String, Option<String>> {
 }
 
 /// The token's email wins over the catalog's, so a caller with one costs no lookup.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_actor_email_comes_from_the_token_first(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let alice = user("email-alice");
@@ -243,7 +243,7 @@ async fn the_actor_email_comes_from_the_token_first(pool: PgPool) {
 }
 
 /// A token without an email falls back to the catalog.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_actor_email_falls_back_to_the_catalog(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let carol = user("email-carol");
@@ -257,7 +257,7 @@ async fn the_actor_email_falls_back_to_the_catalog(pool: PgPool) {
 
 /// An actor for a record raised outside the request's own records takes the email known
 /// without a database read: the token's when it is the user's, otherwise the user cache's.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_principal_outside_the_request_takes_the_known_email(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let (alice, bob, carol) = (user("known-alice"), user("known-bob"), user("known-carol"));
@@ -286,7 +286,7 @@ async fn a_principal_outside_the_request_takes_the_known_email(pool: PgPool) {
 }
 
 /// Subjects get their emails; one without a user row or without an email gets no field.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn decision_subjects_carry_their_emails(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let bob = user("email-bob");
@@ -313,7 +313,7 @@ async fn decision_subjects_carry_their_emails(pool: PgPool) {
 }
 
 /// Grant records carry the recipient's email; a role recipient never has one.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn grant_records_carry_the_recipients_email(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let bob = user("email-grantee");
@@ -348,7 +348,7 @@ async fn grant_records_carry_the_recipients_email(pool: PgPool) {
 
 /// The principals an `apply_grants` record lists carry their emails, like every other
 /// place a user is named.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_grants_principals_carry_their_emails(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let bob = user("email-apply-bob");
@@ -393,7 +393,7 @@ async fn apply_grants_principals_carry_their_emails(pool: PgPool) {
 }
 
 /// A subtree request about one user names them in `principal` with their email.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn subtree_principal_carries_its_email(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let bob = user("email-subtree-bob");
@@ -426,7 +426,7 @@ async fn subtree_principal_carries_its_email(pool: PgPool) {
 
 /// A role a record names carries its provider and source next to its id, on decisions,
 /// on `apply_grants` and on grant records.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn roles_carry_their_provider_and_source(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let mut caller = RequestMetadata::test_user(user("role-caller"));
@@ -502,7 +502,7 @@ async fn roles_carry_their_provider_and_source(pool: PgPool) {
 
 /// Several roles are looked up together, each under its own id, whatever the order and
 /// however often it is asked for; a role that does not exist is left out.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn role_sources_are_looked_up_together(pool: PgPool) {
     let f = Fixture::new(pool, None).await;
     let mut caller = RequestMetadata::test_user(user("role-batch-caller"));
@@ -560,7 +560,7 @@ impl EventCatalog for FailingCatalog {
 }
 
 /// A failed lookup still writes the record, without the emails it could not find.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_failed_lookup_writes_the_record_without_emails(pool: PgPool) {
     let f = Fixture::new(pool, Some(Arc::new(FailingCatalog))).await;
     let bob = user("email-down");

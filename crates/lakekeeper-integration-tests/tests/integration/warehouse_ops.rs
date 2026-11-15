@@ -24,7 +24,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 /// Test basic warehouse creation
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -68,7 +68,7 @@ async fn test_create_warehouse(pool: PgPool) {
 }
 
 /// Test creating warehouse with storage secret
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse_with_secret(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -112,7 +112,7 @@ async fn test_create_warehouse_with_secret(pool: PgPool) {
 }
 
 /// Test that creating warehouse with duplicate name fails
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse_duplicate_name(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -149,7 +149,7 @@ async fn test_create_warehouse_duplicate_name(pool: PgPool) {
     ));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_warehouse_by_id(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -176,7 +176,7 @@ async fn test_get_warehouse_by_id(pool: PgPool) {
     assert_eq!(warehouse.name, warehouse_resp.warehouse_name);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_warehouse_by_id_not_found(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -202,7 +202,7 @@ async fn test_get_warehouse_by_id_not_found(pool: PgPool) {
     assert!(warehouse.is_none());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_require_warehouse_by_id(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -239,7 +239,7 @@ async fn test_require_warehouse_by_id(pool: PgPool) {
     assert!(result.is_none());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_warehouse_by_name(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -269,7 +269,7 @@ async fn test_get_warehouse_by_name(pool: PgPool) {
     assert_eq!(warehouse.warehouse_id, warehouse_resp.warehouse_id);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_warehouse_by_name_not_found(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -296,7 +296,7 @@ async fn test_get_warehouse_by_name_not_found(pool: PgPool) {
     assert!(warehouse.is_none());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_warehouses(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -332,7 +332,7 @@ async fn test_list_warehouses(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_warehouses_include_inactive(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -384,7 +384,7 @@ async fn test_list_warehouses_include_inactive(pool: PgPool) {
     assert_eq!(all_warehouses.len(), 2);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_warehouse_not_found(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -413,7 +413,7 @@ async fn test_rename_warehouse_not_found(pool: PgPool) {
     ));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_set_warehouse_status(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -494,7 +494,7 @@ async fn test_set_warehouse_status(pool: PgPool) {
     assert_eq!(warehouse.status, WarehouseStatus::Inactive);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_set_warehouse_status_reactivate(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -549,7 +549,7 @@ async fn test_set_warehouse_status_reactivate(pool: PgPool) {
     assert_eq!(*warehouse.version, *version + 1);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_set_warehouse_deletion_profile(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -602,7 +602,7 @@ async fn test_set_warehouse_deletion_profile(pool: PgPool) {
     assert_eq!(*warehouse.version, 1);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_storage_profile(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -651,7 +651,7 @@ async fn test_update_storage_profile(pool: PgPool) {
     assert_eq!(*warehouse.version, 1);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_set_warehouse_protection(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -706,7 +706,7 @@ async fn test_set_warehouse_protection(pool: PgPool) {
 }
 
 /// Test operations on non-existent warehouse return appropriate errors
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_operations_on_nonexistent_warehouse(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -766,7 +766,7 @@ async fn test_operations_on_nonexistent_warehouse(pool: PgPool) {
     assert!(result.is_err());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_warehouse_cache_populated_by_get_id(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -815,7 +815,7 @@ async fn test_warehouse_cache_populated_by_get_id(pool: PgPool) {
     assert_eq!(warehouse2.name, warehouse.name);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_warehouse_cache_populated_by_list(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -857,7 +857,7 @@ async fn test_warehouse_cache_populated_by_list(pool: PgPool) {
 }
 
 /// Test cache respects version
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_respects_min_version(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -941,7 +941,7 @@ async fn set_delete_profile_on_another_instance(
     transaction.commit_as_another_instance().await.unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1001,7 +1001,7 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_by_name_uses_cache(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1054,7 +1054,7 @@ async fn test_get_by_name_uses_cache(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_version_not_updated_if_nothing_changed(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1111,7 +1111,7 @@ async fn test_version_not_updated_if_nothing_changed(pool: PgPool) {
 
 // ==================== Cache Invalidation Tests using ApiServer ====================
 /// Test cache invalidation when renaming warehouse via `ApiServer`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_invalidation_on_api_rename(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1174,7 +1174,7 @@ async fn test_cache_invalidation_on_api_rename(pool: PgPool) {
 }
 
 /// Test cache invalidation when updating warehouse storage via `ApiServer`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_invalidation_on_api_update_storage(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1230,7 +1230,7 @@ async fn test_cache_invalidation_on_api_update_storage(pool: PgPool) {
 }
 
 /// Test cache invalidation when updating delete profile via `ApiServer`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_invalidation_on_api_update_delete_profile(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1294,7 +1294,7 @@ async fn test_cache_invalidation_on_api_update_delete_profile(pool: PgPool) {
 
 /// Test that the per-warehouse format version policy can be set via the API and
 /// is persisted and reflected in the cache.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_format_version_policy(pool: PgPool) {
     use iceberg::spec::FormatVersion;
 
@@ -1359,7 +1359,7 @@ async fn test_update_format_version_policy(pool: PgPool) {
 }
 
 /// Test that a default version outside the allowed set is rejected.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_format_version_policy_invalid_default(pool: PgPool) {
     use iceberg::spec::FormatVersion;
 
@@ -1392,7 +1392,7 @@ async fn test_update_format_version_policy_invalid_default(pool: PgPool) {
 /// the storage layer): only an instance admin may set/clear the marker, a
 /// managed warehouse's spec is locked even when the resource authorizer allows
 /// the action (AllowAll here), and clearing the marker restores mutability.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_managed_by_locks_spec_via_handlers(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1474,7 +1474,7 @@ async fn test_managed_by_locks_spec_via_handlers(pool: PgPool) {
 
 /// A warehouse may only be *born* managed if the caller is an instance admin;
 /// a non-admin creating a managed warehouse is rejected before it exists.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_managed_warehouse_requires_instance_admin(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -1535,7 +1535,7 @@ async fn test_create_managed_warehouse_requires_instance_admin(pool: PgPool) {
 /// Guards against a new mutation endpoint silently skipping the lock — the
 /// `is_spec_mutation` classification and the per-handler guard call must not
 /// drift apart.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_all_spec_mutations_blocked_on_managed_warehouse(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1638,7 +1638,7 @@ async fn test_all_spec_mutations_blocked_on_managed_warehouse(pool: PgPool) {
 
 /// The owners of a managed warehouse keep its soft-deletion settings and its
 /// format-version policy: a non-admin whom the authorizer allows changes both.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_owners_change_soft_deletion_and_format_versions_on_managed_warehouse(pool: PgPool) {
     use iceberg::spec::FormatVersion;
 
@@ -1699,7 +1699,7 @@ async fn test_owners_change_soft_deletion_and_format_versions_on_managed_warehou
 
 /// A caller-supplied `warehouse-id` is honoured verbatim, and an omitted one is
 /// assigned by the server as a UUIDv7.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse_with_requested_id(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -1764,7 +1764,7 @@ async fn test_create_warehouse_with_requested_id(pool: PgPool) {
 
 /// A requested id already in use is a 409, and the error discloses nothing about
 /// the warehouse holding it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse_requested_id_conflict(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -1821,7 +1821,7 @@ async fn test_create_warehouse_requested_id_conflict(pool: PgPool) {
 
 /// The uniqueness of warehouse ids is instance-wide, not per project: an id held
 /// in another project is still refused.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse_requested_id_conflict_across_projects(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -1889,7 +1889,7 @@ async fn test_create_warehouse_requested_id_conflict_across_projects(pool: PgPoo
 /// holds the predecessor can briefly resolve the id to it. `create_warehouse`
 /// invalidates locally, which covers the single-replica case this test exercises;
 /// across replicas the stale entry lives until its TTL.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse_reuses_id_after_delete(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -1942,7 +1942,7 @@ async fn test_create_warehouse_reuses_id_after_delete(pool: PgPool) {
 
 /// Two concurrent creates racing for the same requested id: exactly one wins and
 /// the loser gets the conflict, rather than both appearing to succeed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse_concurrent_requested_id(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()
@@ -1995,7 +1995,7 @@ async fn test_create_warehouse_concurrent_requested_id(pool: PgPool) {
 /// indefinitely. Best-effort by design: the delete happens after the commit, so
 /// a failure leaves the credential orphaned rather than failing a delete that
 /// already succeeded.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_warehouse_deletes_its_storage_secret(pool: PgPool) {
     use lakekeeper::service::{SecretStore as _, storage::StorageCredential};
 
@@ -2075,7 +2075,7 @@ async fn test_delete_warehouse_deletes_its_storage_secret(pool: PgPool) {
 /// follows a conflict cannot remove it — the create path has to. Uses a requested
 /// id that is already taken, the cheapest failure that happens *after* the
 /// credential is stored.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_warehouse_conflict_deletes_the_new_secret(pool: PgPool) {
     use lakekeeper::service::{SecretStore as _, storage::StorageCredential};
 

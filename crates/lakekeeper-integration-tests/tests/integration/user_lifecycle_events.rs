@@ -161,7 +161,7 @@ fn admin() -> RequestMetadata {
     RequestMetadata::test_user(UserId::new_unchecked("oidc", "admin"))
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn create_update_and_delete_each_fire_one_event(pool: PgPool) {
     let mut f = Fixture::new(pool).await;
     let bob = UserId::new_unchecked("oidc", "bob");
@@ -200,7 +200,7 @@ async fn create_update_and_delete_each_fire_one_event(pool: PgPool) {
     f.none().await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn writes_that_change_nothing_or_fail_fire_nothing(pool: PgPool) {
     let mut f = Fixture::new(pool).await;
     let bob = UserId::new_unchecked("oidc", "bob");
@@ -232,7 +232,7 @@ async fn writes_that_change_nothing_or_fail_fire_nothing(pool: PgPool) {
     f.none().await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn self_provisioning_fires_once(pool: PgPool) {
     let mut f = Fixture::new(pool).await;
     let alice = UserId::new_unchecked("oidc", "alice");
@@ -247,7 +247,7 @@ async fn self_provisioning_fires_once(pool: PgPool) {
     f.none().await;
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn role_provider_syncs_fire_for_the_users_they_write(pool: PgPool) {
     let mut f = Fixture::new(pool).await;
     let carol = Arc::new(UserId::new_unchecked("oidc", "carol"));

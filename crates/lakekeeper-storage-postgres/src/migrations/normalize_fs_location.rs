@@ -372,7 +372,7 @@ mod tests {
     }
 
     /// The hook trims a stored trailing slash and validates the constraint.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_hook_trims_a_stored_trailing_slash(pool: PgPool) {
         let (_, ids) = tabulars(&pool, 1).await;
         store_location_unchecked(&pool, ids[0], "bkt/t0/").await;
@@ -399,7 +399,7 @@ mod tests {
 
     /// The constraint governs writes from the moment the migration attaches it,
     /// before the hook has validated it.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_attached_constraint_rejects_a_trailing_slash(pool: PgPool) {
         let (_, ids) = tabulars(&pool, 1).await;
 
@@ -420,7 +420,7 @@ mod tests {
     ///
     /// This is the case the migration itself causes: `bkt/t0` and `bkt/t0/` resolve
     /// to two tabulars today.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_trim_that_would_share_a_location_fails_the_migration(pool: PgPool) {
         let (_, ids) = tabulars(&pool, 2).await;
         store_location_unchecked(&pool, ids[1], "bkt/t0/").await;
@@ -452,7 +452,7 @@ mod tests {
     /// Not this migration's doing: they resolve before it and after it. A table's
     /// commit never consults the collision check, so failing the upgrade would
     /// strand a catalog over a state the upgrade does not touch.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn an_existing_shared_location_does_not_fail_the_migration(pool: PgPool) {
         let (_, ids) = tabulars(&pool, 2).await;
         sqlx::query("UPDATE tabular SET fs_location = 'bkt/t0' WHERE tabular_id = $1")
@@ -469,7 +469,7 @@ mod tests {
 
     /// One location containing another is found and reported, but does not fail the
     /// migration -- moving either tabular resolves it, and both stay readable.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_nested_location_is_reported_without_failing_the_migration(pool: PgPool) {
         let (warehouse_id, ids) = tabulars(&pool, 2).await;
         sqlx::query("UPDATE tabular SET fs_location = 'bkt/t0/inner' WHERE tabular_id = $1")
@@ -501,7 +501,7 @@ mod tests {
     ///
     /// Both directions in one test: asserting only the empty case would be
     /// satisfied by a detector that finds nothing at all.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_backslash_is_not_read_as_an_escape(pool: PgPool) {
         let (warehouse_id, ids) = tabulars(&pool, 3).await;
         for (id, location) in [
