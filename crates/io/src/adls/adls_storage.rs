@@ -911,6 +911,11 @@ async fn append_chunk(
     chunk: Bytes,
     path: &str,
 ) -> Result<(), WriteError> {
+    // ADLS rejects an append of zero bytes, and an empty chunk leaves the file
+    // as it is.
+    if chunk.is_empty() {
+        return Ok(());
+    }
     let chunk_len = chunk.len();
     client.append(offset, chunk).await.map(|_| ()).map_err(|e| {
         WriteError::IOError(parse_error(e, path).with_context(format!(

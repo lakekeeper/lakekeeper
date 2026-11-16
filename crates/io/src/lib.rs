@@ -1504,13 +1504,14 @@ where
         }
         return Ok(bytes);
     }
-    let rest_size = usize::try_from(total_size - window_size as u64).map_err(|_| {
+    let total = usize::try_from(total_size).map_err(|_| {
         ReadError::IOError(IOError::new(
             ErrorKind::ConditionNotMatch,
             format!("Object size {total_size} too large for this platform"),
             location.to_string(),
         ))
     })?;
+    let rest_size = total - window_size;
     parallel_chunked_read(
         window,
         window_size,

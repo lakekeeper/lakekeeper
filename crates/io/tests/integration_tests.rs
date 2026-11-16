@@ -1182,12 +1182,6 @@ async fn test_empty_files_impl(
     let meta = storage.metadata(&test_path).await?;
     assert_eq!(read.info.e_tag(), meta.e_tag());
 
-    // ToDo: Revisit with new Azure storage. Azure blob client currently
-    // can't delete empty files, which fails with: <Error><Code>InvalidRange</Code><Message>The range specified is invalid for the current size of the resource
-    if is_adls(storage) {
-        storage.write(&test_path, Bytes::from_static(b"x")).await?;
-    }
-
     // Clean up
     storage.delete(&test_path).await?;
 

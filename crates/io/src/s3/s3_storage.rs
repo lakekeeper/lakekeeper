@@ -831,15 +831,16 @@ async fn read_object(
     version: Option<&str>,
 ) -> Result<ObjectRead, ReadError> {
     let head_response = head(client, s3_location, version).await?;
-    let content_length = head_response.content_length().unwrap_or(0);
-    let file_size = validate_file_size(content_length, s3_location.as_str())?;
-
-    if file_size == 0 {
+    // Without a reported length the size is unknown, not zero: the full `GET`
+    // below reads whatever the object holds.
+    if head_response.content_length() == Some(0) {
         return Ok(ObjectRead {
             bytes: Bytes::new(),
             info: head_file_info(s3_location, &head_response),
         });
     }
+    let content_length = head_response.content_length().unwrap_or(0);
+    let file_size = validate_file_size(content_length, s3_location.as_str())?;
     if file_size >= MAX_BYTES_PER_REQUEST {
         // The chunks are pinned to the object the `head` describes, so its
         // metadata describes the bytes.
@@ -2686,6 +2687,28 @@ mod tests {
         assert_eq!(read.info.size(), Some(0));
         assert_eq!(read.info.e_tag(), Some("\"v1\""));
         assert_eq!(*requests.lock().unwrap(), ["GET", "HEAD"]);
+    }
+
+    #[tokio::test]
+    async fn a_head_without_a_length_falls_back_to_a_full_get() {
+        let (storage, requests) = storage_serving(vec![
+            object_response("200 OK", "", "hello"),
+            format!(
+                "HTTP/1.1 200 OK
+ETag: \"v1\"
+Last-Modified: {LAST_MODIFIED}
+Connection: close
+
+"
+            ),
+            object_response("200 OK", "", "hello"),
+        ])
+        .await;
+
+        let read = storage.read(PATH).await.unwrap();
+
+        assert_eq!(read.bytes, Bytes::from_static(b"hello"));
+        assert_eq!(*requests.lock().unwrap(), ["GET", "HEAD", "GET"]);
     }
 
     #[tokio::test]
