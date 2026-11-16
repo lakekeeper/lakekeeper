@@ -794,7 +794,7 @@ pub mod tests {
  )).unwrap()
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn create_view(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -920,7 +920,7 @@ pub mod tests {
     /// A view whose current-version schema lost its `schema_field` rows (anchors intact) must fail
     /// loud on load rather than serve a truncated/empty current schema. Only the current schema is
     /// guarded — legitimately zero-column historical schemas still load (seeded empty).
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn load_view_fails_loud_when_current_schema_rows_missing(pool: sqlx::PgPool) {
         let (_state, created_meta, warehouse_id, _, _, _, _) = prepare_view(pool.clone()).await;
         let view_uuid = created_meta.uuid();
@@ -943,7 +943,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn drop_view_unconditionally(pool: sqlx::PgPool) {
         let (state, created_meta, warehouse_id, _, _, _, _) = prepare_view(pool).await;
         let mut tx: sqlx::Transaction<'_, sqlx::Postgres> =
@@ -971,7 +971,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn drop_view_correct_location(pool: sqlx::PgPool) {
         let (state, created_meta, warehouse_id, _, _, metadata_location, _) =
             prepare_view(pool).await;
@@ -998,7 +998,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_view_metadata_mismatch(pool: sqlx::PgPool) {
         let (state, created_meta, warehouse_id, _, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
@@ -1016,7 +1016,7 @@ pub mod tests {
         assert!(matches!(err, DropTabularError::ConcurrentUpdateError(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn soft_drop_view(pool: sqlx::PgPool) {
         let (state, created_meta, warehouse_id, _, _, _, project_id) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
@@ -1075,7 +1075,7 @@ pub mod tests {
         tx.commit().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn view_exists(pool: sqlx::PgPool) {
         let (state, _created_meta, warehouse_id, namespace, name, _, _) = prepare_view(pool).await;
         let view_ident = TableIdent {
@@ -1109,7 +1109,7 @@ pub mod tests {
         assert_eq!(non_exists.len(), 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn drop_view_not_existing(pool: sqlx::PgPool) {
         let (state, _, warehouse_id, _, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
@@ -1126,7 +1126,7 @@ pub mod tests {
         assert!(matches!(e, DropTabularError::TabularNotFound(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_view_case_insensitive_lookup(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -1197,7 +1197,7 @@ pub mod tests {
         assert!(matches!(err, CreateViewError::TabularAlreadyExists(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn commit_existing_view_detects_stale_previous_metadata_location(pool: PgPool) {
         let (state, metadata, warehouse_id, namespace, _, metadata_location, _) =
             prepare_view(pool).await;
@@ -1237,7 +1237,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn commit_existing_view_returns_tabular_not_found_when_view_absent(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -1283,7 +1283,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn commit_existing_view_rejects_colliding_location(pool: PgPool) {
         // First view at the location used by `prepare_view`
         // (`s3://my_bucket/my_table/metadata/bar`).
@@ -1343,7 +1343,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn commit_existing_view_cleans_old_sub_metadata(pool: PgPool) {
         // Asserts the version-family cascade works end-to-end (a weakened CASCADE off view_version
         // would make the second populate hit a PK collision) and that the persisted schema set
@@ -1547,7 +1547,7 @@ pub mod tests {
 
     /// Create a view with a non-trivial schema (nested struct + list), load it,
     /// and assert the loaded `ViewMetadata.schemas` equals the input exactly.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn normalized_create_load_roundtrip(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -1638,7 +1638,7 @@ pub mod tests {
     /// Create a view with schema A (field_ids {1,2,3}); commit NEW metadata that
     /// retains A and adds schema B (field_id 4). Assert tabular_field exactly
     /// equals {1,2,3,4} and both schema versions assemble correctly.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn normalized_commit_adds_schema_stable_spine(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -1763,7 +1763,7 @@ pub mod tests {
     /// Commit that drops a schema: GC reaps tabular_field for removed fields.
     /// Create view with schemas {A(fields 1,2), B(fields 1,3)}. Commit retaining
     /// only A. Assert tabular_field == {1,2} and schema_field for B is gone.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn normalized_commit_drops_schema_gc(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;

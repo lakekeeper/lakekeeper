@@ -2643,7 +2643,7 @@ mod tests {
 
     // ─── schema constraints ───────────────────────────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn accepts_server_grant(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         sqlx::query(
@@ -2656,7 +2656,7 @@ mod tests {
         .expect("server grant inserts");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_server_grant_to_a_role(pool: PgPool) {
         let role_id = seed_role(&pool).await;
         let err = sqlx::query(
@@ -2673,7 +2673,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_namespace_grant_without_warehouse(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let err = sqlx::query(
@@ -2691,7 +2691,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_two_principals_on_one_grant(pool: PgPool) {
         // Sets both principal columns.
         let user = seed_user(&pool, "oidc~alice").await;
@@ -2712,7 +2712,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_principal_type_mismatch(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let project_id = seed_project(&pool).await;
@@ -2732,7 +2732,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn unique_rejects_duplicate(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let insert = || {
@@ -2755,7 +2755,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_overlong_privilege(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let err = sqlx::query(
@@ -2772,7 +2772,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_unknown_resource_type(pool: PgPool) {
         // The enum type rejects the value before any constraint runs, so an unknown
         // resource kind can never reach a row. 22P02 is invalid_text_representation.
@@ -2792,7 +2792,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_unknown_principal_type(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let err = sqlx::query(
@@ -2812,7 +2812,7 @@ mod tests {
 
     // ─── apply / list ─────────────────────────────────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn apply_reports_the_exact_delta_and_is_idempotent(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let spec = user_spec(&user, GrantResource::Server, "admin");
@@ -2858,7 +2858,7 @@ mod tests {
 
     /// A server grant is the one level that populates no resource column, so its
     /// round trip exercises a distinct read path from every other level.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_server_grant_round_trips_through_apply_and_list(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let spec = user_spec(&user, GrantResource::Server, "admin");
@@ -2884,7 +2884,7 @@ mod tests {
         assert!(grants[0].created_at.is_some());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_missing_user_is_named(pool: PgPool) {
         let spec = user_spec("oidc~ghost", GrantResource::Server, "admin");
         let mut txn = pool.begin().await.unwrap();
@@ -2902,7 +2902,7 @@ mod tests {
     /// a tabular's kind — the disagreement is inexpressible rather than rejected. The
     /// same privilege on the same tabular is one row however it was addressed, and it
     /// always reads back as the kind the tabular actually is.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_grant_on_a_tabular_takes_the_tabulars_own_kind(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2987,7 +2987,7 @@ mod tests {
 
     /// Revokes are issued one statement per distinct resource. A diff spanning two
     /// resources must still remove exactly the grants it names.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_revoke_spanning_two_resources_removes_both(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3046,7 +3046,7 @@ mod tests {
     /// needs for its own foreign-key waits must not outlive it. The diff path sets the
     /// same transaction-local `lock_timeout` and deliberately keeps it — asserted here as
     /// the contrast.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn bootstrapping_grants_leaves_the_transaction_settings_alone(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3097,7 +3097,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_diff_that_revokes_and_regrants_ends_granted(pool: PgPool) {
         // Deletes run before inserts, so the same privilege appearing on both sides
         // resolves to granted rather than revoked.
@@ -3167,7 +3167,7 @@ mod tests {
     /// wait on each other's uncommitted rows until the deadlock detector killed one.
     /// Probed with `pg_try_advisory_xact_lock`, which reports contention instead of
     /// waiting for it.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn applying_a_diff_holds_the_resource_lock_until_commit(pool: PgPool) {
         let alice = seed_user(&pool, "oidc~alice").await;
         let spec = user_spec(&alice, GrantResource::Server, "admin");
@@ -3217,7 +3217,7 @@ mod tests {
     /// The SQLSTATEs must actually reach that mapping. Asserting the rendering alone
     /// would let a typo'd code ship as a 503 that reads as "backend unavailable", which
     /// tells a client to give up rather than retry.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn lock_contention_sqlstates_map_to_the_retriable_error(pool: PgPool) {
         // `lock_timeout` elapsing on the advisory lock. Provoked for real: hold the
         // lock in one transaction, then try to take it in another with a short bound.
@@ -3260,7 +3260,7 @@ mod tests {
     /// is what proves none of them leaks: a mis-bound parameter surfaces as a
     /// neighbour's grant rather than as an error. A second user and an ungranted role
     /// pin the principal narrowing; the decoy resources pin the chain narrowing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_returns_exactly_the_requested_chain(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3387,7 +3387,7 @@ mod tests {
 
     /// One read for several principals returns each grant under the principal that holds
     /// it, so a caller may split the result by grantee.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_attributes_each_grant_to_its_grantee(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, _warehouse_id) =
@@ -3466,7 +3466,7 @@ mod tests {
     /// than the id array beside it. They must stay independent `= ANY` sets: zipping them
     /// positionally would drop every object after the first. Two namespaces and two tables
     /// in one warehouse is the shape that shows it.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_matches_every_object_in_one_warehouse(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3513,7 +3513,7 @@ mod tests {
         assert_eq!(fetched, resources);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_cross_warehouse_id_match_is_dropped_not_echoed(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3565,7 +3565,7 @@ mod tests {
     /// keyed code. `namespace_id` is globally unique today, so the cross-request can
     /// only name a pair that does not exist — but the contract accepts arbitrary
     /// resource lists, and the map keying is the only thing enforcing the tightening.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_cross_warehouse_namespace_match_is_dropped_not_echoed(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3622,7 +3622,7 @@ mod tests {
     /// The evaluation fetch includes grants on soft-deleted tabulars — undrop needs its
     /// authorization intact. A hygiene `deleted_at` filter added here would break that
     /// silently, so the documented contract is pinned.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_includes_grants_on_soft_deleted_tabulars(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3659,7 +3659,7 @@ mod tests {
     /// A principal's own grants and their roles' grants arrive in one fetch: the caller
     /// passes the effective set and the two arms of the principal predicate — which read
     /// different columns — must both contribute.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_unions_a_users_grants_with_their_roles(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3894,7 +3894,7 @@ mod tests {
     /// The warehouses and the namespaces are asked together, then each alone, so every
     /// statement sees every principal. W2's `A` has the path of W1's `A`: a grant read in
     /// the wrong warehouse shows.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn containers_with_grants_below_count_live_grants_strictly_below(pool: PgPool) {
         let BelowWorld {
             p,
@@ -4088,7 +4088,7 @@ mod tests {
 
     /// The trigger stores the path of the granted object, also over a path the insert
     /// supplies, byte for byte as the object stores it. Other grants get none.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_trigger_copies_the_path_of_the_granted_object(pool: PgPool) {
         let w = seed_path_world(&pool).await;
         w.grant(&pool).await;
@@ -4138,7 +4138,7 @@ mod tests {
 
     /// A grant on a namespace that does not exist fails in the trigger and reports the target
     /// as not found.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_grant_on_a_missing_target_is_reported_as_not_found(pool: PgPool) {
         let w = seed_path_world(&pool).await;
         let mut transaction = pool.begin().await.unwrap();
@@ -4154,7 +4154,7 @@ mod tests {
 
     /// Renames, also of the letter case alone, and table moves rewrite the copied path;
     /// deletes remove the grants.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_copied_path_follows_renames_moves_and_deletes(pool: PgPool) {
         let w = seed_path_world(&pool).await;
         w.grant(&pool).await;
@@ -4228,7 +4228,7 @@ mod tests {
     /// Older rows can store a child's path with its parent's name in other letter case. The
     /// grants below still count for the parent, and a case-only rewrite of the child reaches
     /// its grants.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_child_stored_in_other_letter_case_counts_below_its_parent(pool: PgPool) {
         let w = seed_path_world(&pool).await;
         w.grant(&pool).await;
@@ -4371,7 +4371,7 @@ mod tests {
     /// The two narrowing parameters sit between the resource columns and the keyset in
     /// the statement, so a mis-numbered bind would show up here as rows from the wrong
     /// principal rather than as an error.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn resource_listing_narrows_to_one_principal(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, _) = initialize_warehouse(state, None, None, None, true).await;
@@ -4421,7 +4421,7 @@ mod tests {
     /// resource it names. Grants on warehouses, projects and tag definitions each
     /// take a different join, so a listing that only joined warehouses would
     /// silently drop the other two.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn principal_listing_covers_every_project_scoped_resource(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -4500,7 +4500,7 @@ mod tests {
     /// A soft-deleted table still has its row, so its grants survive for undrop.
     /// They must not surface in a principal's access list while the table is in the
     /// trash.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn principal_listing_hides_grants_on_soft_deleted_tables(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -4559,7 +4559,7 @@ mod tests {
         assert_eq!(page.grants.len(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn listing_paginates_on_a_stable_keyset(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let specs: Vec<_> = ["a", "b", "c"]
@@ -4592,7 +4592,7 @@ mod tests {
         assert_eq!(seen, vec!["a", "b", "c"]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn deleting_a_user_removes_their_grants(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let other = seed_user(&pool, "oidc~bob").await;

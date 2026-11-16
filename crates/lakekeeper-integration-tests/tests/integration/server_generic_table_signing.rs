@@ -408,7 +408,7 @@ fn assert_forbidden(err: &IcebergErrorResponse) {
 
 /// Warehouse-scoped signer for every method the signer maps to an operation: `GET` and
 /// `HEAD` (read), `PUT` (write) and `DELETE`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_warehouse_scoped(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let base_location =
@@ -428,7 +428,7 @@ async fn test_sign_generic_table_warehouse_scoped(pool: PgPool) {
 /// Table-scoped signer with the generic table's id, which resolves only because the
 /// signer probes all tabular types rather than assuming an Iceberg table. The
 /// per-method behaviour is shared with the warehouse-scoped route and covered above.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_table_scoped(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let base_location =
@@ -446,7 +446,7 @@ async fn test_sign_generic_table_table_scoped(pool: PgPool) {
 /// PyIceberg <= 0.9.1 reuses the signer URI of the first sign call for every
 /// subsequent call, so the id in the path may belong to a different tabular than the
 /// requested location. The location fallback must still resolve the URI's owner.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_falls_back_to_location_on_foreign_id(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let base_location =
@@ -466,7 +466,7 @@ async fn test_sign_generic_table_falls_back_to_location_on_foreign_id(pool: PgPo
 
 /// Without `write_data` on the generic table, mutating operations are rejected
 /// while reads keep working.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_requires_write_data(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
@@ -492,7 +492,7 @@ async fn test_sign_generic_table_requires_write_data(pool: PgPool) {
     assert_signed(&response);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_table_scoped_requires_write_data(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
@@ -518,7 +518,7 @@ async fn test_sign_generic_table_table_scoped_requires_write_data(pool: PgPool) 
 
 /// Without `read_data` on the generic table, reads are rejected while writes keep
 /// working.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_requires_read_data(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
@@ -541,7 +541,7 @@ async fn test_sign_generic_table_requires_read_data(pool: PgPool) {
 
 /// Bulk deletes reach the signer as `POST /{bucket}?delete` rather than as `DELETE`,
 /// and are authorized as writes like any other delete.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_batch_delete(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
@@ -567,7 +567,7 @@ async fn test_sign_generic_table_batch_delete(pool: PgPool) {
 }
 
 /// Every key of a bulk delete is validated, not just the one that resolved the table.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_batch_delete_rejects_foreign_key(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let base_location =
@@ -589,7 +589,7 @@ async fn test_sign_generic_table_batch_delete_rejects_foreign_key(pool: PgPool) 
 /// Prefix listing (`SupportsPrefixOperations`, used by Spark's `remove_orphan_files` with
 /// `prefix_listing => true`) reaches the signer as a bucket-level `ListObjectsV2`. The table
 /// is identified by the `prefix` query parameter, and listing is authorized as a read.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_list_prefix(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
@@ -630,7 +630,7 @@ async fn test_sign_generic_table_list_prefix(pool: PgPool) {
 /// S3 matches list prefixes as raw strings, so the bare table location also returns the keys
 /// of a sibling table whose location starts with the same string. Only a prefix that reaches
 /// past the table's path separator is confined to the table.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_list_prefix_requires_a_directory_prefix(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let (_table_id, location) =
@@ -659,7 +659,7 @@ async fn test_sign_list_prefix_requires_a_directory_prefix(pool: PgPool) {
 
 /// A list that is not scoped to a prefix would walk the whole bucket, and one scoped above
 /// the table resolves no table at all.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_list_prefix_rejects_unscoped_and_foreign_prefixes(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
@@ -689,7 +689,7 @@ async fn test_sign_list_prefix_rejects_unscoped_and_foreign_prefixes(pool: PgPoo
 }
 
 /// Iceberg tables share the list-prefix path with generic tables, on both signer routes.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_iceberg_table_list_prefix(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let (table_id, location) =
@@ -728,7 +728,7 @@ async fn test_sign_iceberg_table_list_prefix(pool: PgPool) {
 }
 
 /// A caller that cannot even see the generic table must not learn that it exists.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_invisible_is_not_found(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
@@ -748,7 +748,7 @@ async fn test_sign_generic_table_invisible_is_not_found(pool: PgPool) {
 
 /// Iceberg tables share the resolution path with generic tables, but must keep
 /// authorizing against the *table* relations.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_iceberg_table_is_unaffected(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
@@ -775,7 +775,7 @@ async fn test_sign_iceberg_table_is_unaffected(pool: PgPool) {
 }
 
 /// A URI that is not under any tabular's location must still be rejected.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_generic_table_rejects_foreign_location(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
@@ -794,7 +794,7 @@ async fn test_sign_generic_table_rejects_foreign_location(pool: PgPool) {
 
 /// Views are not signable — including through the table-scoped route, which now
 /// resolves ids of any tabular type.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_view_is_not_signable(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let view = create_catalog_view(&ctx, &namespace_name, warehouse_id, "myview").await;
@@ -818,7 +818,7 @@ async fn test_sign_view_is_not_signable(pool: PgPool) {
 ///
 /// Resolution of each individual tabular type is covered end-to-end by the signer
 /// tests above.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_tabular_info_by_uuid_unknown_id(pool: PgPool) {
     let (ctx, _namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
 
@@ -834,7 +834,7 @@ async fn test_get_tabular_info_by_uuid_unknown_id(pool: PgPool) {
     assert!(resolved.is_none(), "unknown ids must not resolve");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_load_advertises_remote_signing(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
@@ -897,7 +897,7 @@ async fn test_generic_table_load_advertises_remote_signing(pool: PgPool) {
 /// A client asking for vended credentials against a warehouse that cannot vend them must get no
 /// `storage-credentials` entry at all. An entry holding only region/endpoint makes clients scope a
 /// key-less secret to the table prefix and stop signing requests for the files below it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_load_omits_credentials_when_nothing_is_vended(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
@@ -945,7 +945,7 @@ async fn test_generic_table_load_omits_credentials_when_nothing_is_vended(pool: 
 /// The spec's per-table signer route (`…/tables/{table}/sign`), which adopting
 /// `remote-signing-config` obliges us to serve since that config carries no
 /// endpoint of its own.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_by_table_name(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let (_table_id, location) =
@@ -969,7 +969,7 @@ async fn test_sign_by_table_name(pool: PgPool) {
 /// A name that resolves to nothing still signs: the route falls back to
 /// resolving the table from the request location, as the id route does for an
 /// unknown id.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_by_table_name_falls_back_to_the_request_location(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let (_table_id, location) =
@@ -994,7 +994,7 @@ async fn test_sign_by_table_name_falls_back_to_the_request_location(pool: PgPool
 /// request URI must still fall under that table's location. A URI outside it is
 /// resolved by location instead, and is refused when no tabular owns it — the
 /// same guard the id route applies.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_by_table_name_cross_checks_the_request_location(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     create_catalog_table(&ctx, &namespace_name, warehouse_id, "named_table").await;
@@ -1020,7 +1020,7 @@ async fn test_sign_by_table_name_cross_checks_the_request_location(pool: PgPool)
 
 /// `provider` is absent-means-s3 per the spec. Anything else must be refused
 /// rather than quietly signed as S3.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_sign_rejects_a_foreign_provider(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     let (table_id, location) =
@@ -1060,7 +1060,7 @@ async fn test_sign_rejects_a_foreign_provider(pool: PgPool) {
 /// signer resolves the table from the request path, so there is nothing for the
 /// client to echo back. Whether it appears at all is decided — and tested — where
 /// the storage profile builds the table config.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_advertises_remote_signing_config(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     create_catalog_table(&ctx, &namespace_name, warehouse_id, "advertised").await;
@@ -1111,7 +1111,7 @@ async fn test_load_table_advertises_remote_signing_config(pool: PgPool) {
 
 /// A view response carries no signer keys and no storage config, even if the client asks
 /// for remote signing. The signer refuses views anyway.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_advertises_no_remote_signing(pool: PgPool) {
     let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
     create_catalog_view(&ctx, &namespace_name, warehouse_id, "myview").await;
@@ -1224,7 +1224,7 @@ mod s3_compat_integration_tests {
     /// different `Range`, and the AWS SDK v2 counts each attempt in
     /// `amz-sdk-request`. Both come in title case from the SDK, and the store must
     /// still accept the signature.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cached_signature_serves_another_range(pool: PgPool) {
         let (profile, cred) = s3_compatible_profile();
         let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(

@@ -563,7 +563,7 @@ mod test {
     use super::*;
     use crate::{CatalogState, PostgresBackend, PostgresTransaction};
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -650,7 +650,7 @@ mod test {
         assert!(matches!(err, CreateRoleError::RoleNameAlreadyExists(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -712,7 +712,7 @@ mod test {
         assert_eq!(&*updated_role.project_id, &project_id);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_role_conflicts(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -787,7 +787,7 @@ mod test {
         assert!(matches!(err, UpdateRoleError::RoleNameAlreadyExists(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_set_role_source_system(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -907,7 +907,7 @@ mod test {
         assert!(matches!(err, UpdateRoleError::RoleSourceIdConflict(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_roles(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project1_id = ProjectId::new_random();
@@ -1011,7 +1011,7 @@ mod test {
         assert_eq!(roles.roles[0].id, role2_id);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_roles_across_all_projects(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project1_id = ProjectId::new_random();
@@ -1155,7 +1155,7 @@ mod test {
         assert!(!role_ids.contains(&role2_id));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_paginate_roles(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project1_id = ProjectId::new_random();
@@ -1273,7 +1273,7 @@ mod test {
         assert!(roles.next_page_token.is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1339,7 +1339,7 @@ mod test {
 
         assert_eq!(roles.roles.len(), 0);
     }
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_roles_by_id(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1418,7 +1418,7 @@ mod test {
         assert_eq!(roles.roles[0].id, role2_id);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_all_roles_in_project(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1497,7 +1497,7 @@ mod test {
         assert_eq!(roles.roles[0].id, role_id_2);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_roles_respects_project_boundary(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project1_id = ProjectId::new_random();
@@ -1590,7 +1590,7 @@ mod test {
         assert_eq!(roles.roles[0].name, "Role 2");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_roles_filter_by_source_ids(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1689,7 +1689,7 @@ mod test {
         assert_eq!(roles.roles[0].source_id(), &ext_source_2);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_roles_filter_by_role_ids_and_source_filters(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1800,7 +1800,7 @@ mod test {
         assert_eq!(roles.roles[0].id, role2_id);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_search_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1854,7 +1854,7 @@ mod test {
         assert_eq!(customer_hits[0].name, role_name);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_batch_create_roles_with_mixed_optional_fields(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1943,7 +1943,7 @@ mod test {
         assert_eq!(roles[3].source_id().as_str(), role4_id.to_string());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_batch_create_roles_all_none_fields(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -2006,7 +2006,7 @@ mod test {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_batch_create_roles_conflict_in_batch(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -2055,7 +2055,7 @@ mod test {
         assert!(matches!(err, CreateRoleError::RoleNameAlreadyExists(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_batch_create_roles_duplicate_source_id_in_batch(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -2099,7 +2099,7 @@ mod test {
         assert!(matches!(err, CreateRoleError::RoleSourceIdConflict(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_batch_create_single_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -2147,7 +2147,7 @@ mod test {
     /// dropped [`lakekeeper::service::SystemRoleSpec`]. Verifies that the
     /// trait method's filter shape lands the right rows everywhere and
     /// leaves siblings alone.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_roles_cross_project_by_provider_and_source(pool: sqlx::PgPool) {
         use lakekeeper::service::SYSTEM_ROLE_PROVIDER_ID;
 
@@ -2261,7 +2261,7 @@ mod test {
     /// corrupted cross-replica ident→id mapping, which cannot be produced through
     /// public ops or the public `ROLE_CACHE` — it would need seeding the private
     /// role ident index — so it is not covered here.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn get_role_by_ident_reloads_on_stale_by_id_cache(pool: sqlx::PgPool) {
         use std::sync::Arc;
 
@@ -2335,7 +2335,7 @@ mod test {
 
     /// Exact pairs across projects: a role matches only when both its provider and its
     /// source id are one requested pair, and only in a requested project.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn roles_by_idents_in_projects_match_exact_pairs(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let first = ProjectId::new_random();

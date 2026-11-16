@@ -60,7 +60,7 @@ async fn listed(ctx: Ctx) -> Vec<String> {
     ids
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn lists_the_projects_the_authorizer_includes(pool: PgPool) {
     let authorizer = HidingAuthorizer::new().with_unsupported_project_listing();
     let (ctx, [first, second]) = setup(pool, authorizer.clone()).await;
@@ -73,7 +73,7 @@ async fn lists_the_projects_the_authorizer_includes(pool: PgPool) {
     assert_eq!(listed(ctx).await, vec![first]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn asks_include_in_list_and_not_get_metadata(pool: PgPool) {
     let authorizer = HidingAuthorizer::new().with_unsupported_project_listing();
     let (ctx, [first, second]) = setup(pool, authorizer.clone()).await;

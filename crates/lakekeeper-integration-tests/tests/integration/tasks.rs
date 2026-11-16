@@ -27,7 +27,7 @@ mod test {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_task_queue_config_lands_in_task_worker(pool: PgPool) {
         #[derive(Debug, Clone, Deserialize, Serialize)]
         #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]

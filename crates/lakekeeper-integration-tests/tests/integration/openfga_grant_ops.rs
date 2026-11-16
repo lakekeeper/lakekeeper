@@ -155,7 +155,7 @@ mod grant {
         /// A warehouse grant round-trips through OpenFGA: the write lands as an
         /// assignment tuple, the listing reads it back with the tuple's timestamp, and
         /// the revoke removes it.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn apply_list_and_revoke_a_warehouse_grant(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -222,7 +222,7 @@ mod grant {
         /// The vocabulary is the model's assignable relations, so a warehouse *action*
         /// name is rejected on write while a privilege outside the vocabulary stays
         /// revocable — a grant written before the model changed must not get stuck.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn the_vocabulary_is_the_models_assignable_relations(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -283,7 +283,7 @@ mod grant {
 
         /// Grant authority is the model's `can_grant_*` relation, not a catalog
         /// action: the operator holds it, a user with no relations does not.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn grant_authority_comes_from_the_can_grant_relations(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let authorizer = &ctx.v1_state.authz;
@@ -333,7 +333,7 @@ mod grant {
         ///
         /// Pins the fan-out, which is the part that can go wrong silently: one decision
         /// per check, in the order asked, with repeated and unknown privileges mixed in.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn grant_authority_repeats_one_answer_per_grantee(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let authorizer = &ctx.v1_state.authz;
@@ -398,7 +398,7 @@ mod grant {
         /// delegated grantable-privileges view answered the masked not-found — grants
         /// could be written but never read back. A principal without grant-read stays
         /// masked.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn a_grant_admin_without_describe_reads_what_it_applies(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let grant_admin = UserId::new_unchecked("oidc", "grant-admin");
@@ -509,7 +509,7 @@ mod grant {
         /// are pinned: the write exemption is the only one of its kind and would be
         /// undone by anyone "restoring consistency", and the read half is what stops that
         /// exemption from being over-applied.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn an_instance_admin_may_read_grants_but_not_write_them(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let operator = UserId::new_unchecked("oidc", "leaked-operator");
@@ -588,7 +588,7 @@ mod grant {
 
         /// Answering for another principal requires read-assignments authority on the
         /// resource, enforced inside the authorizer rather than by its callers.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn answering_for_another_principal_needs_the_read_gate(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let authorizer = &ctx.v1_state.authz;
@@ -631,7 +631,7 @@ mod grant {
         /// level at a time. It refuses instead of returning one unpageable response
         /// sized by the deployment. The catalog-backed arm answers the same request
         /// normally — see the `grant_ops` twin.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn the_project_scoped_listing_is_not_implemented(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -685,7 +685,7 @@ mod grant {
         /// its own listing is a distinct read path from the tabular levels. Kept because
         /// the refusal above sends clients here, and a nested resource is the case where
         /// that advice is least obviously sufficient.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn a_namespace_grant_is_applied_and_read_back_on_its_own_listing(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -733,7 +733,7 @@ mod grant {
         /// Unsupported must not become a capability oracle: a caller with no relations
         /// is refused for lacking authority, and only an authorized one learns that the
         /// listing is unavailable. The gate runs before the store is consulted.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn the_authorization_gate_precedes_the_refusal(pool: PgPool) {
             let (ctx, _admin, project_id, _warehouse_id) = setup(pool).await;
             let nobody = UserId::new_unchecked("oidc", "nobody");
@@ -756,7 +756,7 @@ mod grant {
         /// A grant written through `/grants` is visible through the older
         /// `/permissions/…/assignments` API, because both are views of one tuple.
         /// This is what lets `/grants` supersede that API without a migration.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn a_grant_and_an_assignment_are_the_same_tuple(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -801,7 +801,7 @@ mod grant {
         /// The per-resource vocabulary filters the model's assignable relations by the
         /// caller's own `can_grant_*` relations — the operator may grant everything on
         /// its warehouse, a principal with no relations may grant nothing.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn grantable_privileges_follow_the_can_grant_relations(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
 
@@ -860,7 +860,7 @@ mod grant {
         /// same `Read` on its user field. OpenFGA validates the shape of a `Read` tuple
         /// key, so a user filter alongside a full object id and an empty relation has to
         /// be proven against a real server rather than reasoned about.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn a_resource_listing_narrows_to_one_principal(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -928,7 +928,7 @@ mod grant {
         /// permission to see the resource. Under a real authorizer that means a user with
         /// one grant on a warehouse can read it back, while the same request for someone
         /// else is refused.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn your_own_grants_on_a_resource_need_no_grant_read_authority(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);
@@ -1003,7 +1003,7 @@ mod grant {
         /// about the deployment rather than about this caller, so there is no decision to
         /// record. The refusal reaches an operator who holds every relevant permission,
         /// which is what pins that the check runs first.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn the_subtree_routes_are_not_implemented(pool: PgPool) {
             use lakekeeper::api::management::v1::grant::{
                 ListSubtreeGrantsQuery, RevokeSubtreeGrantsRequest,

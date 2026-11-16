@@ -219,7 +219,7 @@ async fn create_table_returning_id<A: lakekeeper::service::authz::Authorizer>(
 /// The namespace level writes a resource shape no other level does: `warehouse_id` and
 /// `namespace_id` together, guarded by a composite foreign key whose MATCH SIMPLE
 /// semantics would skip entirely if either column were null. Round-trip it for real.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_and_list_namespace_grants(pool: PgPool) {
     let f = setup(pool).await;
     create_namespace_in(&f.ctx, f.warehouse_id, "grant_nsg").await;
@@ -298,7 +298,7 @@ async fn apply_and_list_namespace_grants(pool: PgPool) {
 /// Tag grants are the only level whose cross-project masking comes from the fetch being
 /// project-scoped rather than from an explicit check, and the only one keyed solely by
 /// `tag_definition_id`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_and_list_tag_grants(pool: PgPool) {
     let f = setup(pool).await;
     let definition = Server::create_tag_definition(
@@ -362,7 +362,7 @@ async fn apply_and_list_tag_grants(pool: PgPool) {
 
 /// Generic tables share the collapsed `tabular` storage kind with tables and views, so
 /// this exercises the third branch of the kind guard.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_and_list_generic_table_grants(pool: PgPool) {
     let f = setup(pool).await;
     create_namespace_in(&f.ctx, f.warehouse_id, "grant_gt").await;
@@ -433,7 +433,7 @@ async fn apply_and_list_generic_table_grants(pool: PgPool) {
 
 /// A server grant must be readable back through its own endpoint, and must not appear
 /// in the project roll-up — it belongs to no project.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_and_list_server_grants(pool: PgPool) {
     let f = setup(pool).await;
     Server::apply_server_grants(
@@ -469,7 +469,7 @@ async fn apply_and_list_server_grants(pool: PgPool) {
 
 /// A role belongs to a project, so a server grant to it would hand server-wide authority
 /// to whoever manages that project's role members. Removing one stays allowed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_server_grant_to_a_role_is_refused(pool: PgPool) {
     let f = setup(pool).await;
     let role_id = create_role_in_project(&f.ctx, &f.metadata).await;
@@ -506,7 +506,7 @@ async fn a_server_grant_to_a_role_is_refused(pool: PgPool) {
 
 /// The project level has its own resource listing, distinct from the project-wide
 /// roll-up that reports grants on everything inside the project.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_and_list_project_grants(pool: PgPool) {
     let f = setup(pool).await;
     Server::apply_project_grants(
@@ -537,7 +537,7 @@ async fn apply_and_list_project_grants(pool: PgPool) {
 /// The project-wide listing resolves each grant's project through a different join per
 /// resource kind, so a listing that only joined warehouses would silently drop the
 /// others. Server grants belong to no project and must not appear.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_project_listing_covers_every_level(pool: PgPool) {
     let f = setup(pool).await;
     let table_id = create_table_returning_id(&f.ctx, f.warehouse_id, "grant_ns", "t1").await;
@@ -602,7 +602,7 @@ async fn the_project_listing_covers_every_level(pool: PgPool) {
 /// error rather than a licence to read the whole project. Refused before the
 /// authorization check, like the two-principals rejection: there is no listing to
 /// authorize yet.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_project_listing_requires_a_principal(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::list_grants(
@@ -619,7 +619,7 @@ async fn the_project_listing_requires_a_principal(pool: PgPool) {
 
 /// Grants are reported at the layer they are held. A grant a role holds must not
 /// surface under a user who has that role — resolution is the check endpoints' job.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_role_held_grant_is_not_listed_under_its_members(pool: PgPool) {
     let f = setup(pool).await;
     let role_id = create_role_in_project(&f.ctx, &f.metadata).await;
@@ -666,7 +666,7 @@ async fn a_role_held_grant_is_not_listed_under_its_members(pool: PgPool) {
 /// The self-listing allowance must actually be reachable, and must be scoped to the
 /// caller's own grants. Needs an authenticated actor: the default test metadata is
 /// anonymous, whose `user_id()` is `None`, so `is_self` could never be true there.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn listing_your_own_grants_is_scoped_to_you(pool: PgPool) {
     let f = setup(pool).await;
     let bob = UserId::try_from("oidc~bob").unwrap();
@@ -727,7 +727,7 @@ async fn listing_your_own_grants_is_scoped_to_you(pool: PgPool) {
 }
 
 /// Naming both a user and a role is ambiguous, not a merge.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn naming_two_principals_in_a_listing_is_rejected(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::list_grants(
@@ -748,7 +748,7 @@ async fn naming_two_principals_in_a_listing_is_rejected(pool: PgPool) {
 /// Each tabular kind gets its own path and its own `ResourceType`, so each needs its
 /// own round trip: a grant applied through one must come back from that same one,
 /// labelled with the right resource.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_and_list_table_grants(pool: PgPool) {
     let f = setup(pool).await;
     let table_id = create_table_returning_id(&f.ctx, f.warehouse_id, "grant_ns", "t1").await;
@@ -818,7 +818,7 @@ async fn apply_and_list_table_grants(pool: PgPool) {
     assert_eq!(page.grants, Vec::new());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_and_list_view_grants(pool: PgPool) {
     let f = setup(pool).await;
     create_namespace_in(&f.ctx, f.warehouse_id, "grant_vns").await;
@@ -866,7 +866,7 @@ async fn apply_and_list_view_grants(pool: PgPool) {
 /// A table's id must not resolve as a view. This is refused at the API layer, before
 /// the store's own kind guard is reached — so it pins the masked not-found, not the
 /// store behaviour (that is `a_grant_on_a_tabular_takes_the_tabulars_own_kind`).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_table_id_does_not_resolve_as_a_view(pool: PgPool) {
     let f = setup(pool).await;
     let table_id = create_table_returning_id(&f.ctx, f.warehouse_id, "grant_ns", "t1").await;
@@ -909,7 +909,7 @@ async fn a_table_id_does_not_resolve_as_a_view(pool: PgPool) {
     assert_eq!(err.error.code, 404);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn apply_list_and_revoke_warehouse_grants(pool: PgPool) {
     let f = setup(pool).await;
 
@@ -992,7 +992,7 @@ async fn apply_list_and_revoke_warehouse_grants(pool: PgPool) {
     assert_eq!(page.grants, Vec::new());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_privilege_outside_the_vocabulary_is_rejected_on_write(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::apply_warehouse_grants(
@@ -1008,7 +1008,7 @@ async fn a_privilege_outside_the_vocabulary_is_rejected_on_write(pool: PgPool) {
 }
 
 /// `read_grants` gates reading grants; it is not itself something to hand out.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_grant_read_gate_is_not_a_grantable_privilege(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::apply_warehouse_grants(
@@ -1026,7 +1026,7 @@ async fn the_grant_read_gate_is_not_a_grantable_privilege(pool: PgPool) {
 /// The vocabulary must be discoverable: a privilege name is authorizer-specific and a
 /// wrong guess is a 400, so every resource type reports its grantable privileges. The
 /// read gate is enforceable but never grantable, so it must not appear.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn grantable_privileges_publishes_the_whole_vocabulary(pool: PgPool) {
     let f = setup(pool).await;
     let published = Server::get_grantable_privileges(f.ctx.clone(), f.metadata.clone())
@@ -1071,7 +1071,7 @@ async fn grantable_privileges_publishes_the_whole_vocabulary(pool: PgPool) {
 
 /// Discovery must not be stricter than the endpoints it describes: the vocabulary is
 /// static configuration, so it needs no project header and no principal.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn grantable_privileges_needs_no_project_or_principal(pool: PgPool) {
     let f = setup(pool).await;
     let published =
@@ -1083,7 +1083,7 @@ async fn grantable_privileges_needs_no_project_or_principal(pool: PgPool) {
 
 /// A revoke is never checked against the vocabulary: a privilege that has left it
 /// must stay revocable, or its grants would be stuck forever.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_unrecognized_privilege_can_still_be_revoked(pool: PgPool) {
     let f = setup(pool).await;
     // Plant a grant the current vocabulary does not accept, as an authorizer switch
@@ -1133,7 +1133,7 @@ async fn an_unrecognized_privilege_can_still_be_revoked(pool: PgPool) {
     assert_eq!(page.grants, Vec::new());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_contradictory_diff_is_rejected(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::apply_warehouse_grants(
@@ -1151,7 +1151,7 @@ async fn a_contradictory_diff_is_rejected(pool: PgPool) {
     assert_eq!(err.error.r#type, "ContradictoryGrantDiff");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_repeated_entry_is_rejected(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::apply_warehouse_grants(
@@ -1169,7 +1169,7 @@ async fn a_repeated_entry_is_rejected(pool: PgPool) {
     assert_eq!(err.error.r#type, "DuplicateGrantEntry");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_empty_diff_is_rejected(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::apply_warehouse_grants(
@@ -1184,7 +1184,7 @@ async fn an_empty_diff_is_rejected(pool: PgPool) {
     assert_eq!(err.error.r#type, "EmptyGrantDiff");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_oversized_diff_is_rejected(pool: PgPool) {
     let f = setup(pool).await;
     // One past the cap, which matches the largest batch an authorizer-managed store
@@ -1209,7 +1209,7 @@ async fn an_oversized_diff_is_rejected(pool: PgPool) {
 
 /// Role ids are global while roles are project-scoped, so a grant to a role from
 /// another project must be refused rather than silently stored.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_role_outside_the_project_cannot_be_granted(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::apply_warehouse_grants(
@@ -1227,7 +1227,7 @@ async fn a_role_outside_the_project_cannot_be_granted(pool: PgPool) {
     assert_eq!(err.error.r#type, "GrantRoleNotInProject");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn granting_to_an_unprovisioned_user_is_refused(pool: PgPool) {
     let f = setup(pool).await;
     let ghost = UserId::try_from("oidc~ghost").unwrap();
@@ -1246,7 +1246,7 @@ async fn granting_to_an_unprovisioned_user_is_refused(pool: PgPool) {
 
 /// A warehouse id from another project must read as absent — never as a denial that
 /// would confirm the warehouse exists.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_warehouse_in_another_project_is_not_found(pool: PgPool) {
     let f = setup(pool).await;
     let other_project = RequestMetadataTestBuilder::builder()
@@ -1279,7 +1279,7 @@ async fn a_warehouse_in_another_project_is_not_found(pool: PgPool) {
 /// no one else's, for a user and for a role. Narrowing has to happen in the store rather
 /// than after paging, or a page could come back empty while a continuation token still
 /// promised more.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_resource_listing_narrows_to_one_principal(pool: PgPool) {
     let f = setup(pool).await;
     let bob = UserId::try_from("oidc~bob").unwrap();
@@ -1345,7 +1345,7 @@ async fn a_resource_listing_narrows_to_one_principal(pool: PgPool) {
 
 /// Naming both principals is refused on a per-resource listing with the same error the
 /// rest of the grant surface uses, rather than one of them silently winning.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_resource_listing_rejects_two_principals(pool: PgPool) {
     let f = setup(pool).await;
     let role_id = create_role_in_project(&f.ctx, &f.metadata).await;
@@ -1446,7 +1446,7 @@ fn as_principal(user: &UserId, project_id: &ProjectId) -> RequestMetadata {
 
 /// Blocking `read_grants` on the warehouse must turn the listing into a denial — not
 /// into a listing that quietly returns the rows anyway.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn blocking_read_grants_denies_the_warehouse_listing(pool: PgPool) {
     let f = setup_denying(pool).await;
     let metadata = as_principal(&f.alice, &f.project_id);
@@ -1488,7 +1488,7 @@ async fn blocking_read_grants_denies_the_warehouse_listing(pool: PgPool) {
 /// A warehouse the caller cannot see must read as absent, so the response never
 /// confirms that the warehouse exists. Note this is a *different* answer from the
 /// blocked-action case above: invisible is 404, visible-but-forbidden is 403.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_invisible_warehouse_hides_its_grants(pool: PgPool) {
     let f = setup_denying(pool).await;
     f.authorizer.hide(&format!("warehouse:{}", f.warehouse_id));
@@ -1509,7 +1509,7 @@ async fn an_invisible_warehouse_hides_its_grants(pool: PgPool) {
 /// The self-read allowance: asking about yourself skips the project gate, asking
 /// about anyone else does not. Both halves matter — an allowance that never applies
 /// is dead code, one that applies too broadly leaks another principal's access.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn your_own_grants_need_no_authority_but_another_principals_do(pool: PgPool) {
     use lakekeeper::service::authz::{
         CatalogProjectAction, ResourceType, RootLevelGrants, SubtreeGrantPrincipal,
@@ -1592,7 +1592,7 @@ async fn your_own_grants_need_no_authority_but_another_principals_do(pool: PgPoo
 
 /// `GET /management/v1/project/actions` lists `read_subtree_grants` where grants are
 /// stored in the catalog.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn project_actions_list_the_subtree_read_where_the_catalog_stores_grants(pool: PgPool) {
     let actions = project_actions(pool, HidingAuthorizer::new()).await;
     assert!(actions.contains(&"get_metadata".to_string()), "{actions:?}");
@@ -1604,7 +1604,7 @@ async fn project_actions_list_the_subtree_read_where_the_catalog_stores_grants(p
 
 /// Where the authorizer keeps its own grants, the project-wide listing answers 501, so
 /// project actions omit `read_subtree_grants`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn project_actions_omit_the_subtree_read_where_the_authorizer_keeps_grants(pool: PgPool) {
     let actions = project_actions(pool, HidingAuthorizer::new().with_own_grant_store()).await;
     assert!(actions.contains(&"get_metadata".to_string()), "{actions:?}");
@@ -1676,7 +1676,7 @@ async fn project_actions(pool: PgPool, authorizer: HidingAuthorizer) -> Vec<Stri
 /// the project is its own permission, not the project's grant read: that one covers the
 /// project's own grants, and holding it must neither grant nor be needed for the
 /// project-wide listing.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_project_wide_listing_is_not_the_project_grant_read(pool: PgPool) {
     let f = setup_denying(pool).await;
     f.authorizer.block_action("project:ReadGrants");
@@ -1711,7 +1711,7 @@ async fn the_project_wide_listing_is_not_the_project_grant_read(pool: PgPool) {
 /// The same self-read allowance on a per-resource listing: a user with no grant-read
 /// authority on the warehouse can still see their own grants there, which is what lets a
 /// console show someone what they hold and what they must go and ask for.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn your_own_grants_on_a_resource_need_no_grant_read_authority(pool: PgPool) {
     let f = setup_denying(pool).await;
     f.authorizer.block_action("warehouse:ReadGrants");
@@ -1752,7 +1752,7 @@ async fn your_own_grants_on_a_resource_need_no_grant_read_authority(pool: PgPool
 /// Narrowing to a role is never a self-read, even for a member. A grant a role holds is
 /// the role's, so reading it needs the same authority as reading anyone else's. The role
 /// need not exist for this to hold: the gate runs before the principal is looked at.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn narrowing_to_a_role_is_never_a_self_read(pool: PgPool) {
     let f = setup_denying(pool).await;
     f.authorizer.block_action("warehouse:ReadGrants");
@@ -1777,7 +1777,7 @@ async fn narrowing_to_a_role_is_never_a_self_read(pool: PgPool) {
 /// resource, so a warehouse the caller cannot see stays absent even when they only ask
 /// about their own grants on it. Without this the endpoint would confirm that any
 /// warehouse id exists.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_self_listing_still_requires_seeing_the_resource(pool: PgPool) {
     let f = setup_denying(pool).await;
     let self_query = || ListGrantsQuery {
@@ -1824,7 +1824,7 @@ async fn a_self_listing_still_requires_seeing_the_resource(pool: PgPool) {
 /// Server grants belong to no project, so the project-scoped listing excludes them and
 /// the server listing is the only way to reach them. Reading your own must therefore work
 /// without server-level authority, or nobody could ever see their own server grants.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn your_own_server_grants_are_readable_without_authority(pool: PgPool) {
     let f = setup_denying(pool).await;
     PostgresBackend::apply_grants(
@@ -1899,7 +1899,7 @@ async fn your_own_server_grants_are_readable_without_authority(pool: PgPool) {
 /// An authorizer that has not implemented grants publishes no vocabulary, so every
 /// write is refused before it reaches the store. Revocations stay possible: a
 /// privilege that has left the vocabulary must not become unrevokable.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_authorizer_without_a_vocabulary_refuses_writes_but_allows_revokes(pool: PgPool) {
     let f = setup_denying(pool).await;
     let metadata = as_principal(&f.alice, &f.project_id);
@@ -1950,7 +1950,7 @@ async fn an_authorizer_without_a_vocabulary_refuses_writes_but_allows_revokes(po
 /// the shared namespace/tabular resolution helpers require an active one, and no
 /// roll-up in the repo filters on warehouse status. Pinned so that changing it is a
 /// deliberate, repo-wide decision rather than a silent drift in this surface.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn deactivating_a_warehouse_hides_child_grants_but_not_its_own(pool: PgPool) {
     let f = setup(pool).await;
     let table_id = create_table_returning_id(&f.ctx, f.warehouse_id, "grant_deact", "t1").await;
@@ -2057,7 +2057,7 @@ async fn deactivating_a_warehouse_hides_child_grants_but_not_its_own(pool: PgPoo
 /// Each request is a revoke of a grant nobody holds. Revokes are deliberately not
 /// validated against the authorizer's vocabulary, so one body works at every level and
 /// a 200 means the route resolved, the ids parsed, and the handler ran.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
     use lakekeeper::{
         api::endpoints::ManagementV1Endpoint,
@@ -2207,7 +2207,7 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
 /// deployment-wide one cannot: grant authority is a right of its own, invisible to
 /// action introspection. Every entry of the level's vocabulary is returned, marked —
 /// a picker must be able to show what it cannot offer.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn grantable_privileges_mark_the_whole_vocabulary(pool: PgPool) {
     let f = setup(pool).await;
     let table_id = create_table_returning_id(&f.ctx, f.warehouse_id, "grant_avail", "t1").await;
@@ -2285,7 +2285,7 @@ async fn grantable_privileges_mark_the_whole_vocabulary(pool: PgPool) {
 
 /// An authorizer that confers no grant authority still publishes the vocabulary it has;
 /// every entry simply reports `allowed: false`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn grantable_privileges_report_not_allowed_rather_than_omitting(pool: PgPool) {
     let f = setup_denying(pool).await;
     let response = DenyServer::get_warehouse_grantable_privileges(
@@ -2303,7 +2303,7 @@ async fn grantable_privileges_report_not_allowed_rather_than_omitting(pool: PgPo
 
 /// A resource in another project must read as absent, not as a list of unavailable
 /// privileges that would confirm it exists.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn grantable_privileges_hide_a_resource_from_another_project(pool: PgPool) {
     let f = setup(pool).await;
     let other_project = RequestMetadataTestBuilder::builder()
@@ -2322,7 +2322,7 @@ async fn grantable_privileges_hide_a_resource_from_another_project(pool: PgPool)
 
 /// Naming both principal parameters is ambiguous here for the same reason it is on the
 /// listing, and reports the same error type.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn grantable_privileges_reject_two_principals(pool: PgPool) {
     let f = setup(pool).await;
     let err = Server::get_warehouse_grantable_privileges(
@@ -2353,7 +2353,7 @@ fn no_principal() -> GetGrantAccessQuery {
 /// Also pins the two properties the fetch's contract turns on: nothing is implied —
 /// server grants come back because the chain names the server root — and a role's
 /// grants come back only when the caller includes that role in the effective set.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_committed_grant_is_visible_to_the_evaluation_fetch(pool: PgPool) {
     let f = setup(pool).await;
     let role_id = create_role_in_project(&f.ctx, &f.metadata).await;
@@ -2550,7 +2550,7 @@ async fn a_committed_grant_is_visible_to_the_evaluation_fetch(pool: PgPool) {
 /// Asking which privileges *another* principal may grant discloses that principal's
 /// access. The authorizer decides that at every level, as it does on the action-check
 /// endpoints, and its refusal reaches the caller unchanged.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 #[allow(clippy::too_many_lines)] // one call per level; splitting hides which level failed
 async fn grantable_privileges_for_another_principal_are_decided_by_the_authorizer(pool: PgPool) {
     let f = setup_denying(pool).await;
@@ -2690,7 +2690,7 @@ async fn grantable_privileges_for_another_principal_are_decided_by_the_authorize
 
 /// Asking about yourself discloses nothing you do not already have, so the gate must not
 /// apply — including when you name yourself explicitly rather than leaving it implicit.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn grantable_privileges_for_yourself_need_no_read_gate(pool: PgPool) {
     let f = setup_denying(pool).await;
     f.authorizer.block_action("warehouse:ReadGrants");
@@ -2742,7 +2742,7 @@ const OWNS_FOUR_LEVELS: &[(ResourceType, &[&str])] = &[
 
 /// Creating a resource writes the declared grants for the creating identity, at every
 /// level, in the transaction that creates it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn creating_a_resource_grants_ownership_to_its_creator(pool: PgPool) {
     let alice = UserId::try_from("oidc~alice").unwrap();
     // The setup helper creates the warehouse through the API as this user, so the
@@ -2919,7 +2919,7 @@ async fn creating_a_resource_grants_ownership_to_its_creator(pool: PgPool) {
 
 /// The default is off: an authorizer that declares nothing writes nothing, so upgrading
 /// does not silently start recording ownership.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn creating_a_resource_writes_nothing_without_a_declaration(pool: PgPool) {
     let alice = UserId::try_from("oidc~alice").unwrap();
     let (ctx, warehouse) = SetupTestCatalog::builder()
@@ -2947,7 +2947,7 @@ async fn creating_a_resource_writes_nothing_without_a_declaration(pool: PgPool) 
 /// Re-registering a table that keeps its id runs no create hook, and the drop inside that
 /// same transaction cascades the old rows away — so unless the write sits outside the hook
 /// branches, the table comes back with no owner at all.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn re_registering_a_table_that_keeps_its_id_keeps_its_owner(pool: PgPool) {
     let alice = UserId::try_from("oidc~alice").unwrap();
     let (ctx, warehouse) = SetupTestCatalog::builder()
@@ -3071,7 +3071,7 @@ impl EventListener for GrantEventCapture {
 /// The rows a resource is born with are announced too. The audit backend derives its
 /// per-grant records from grant events alone, so a create that stored ownership without
 /// announcing it would leave no trace of who may act on the resource.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn creating_a_resource_announces_the_grants_it_wrote(pool: PgPool) {
     let alice = UserId::try_from("oidc~alice").unwrap();
     let (ctx, warehouse) = SetupTestCatalog::builder()
@@ -3148,7 +3148,7 @@ async fn creating_a_resource_announces_the_grants_it_wrote(pool: PgPool) {
 /// Declaring a privilege commits to the creator being able to hold it. A principal the
 /// catalog has no user record for cannot, and the create fails saying so rather than
 /// committing a resource nobody owns.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_creator_without_a_user_record_is_refused(pool: PgPool) {
     let alice = UserId::try_from("oidc~alice").unwrap();
     let (ctx, warehouse) = SetupTestCatalog::builder()

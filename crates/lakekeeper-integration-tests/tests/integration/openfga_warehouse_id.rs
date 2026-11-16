@@ -86,7 +86,7 @@ mod warehouse_id {
         /// Deleting a warehouse frees its id for real: the authorizer's tuple cleanup runs,
         /// so the guard that would otherwise refuse the id is satisfied, and the recreated
         /// warehouse belongs to whoever recreated it.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn delete_frees_the_id_and_recreate_takes_fresh_ownership(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -142,7 +142,7 @@ mod warehouse_id {
         /// Reproduces the orphaned-tuple state a create leaves behind when the authorizer
         /// write lands and the transaction then fails to commit, by deleting the warehouse
         /// through the catalog only — skipping the endpoint's authz cleanup.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn a_chosen_id_with_leftover_tuples_is_refused(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -210,7 +210,7 @@ mod warehouse_id {
         /// and compensating there would hand the loser a way to revoke the winner's
         /// grants. The DB conflict fires before the authorizer is reached, so no
         /// compensation is owed; this pins that the winner survives intact.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn a_losing_create_leaves_the_holders_relations_intact(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);

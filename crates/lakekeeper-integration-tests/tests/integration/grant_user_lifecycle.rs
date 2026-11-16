@@ -42,7 +42,7 @@ async fn provision_user(ctx: &Ctx, user_id: &UserId, name: &str) {
     tx.commit().await.unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn deleting_a_user_revokes_their_grants(pool: PgPool) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -135,7 +135,7 @@ impl lakekeeper::service::events::EventListener for GrantEventCapture {
 
 /// A user delete whose request is dropped while it commits still clears the user's
 /// cached role assignments and announces the revoked grants.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_user_delete_dropped_while_committing_still_announces_and_updates_the_cache(
     pool: PgPool,
 ) {

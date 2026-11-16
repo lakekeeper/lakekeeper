@@ -115,7 +115,7 @@ impl_pagination_tests!(
     |tid| { tid.name }
 );
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
 

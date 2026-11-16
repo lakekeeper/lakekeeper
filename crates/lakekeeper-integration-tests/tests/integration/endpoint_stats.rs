@@ -46,7 +46,7 @@ mod test {
 
     use super::StatsSetup;
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {
         let setup = super::setup_stats_test(pool, FlushMode::Automatic, 1).await;
 
@@ -94,7 +94,7 @@ mod test {
         setup.tracker_handle.await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_pagination_endpoints_statistics(pool: sqlx::PgPool) {
         let setup = super::setup_stats_test(pool, FlushMode::Automatic, 1).await;
         // sync to the nearest second
@@ -293,7 +293,7 @@ mod test {
         setup.tracker_handle.await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_endpoint_statistics_filters(pool: sqlx::PgPool) {
         let setup = super::setup_stats_test(pool, FlushMode::Automatic, 1).await;
 
@@ -403,7 +403,7 @@ mod test {
         setup.tracker_handle.await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_not_existing_project_is_not_recorded(pg_pool: PgPool) {
         let setup = super::setup_stats_test(pg_pool, FlushMode::Manual, 1).await;
         let ep: Endpoint = CatalogV1Endpoint::DropTable.into();
@@ -457,7 +457,7 @@ mod test {
         assert_eq!(stats.timestamps.len(), 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_with_multiple_warehouses(pg_pool: PgPool) {
         let setup = super::setup_stats_test(pg_pool, FlushMode::Manual, 3).await;
         let ep: Endpoint = CatalogV1Endpoint::DropTable.into();

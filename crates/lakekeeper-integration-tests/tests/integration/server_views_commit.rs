@@ -41,7 +41,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -92,7 +92,7 @@ async fn test_commit_view(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_preserves_protection(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -168,7 +168,7 @@ async fn test_commit_view_preserves_protection(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::CONFLICT);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_fails_with_wrong_assertion(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -365,7 +365,7 @@ fn sibling(location: &str, name: &str) -> String {
 
 /// Moving a view into a location that holds files is refused: moving it away again would
 /// remove that location with all its files. The failed commit deletes nothing.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_refuses_move_to_location_with_files(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -402,7 +402,7 @@ async fn test_commit_view_refuses_move_to_location_with_files(pool: PgPool) {
 
 /// Moving a view into its own location is refused: removing the old location would remove
 /// the new metadata. The failed commit deletes nothing.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_refuses_move_into_own_location(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -430,7 +430,7 @@ async fn test_commit_view_refuses_move_into_own_location(pool: PgPool) {
 
 /// Trino up to version 481 gives a view a new location on `CREATE OR REPLACE VIEW`. The view
 /// moves to the new, empty location, and its old location is removed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_moves_to_empty_location(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -462,7 +462,7 @@ async fn test_commit_view_moves_to_empty_location(pool: PgPool) {
 
 /// A commit that ends in the location the view already has, also with a trailing slash or after
 /// setting another location first, keeps the view in place and deletes none of its files.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_set_location_to_own_location_deletes_nothing(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -513,7 +513,7 @@ async fn test_commit_view_set_location_to_own_location_deletes_nothing(pool: PgP
     assert_eq!(loaded.metadata_location, back.metadata_location);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_cannot_set_owner_property_from_untrusted_client(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -541,7 +541,7 @@ async fn test_commit_view_cannot_set_owner_property_from_untrusted_client(pool: 
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_cannot_change_or_remove_owner_property_from_untrusted_client(
     pool: PgPool,
 ) {
@@ -586,7 +586,7 @@ async fn test_commit_view_cannot_change_or_remove_owner_property_from_untrusted_
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_refuses_new_sql_on_definer_view_from_untrusted_client(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -616,7 +616,7 @@ async fn test_commit_view_refuses_new_sql_on_definer_view_from_untrusted_client(
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_refuses_rollback_on_definer_view_from_untrusted_client(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -651,7 +651,7 @@ async fn test_commit_view_refuses_rollback_on_definer_view_from_untrusted_client
     assert_eq!(current_sql(&after), "select id from spark_demo.other_table");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_from_trusted_engine_without_owner_property_makes_invoker_view(
     pool: PgPool,
 ) {
@@ -724,7 +724,7 @@ fn kept_versions(view: &LoadViewResult) -> Vec<(i32, String)> {
     versions
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_owner_removal_keeps_every_added_version(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -787,7 +787,7 @@ async fn test_commit_view_owner_removal_keeps_every_added_version(pool: PgPool) 
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_rollback_from_trusted_engine_without_owner_property_removes_it(
     pool: PgPool,
 ) {
@@ -882,7 +882,7 @@ impl EventListener for ViewCommitRecorder {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_owner_removal_reaches_contract_verifiers_and_events(pool: PgPool) {
     let (mut ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let verifier = Arc::new(ViewUpdateRecorder::default());
@@ -923,7 +923,7 @@ async fn test_commit_view_owner_removal_reaches_contract_verifiers_and_events(po
     assert_eq!(recorded[0].updates, expected);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_untrusted_client_can_rename_and_drop_definer_view(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -958,7 +958,7 @@ async fn test_commit_view_untrusted_client_can_rename_and_drop_definer_view(pool
     .unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_allows_new_sql_from_trusted_engine_with_owner_property(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -981,7 +981,7 @@ async fn test_commit_view_allows_new_sql_from_trusted_engine_with_owner_property
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_definer_replace_from_trusted_engine_keeps_owner(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -1006,7 +1006,7 @@ async fn test_commit_view_definer_replace_from_trusted_engine_keeps_owner(pool: 
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_allows_same_query_version_change_from_trusted_engine(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -1030,7 +1030,7 @@ async fn test_commit_view_allows_same_query_version_change_from_trusted_engine(p
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_allows_untrusted_client_to_set_other_properties_on_definer_view(
     pool: PgPool,
 ) {
@@ -1061,7 +1061,7 @@ async fn test_commit_view_allows_untrusted_client_to_set_other_properties_on_def
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_from_trusted_engine_can_change_and_remove_owner_property(pool: PgPool) {
     let (ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     let prefix = whi.to_string();
@@ -1091,7 +1091,7 @@ async fn test_commit_view_from_trusted_engine_can_change_and_remove_owner_proper
     assert_eq!(res.metadata.properties().get(OWNER_PROPERTY), None);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_without_authentication_does_not_protect_owner_property(pool: PgPool) {
     let (mut ctx, namespace, whi, _) = views_test_setup(pool, None).await;
     // A server without authentication: every request is anonymous and none is a trusted
@@ -1124,7 +1124,7 @@ async fn test_commit_view_without_authentication_does_not_protect_owner_property
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_commit_view_on_authenticated_server_refuses_request_without_authentication(
     pool: PgPool,
 ) {

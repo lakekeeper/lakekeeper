@@ -107,7 +107,7 @@ fn build_schema() -> Schema {
         .unwrap()
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn schedule_then_409_then_runnow(pool: PgPool) {
     let (ctx, warehouse, registry) = setup_with_registry(
         pool,
@@ -218,7 +218,7 @@ async fn schedule_then_409_then_runnow(pool: PgPool) {
     .expect("control_tasks RunNow on the existing task should succeed");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn schedule_eligibility_rejection_surfaces_as_400(pool: PgPool) {
     let (ctx, warehouse, registry) = setup_with_registry(
         pool,
@@ -306,7 +306,7 @@ async fn schedule_eligibility_rejection_surfaces_as_400(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn schedule_unknown_queue_returns_404(pool: PgPool) {
     let (ctx, warehouse, _registry) = setup_with_registry(
         pool,
@@ -365,7 +365,7 @@ async fn schedule_unknown_queue_returns_404(pool: PgPool) {
     assert_eq!(err.error.r#type, "QueueNotFound");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn schedule_non_user_schedulable_queue_returns_400(pool: PgPool) {
     use lakekeeper::service::tasks::tabular_purge_queue::QUEUE_NAME as PURGE_QUEUE_NAME;
 
@@ -448,7 +448,7 @@ impl TaskConfig for TypedPayloadConfig {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn schedule_invalid_payload_returns_400(pool: PgPool) {
     let (ctx, warehouse, registry) = setup_with_registry(
         pool,
@@ -522,7 +522,7 @@ async fn schedule_invalid_payload_returns_400(pool: PgPool) {
     assert_eq!(err.error.r#type, "InvalidTaskPayload");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn schedule_missing_table_returns_404(pool: PgPool) {
     let (ctx, warehouse, registry) = setup_with_registry(
         pool,
@@ -633,7 +633,7 @@ fn set_config_request(level: u32) -> SetTaskQueueConfigRequest {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn set_config_refused_by_check_config_is_not_stored(pool: PgPool) {
     let (ctx, warehouse, registry) = setup_with_registry(
         pool,
@@ -735,7 +735,7 @@ async fn set_config_refused_by_check_config_is_not_stored(pool: PgPool) {
     assert_eq!(stored.queue_config.config, serde_json::json!({}));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn get_config_of_unregistered_queue_returns_404(pool: PgPool) {
     let (ctx, warehouse, _registry) = setup_with_registry(
         pool,
@@ -781,7 +781,7 @@ async fn get_config_of_unregistered_queue_returns_404(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn get_config_of_registered_queue_without_config_returns_empty_config(pool: PgPool) {
     let (ctx, warehouse, _registry) = setup_with_registry(
         pool,

@@ -89,7 +89,7 @@ fn assert_report_is_exhaustive(response: &ValidateWarehouseResponse) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_warehouse_passes_and_persists_nothing(pool: PgPool) {
     let (ctx, _) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -169,7 +169,7 @@ async fn test_validate_warehouse_passes_and_persists_nothing(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_warehouse_reports_name_conflict_without_stopping(pool: PgPool) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -205,7 +205,7 @@ async fn test_validate_warehouse_reports_name_conflict_without_stopping(pool: Pg
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_warehouse_detects_a_duplicate_name_differing_in_case(pool: PgPool) {
     // `warehouse_name` is stored under a case-insensitive collation, so the
     // create would be rejected by the database. A case-sensitive comparison here
@@ -241,7 +241,7 @@ async fn test_validate_warehouse_detects_a_duplicate_name_differing_in_case(pool
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_storage_reports_the_compatibility_check(pool: PgPool) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -298,7 +298,7 @@ async fn test_validate_storage_reports_the_compatibility_check(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_warehouse_reports_an_unusable_profile_without_probing(pool: PgPool) {
     let (ctx, _) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -357,7 +357,7 @@ async fn test_validate_warehouse_reports_an_unusable_profile_without_probing(poo
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_warehouse_reports_a_location_overlap(pool: PgPool) {
     // Memory profiles never overlap, so this needs a real storage type. The
     // neighbour is inserted straight into the catalog because creating it
@@ -424,7 +424,7 @@ async fn test_validate_warehouse_reports_a_location_overlap(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_storage_access(pool: PgPool) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -464,7 +464,7 @@ async fn test_validate_storage_access(pool: PgPool) {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_storage_credential_leaves_the_stored_credential_alone(pool: PgPool) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -517,7 +517,7 @@ async fn test_validate_storage_credential_leaves_the_stored_credential_alone(poo
     assert_eq!(before.version, after.version);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_warehouse_denies_a_caller_without_create_permission(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, _warehouse) = SetupTestCatalog::builder()
@@ -659,7 +659,7 @@ async fn storage_catalog(
 /// Replacing the credential asks `update_storage_credential`. Changing the profile also
 /// replaces the credential, so it asks it too. Each dry run asks what its mutation asks;
 /// checking the current storage does not ask it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_storage_credential_action_is_asked_by_credential_and_profile_changes(pool: PgPool) {
     let (ctx, authz, warehouse_id) = storage_catalog(pool).await;
     authz.block_action(&format!(
@@ -690,7 +690,7 @@ async fn test_storage_credential_action_is_asked_by_credential_and_profile_chang
 
 /// Changing the profile and checking the current storage ask `update_storage`; replacing
 /// the credential does not.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_storage_action_is_not_asked_by_credential_changes(pool: PgPool) {
     let (ctx, authz, warehouse_id) = storage_catalog(pool).await;
     // A prefix block of `UpdateStorage` would also match `UpdateStorageCredential`.
@@ -725,7 +725,7 @@ async fn test_storage_action_is_not_asked_by_credential_changes(pool: PgPool) {
 /// The id-availability check reports what the dry run can actually determine:
 /// skipped when no id was requested, failed when the id is held by a warehouse in
 /// this project, passed otherwise.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_validate_warehouse_id_availability(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, _) = SetupTestCatalog::builder()

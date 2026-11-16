@@ -86,7 +86,7 @@ async fn db_create_role(
 // ==================== Basic CRUD tests ====================
 
 /// Test basic role creation via `PostgresBackend`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_role(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -105,7 +105,7 @@ async fn test_create_role(pool: PgPool) {
 }
 
 /// Test `list_roles` returns the created role
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_roles(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -132,7 +132,7 @@ async fn test_list_roles(pool: PgPool) {
 }
 
 /// Test `delete_role` removes the role
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_role(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -169,7 +169,7 @@ async fn test_delete_role(pool: PgPool) {
 }
 
 /// Test `update_role` changes the name and increments version
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_role(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -205,7 +205,7 @@ async fn test_update_role(pool: PgPool) {
 // ==================== Cache population tests ====================
 
 /// Test that `get_role_by_id` populates `ROLE_CACHE`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_role_cache_populated_by_get_id(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -257,7 +257,7 @@ async fn test_role_cache_populated_by_get_id(pool: PgPool) {
 }
 
 /// Test that `get_role_by_ident` populates `ROLE_CACHE`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_role_cache_populated_by_get_ident(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -300,7 +300,7 @@ async fn test_role_cache_populated_by_get_ident(pool: PgPool) {
 }
 
 /// Test that `get_role_by_ident` returns stale data from cache when DB is updated
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_role_by_ident_uses_cache(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -361,7 +361,7 @@ async fn test_get_role_by_ident_uses_cache(pool: PgPool) {
 
 /// Test `CachePolicy::Use` returns stale data and
 /// `CachePolicy::RequireMinimumVersion` fetches fresh
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_respects_min_version(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -425,7 +425,7 @@ async fn test_cache_respects_min_version(pool: PgPool) {
 }
 
 /// Test `CachePolicy::Skip` bypasses cache read but still re-populates cache after DB fetch
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -501,7 +501,7 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
 // ==================== List from cache tests ====================
 
 /// Test that `list_roles` with `role_ids` filter serves results from cache on second call
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_roles_with_role_ids_served_from_cache(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -572,7 +572,7 @@ async fn test_list_roles_with_role_ids_served_from_cache(pool: PgPool) {
 }
 
 /// Test `list_roles_across_projects` with `role_ids` filter populates cache
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_roles_across_projects_cache_populated(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -606,7 +606,7 @@ async fn test_list_roles_across_projects_cache_populated(pool: PgPool) {
 // ==================== API event-driven cache tests ====================
 
 /// Test that `ApiServer::update_role` fires an event that updates the cache
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_updated_on_api_update(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -667,7 +667,7 @@ async fn test_cache_updated_on_api_update(pool: PgPool) {
 }
 
 /// `ApiServer::delete_role` evicts the deleted role from the cache
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_invalidated_on_api_delete(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -737,7 +737,7 @@ async fn test_cache_invalidated_on_api_delete(pool: PgPool) {
 /// Test that invalidating `ROLE_CACHE` cascades to the secondary ident-to-id cache,
 /// so subsequent `get_role_by_ident` lookups re-fetch from DB rather than serving a
 /// stale ident mapping.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_eviction_invalidates_ident_lookup(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -799,7 +799,7 @@ async fn test_cache_eviction_invalidates_ident_lookup(pool: PgPool) {
 }
 
 /// Test that `get_role_by_id_across_projects` populates `ROLE_CACHE`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_role_cache_populated_by_get_across_projects(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -834,7 +834,7 @@ async fn test_role_cache_populated_by_get_across_projects(pool: PgPool) {
 }
 
 /// Test `list_roles` with `role_ids` and `source_ids` filters applies post-cache filtering
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_roles_cache_source_id_filter(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -902,7 +902,7 @@ async fn test_list_roles_cache_source_id_filter(pool: PgPool) {
 
 /// `create_role` rejects requests with `provider_id = "system"`, recorded as the
 /// request's one denial.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_role_rejects_system_provider_id(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -939,7 +939,7 @@ async fn test_create_role_rejects_system_provider_id(pool: PgPool) {
 
 /// A caller who may not create roles is refused by the authorizer before the
 /// provider guard runs, so a reserved `provider_id` reveals nothing to them.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_role_authz_denial_precedes_provider_guard(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
@@ -1010,7 +1010,7 @@ async fn seed_test_system_role(
 }
 
 /// `delete_role` rejects a system role with `SystemRoleImmutable`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_role_rejects_system_role(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1047,7 +1047,7 @@ async fn test_delete_role_rejects_system_role(pool: PgPool) {
 }
 
 /// `update_role` rejects a system role with `SystemRoleImmutable`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_role_rejects_system_role(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1077,7 +1077,7 @@ async fn test_update_role_rejects_system_role(pool: PgPool) {
 }
 
 /// `update_role_source_system` rejects when the target role is a system role.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_role_source_system_rejects_system_target(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1106,7 +1106,7 @@ async fn test_update_role_source_system_rejects_system_target(pool: PgPool) {
 }
 
 /// `update_role_source_system` rejects when the *new* `provider_id` is `system`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_role_source_system_rejects_system_provider(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1144,7 +1144,7 @@ async fn test_update_role_source_system_rejects_system_provider(pool: PgPool) {
 /// The `Role` API response surfaces a system role's identity via
 /// `provider-id = "system"`. Customer-created roles default to
 /// `provider-id = "lakekeeper"`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_role_response_provider_id_distinguishes_system_from_customer(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1197,7 +1197,7 @@ fn system_role_spec(source_id: &'static str, name: &'static str) -> SystemRoleSp
 /// `upsert_system_roles` inserts new specs and refreshes only the rows that
 /// actually changed, and records those roles as changed. The same call twice in a
 /// row returns an empty Vec and records nothing.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_upsert_system_roles_via_trait(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1268,7 +1268,7 @@ async fn test_upsert_system_roles_via_trait(pool: PgPool) {
 /// `delete_system_roles` removes rows by `source_id`, records them, every user's
 /// assignments and the ancestor sets as changed, and is idempotent: a second call
 /// returns an empty Vec and records nothing.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_system_roles_via_trait(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1322,7 +1322,7 @@ async fn test_delete_system_roles_via_trait(pool: PgPool) {
 /// Updating, rebinding and deleting a role record the role, and a rebind also the
 /// ident it had. A rebind and a delete also record the users holding the role and the
 /// ancestor sets.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn role_writes_record_their_cache_keys(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1435,7 +1435,7 @@ async fn role_writes_record_their_cache_keys(pool: PgPool) {
 /// with `RoleSourceIdConflict`. Without this check, Postgres would raise
 /// a `cardinality_violation` (`ON CONFLICT DO UPDATE` can't touch the
 /// same row twice) and surface it as an opaque backend error.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1476,7 +1476,7 @@ async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
 /// The second request is identical to the first, so `require_project_action`
 /// passes again while the catalog rejects the duplicate `provider~source_id` —
 /// a write failure reachable only once authorization has already been decided.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_role_audits_authz_before_failing_write(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1525,7 +1525,7 @@ async fn test_create_role_audits_authz_before_failing_write(pool: PgPool) {
 
 /// Same contract on the update path: renaming onto an existing name is rejected
 /// by the write, after `require_role_action` has already allowed the update.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_role_audits_authz_before_failing_write(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1583,7 +1583,7 @@ async fn test_update_role_audits_authz_before_failing_write(pool: PgPool) {
 /// routed through the `DeleteRoleError`/`UpdateRoleError` wrappers these report
 /// `InternalCatalogError` ("no verdict was reached"), which is what a deliberate
 /// refusal must not say.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_system_role_lifecycle_guards_audit_as_denials(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -1672,7 +1672,7 @@ async fn test_system_role_lifecycle_guards_audit_as_denials(pool: PgPool) {
 /// `Authorizer::managed_role_provider_ids`, and needs store-level seeding because
 /// `reject_role_provider_target` refuses a managed provider-id on create, so the API
 /// cannot produce this state.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_managed_role_refuses_edits_allows_delete(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
@@ -1842,7 +1842,7 @@ async fn sync_records(pool: &PgPool) -> Vec<(String, String, String)> {
 /// provider in that project, so the provider re-syncs them on their next request.
 /// Their records for other projects and other providers, and the records of users
 /// outside the role, stay.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_provider_role_expires_member_syncs(pool: PgPool) {
     use lakekeeper::service::{
         CatalogRoleAssignmentOps as _, UserId, authz::tests::HidingAuthorizer,
@@ -1912,7 +1912,7 @@ async fn test_delete_provider_role_expires_member_syncs(pool: PgPool) {
 }
 
 /// Deleting a `lakekeeper` role leaves its members' provider sync records alone.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_lakekeeper_role_keeps_member_syncs(pool: PgPool) {
     use lakekeeper::service::UserId;
 
@@ -1960,7 +1960,7 @@ async fn test_delete_lakekeeper_role_keeps_member_syncs(pool: PgPool) {
 
 /// Under an authorizer with its own grant store, rows in the catalog's grant table
 /// confer nothing, so they need no `force`; the delete removes them with the role.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_role_ignores_catalog_grants_under_own_grant_store(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
@@ -2053,7 +2053,7 @@ fn create_request(
 
 /// Under `LakekeeperOnly`, create accepts `lakekeeper` roles only, and every
 /// refused provider is recorded as the request's one denial.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_role_lakekeeper_only(pool: PgPool) {
     use lakekeeper::service::authz::{ApiRoleProviders, tests::HidingAuthorizer};
 
@@ -2120,7 +2120,7 @@ async fn test_create_role_lakekeeper_only(pool: PgPool) {
 
 /// The default, `AnyUnmanaged`, keeps namespaces no provider owns writable, so
 /// external provisioning can label roles with its own provider id.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_and_rebind_into_unmanaged_namespace_by_default(pool: PgPool) {
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -2164,7 +2164,7 @@ async fn test_create_and_rebind_into_unmanaged_namespace_by_default(pool: PgPool
 
 /// Under `LakekeeperOnly`, a rebind must start and end in `lakekeeper`. A role left
 /// in another namespace can still be renamed and deleted, so it can be cleaned up.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rebind_and_cleanup_lakekeeper_only(pool: PgPool) {
     use lakekeeper::service::authz::{ApiRoleProviders, tests::HidingAuthorizer};
 
@@ -2252,7 +2252,7 @@ async fn test_rebind_and_cleanup_lakekeeper_only(pool: PgPool) {
 /// An error from the authorizer's `create_role` hook reaches the caller with its
 /// own status, and the role is rolled back. Authorization had already allowed the
 /// request, so it stays the one recorded verdict.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_role_hook_error_passes_through(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 

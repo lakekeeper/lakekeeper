@@ -49,7 +49,7 @@ async fn update_properties_on_another_instance(
 }
 
 /// Test basic namespace creation
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_namespace(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -91,7 +91,7 @@ async fn test_create_namespace(pool: PgPool) {
 }
 
 /// Test creating namespace with properties
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_namespace_with_properties(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -133,7 +133,7 @@ async fn test_create_namespace_with_properties(pool: PgPool) {
 }
 
 /// Test that creating namespace with duplicate name fails
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_namespace_duplicate_name(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -193,7 +193,7 @@ async fn test_create_namespace_duplicate_name(pool: PgPool) {
 }
 
 /// Test get namespace by ID
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_namespace_by_id(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -244,7 +244,7 @@ async fn test_get_namespace_by_id(pool: PgPool) {
 }
 
 /// Test get namespace by name
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_namespace_by_name(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -295,7 +295,7 @@ async fn test_get_namespace_by_name(pool: PgPool) {
 }
 
 /// Test get non-existent namespace
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_namespace_not_found(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -335,7 +335,7 @@ async fn test_get_namespace_not_found(pool: PgPool) {
 // ==================== Cache Tests ====================
 
 /// Test cache is populated by `get_namespace`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_namespace_cache_populated_by_get_id(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -406,7 +406,7 @@ async fn test_namespace_cache_populated_by_get_id(pool: PgPool) {
 }
 
 /// Test cache respects version
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_respects_min_version(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -494,7 +494,7 @@ async fn test_cache_respects_min_version(pool: PgPool) {
 }
 
 /// Test `CachePolicy::Skip` bypasses cache
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -580,7 +580,7 @@ async fn test_cache_policy_skip_bypasses_cache(pool: PgPool) {
 }
 
 /// Test cache invalidation when updating namespace properties via `ApiServer`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_invalidation_on_api_update_properties(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -644,7 +644,7 @@ async fn test_cache_invalidation_on_api_update_properties(pool: PgPool) {
 }
 
 /// Test cache invalidation when setting namespace protection via `ApiServer`
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_invalidation_on_api_set_protection(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -737,7 +737,7 @@ async fn test_cache_invalidation_on_api_set_protection(pool: PgPool) {
 }
 
 /// Test `get_by_name` uses cache
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_get_by_name_uses_cache(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -809,7 +809,7 @@ async fn test_get_by_name_uses_cache(pool: PgPool) {
 }
 
 /// Test cache with hierarchical namespaces
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_with_hierarchical_namespaces(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -895,7 +895,7 @@ async fn test_cache_with_hierarchical_namespaces(pool: PgPool) {
 }
 
 /// Test that cache is invalidated when parent version is stale
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_namespace_cache_parent_version_staleness(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1001,7 +1001,7 @@ async fn test_namespace_cache_parent_version_staleness(pool: PgPool) {
 }
 
 /// Test deep namespace hierarchies (4+ levels)
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_namespace_deep_hierarchy(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1098,7 +1098,7 @@ async fn test_namespace_deep_hierarchy(pool: PgPool) {
 }
 
 /// Test that parent version is correctly tracked when child is created
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_parent_version_tracking(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1223,7 +1223,7 @@ async fn test_parent_version_tracking(pool: PgPool) {
 }
 
 /// Test cache eviction invalidates ident-to-id mapping
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cache_eviction_invalidates_mapping(pool: PgPool) {
     use lakekeeper::service::namespace_cache::IDENT_TO_ID_CACHE;
 
@@ -1295,7 +1295,7 @@ async fn test_cache_eviction_invalidates_mapping(pool: PgPool) {
 }
 
 /// Test root namespaces (no parent) are handled correctly
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_root_namespace_null_parent(pool: PgPool) {
     let storage_profile = memory_io_profile();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -1421,7 +1421,7 @@ fn ns_ident(parts: &[&str]) -> NamespaceIdent {
     NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap()
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_reparents(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     create_ns(&ctx, warehouse_id, &["old"]).await;
@@ -1458,7 +1458,7 @@ async fn test_move_namespace_reparents(pool: PgPool) {
     assert_eq!(reloaded.namespace_ident(), &ns_ident(&["new", "child"]));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_renames_in_place(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let parent = create_ns(&ctx, warehouse_id, &["parent"]).await;
@@ -1485,7 +1485,7 @@ async fn test_move_namespace_renames_in_place(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_to_warehouse_root(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     create_ns(&ctx, warehouse_id, &["parent"]).await;
@@ -1516,7 +1516,7 @@ async fn test_move_namespace_to_warehouse_root(pool: PgPool) {
 /// Covers the common case, where a primary `NAMESPACE_CACHE` entry exists. A secondary-index
 /// entry outliving its primary entry, which the two caches' independent jittered TTLs allow,
 /// is covered by `test_committed_move_retires_old_ident_without_primary_entry`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_invalidates_cached_old_path(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     create_ns(&ctx, warehouse_id, &["src_parent"]).await;
@@ -1582,7 +1582,7 @@ async fn test_move_namespace_invalidates_cached_old_path(pool: PgPool) {
     assert_eq!(by_new_path.namespace_ident(), &new_path);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_protected_requires_force(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let ns = create_ns(&ctx, warehouse_id, &["protected_ns"]).await;
@@ -1642,7 +1642,7 @@ async fn test_move_namespace_protected_requires_force(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_rejects_namespace_with_children(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let parent = create_ns(&ctx, warehouse_id, &["with_children"]).await;
@@ -1664,7 +1664,7 @@ async fn test_move_namespace_rejects_namespace_with_children(pool: PgPool) {
     assert_eq!(err.error.r#type, "NamespaceHasChildren");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_rejects_existing_destination(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let source = create_ns(&ctx, warehouse_id, &["source"]).await;
@@ -1685,7 +1685,7 @@ async fn test_move_namespace_rejects_existing_destination(pool: PgPool) {
     assert_eq!(err.error.code, 409, "expected conflict, got {err:?}");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_rejects_reserved_destination(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let ns = create_ns(&ctx, warehouse_id, &["ordinary"]).await;
@@ -1710,7 +1710,7 @@ async fn test_move_namespace_rejects_reserved_destination(pool: PgPool) {
 
 /// A destination equal to the current path must succeed, so retrying a request that already
 /// went through does not fail with a spurious conflict against the namespace itself.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_is_retryable(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     create_ns(&ctx, warehouse_id, &["a"]).await;
@@ -1749,7 +1749,7 @@ async fn test_move_namespace_is_retryable(pool: PgPool) {
 /// Denying `Move` on the namespace itself must block the request, even though the caller can
 /// create at the destination. This is the gate that makes re-parenting require grant-level
 /// authority rather than plain write access.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_denied_without_move_permission(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
@@ -1801,7 +1801,7 @@ async fn test_move_namespace_denied_without_move_permission(pool: PgPool) {
 /// Denying `CreateNamespace` at the destination must block the request even when `Move` on
 /// the namespace is allowed — otherwise a caller could push a namespace into a subtree they
 /// have no right to add to.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_denied_without_create_at_destination(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
@@ -1839,7 +1839,7 @@ async fn test_move_namespace_denied_without_create_at_destination(pool: PgPool) 
 
 /// Under a layout that renders one directory per namespace level, re-parenting would leave
 /// later-created children physically outside the moved namespace, so the move is refused.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_refused_for_hierarchy_deriving_storage_layout(pool: PgPool) {
     use lakekeeper::service::storage::{
         MemoryProfile, StorageProfile, storage_layout::StorageLayout,
@@ -1886,7 +1886,7 @@ async fn test_move_namespace_refused_for_hierarchy_deriving_storage_layout(pool:
 /// two collation-equal paths cannot both exist, so it names the same parent row. Comparing the
 /// paths byte-wise would report a re-parent and reject a request that changes nothing, and only on
 /// hierarchy-deriving layouts, so the same request would behave differently per warehouse.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_ancestor_case_only_allowed_on_hierarchy_deriving_layout(pool: PgPool) {
     use lakekeeper::service::storage::{
         MemoryProfile, StorageProfile, storage_layout::StorageLayout,
@@ -1948,7 +1948,7 @@ async fn test_move_namespace_ancestor_case_only_allowed_on_hierarchy_deriving_la
 
 /// The default layout emits no namespace directories at all, so the restriction above must
 /// not fire for it — otherwise the feature would be unusable on ordinary warehouses.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_allowed_for_default_storage_layout(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     create_ns(&ctx, warehouse_id, &["q1"]).await;
@@ -1972,7 +1972,7 @@ async fn test_move_namespace_allowed_for_default_storage_layout(pool: PgPool) {
 /// Tables belong to their namespace by id, so a move must not disturb them: the table stays
 /// loadable and is listed under the namespace's new path, and the old path stops resolving.
 /// This is what makes the single `UPDATE` in the storage layer sufficient.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_keeps_contained_tables_reachable(pool: PgPool) {
     use iceberg::TableIdent;
     use lakekeeper::api::iceberg::{
@@ -2104,7 +2104,7 @@ async fn test_move_namespace_keeps_contained_tables_reachable(pool: PgPool) {
 ///
 /// This is the gate that stops a namespace being populated and granted under a permissive
 /// parent and then moved into a subtree where the actor could not have issued those grants.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_denied_without_grant_authority_at_destination(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
@@ -2142,7 +2142,7 @@ async fn test_move_namespace_denied_without_grant_authority_at_destination(pool:
 
 /// Same rule at the warehouse root: a `managed_access` warehouse is equally a destination
 /// whose grants are centrally controlled, so moving to the root needs grant authority there.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_to_root_denied_without_grant_authority(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
@@ -2184,7 +2184,7 @@ async fn test_move_namespace_to_root_denied_without_grant_authority(pool: PgPool
 /// accepted by serde, and `validate_namespace_ident_creation` passes it vacuously — its depth,
 /// dot and empty-part checks all hold trivially for zero elements. Anything downstream that
 /// indexes element 0 (the reserved-namespace lookup) would then panic into a 500.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_namespace_rejects_empty_destination(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let ns = create_ns(&ctx, warehouse_id, &["some_ns"]).await;
@@ -2213,7 +2213,7 @@ async fn test_move_namespace_rejects_empty_destination(pool: PgPool) {
 /// `list_namespaces` and `move_namespace`, so a client can diff a listing against what create told
 /// it. A read addressed by an explicit path still echoes that path, and this pins both halves —
 /// they are deliberately different contracts, not an inconsistency.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_namespace_under_case_variant_parent_reports_stored_path(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let prefix = lakekeeper::api::iceberg::types::Prefix(warehouse_id.to_string());
@@ -2407,7 +2407,7 @@ fn expected_response(
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_concurrent_property_updates_keep_every_key(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let namespace = ns_ident(&["concurrent_updates"]);
@@ -2430,7 +2430,7 @@ async fn test_concurrent_property_updates_keep_every_key(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_concurrent_property_removals_and_updates_all_apply(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let namespace = ns_ident(&["removals_and_updates"]);
@@ -2470,7 +2470,7 @@ async fn test_concurrent_property_removals_and_updates_all_apply(pool: PgPool) {
 }
 
 /// Each response is computed from the properties its own update replaced.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_concurrent_removals_of_one_key_report_it_removed_once(pool: PgPool) {
     let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
     let namespace = ns_ident(&["concurrent_removals"]);

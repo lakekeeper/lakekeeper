@@ -178,7 +178,7 @@ async fn view_object_key(
 
 // ---- Basic tests ----
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_with_referenced_by_succeeds(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -209,7 +209,7 @@ async fn test_load_table_with_referenced_by_succeeds(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_referenced_by_without_engine_ignores_views(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -242,7 +242,7 @@ async fn test_load_table_referenced_by_without_engine_ignores_views(pool: PgPool
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_referenced_by_with_engine_rejects_missing_view(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -275,7 +275,7 @@ async fn test_load_table_referenced_by_with_engine_rejects_missing_view(pool: Pg
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_with_chained_views(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -310,7 +310,7 @@ async fn test_load_table_with_chained_views(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_with_referenced_by(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -346,7 +346,7 @@ async fn test_load_view_with_referenced_by(pool: PgPool) {
 
 // ---- Hiding tests (global) ----
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_hidden_view_in_chain_denied(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -382,7 +382,7 @@ async fn test_load_table_hidden_view_in_chain_denied(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_hidden_table_denied(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -422,7 +422,7 @@ async fn test_load_table_hidden_table_denied(pool: PgPool) {
 
 /// User A cannot access the table directly, but succeeds through a DEFINER view
 /// because owner B's permissions are used for the table check.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_definer_delegates_table_access_to_owner(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -461,7 +461,7 @@ async fn test_definer_delegates_table_access_to_owner(pool: PgPool) {
 }
 
 /// When the DEFINER view owner loses table access, load fails.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_definer_fails_when_owner_loses_table_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -510,7 +510,7 @@ async fn test_definer_fails_when_owner_loses_table_access(pool: PgPool) {
 ///
 /// We hide the table for `user_a` AND `owner_b` to prove that only `owner_c`
 /// (the final DEFINER owner) is used for the table check.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_chain_definer_invoker_definer_succeeds(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -564,7 +564,7 @@ async fn test_chain_definer_invoker_definer_succeeds(pool: PgPool) {
 
 /// Same chain, but `owner_b` loses access to view2 → fails
 /// (view2 is checked as `owner_b` because view1 runs as `owner_b`)
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_chain_fails_when_definer_owner_loses_mid_chain_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -609,7 +609,7 @@ async fn test_chain_fails_when_definer_owner_loses_mid_chain_access(pool: PgPool
 
 /// Same chain, but `owner_c` loses access to table → fails
 /// (table is checked as `owner_c` because view3 is DEFINER)
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_chain_fails_when_final_definer_owner_loses_table_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -655,7 +655,7 @@ async fn test_chain_fails_when_final_definer_owner_loses_table_access(pool: PgPo
 /// INVOKER view checks the calling user (`user_a`), not any owner.
 /// If `user_a` can't see view2 (INVOKER, no chain switch), load fails —
 /// proving INVOKER doesn't delegate.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_invoker_view_checks_calling_user_not_owner(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -697,7 +697,7 @@ async fn test_invoker_view_checks_calling_user_not_owner(pool: PgPool) {
 /// could traverse any existing DEFINER view into the owner's data context —
 /// defeating the data-plane carve-out that the instance-admin design
 /// explicitly promises. Regression guard for that path.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_instance_admin_cannot_traverse_definer_chain_without_view_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -740,7 +740,7 @@ async fn test_instance_admin_cannot_traverse_definer_chain_without_view_access(p
 /// branch on intermediate views enforces `Select` denial in both
 /// consumers — a future refactor that accidentally skipped it on the view
 /// path would regress the fix.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_instance_admin_cannot_load_view_through_definer_chain_without_view_access(
     pool: PgPool,
 ) {
@@ -788,7 +788,7 @@ async fn test_instance_admin_cannot_load_view_through_definer_chain_without_view
 /// definition — that's the "admins manage the catalog" contract. A silent
 /// regression that demoted `GetMetadata` to data-plane, or that consulted
 /// `Select` on the `loadView` target, would break this.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_instance_admin_can_load_view_without_grants(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -831,7 +831,7 @@ async fn test_instance_admin_can_load_view_without_grants(pool: PgPool) {
 /// Counterpart to the regression test above: when the instance admin *has*
 /// authz access to the entry view (no hide applied), the DEFINER chain
 /// still works — bypass of `GetMetadata` alone is not what gates traversal.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_instance_admin_can_traverse_definer_chain_with_view_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -865,7 +865,7 @@ async fn test_instance_admin_can_traverse_definer_chain_with_view_access(pool: P
 
 /// Same chain, but `user_a` loses access to view1 → fails
 /// (view1 is checked as `user_a`, the entry point)
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_chain_fails_when_user_loses_entry_point_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -947,7 +947,7 @@ fn assert_referenced_by_depth_exceeded(err: &IcebergErrorResponse) {
     assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_referenced_by_at_limit_succeeds(pool: PgPool) {
     assert_default_cap();
 
@@ -980,7 +980,7 @@ async fn test_load_table_referenced_by_at_limit_succeeds(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_referenced_by_over_limit_rejected(pool: PgPool) {
     assert_default_cap();
 
@@ -1015,7 +1015,7 @@ async fn test_load_table_referenced_by_over_limit_rejected(pool: PgPool) {
 /// engine the chain would be ignored entirely, and it is still rejected. This
 /// pins the placement decision — the check runs on the raw supplied list, before
 /// the trusted-engine filter.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_referenced_by_over_limit_rejected_without_trusted_engine(pool: PgPool) {
     assert_default_cap();
 
@@ -1045,7 +1045,7 @@ async fn test_load_table_referenced_by_over_limit_rejected_without_trusted_engin
     assert_referenced_by_depth_exceeded(&err);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_credentials_referenced_by_at_limit_succeeds(pool: PgPool) {
     assert_default_cap();
 
@@ -1082,7 +1082,7 @@ async fn test_load_table_credentials_referenced_by_at_limit_succeeds(pool: PgPoo
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_credentials_referenced_by_over_limit_rejected(pool: PgPool) {
     assert_default_cap();
 
@@ -1117,7 +1117,7 @@ async fn test_load_table_credentials_referenced_by_over_limit_rejected(pool: PgP
     assert_referenced_by_depth_exceeded(&err);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_referenced_by_over_limit_rejected(pool: PgPool) {
     assert_default_cap();
 
@@ -1154,7 +1154,7 @@ async fn test_load_view_referenced_by_over_limit_rejected(pool: PgPool) {
 
 /// `loadCredentials` counterpart of the untrusted-engine case: the cap must be a
 /// property of the request at *this* call site too, not only on `loadTable`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_credentials_referenced_by_over_limit_rejected_without_trusted_engine(
     pool: PgPool,
 ) {
@@ -1191,7 +1191,7 @@ async fn test_load_table_credentials_referenced_by_over_limit_rejected_without_t
 }
 
 /// `loadView` counterpart of the untrusted-engine case.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_referenced_by_over_limit_rejected_without_trusted_engine(pool: PgPool) {
     assert_default_cap();
 
@@ -1225,7 +1225,7 @@ async fn test_load_view_referenced_by_over_limit_rejected_without_trusted_engine
 
 /// `loadView` is otherwise the only path with an over-limit but no at-limit test,
 /// so a too-small hardcoded bound at that call site would go unnoticed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_referenced_by_at_limit_succeeds(pool: PgPool) {
     assert_default_cap();
 
@@ -1320,7 +1320,7 @@ async fn load_table_through(
 
 /// A caller refused on the DEFINER entry view never makes the authorizer
 /// decide anything for the view's owner.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_refused_caller_never_sends_owner_checks(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1350,7 +1350,7 @@ async fn test_load_table_refused_caller_never_sends_owner_checks(pool: PgPool) {
 
 /// The caller may traverse, the owner may not read the table: the owner is
 /// decided in a second call and the refusal is reported for delegated execution.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_refused_owner_is_decided_after_the_caller(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1394,7 +1394,7 @@ async fn test_load_table_refused_owner_is_decided_after_the_caller(pool: PgPool)
 
 /// An authorizer that cannot decide for the owner is never asked when the
 /// caller is refused: the caller gets the refusal, not a 503.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_failing_owner_lookup_not_reached_when_caller_refused(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1425,7 +1425,7 @@ async fn test_load_table_failing_owner_lookup_not_reached_when_caller_refused(po
 
 /// Counterpart: a caller allowed to traverse reaches the owner, whose failing
 /// lookup surfaces as 503.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_failing_owner_lookup_surfaces_when_caller_allowed(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1465,7 +1465,7 @@ async fn test_load_table_failing_owner_lookup_surfaces_when_caller_allowed(pool:
 }
 
 /// An INVOKER-only chain is decided in one call, which asks about tables before views.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_invoker_chain_is_one_call(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1503,7 +1503,7 @@ async fn test_load_table_invoker_chain_is_one_call(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_refused_caller_never_sends_owner_checks(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1546,7 +1546,7 @@ async fn test_load_view_refused_caller_never_sends_owner_checks(pool: PgPool) {
 
 /// `owner_b` refuses the second DEFINER view: `owner_c`, who would decide the
 /// table, is never asked, even with a lookup that would fail.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_refused_later_segment_ends_the_chain(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1636,7 +1636,7 @@ fn assert_table_refused_for_caller(
 /// Whoever can change the INVOKER view must not read with `owner_b`'s rights: a
 /// table hidden from `user_a` stays hidden through DEFINER(`owner_b`) → INVOKER,
 /// although `owner_b` may read it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_below_invoker_view_in_definer_chain_is_checked_as_caller(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1664,7 +1664,7 @@ async fn test_load_table_below_invoker_view_in_definer_chain_is_checked_as_calle
 
 /// The reverse: `user_a` may read the table and `owner_b` may not, so the load
 /// through DEFINER(`owner_b`) → INVOKER succeeds.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_below_invoker_view_ignores_definer_owner_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1694,7 +1694,7 @@ async fn test_load_table_below_invoker_view_ignores_definer_owner_access(pool: P
 /// The INVOKER view itself is checked as `owner_b`, whose view references it, so
 /// `user_a` needs no grant on it. `owner_b` losing it is covered by
 /// [`test_chain_fails_when_definer_owner_loses_mid_chain_access`].
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_invoker_view_itself_is_checked_as_definer_owner(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1713,7 +1713,7 @@ async fn test_load_table_invoker_view_itself_is_checked_as_definer_owner(pool: P
 
 /// Pivot: the INVOKER view reads a DEFINER view of `owner_c` that `owner_b` may
 /// select and `user_a` may not. The inner DEFINER view is checked as `user_a`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_definer_view_below_invoker_view_is_checked_as_caller(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1755,7 +1755,7 @@ async fn test_load_table_definer_view_below_invoker_view_is_checked_as_caller(po
 }
 
 /// `loadView` of a view below DEFINER(`owner_b`) → INVOKER checks the target as `user_a`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_below_invoker_view_in_definer_chain_is_checked_as_caller(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1807,7 +1807,7 @@ async fn test_load_view_below_invoker_view_in_definer_chain_is_checked_as_caller
 }
 
 /// Table credentials through DEFINER(`owner_b`) → INVOKER are decided for `user_a`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_credentials_below_invoker_view_in_definer_chain_is_checked_as_caller(
     pool: PgPool,
 ) {
@@ -1862,7 +1862,7 @@ fn assert_referenced_by_contains_target(err: &IcebergErrorResponse) {
 
 /// A view cannot reference itself: `loadView` of a DEFINER view listed in its
 /// own chain is refused before the authorizer is asked.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_referenced_by_itself_is_rejected(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1901,7 +1901,7 @@ async fn test_load_view_referenced_by_itself_is_rejected(pool: PgPool) {
 
 /// A self-reference that differs from the target only in case is decided as an
 /// intermediate view: the caller needs `GetMetadata` and `Select` on it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_case_variant_self_reference_is_an_intermediate_view(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
@@ -1958,7 +1958,7 @@ async fn test_load_view_case_variant_self_reference_is_an_intermediate_view(pool
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_referenced_by_itself_is_rejected(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -1986,7 +1986,7 @@ async fn test_load_table_referenced_by_itself_is_rejected(pool: PgPool) {
     assert_referenced_by_contains_target(&err);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_credentials_referenced_by_itself_is_rejected(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)

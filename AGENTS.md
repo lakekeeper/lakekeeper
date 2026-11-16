@@ -40,6 +40,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 | iceberg-ext | crates/iceberg-ext | Iceberg format extensions |
 | lakekeeper-authz-openfga | crates/authz-openfga | OpenFGA authorization |
 | lakekeeper-audit-macros | crates/audit-macros | `#[audit_part]` attribute for audit types |
+| lakekeeper-test-macros | crates/test-macros | `#[lakekeeper_storage_postgres::db_test]`: a test on a copy of a migrated database |
 | lakekeeper-storage-postgres | crates/lakekeeper-storage-postgres | PostgreSQL catalog backend and migrations |
 | lakekeeper-events-kafka | crates/lakekeeper-events-kafka | Kafka cloud-events publisher |
 | lakekeeper-events-nats | crates/lakekeeper-events-nats | NATS cloud-events publisher |
@@ -129,6 +130,7 @@ Follow `crates/lakekeeper/src/api/management/v1/lakekeeper_actions.rs` as the re
 
 ## Testing
 
+- Write Postgres tests with `#[lakekeeper_storage_postgres::db_test]`: it copies a migrated template database. Use `#[sqlx::test]` only for a test that needs an empty database, such as a migration test.
 - Assert exact expected values. Never `assert x in (a, b)` or approximate matches — ambiguity in tests hides real bugs. If you're unsure which value is correct, find out first.
 
 ## Downstream: Lakekeeper Plus

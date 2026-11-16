@@ -28,7 +28,7 @@ jobs:
     if: ${{ !(github.base_ref == 'main' && github.head_ref == 'release-please--branches--main' && github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-24.04
     services:
-      # Required by the catalog-level S3 tests, which are `#[sqlx::test]`s.
+      # Required by the catalog-level S3 tests, which run on a Postgres database.
       postgres:
         image: postgres:16
         env:

@@ -192,7 +192,7 @@ fn no_pagination() -> PaginationQuery {
     PaginationQuery::new(PageToken::Empty, None)
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn deleting_a_role_takes_its_grants_with_it(pool: PgPool) {
     let f = setup(pool).await;
     let role_id = Server::create_role(
@@ -262,7 +262,7 @@ async fn deleting_a_role_takes_its_grants_with_it(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn deleting_a_project_takes_its_grants_with_it(pool: PgPool) {
     let f = setup(pool).await;
     // A second, warehouse-free project: a project holding warehouses cannot be deleted.
@@ -310,7 +310,7 @@ async fn deleting_a_project_takes_its_grants_with_it(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn deleting_a_warehouse_takes_its_grants_with_it(pool: PgPool) {
     let f = setup(pool).await;
     plant(
@@ -346,7 +346,7 @@ async fn deleting_a_warehouse_takes_its_grants_with_it(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn dropping_a_namespace_takes_its_grants_with_it(pool: PgPool) {
     let f = setup(pool).await;
     create_ns(
@@ -408,7 +408,7 @@ async fn dropping_a_namespace_takes_its_grants_with_it(pool: PgPool) {
 
 /// A recursive drop is the only path that removes several levels at once, and the
 /// only one that reaches all three tabular kinds through one delete.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn dropping_a_namespace_recursively_takes_every_grant_below_it(pool: PgPool) {
     let f = setup(pool).await;
     let prefix = f.warehouse_id.to_string();
@@ -490,7 +490,7 @@ async fn dropping_a_namespace_recursively_takes_every_grant_below_it(pool: PgPoo
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn dropping_a_table_takes_its_grants_with_it(pool: PgPool) {
     let f = setup(pool).await;
     create_ns(f.ctx.clone(), f.warehouse_id.to_string(), "ns".to_string()).await;
@@ -538,7 +538,7 @@ async fn dropping_a_table_takes_its_grants_with_it(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn deleting_a_tag_definition_takes_its_grants_with_it(pool: PgPool) {
     let f = setup(pool).await;
     let doomed = Server::create_tag_definition(
@@ -582,7 +582,7 @@ async fn deleting_a_tag_definition_takes_its_grants_with_it(pool: PgPool) {
 /// A soft-dropped tabular keeps its row, so the cascade does not fire and the grants
 /// stay. That is what makes an undrop restore the access that was there before it —
 /// they go for real when expiration hard-deletes the row.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_soft_dropped_table_keeps_its_grants_for_undrop(pool: PgPool) {
     let f = setup_with_delete_profile(
         pool,

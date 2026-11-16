@@ -134,7 +134,7 @@ mod role_membership {
         /// A role's direct members (a member role B and a user U) are read back from
         /// OpenFGA, role identity hydrated from the catalog, both carrying the
         /// tuple's write timestamp. The `?type=` filter composes.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn list_role_members_openfga(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -211,7 +211,7 @@ mod role_membership {
 
         /// A child role's direct `member-of` listing names its parent, with identity
         /// hydrated from the catalog and the tuple's write timestamp.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn list_role_member_of_openfga(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -241,7 +241,7 @@ mod role_membership {
         /// A user's directly-assigned roles are hydrated from the catalog. An unknown
         /// user is tolerated (empty page, 200) — OpenFGA cannot prove non-existence,
         /// so the authorizer arm never 404s (unlike the catalog arm).
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn list_user_roles_openfga(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -279,7 +279,7 @@ mod role_membership {
         /// assignment-managing authorizer (OpenFGA): they return 501 after the
         /// authz check passes. The direct listings (above) ARE supported; full
         /// transitive support lives on catalog backends (see role_membership_ops.rs).
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn transitive_listings_not_supported_openfga(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -319,7 +319,7 @@ mod role_membership {
         /// An actor with no grants in the project is DENIED these reads — the authz
         /// check fires before any listing. Guards against silently dropping the
         /// check (every other test exercises only the allow path).
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn reads_denied_for_unprivileged_openfga(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let a = create_role(&ctx, &metadata(&admin, &project_id), "A").await;
@@ -360,7 +360,7 @@ mod role_membership {
         /// tuple, e.g. a since-deleted role) is dropped from the listing with a
         /// warn; real members remain. This is the behavior unique to the authorizer
         /// arm — the catalog arm can never have a dangling role id.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn orphan_role_member_dropped_openfga(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
@@ -399,7 +399,7 @@ mod role_membership {
 
         /// Direct members paginate via OpenFGA's continuation token: a page_size=1
         /// drain yields every member exactly once, no gaps or duplicates.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn list_role_members_paginates_openfga(pool: PgPool) {
             let (ctx, admin, project_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);

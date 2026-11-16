@@ -2005,7 +2005,7 @@ mod test {
         TaskQueueName::from(format!("test-{}", Uuid::now_v7()))
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_queue_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2071,7 +2071,7 @@ mod test {
         assert_ne!(id, id3);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_queue_task_batch_round_trips_generic_table_entity(pool: PgPool) {
         // Pins the TaskEntityTypeDB::GenericTable arm of the InsertResult
         // mapping at the queue_task_batch site: a GenericTable entity goes in,
@@ -2154,7 +2154,7 @@ mod test {
         )
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_pick_task_dual_reads_legacy_queue_name(pool: PgPool) {
         // A task enqueued under a queue's pre-rename name must still be picked
         // up when the worker polls under the current name plus the legacy
@@ -2263,7 +2263,7 @@ mod test {
         picked
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_pick_takes_the_oldest_due_task_across_queue_names(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let current = generate_tq_name();
@@ -2285,7 +2285,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_pick_skips_the_tasks_another_picker_holds(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let current = generate_tq_name();
@@ -2321,7 +2321,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_concurrent_pickers_pick_each_task_once(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let current = generate_tq_name();
@@ -2360,7 +2360,7 @@ mod test {
         assert_eq!(once, 50);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_failed_tasks_retry_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2429,7 +2429,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_success_tasks_are_not_polled(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
@@ -2479,7 +2479,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_success_tasks_can_be_reinserted_with_new_id(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
@@ -2554,7 +2554,7 @@ mod test {
         assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cancelled_tasks_can_be_reinserted(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2622,7 +2622,7 @@ mod test {
         assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_failed_tasks_can_be_reinserted(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
@@ -2697,7 +2697,7 @@ mod test {
         assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_scheduled_tasks_are_polled_later(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
@@ -2745,7 +2745,7 @@ mod test {
         assert_eq!(&task.queue_name, &tq_name);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_stale_tasks_are_picked_up_again(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2884,7 +2884,7 @@ mod test {
         .unwrap()
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_timed_out_attempt_is_retried_after_its_backoff(pool: PgPool) {
         let policy = RetryPolicy {
             max_retries: 5,
@@ -2945,7 +2945,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_timed_out_last_attempt_fails_the_task(pool: PgPool) {
         let policy = RetryPolicy {
             max_retries: 1,
@@ -2984,7 +2984,7 @@ mod test {
     }
 
     /// Two picks race for one timed-out attempt: one fails it, and it is counted once.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_timed_out_attempt_is_counted_once_for_its_queue(pool: PgPool) {
         let recorder =
             axum_prometheus::metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
@@ -3029,7 +3029,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_timed_out_attempt_asked_to_stop_is_retried(pool: PgPool) {
         let (tq_name, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
         sqlx::query("UPDATE task SET status = 'should-stop' WHERE task_id = $1")
@@ -3090,7 +3090,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cancelling_by_id_a_task_waiting_for_its_retry_logs_the_cancellation(
         pool: PgPool,
     ) {
@@ -3100,7 +3100,7 @@ mod test {
         .await;
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cancelling_by_warehouse_a_task_waiting_for_its_retry_logs_the_cancellation(
         pool: PgPool,
     ) {
@@ -3112,7 +3112,7 @@ mod test {
         .await;
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cancelling_by_project_a_task_waiting_for_its_retry_logs_the_cancellation(
         pool: PgPool,
     ) {
@@ -3125,7 +3125,7 @@ mod test {
         .await;
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cancelling_a_running_task_while_its_failure_commits_logs_the_cancellation(
         pool: PgPool,
     ) {
@@ -3265,7 +3265,7 @@ mod test {
         (task, log)
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_resource_demand_travels_with_the_task(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q = generate_tq_name();
@@ -3367,7 +3367,7 @@ mod test {
         assert_eq!(listed().await, all);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_pick_takes_only_tasks_in_its_resource_demand_range(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let pick_all = |q: TaskQueueName, range: TaskResourceDemandRange| {
@@ -3423,7 +3423,7 @@ mod test {
         assert_eq!(pick_all(q, empty).await, vec![]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_filtered_pick_closes_a_timed_out_attempt_outside_its_range(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q = generate_tq_name();
@@ -3454,7 +3454,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_a_retry_decision_can_give_up(pool: PgPool) {
         // Give up on a timed-out attempt above 10; retry anything else.
         let policy = RetryPolicy {
@@ -3519,7 +3519,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_retry_policy_sets_the_resource_demand_of_a_timed_out_attempts_retry(
         pool: PgPool,
     ) {
@@ -3635,7 +3635,7 @@ mod test {
     }
 
     /// A queue's [`TaskConfig::retry_decision`] applies to the failures its tasks report.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_task_config_sets_the_resource_demand_of_a_reported_failures_retry(pool: PgPool) {
         #[derive(Clone, Debug, Serialize, Deserialize)]
         #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -3712,7 +3712,7 @@ mod test {
 
     /// A failure recorded with a decision follows it, whatever the queue's
     /// [`TaskConfig::retry_decision`] says; [`TaskConfig::max_retries`] still caps retries.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_a_failure_recorded_with_a_decision_overrides_the_queues_retry_decision(
         pool: PgPool,
     ) {
@@ -3849,7 +3849,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_a_negative_resource_demand_counts_as_zero(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q = generate_tq_name();
@@ -3867,7 +3867,7 @@ mod test {
         assert_eq!(db_err.constraint(), Some("task_resource_demand_check"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_a_retry_backoff_is_kept_between_zero_and_100_years(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (tq_name, task) = queue_and_pick_timing_out_task(&pool, TEST_RETRY_POLICY).await;
@@ -3915,7 +3915,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_multiple_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -3999,7 +3999,7 @@ mod test {
             .unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_queue_batch(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4108,7 +4108,7 @@ mod test {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_queue_batch_idempotency(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4226,7 +4226,7 @@ mod test {
             .unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_set_get_task_config(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4275,7 +4275,7 @@ mod test {
         assert_eq!(response.max_seconds_since_last_heartbeat, Some(3600));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_queue_config_with_project_filter(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
 
@@ -4328,7 +4328,7 @@ mod test {
         assert_eq!(response.queue_config.config, project_queue_config);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_queue_config_with_project_filter_and_all_have_same_queue_name(
         pool: PgPool,
     ) {
@@ -4383,7 +4383,7 @@ mod test {
         assert_eq!(response.queue_config.config, project_queue_config);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_set_task_config_yields_a_task_with_config(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4469,7 +4469,7 @@ mod test {
         assert_eq!(task.data, other_payload);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_record_success_attempt(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4546,7 +4546,7 @@ mod test {
         assert_eq!(task_details.task.attempt(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_record_success_conflict_on_duplicate(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4608,7 +4608,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_record_success_not_found_error(pool: PgPool) {
         let task_attempt_id = TaskAttemptId {
             task_id: TaskId::from(Uuid::now_v7()),
@@ -4630,7 +4630,7 @@ mod test {
         assert!(error.error.message.contains("not found in active tasks"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_record_success_normal_case(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4679,7 +4679,7 @@ mod test {
         assert!(no_task.is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_record_failure_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4758,7 +4758,7 @@ mod test {
         assert_eq!(task_details.task.attempt(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_record_failure_conflict_on_duplicate(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4867,7 +4867,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_record_failure_not_found_error(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (_warehouse_id, _project_id) = setup_warehouse(pool.clone()).await;
@@ -4889,7 +4889,7 @@ mod test {
         assert!(iceberg_error.message.contains("not found in active tasks"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cancel_scheduled_tasks_idempotent(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -4976,7 +4976,7 @@ mod test {
         assert_eq!(task_details.task.attempt(), 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cancel_running_tasks_idempotent_with_force_delete(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -5073,7 +5073,7 @@ mod test {
         assert_eq!(task_details.task.attempt(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_mixed_operations(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -5164,7 +5164,7 @@ mod test {
         assert_eq!(task_details.task.attempt(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_run_tasks_at_with_and_without_scheduled_for(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -5298,7 +5298,7 @@ mod test {
             .unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_reschedule_running_task_creates_failed_attempt(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -5475,7 +5475,7 @@ mod test {
     }
 
     /// A stopped attempt that records its success after "run now" keeps the rescheduled task.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_record_success_in_transaction_keeps_rescheduled_task(pool: PgPool) {
         #[derive(Clone, Debug, Serialize, Deserialize)]
         #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -5580,7 +5580,7 @@ mod test {
     }
 
     /// Test: Project-level tasks across different projects get picked correctly
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_pick_task_finds_correct_config_for_project_level_tasks_on_different_projects(
         pool: PgPool,
     ) {
@@ -5670,7 +5670,7 @@ mod test {
     }
 
     // Test: Project-level and warehouse-level tasks for same project are isolated
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_pick_task_finds_correct_config_for_project_and_warehouse_level_tasks_in_same_project(
         pool: PgPool,
     ) {
@@ -5768,7 +5768,7 @@ mod test {
 
     /// The real poll under a runner: a picked task runs until the worker polls again, and a
     /// closed gate lets the poll pick nothing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_poll_counts_picked_tasks_and_stops_at_the_drain_gate(pool: PgPool) {
         #[derive(Clone, Debug, Serialize, Deserialize)]
         #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -5838,7 +5838,7 @@ mod test {
 
     /// A worker that picks once and never polls again, like a run-once Job: its task runs until
     /// the worker ends, and a closed gate lets the pick return nothing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_a_single_pick_in_a_worker_is_counted_and_gated(pool: PgPool) {
         #[derive(Clone, Debug, Serialize, Deserialize)]
         #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -5938,7 +5938,7 @@ mod test {
         (demand.due, demand.heartbeat_expired, demand.running)
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_task_queue_demand_counts_each_range(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q = generate_tq_name();
@@ -6087,7 +6087,7 @@ mod test {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_task_queue_demand_finds_the_longest_waiting_task(pool: PgPool) {
         use chrono::SubsecRound;
 
@@ -6244,7 +6244,7 @@ mod test {
 
     /// The pick and the due count find a resource demand range in `task_queue_name_status_idx`,
     /// also in a generic plan.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_resource_demand_ranges_are_index_conditions(pool: PgPool) {
         setup_warehouse(pool.clone()).await;
         let range_in_index = "Index Cond: ((queue_name = $1) AND (status = 'scheduled'::task_intermediate_status) \

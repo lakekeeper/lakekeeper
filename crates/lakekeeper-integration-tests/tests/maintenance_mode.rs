@@ -97,7 +97,7 @@ async fn post(
     (status, serde_json::from_slice(&bytes).unwrap_or_default())
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn maintenance_mode_toggle_end_to_end(pool: PgPool) {
     let (ctx, _) = SetupTestCatalog::builder()
         .pool(pool.clone())

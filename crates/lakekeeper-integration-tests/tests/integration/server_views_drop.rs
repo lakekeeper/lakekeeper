@@ -26,7 +26,7 @@ use lakekeeper_integration_tests::{
 };
 use sqlx::PgPool;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_drop_view(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 
@@ -103,7 +103,7 @@ async fn test_drop_view(pool: PgPool) {
     assert_eq!(task.entity, Some(entity));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cannot_drop_protected_view(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 
@@ -199,7 +199,7 @@ async fn test_cannot_drop_protected_view(pool: PgPool) {
     assert_eq!(error.error.code, StatusCode::NOT_FOUND);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_can_force_drop_protected_view(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 

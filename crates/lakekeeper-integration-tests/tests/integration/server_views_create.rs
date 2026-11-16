@@ -14,7 +14,7 @@ use lakekeeper_storage_postgres::namespace::tests::initialize_namespace;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_view(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 
@@ -63,7 +63,7 @@ async fn test_create_view(pool: PgPool) {
 
 /// A view cannot be created in a location that holds files, as a table cannot: dropping the
 /// view removes its location with all its files.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_view_refuses_location_with_files(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
     let first = create_view_helper(
@@ -94,7 +94,7 @@ async fn test_create_view_refuses_location_with_files(pool: PgPool) {
 
 /// The test server configures no trusted engine. The owner property is protected anyway: a
 /// client that is not a trusted engine must not create a view that runs as another user.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_view_with_owner_property_refused_from_untrusted_client(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 
@@ -128,7 +128,7 @@ async fn test_create_view_with_owner_property_refused_from_untrusted_client(pool
     .expect("the refused create must not leave a view behind");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_view_with_owner_property_from_trusted_engine(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 
@@ -155,7 +155,7 @@ async fn test_create_view_with_owner_property_from_trusted_engine(pool: PgPool) 
 
 /// A server without authentication cannot trust any client as an engine, so the owner
 /// property is not protected there.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_view_with_owner_property_without_authentication(pool: PgPool) {
     let (mut api_context, namespace, whi, _) = views_test_setup(pool, None).await;
     api_context.v1_state.authentication = ServerAuthentication::Disabled;
@@ -183,7 +183,7 @@ async fn test_create_view_with_owner_property_without_authentication(pool: PgPoo
 
 /// On a server that authenticates requests, an in-process call without authentication is not a
 /// trusted engine.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_view_with_owner_property_refused_from_request_without_authentication(
     pool: PgPool,
 ) {
@@ -208,7 +208,7 @@ async fn test_create_view_with_owner_property_refused_from_request_without_authe
     assert_eq!(err.error.r#type, "ProtectedPropertyModification");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_view_refuses_invalid_names(pool: PgPool) {
     let (api_context, namespace, whi, _) = views_test_setup(pool, None).await;
 

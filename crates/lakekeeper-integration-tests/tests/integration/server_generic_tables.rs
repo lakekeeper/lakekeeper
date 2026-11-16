@@ -86,7 +86,7 @@ fn create_request(name: &str) -> CreateGenericTableRequest {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_invalid_format_fails(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let params = NamespaceParameters {
@@ -115,7 +115,7 @@ async fn test_create_invalid_format_fails(pool: PgPool) {
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_oversized_blob_fails(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let params = NamespaceParameters {
@@ -143,7 +143,7 @@ async fn test_create_oversized_blob_fails(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_generic_table(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -168,7 +168,7 @@ async fn test_create_generic_table(pool: PgPool) {
     assert_eq!(result.table.doc, Some("test doc".to_string()));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_duplicate_fails(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -198,7 +198,7 @@ async fn test_create_duplicate_fails(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::CONFLICT);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_empty_name_fails(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
 
@@ -217,7 +217,7 @@ async fn test_create_empty_name_fails(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_generic_table(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -251,7 +251,7 @@ async fn test_load_generic_table(pool: PgPool) {
     assert_eq!(loaded.table.base_location, created.table.base_location);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_not_found(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
 
@@ -271,7 +271,7 @@ async fn test_load_not_found(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::NOT_FOUND);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_generic_tables(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -322,7 +322,7 @@ async fn test_list_generic_tables(pool: PgPool) {
     assert!(names.contains(&"gt-b"));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_drop_generic_table(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -381,7 +381,7 @@ async fn test_drop_generic_table(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::NOT_FOUND);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_drop_not_found(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
 
@@ -404,7 +404,7 @@ async fn test_drop_not_found(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::NOT_FOUND);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_generic_table_idempotent_replay(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -456,7 +456,7 @@ async fn test_create_generic_table_idempotent_replay(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cannot_drop_protected_generic_table(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -539,7 +539,7 @@ async fn test_cannot_drop_protected_generic_table(pool: PgPool) {
     .unwrap();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_generic_table(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -597,7 +597,7 @@ async fn test_rename_generic_table(pool: PgPool) {
     assert_eq!(loaded.table.name, "renamed");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_generic_table_cross_namespace(pool: PgPool) {
     let (ctx, source_ns, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -692,7 +692,7 @@ async fn move_generic_table_setup(
 }
 
 /// Moving a generic table into another namespace needs `move` on it, not just `rename`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_generic_table_without_move_on_source(pool: PgPool) {
     let (ctx, authz, prefix, source_ns, dest_ns) = move_generic_table_setup(pool).await;
     authz.block_action("generic_table:Move");
@@ -727,7 +727,7 @@ async fn test_move_generic_table_without_move_on_source(pool: PgPool) {
 
 /// Moving a generic table into another namespace needs `accept_moved_tabular` on the
 /// destination, not just `create_generic_table`; the refusal is recorded as `move`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_move_generic_table_without_accept_moved_tabular_on_destination(pool: PgPool) {
     use lakekeeper::service::events::{EventListener, context::ActionContextKey};
     use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
@@ -767,7 +767,7 @@ async fn test_move_generic_table_without_accept_moved_tabular_on_destination(poo
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_generic_table_source_missing(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
 
@@ -785,7 +785,7 @@ async fn test_rename_generic_table_source_missing(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::NOT_FOUND);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_rename_generic_table_idempotent_replay(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -825,7 +825,7 @@ async fn test_rename_generic_table_idempotent_replay(pool: PgPool) {
         .expect("idempotent replay should succeed");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_generic_tables_pagination(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -957,7 +957,7 @@ impl_pagination_tests!(
     |ident| { ident.name }
 );
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_tables_refuse_invalid_names(pool: PgPool) {
     let (ctx, namespace, whi) = setup(pool).await;
     let prefix = whi.to_string();
@@ -1082,7 +1082,7 @@ async fn create_at(
 /// Creating a generic table on a location that holds files takes the files over, as
 /// registering a table does, so it needs the register right on the warehouse. An empty
 /// location does not.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPool) {
     let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
     let register_right = format!("warehouse:{:?}", CatalogWarehouseAction::RegisterTable);
@@ -1109,7 +1109,7 @@ async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPoo
 
 /// Re-creating a generic table at its own location, which holds files, without the register
 /// right gets 409, as a re-create with the right does, not a refusal.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_recreate_generic_table_on_its_files_without_the_register_right(pool: PgPool) {
     let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
     create_at(&ctx, &ns_params, "events", &with_files)

@@ -282,7 +282,7 @@ async fn body_text(response: Response) -> String {
     String::from_utf8(body.to_vec()).unwrap()
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_extension_route_is_authenticated_and_counted(pool: PgPool) {
     let harness = Harness::new(pool).await;
     let router = harness
@@ -315,7 +315,7 @@ async fn an_extension_route_is_authenticated_and_counted(pool: PgPool) {
     assert_eq!(listed[0].warehouse_id, Some(*warehouse_id));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn admission_gates_apply_to_extension_routes(pool: PgPool) {
     let harness = Harness::new(pool).await;
     let router = harness
@@ -336,7 +336,7 @@ async fn admission_gates_apply_to_extension_routes(pool: PgPool) {
 }
 
 #[cfg(feature = "open-api")]
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_management_document_includes_extension_endpoints(pool: PgPool) {
     let harness = Harness::new(pool).await;
     let router = harness
@@ -437,7 +437,7 @@ fn extensions_validate_without_a_server() {
     assert_eq!(undocumented, Ok(()));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_router_refuses_an_invalid_extension(pool: PgPool) {
     let harness = Harness::new(pool).await;
     let error = harness

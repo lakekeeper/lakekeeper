@@ -87,7 +87,7 @@ mod tests {
 
     const TEST_KEY: i64 = 0x5f8e_2d63_a4b1_dead;
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn try_acquire_succeeds_when_free(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool);
         let lock = PostgresAdvisoryLock::try_acquire(&state, TEST_KEY)
@@ -96,7 +96,7 @@ mod tests {
         assert!(lock.is_some(), "lock must be acquired when key is free");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn try_acquire_returns_none_when_held(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool);
 
@@ -121,7 +121,7 @@ mod tests {
         drop(holder);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn lock_released_on_drop(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool);
 

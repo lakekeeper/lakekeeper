@@ -64,7 +64,7 @@ async fn list_system_roles(
         .collect()
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_upsert_system_roles_in_all_projects_inserts_then_refreshes(pool: PgPool) {
     migrate_core_only(&pool).await.unwrap();
     let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -144,7 +144,7 @@ async fn test_upsert_system_roles_in_all_projects_inserts_then_refreshes(pool: P
     }
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_upsert_system_roles_in_all_projects_with_empty_specs_is_noop(pool: PgPool) {
     migrate_core_only(&pool).await.unwrap();
     let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -172,7 +172,7 @@ async fn test_upsert_system_roles_in_all_projects_with_empty_specs_is_noop(pool:
 /// Locks in the OSS no-impact contract: `run_post_migration_hooks` with an
 /// empty `Vec` returns `Ok` AND seeds no system-role rows in any existing
 /// project.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_run_post_migration_hooks_oss_no_registry_is_ok(pool: PgPool) {
     migrate_core_only(&pool).await.unwrap();
     let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -204,7 +204,7 @@ async fn test_run_post_migration_hooks_oss_no_registry_is_ok(pool: PgPool) {
 /// `upsert_system_roles_in_all_projects` propagates via `?`. We inject the
 /// failure by closing the pool before the helper starts, which causes the
 /// first `begin_write` to return `PoolClosed`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_upsert_system_roles_in_all_projects_propagates_errors(pool: PgPool) {
     migrate_core_only(&pool).await.unwrap();
     let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -248,7 +248,7 @@ async fn test_casing_repair_pin_is_absent_before_migrating(pool: PgPool) {
 /// whether it runs — that is the whole mechanism behind
 /// `migrate --force-idempotent-post-migration-hooks`, and a gate that silently ignored its flag
 /// would leave a failed repair unrecoverable.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_casing_repair_hook_runs_only_when_its_gate_is_open(pool: PgPool) {
     use lakekeeper_storage_postgres::namespace::tests::initialize_namespace;
 

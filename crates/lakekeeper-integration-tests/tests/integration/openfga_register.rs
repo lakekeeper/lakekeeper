@@ -41,7 +41,7 @@ mod register {
         use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
         use sqlx::PgPool;
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn test_create_alone_cannot_adopt_a_dropped_table(pool: PgPool) {
             let authorizer = new_authorizer_in_empty_store_from_default_config()
                 .await
