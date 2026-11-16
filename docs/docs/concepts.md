@@ -48,6 +48,7 @@ Query engines disagree on identifier case — and they disagree in the worst pos
 | Athena (Spark) | **Always lowercased** | **Quoted still lowercased** | **Always lowercase** |
 | Snowflake | **Uppercased** | `"..."` preserves case | **Uppercase** (unquoted), preserved (quoted) |
 | PyIceberg | N/A (programmatic) | N/A | **Exactly as provided** |
+| OLake Go | N/A | N/A | **Lowercase by default**, special characters replaced by `_`; explicitly configured `destination_table` names preserve their case and characters |
 
 Notice the conflict: Spark sends `monthly_revenue`, Snowflake sends `MONTHLY_REVENUE`, and PyIceberg sends whatever the user typed. With a case-sensitive catalog, **the same table has three different names depending on which engine created it** — and none of them can find each other's tables.
 
@@ -287,8 +288,6 @@ In a warehouse with soft deletion, these calls need this permission in addition 
 In warehouses with hard deletion, and when deleting a namespace without `recursive=true`, `force` only skips protection and needs no extra permission.
 
 In a warehouse with soft deletion, users without this permission can delete a namespace only when it is empty. Dropped tables, views and generic tables count until they expire.
-
-In a warehouse managed by the instance (`managed-by: instance-admin`), only instance admins can change the soft-deletion settings, but this permission still decides who may skip soft deletion.
 
 ## Upgrades & Migration
 

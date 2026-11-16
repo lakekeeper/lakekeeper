@@ -401,6 +401,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             metadata: new_metadata.clone(),
             // Views carry no storage access: engines load the tables behind a view with loadTable.
             config: None,
+            labels: None,
         },
         ViewEventTransition {
             old_metadata: previous_view.metadata,

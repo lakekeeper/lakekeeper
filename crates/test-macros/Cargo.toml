@@ -1,0 +1,17 @@
+[package]
+name = "lakekeeper-test-macros"
+description = "The `#[db_test]` attribute: a Lakekeeper test on a copy of a migrated Postgres database"
+version.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }

@@ -22,8 +22,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Required check. It runs even when a job it needs failed: a failed
+  # dependency would otherwise skip it, and a skipped required check passes.
   tests-pass:
     name: all tests pass
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     needs:
       - sqlx-check
@@ -35,7 +38,13 @@ jobs:
       - unused-deps
       - check-audit-format
     steps:
-      - run: exit 0
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            [[ $result == "success" || $result == "skipped" ]] || exit 1
+          done
 
   msrv-check:
     name: MSRV check
@@ -135,7 +144,7 @@ jobs:
   check-format:
     runs-on: ubuntu-24.04
     steps:
-      - run: sudo snap install --edge --classic just
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
@@ -160,8 +169,7 @@ jobs:
   clippy:
     runs-on: ubuntu-24.04
     steps:
-      - run: |
-          sudo snap install --edge --classic just
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -183,8 +191,7 @@ jobs:
   check-generated-openapi-matches:
     runs-on: ubuntu-24.04
     steps:
-      - run: |
-          sudo snap install --edge --classic just
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
@@ -233,7 +240,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres-version: ["15", "18"]
+        # Pull requests test the oldest supported Postgres, which catches SQL that only newer
+        # versions accept. Pushes also test the newest.
+        postgres-version: ${{ github.event_name == 'pull_request' && fromJSON('["15"]') || fromJSON('["15", "18"]') }}
     services:
       vault:
         # Recent vault images run as non-root and hard-require IPC_LOCK; the
@@ -273,6 +282,18 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+          # A pull request checks out its merge commit; the first parent is the base branch.
+          fetch-depth: 2
+
+      # The tests throw their databases away, so Postgres need not wait for its writes to
+      # reach the disk.
+      - name: Turn off Postgres durability
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
 
       - name: Start Minio Docker Container
         run: |
@@ -328,14 +349,22 @@ jobs:
 
       - name: Determine nextest profile
         run: |
-          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
-            # PR is made off this repo, so workflows have access to secrets and the entire suite
-            # can be run.
-            echo "NEXTEST_PROFILE=ci" >> $GITHUB_ENV
+          # The live cloud storage tests read repository secrets, which pull requests from forks
+          # don't get. Pushes run them in one job; pull requests run them when they change storage
+          # code, its tests or the test setup.
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            cloud=${{ matrix.postgres-version == '15' }}
+          elif [[ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]]; then
+            cloud=false
+          elif git diff --quiet HEAD^1 HEAD -- \
+              Cargo.lock .config/nextest.toml .github/workflows/unittests.yml \
+              crates/io crates/lakekeeper/src/service/storage crates/lakekeeper/src/server/io.rs \
+              crates/lakekeeper-integration-tests/tests/integration/namespace_storage_cleanup.rs; then
+            cloud=false
           else
-            # PR is made off a fork, so secrets are not available in ci workflows.
-            echo "NEXTEST_PROFILE=ci_no_secrets" >> $GITHUB_ENV
+            cloud=true
           fi
+          echo "NEXTEST_PROFILE=$([[ $cloud == true ]] && echo ci || echo ci_no_secrets)" >> "$GITHUB_ENV"
 
       - name: Migrate database
         run: |

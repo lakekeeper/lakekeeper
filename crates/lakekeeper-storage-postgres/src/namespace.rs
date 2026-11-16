@@ -16,8 +16,8 @@ use lakekeeper::{
         NamespaceCannotMoveIntoSelf, NamespaceDropInfo, NamespaceHasChildren,
         NamespaceHasRunningTabularExpirations, NamespaceId, NamespaceIdent, NamespaceNotEmpty,
         NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected,
-        NamespaceWithParent, Result, SerializationError, TabularId, WarehouseIdNotFound,
-        storage::join_location, tasks::TaskId,
+        NamespaceWithParent, Result, SerializationError, TabularId, UpdatedNamespaceProperties,
+        WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
 use lakekeeper_io::Location;
@@ -1384,22 +1384,47 @@ pub(crate) async fn set_namespace_protected(
 pub(crate) async fn update_namespace_properties(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
-    properties: HashMap<String, String>,
+    updates: &HashMap<String, String>,
+    removals: &[String],
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<NamespaceWithParent, CatalogUpdateNamespacePropertiesError> {
-    let properties = serde_json::to_value(properties)
+) -> std::result::Result<UpdatedNamespaceProperties, CatalogUpdateNamespacePropertiesError> {
+    let updates = serde_json::to_value(updates)
         .map_err(|e| NamespacePropertiesSerializationError::new(warehouse_id, namespace_id, e))?;
+    let not_found = || NamespaceNotFound::new(warehouse_id, namespace_id);
 
+    // Lock the row, then update it in a second statement: one statement that locks the row and
+    // then updates it can deadlock behind other lockers. The update sees exactly the locked row.
+    let previous = sqlx::query_scalar!(
+        r#"
+        SELECT namespace_properties as "properties: Json<Option<HashMap<String, String>>>"
+        FROM namespace
+        WHERE warehouse_id = $1 AND namespace_id = $2
+        AND warehouse_id IN (
+            SELECT warehouse_id FROM warehouse WHERE status = 'active'
+        )
+        FOR NO KEY UPDATE
+        "#,
+        *warehouse_id,
+        *namespace_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
+    .ok_or_else(not_found)?;
+
+    // A stored JSON `null` counts as no properties.
     let row = sqlx::query_as!(
         NamespaceWithParentVersionRow,
         r#"
         WITH updated_ns AS (
             UPDATE namespace
-            SET namespace_properties = $1
-            WHERE warehouse_id = $2 AND namespace_id = $3
-            AND warehouse_id IN (
-                SELECT warehouse_id FROM warehouse WHERE status = 'active'
-            )
+            SET namespace_properties = (
+                CASE WHEN jsonb_typeof(namespace_properties) = 'object'
+                    THEN namespace_properties
+                    ELSE '{}'::jsonb
+                END - $4::text[]
+            ) || $3::jsonb
+            WHERE warehouse_id = $1 AND namespace_id = $2
             RETURNING
                 namespace_id,
                 namespace_name,
@@ -1435,21 +1460,22 @@ pub(crate) async fn update_namespace_properties(
         FROM updated_ns u
         LEFT JOIN parent_ns p ON TRUE
         "#,
-        properties,
         *warehouse_id,
-        *namespace_id
+        *namespace_id,
+        updates,
+        removals,
     )
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| match e {
-        sqlx::Error::RowNotFound => CatalogUpdateNamespacePropertiesError::from(
-            NamespaceNotFound::new(warehouse_id, namespace_id),
-        ),
+        sqlx::Error::RowNotFound => CatalogUpdateNamespacePropertiesError::from(not_found()),
         _ => e.into_catalog_backend_error().into(),
     })?;
 
-    row.into_namespace_with_parent_version(warehouse_id)
-        .map_err(Into::into)
+    Ok(UpdatedNamespaceProperties {
+        namespace: row.into_namespace_with_parent_version(warehouse_id)?,
+        previous_properties: previous.0.filter(|p| !p.is_empty()),
+    })
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1508,7 +1534,7 @@ pub mod tests {
         response
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_namespace_lifecycle(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1518,6 +1544,7 @@ pub mod tests {
         let properties = HashMap::from_iter(vec![
             ("key1".to_string(), "value1".to_string()),
             ("key2".to_string(), "value2".to_string()),
+            ("key3".to_string(), "value3".to_string()),
         ]);
 
         let namespace_info = initialize_namespace(
@@ -1598,20 +1625,29 @@ pub mod tests {
             .await
             .unwrap();
 
-        let new_props = HashMap::from_iter(vec![
+        let updates = HashMap::from_iter(vec![
             ("key2".to_string(), "updated_value".to_string()),
             ("new_key".to_string(), "new_value".to_string()),
         ]);
-        PostgresBackend::update_namespace_properties(
+        let outcome = PostgresBackend::update_namespace_properties(
             warehouse_id,
             namespace_id,
-            new_props.clone(),
+            &updates,
+            &["key1".to_string(), "missing_key".to_string()],
             &mut transaction,
         )
         .await
         .unwrap();
 
         transaction.commit().await.unwrap();
+
+        let new_props = HashMap::from_iter(vec![
+            ("key2".to_string(), "updated_value".to_string()),
+            ("key3".to_string(), "value3".to_string()),
+            ("new_key".to_string(), "new_value".to_string()),
+        ]);
+        assert_eq!(outcome.previous_properties, Some(properties.clone()));
+        assert_eq!(outcome.namespace.properties(), Some(&new_props));
 
         let response = PostgresBackend::get_namespace_cache_aware(
             warehouse_id,
@@ -1638,7 +1674,39 @@ pub mod tests {
         .expect("Error dropping namespace");
     }
 
-    #[sqlx::test]
+    /// A namespace created without properties stores JSON `null`, which an update treats as
+    /// empty. A key in both `updates` and `removals` is removed first, then set.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn test_update_namespace_properties_without_stored_properties(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        let mut transaction = WriteTransaction::<PostgresBackend>::begin(state.clone())
+            .await
+            .unwrap();
+        let outcome = PostgresBackend::update_namespace_properties(
+            warehouse_id,
+            namespace_id,
+            &HashMap::from([("a".to_string(), "1".to_string())]),
+            &["a".to_string()],
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(outcome.previous_properties, None);
+        assert_eq!(
+            outcome.namespace.properties(),
+            Some(&HashMap::from([("a".to_string(), "1".to_string())]))
+        );
+    }
+
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_pagination(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1758,7 +1826,7 @@ pub mod tests {
         assert_eq!(namespaces.into_hashmap(), HashMap::new());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_nested_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1789,7 +1857,7 @@ pub mod tests {
         assert_eq!(&result.parents[0], &parent_namespace);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_nonexistent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1806,7 +1874,7 @@ pub mod tests {
         assert_eq!(result, None);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_nonexistent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1830,7 +1898,7 @@ pub mod tests {
         ));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_drop_nonempty_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1871,7 +1939,7 @@ pub mod tests {
     // non-recursive guard checked only active tabulars, so the FK CASCADE on
     // namespace deletion would hard-delete the soft-deleted rows and orphan their
     // expiration tasks.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_drop_namespace_with_soft_deleted_tabulars(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1927,7 +1995,7 @@ pub mod tests {
     // Non-recursive drop must fail when the namespace contains a generic table.
     // Exercises the `entity_type IN ('table', 'view', 'generic-table')` branch in
     // the drop_namespace SQL.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_drop_namespace_with_generic_tables(pool: sqlx::PgPool) {
         use lakekeeper::service::{
             CatalogGenericTableOps as _, GenericTableCreation, GenericTableFormat, GenericTableId,
@@ -1984,7 +2052,7 @@ pub mod tests {
     }
 
     // Recursive drop must succeed and surface the generic table as a child.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_recursive_drop_namespace_with_generic_tables(pool: sqlx::PgPool) {
         use lakekeeper::service::{
             CatalogGenericTableOps as _, GenericTableCreation, GenericTableFormat, GenericTableId,
@@ -2048,7 +2116,7 @@ pub mod tests {
         trx.commit().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_recursive_drop_nonempty_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2157,7 +2225,7 @@ pub mod tests {
         .unwrap()
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_recursive_drop_namespace_holding_a_view_that_defaults_to_it(
         pool: sqlx::PgPool,
     ) {
@@ -2206,7 +2274,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_dropping_a_namespace_clears_it_as_the_default_of_views_elsewhere(
         pool: sqlx::PgPool,
     ) {
@@ -2269,7 +2337,7 @@ pub mod tests {
 
     /// Versions written before default namespaces were resolved within the view's warehouse
     /// can point at a namespace of another warehouse.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_dropping_a_namespace_clears_it_as_the_default_of_views_in_other_warehouses(
         pool: sqlx::PgPool,
     ) {
@@ -2318,7 +2386,7 @@ pub mod tests {
     /// The delete triggers of `tabular`'s two keys on `namespace` fire in name order, and each
     /// name ends in the trigger's OID. Re-creating the keys puts the non-cascading one first,
     /// the order in which a namespace delete left to the cascade fails.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_recursive_drop_does_not_depend_on_foreign_key_trigger_order(pool: sqlx::PgPool) {
         const ID_KEY: &str = "tabular_warehouse_id_namespace_id_fkey";
         const NAME_KEY: &str = "tabular_warehouse_id_namespace_id_namespace_name_fkey";
@@ -2421,7 +2489,7 @@ pub mod tests {
         assert_eq!(remaining, 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_drop_namespace_with_sub_namespaces(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2471,7 +2539,7 @@ pub mod tests {
         .unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_recursive_drop_namespace_with_sub_namespaces(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2529,7 +2597,7 @@ pub mod tests {
         assert_eq!(ns.len(), 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_namespace_returns_locations_of_dropped_namespaces(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2575,7 +2643,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_case_insensitive_but_preserve_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2625,7 +2693,7 @@ pub mod tests {
         ));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_drop_protected_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2664,7 +2732,7 @@ pub mod tests {
         ));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_force_drop_protected_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2704,7 +2772,7 @@ pub mod tests {
         assert!(result.open_tasks.is_empty());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_recursive_force_drop_nonempty_protected_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2767,7 +2835,7 @@ pub mod tests {
         assert_eq!(drop_info.open_tasks.len(), 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_recursive_force_drop_namespace_with_protected_table(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2837,7 +2905,7 @@ pub mod tests {
         transaction.commit().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_namespaces_with_hierarchy(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2947,7 +3015,7 @@ pub mod tests {
         assert!(!grandchild_hierarchy.is_root());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_namespaces_multiple_hierarchies(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3058,7 +3126,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_namespaces_pagination_with_hierarchy(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3154,7 +3222,7 @@ pub mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_namespaces_deep_hierarchy(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3227,7 +3295,7 @@ pub mod tests {
         assert!(parent1.is_root());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_namespaces_preserves_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -3260,7 +3328,7 @@ pub mod tests {
         assert_eq!(stored.namespace_ident(), &ns_mixed);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_namespace_case_insensitive_lookup(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -3308,7 +3376,7 @@ pub mod tests {
     /// requester's case, and subsequent by-id lookups return that case — making
     /// id-based lookups non-deterministic (depending on whoever populated the
     /// cache first).
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_id_lookup_returns_canonical_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -3355,7 +3423,7 @@ pub mod tests {
     /// Cache hits must carry the current caller's case, not whichever case
     /// populated the cache first. Two different-case lookups should each get
     /// their own case back.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cache_hit_returns_callers_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3407,7 +3475,7 @@ pub mod tests {
 
     /// Multi-level lookup must return the caller's case for the leaf AND all
     /// ancestor levels of the hierarchy.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_hierarchy_lookup_applies_case_to_all_levels(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3472,7 +3540,7 @@ pub mod tests {
     /// and the keys it builds from it are case-sensitive. Deduplicating the requested
     /// arrays case-insensitively would leave one arbitrary spelling with a row and
     /// the others with none, which reads downstream as "namespace not found".
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn every_requested_spelling_maps_to_the_same_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3514,7 +3582,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_batch_ident_lookup_applies_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3564,7 +3632,7 @@ pub mod tests {
     /// After populating the cache with a specific case, subsequent lookups with
     /// the *same* case hit without a DB call. Different-case lookups miss the
     /// ident-cache, go to DB, and populate a separate ident-cache entry.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_canonical_lookup_hits_cache_after_creation(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3615,7 +3683,7 @@ pub mod tests {
     /// Reads through a transaction that may write leave the shared namespace caches cold: a
     /// transaction can observe its own uncommitted writes. The contrast assertion proves the
     /// cache is enabled.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn write_transaction_reads_do_not_warm_shared_cache(pool: sqlx::PgPool) {
         use lakekeeper::service::namespace_cache::{IDENT_TO_ID_CACHE, NAMESPACE_CACHE};
 
@@ -3685,7 +3753,7 @@ pub mod tests {
 
     /// Reads through a read transaction see only committed data, so each of them warms the
     /// shared namespace caches.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn read_transaction_reads_warm_shared_cache(pool: sqlx::PgPool) {
         use lakekeeper::service::namespace_cache::{IDENT_TO_ID_CACHE, NAMESPACE_CACHE};
 
@@ -3779,7 +3847,7 @@ pub mod tests {
     /// A transaction that changed a cached namespace and reads it again, through the
     /// version-conflict refetch of the multi-get or a stale minimum version, leaves the
     /// cached entry as it was: the change may still roll back.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rereads_in_a_transaction_keep_the_cached_namespace(pool: sqlx::PgPool) {
         use lakekeeper::service::namespace_cache::NAMESPACE_CACHE;
 
@@ -3839,7 +3907,7 @@ pub mod tests {
     /// Every namespace write records the cache keys it changes: the namespace, and the path a
     /// move left. A drop records only its root, also when it drops children; a move to the
     /// current path records nothing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn namespace_writes_record_their_cache_keys(pool: sqlx::PgPool) {
         use lakekeeper::service::cache_invalidation::CacheKey;
 
@@ -3869,7 +3937,8 @@ pub mod tests {
         PostgresBackend::update_namespace_properties(
             warehouse_id,
             parent,
-            HashMap::from([("key".to_string(), "value".to_string())]),
+            &HashMap::from([("key".to_string(), "value".to_string())]),
+            &[],
             &mut t,
         )
         .await
@@ -3945,7 +4014,7 @@ pub mod tests {
     /// stored spelling: the namespace cache compares a child's path minus its leaf against its
     /// parent's ident byte-wise, and a mismatch makes every later lookup of that row — and of its
     /// whole subtree — miss the cache, reload the same bytes and fail identically.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_namespace_canonicalises_parent_casing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4011,7 +4080,7 @@ pub mod tests {
     /// Discriminates against a fix that only canonicalises the immediate parent segment — which a
     /// depth-2 test would pass. Every ancestor segment comes from the parent row, and the parent
     /// row's own prefix is canonical by induction.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_namespace_canonicalises_every_ancestor_segment(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4043,7 +4112,7 @@ pub mod tests {
 
     /// The `None` arm: at the warehouse root there is no parent row to take a spelling from, so the
     /// caller's casing is the stored casing. Guards against over-canonicalisation.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_namespace_at_warehouse_root_keeps_callers_casing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4060,7 +4129,7 @@ pub mod tests {
 
     /// Canonicalising the prefix must not change collision behaviour: the unique index is over the
     /// whole array under the case-insensitive collation, so a case-variant path still collides.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_namespace_rejects_case_variant_prefix_collision(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4096,7 +4165,7 @@ pub mod tests {
     /// Runs the migration's own statement via `include_str!` so the SQL stays single-sourced.
     /// `#[sqlx::test]` applies migrations before the body, so the drift has to be created after —
     /// which also means this exercises the re-run path, and the statement is idempotent.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_repair_namespace_path_casing_canonicalises_existing_rows(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4258,7 +4327,7 @@ pub mod tests {
         .unwrap()
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_to_warehouse_root(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4293,7 +4362,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_under_new_parent(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4334,7 +4403,7 @@ pub mod tests {
         assert!(moved.changed_parent());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_renames_in_place(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4381,7 +4450,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_case_only_rename(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4426,7 +4495,7 @@ pub mod tests {
     /// parent's stored spelling: the namespace cache's `is_parent_ident` compares a child's
     /// path minus its leaf against the parent's ident byte-wise, and a mismatch turns every
     /// later by-id lookup of that namespace into a cache miss plus an eviction.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_canonicalises_parent_casing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4490,7 +4559,7 @@ pub mod tests {
     ///
     /// Contrast `test_move_namespace_case_only_rename`: a case-only difference in the *leaf* is a
     /// real rename, because the leaf is the name itself.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_ancestor_case_only_destination_is_noop(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4552,7 +4621,7 @@ pub mod tests {
     /// The probe table copies its column type *and collation* from the real `namespace` table with
     /// `CREATE TABLE AS ... LIMIT 0`, so it tracks the migration instead of restating it. All
     /// queries run on one connection because a temp table belongs to its connection.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_namespace_path_comparison_is_no_looser_than_the_collation(pool: sqlx::PgPool) {
         let mut conn = pool.acquire().await.unwrap();
 
@@ -4632,7 +4701,7 @@ pub mod tests {
         .unwrap()
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_has_children_probe_adversarial_names(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4706,7 +4775,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_to_current_path_is_noop(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4747,7 +4816,7 @@ pub mod tests {
         assert!(!moved.changed_parent());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_noop_succeeds_even_with_children(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4775,7 +4844,7 @@ pub mod tests {
         .unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_rejects_existing_destination(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4804,7 +4873,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_rejects_existing_destination_different_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4829,7 +4898,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_rejects_namespace_with_children(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4860,7 +4929,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_rejects_namespace_with_grandchildren_only(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4906,7 +4975,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_rejects_protected_without_force(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4942,7 +5011,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_force_moves_protected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -4979,7 +5048,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_rejects_missing_destination_parent(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -5002,7 +5071,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_rejects_move_into_self(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -5028,7 +5097,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_unknown_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -5049,7 +5118,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_move_namespace_cascades_tabular_namespace_name(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;

@@ -4,7 +4,7 @@ use itertools::Itertools;
 use lakekeeper::{
     ProjectId, XXHashSet,
     service::{
-        ArcProjectId,
+        ArcProjectId, IcebergErrorResponse,
         endpoint_statistics::{EndpointIdentifier, EndpointStatisticsSink},
     },
 };
@@ -18,28 +18,26 @@ impl EndpointStatisticsSink for PostgresStatisticsSink {
         &self,
         stats: HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>>,
     ) -> lakekeeper::api::Result<()> {
+        const RETRIES: u32 = 5;
         let stats = Arc::new(stats);
 
-        tryhard::retry_fn(async || {
-            self.process_stats(stats.clone()).await.inspect_err(|e| {
-                tracing::error!(
-                    "Failed to consume stats: {:?}, will retry up to 5 times.",
-                    e.error
-                );
+        // The tracker logs the final error, so a retry is only a warning.
+        tryhard::retry_fn(async || self.process_stats(stats.clone()).await)
+            .retries(RETRIES)
+            .exponential_backoff(Duration::from_millis(125))
+            .on_retry(|retry, next_delay, e: &IcebergErrorResponse| {
+                if let Some(next_delay) = next_delay {
+                    tracing::warn!(
+                        "Failed to write endpoint statistics, retry {retry} of {RETRIES} in {next_delay:?}: {}",
+                        e.error
+                    );
+                }
+                std::future::ready(())
             })
-        })
-        .retries(5)
-        .exponential_backoff(Duration::from_millis(125))
-        .await
-        .inspect(|()| {
-            tracing::debug!("Successfully consumed stats");
-        })
-        .inspect_err(|e| {
-            tracing::error!(
-                "Failed to consume stats: {:?}, lost stats: {stats:?}",
-                e.error
-            );
-        })
+            .await
+            .inspect(|()| {
+                tracing::debug!("Successfully consumed stats");
+            })
     }
 
     fn sink_id(&self) -> &'static str {
@@ -175,10 +173,7 @@ impl PostgresStatisticsSink {
                 &uris as _,
                 &status_codes,
                 &counts
-            ).execute(&self.write_pool).await.map_err(|e| {
-            tracing::error!("Failed to insert stats: {e}, lost stats: {stats:?}");
-            e.into_error_model("failed to insert stats")
-        })?;
+            ).execute(&self.write_pool).await.map_err(|e| e.into_error_model("failed to insert stats"))?;
 
         Ok(())
     }
@@ -198,10 +193,7 @@ async fn resolve_projects<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Pos
     )
     .fetch_all(conn)
     .await
-    .map_err(|e| {
-        tracing::error!("Failed to fetch project ids: {e}");
-        e.into_error_model("failed to fetch project ids")
-    })?
+    .map_err(|e| e.into_error_model("failed to fetch project ids"))?
     .into_iter()
     .filter_map(|p| {
         p.exists
@@ -248,10 +240,7 @@ async fn resolve_warehouses<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::P
     )
     .fetch_all(conn)
     .await
-    .map_err(|e| {
-        tracing::error!("Failed to fetch warehouse ids: {e}");
-        e.into_error_model("failed to fetch warehouse ids")
-    })?
+    .map_err(|e| e.into_error_model("failed to fetch warehouse ids"))?
     .into_iter()
     .map(|w| ((w.project_id, w.warehouse_name), w.warehouse_id))
     .collect::<HashMap<_, _>>())

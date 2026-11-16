@@ -3,6 +3,7 @@ pub(crate) mod compression_codec;
 mod config;
 pub mod generic_tables;
 pub(crate) mod io;
+pub(crate) mod labels;
 mod metrics;
 pub mod namespace;
 #[cfg(feature = "s3-signer")]
@@ -189,41 +190,31 @@ impl<Entity, EntityId> UnfilteredPage<Entity, EntityId> {
         }
     }
 
+    /// Takes the first `n` approved entities. A full result ends at its last entity's token:
+    /// a token holds the id and creation time of its row, so it must not point at a hidden one.
+    /// A short result ends at the last row read, hidden or not: use it only as the next cursor.
     #[must_use]
     pub(crate) fn take_n_authz_approved(
         self,
         n: usize,
     ) -> (Vec<Entity>, Vec<EntityId>, Option<String>) {
-        #[derive(Debug)]
-        enum State {
-            Open,
-            LoopingForLastNextPage,
-        }
-        let (entities, ids, token, _) = self
+        let (entities, ids, token) = self
             .authz_approved
             .into_iter()
             .zip(self.entities)
             .zip(self.entity_ids)
             .zip(self.page_tokens)
             .fold_while(
-                (vec![], vec![], None, State::Open),
-                |(mut entities, mut entity_ids, mut page_token, mut state),
-                 (((authz, entity), id), token)| {
+                (vec![], vec![], None),
+                |(mut entities, mut entity_ids, _), (((authz, entity), id), token)| {
                     if authz {
-                        if matches!(state, State::Open) {
-                            entities.push(entity);
-                            entity_ids.push(id);
-                        } else if matches!(state, State::LoopingForLastNextPage) {
-                            return FoldWhile::Done((entities, entity_ids, page_token, state));
+                        entities.push(entity);
+                        entity_ids.push(id);
+                        if entities.len() == n {
+                            return FoldWhile::Done((entities, entity_ids, Some(token)));
                         }
                     }
-                    page_token = Some(token);
-                    state = if entities.len() == n {
-                        State::LoopingForLastNextPage
-                    } else {
-                        State::Open
-                    };
-                    FoldWhile::Continue((entities, entity_ids, page_token, state))
+                    FoldWhile::Continue((entities, entity_ids, Some(token)))
                 },
             )
             .into_inner();
@@ -235,18 +226,14 @@ impl<Entity, EntityId> UnfilteredPage<Entity, EntityId> {
     fn is_partial(&self) -> bool {
         self.entities.len() < self.page_size
     }
-
-    #[must_use]
-    fn has_authz_denied_items(&self) -> bool {
-        self.n_filtered > 0
-    }
 }
 
 /// Reads and authorizes pages until one is full of allowed entities.
 ///
 /// `fetch_fn` runs in a read transaction that is committed before `authorize_fn` sees the
 /// page: an authorizer may read the catalog itself, and a connection held meanwhile lets
-/// concurrent lists exhaust the read pool.
+/// concurrent lists exhaust the read pool. `fetch_fn` must return fewer rows than asked
+/// only at the end of the data.
 pub(crate) async fn fetch_until_full_page<'a, Entity, EntityId, Page, C: CatalogStore>(
     page_size: Option<i64>,
     page_token: PageToken,
@@ -277,15 +264,18 @@ pub(crate) async fn fetch_until_full_page<'a, Entity, EntityId, Page, C: Catalog
     let page = read_page::<C, _>(&catalog_state, page_size, page_token, &mut fetch_fn).await?;
     let unfiltered_page = authorize_fn(page_size, page).await?;
 
-    if unfiltered_page.is_partial() && !unfiltered_page.has_authz_denied_items() {
-        return Ok((unfiltered_page.entities, unfiltered_page.entity_ids, None));
+    // A short read is the end of the data, whether or not some entries were hidden.
+    if unfiltered_page.is_partial() {
+        let (entities, entity_ids, _) = unfiltered_page.take_n_authz_approved(page_as_usize);
+        return Ok((entities, entity_ids, None));
     }
 
     let (mut entities, mut entity_ids, mut next_page_token) =
         unfiltered_page.take_n_authz_approved(page_as_usize);
 
     while entities.len() < page_as_usize {
-        let refill_size = CONFIG.pagination_size_default.into();
+        // Clamped to the maximum: a store never reads more, so a larger refill would look short.
+        let refill_size = CONFIG.page_size_or_pagination_default(None);
         let page = read_page::<C, _>(
             &catalog_state,
             refill_size,
@@ -296,7 +286,8 @@ pub(crate) async fn fetch_until_full_page<'a, Entity, EntityId, Page, C: Catalog
         let new_unfiltered_page = authorize_fn(refill_size, page).await?;
 
         let number_of_requested_items = page_as_usize - entities.len();
-        let page_was_authz_reduced = new_unfiltered_page.has_authz_denied_items();
+        // Only a short read means the end: a refill can be smaller than the gap it fills.
+        let refill_was_partial = new_unfiltered_page.is_partial();
 
         let (more_entities, more_ids, n_page) =
             new_unfiltered_page.take_n_authz_approved(number_of_requested_items);
@@ -304,7 +295,7 @@ pub(crate) async fn fetch_until_full_page<'a, Entity, EntityId, Page, C: Catalog
         entities.extend(more_entities);
         entity_ids.extend(more_ids);
 
-        if (number_of_new_items < number_of_requested_items) && !page_was_authz_reduced {
+        if number_of_new_items < number_of_requested_items && refill_was_partial {
             next_page_token = None;
             break;
         }
@@ -328,4 +319,30 @@ async fn read_page<C: CatalogStore, Page>(
     let page = fetch_fn(page_size, page_token, &mut t).await?;
     t.commit().await?;
     Ok(page)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UnfilteredPage;
+
+    #[test]
+    fn test_full_page_ends_at_token_of_last_approved_entity() {
+        let page = UnfilteredPage::new(
+            vec!["a", "b", "c"],
+            vec![1, 2, 3],
+            vec![
+                "token-a".to_string(),
+                "token-b".to_string(),
+                "token-c".to_string(),
+            ],
+            vec![true, false, true],
+            3,
+        );
+
+        let (entities, ids, token) = page.take_n_authz_approved(1);
+
+        assert_eq!(entities, vec!["a"]);
+        assert_eq!(ids, vec![1]);
+        assert_eq!(token.as_deref(), Some("token-a"));
+    }
 }

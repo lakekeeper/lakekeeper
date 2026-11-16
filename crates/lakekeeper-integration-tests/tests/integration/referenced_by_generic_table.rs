@@ -1,0 +1,959 @@
+use std::collections::HashMap;
+
+use http::StatusCode;
+use iceberg::{NamespaceIdent, TableIdent};
+use lakekeeper::{
+    MatchedEngines, TrinoEngineConfig, TrustedEngine, WarehouseId,
+    api::{
+        ApiContext, RequestMetadata, Result,
+        data::v1::generic_tables::{
+            GenericTableParameters, GenericTableService as _, LoadGenericTableCredentialsRequest,
+            LoadGenericTableCredentialsResponse,
+        },
+        iceberg::{
+            types::{Prefix, ReferencingView},
+            v1::{
+                DataAccess, NamespaceParameters, tables::DataAccessMode, views::ViewService as _,
+            },
+        },
+    },
+    server::CatalogServer,
+    service::{
+        AuthZViewInfo as _, CatalogGenericTableOps as _, CatalogNamespaceOps as _, CatalogStore,
+        CatalogTabularOps as _, State, TabularListFlags, Transaction as _, UserId,
+        authz::{
+            AllowAllAuthorizer, AuthZCannotSeeGenericTable, Authorizer, CatalogGenericTableAction,
+            UserOrRole,
+            tests::{HidingAuthorizer, RecordedTabularCheck},
+        },
+        events::AuthorizationFailureSource as _,
+    },
+};
+use lakekeeper_integration_tests::{
+    SetupTestCatalog, create_view_request, random_request_metadata,
+};
+use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use sqlx::PgPool;
+
+type Server<A> = CatalogServer<PostgresBackend, A, SecretsState>;
+
+const ENGINE_IDP: &str = "test-idp";
+
+fn trino_engine() -> TrustedEngine {
+    TrustedEngine::Trino(TrinoEngineConfig {
+        owner_property: "trino.run-as-owner".to_string(),
+        identities: HashMap::new(),
+    })
+}
+
+fn matched_engines() -> MatchedEngines {
+    MatchedEngines::single(trino_engine())
+}
+
+fn request_with_engine() -> RequestMetadata {
+    let mut m = RequestMetadata::test_user(UserId::new_unchecked(ENGINE_IDP, "engine-user"));
+    m.set_engines(matched_engines());
+    m
+}
+
+fn request_as_user(name: &str) -> RequestMetadata {
+    let mut m = RequestMetadata::test_user(UserId::new_unchecked(ENGINE_IDP, name));
+    m.set_engines(matched_engines());
+    m
+}
+
+fn request_as_instance_admin(name: &str) -> RequestMetadata {
+    let mut m = RequestMetadata::test_instance_admin(UserId::new_unchecked(ENGINE_IDP, name));
+    m.set_engines(matched_engines());
+    m
+}
+
+fn user(name: &str) -> UserOrRole {
+    UserOrRole::User(UserId::new_unchecked(ENGINE_IDP, name))
+}
+
+fn table_ident(ns_name: &str, name: &str) -> TableIdent {
+    TableIdent::new(NamespaceIdent::new(ns_name.to_string()), name.to_string())
+}
+
+fn prefix(wh: &lakekeeper_integration_tests::TestWarehouseResponse) -> Prefix {
+    Prefix(wh.warehouse_id.to_string())
+}
+
+fn ns_params(
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    ns_name: &str,
+) -> NamespaceParameters {
+    NamespaceParameters {
+        prefix: Some(prefix(wh)),
+        namespace: NamespaceIdent::new(ns_name.to_string()),
+    }
+}
+
+fn referenced_by(views: &[TableIdent]) -> Vec<ReferencingView> {
+    views.iter().cloned().map(ReferencingView::new).collect()
+}
+
+fn gt_params(
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    ns_name: &str,
+    name: &str,
+) -> GenericTableParameters {
+    GenericTableParameters {
+        prefix: Some(prefix(wh)),
+        namespace: NamespaceIdent::new(ns_name.to_string()),
+        table_name: name.to_string(),
+    }
+}
+
+async fn setup_ns_and_generic_table<A: Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+) {
+    let p = wh.warehouse_id.to_string();
+    lakekeeper_integration_tests::create_ns(ctx.clone(), p.clone(), "ns".into()).await;
+    lakekeeper_integration_tests::create_generic_table(ctx.clone(), p, "ns", "my_gt")
+        .await
+        .unwrap();
+}
+
+async fn create_invoker_view<A: Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    name: &str,
+) {
+    Server::create_view(
+        ns_params(wh, "ns"),
+        create_view_request(Some(name), None),
+        ctx.clone(),
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+}
+
+async fn create_definer_view<A: Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    name: &str,
+    owner: &str,
+) {
+    let mut rq = create_view_request(Some(name), None);
+    rq.properties
+        .insert("trino.run-as-owner".to_string(), owner.to_string());
+    Server::create_view(
+        ns_params(wh, "ns"),
+        rq,
+        ctx.clone(),
+        DataAccessMode::ClientManaged,
+        request_with_engine(),
+    )
+    .await
+    .unwrap();
+}
+
+async fn generic_table_object_key(
+    ctx: &ApiContext<State<impl Authorizer, PostgresBackend, SecretsState>>,
+    whi: WarehouseId,
+    table: &TableIdent,
+) -> String {
+    let ns =
+        PostgresBackend::get_namespace(whi, table.namespace.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .expect("namespace should exist");
+    let mut t =
+        <PostgresBackend as CatalogStore>::Transaction::begin_read(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let info = PostgresBackend::load_generic_table(
+        whi,
+        ns.namespace.namespace_id(),
+        &table.name,
+        t.transaction(),
+    )
+    .await
+    .expect("generic table should exist");
+    t.commit().await.unwrap();
+    format!("generic_table:{}/{}", whi, info.generic_table_id)
+}
+
+async fn view_object_key(
+    ctx: &ApiContext<State<impl Authorizer, PostgresBackend, SecretsState>>,
+    whi: WarehouseId,
+    view: &TableIdent,
+) -> String {
+    let info = PostgresBackend::get_view_info(
+        whi,
+        view.clone(),
+        TabularListFlags::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("view should exist");
+    format!("view:{}/{}", whi, info.view_id())
+}
+
+async fn load_credentials<A: Authorizer + Clone>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    gt_name: &str,
+    refs: Option<Vec<TableIdent>>,
+    request_metadata: RequestMetadata,
+) -> Result<LoadGenericTableCredentialsResponse> {
+    Server::load_generic_table_credentials(
+        gt_params(wh, "ns", gt_name),
+        LoadGenericTableCredentialsRequest {
+            referenced_by: refs.map(|v| referenced_by(&v)),
+        },
+        DataAccess::not_specified(),
+        ctx.clone(),
+        request_metadata,
+    )
+    .await
+}
+
+// ---- Basic tests ----
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_with_referenced_by_succeeds(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_invoker_view(&ctx, &wh, "my_view").await;
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "my_view")]),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "load_generic_table_credentials with referenced_by should succeed: {result:?}"
+    );
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_referenced_by_without_engine_ignores_views(
+    pool: PgPool,
+) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+
+    // Without an engine, referenced_by is dropped — even a nonexistent view
+    // shouldn't cause a failure.
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "nonexistent_view")]),
+        random_request_metadata(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "without engine, referenced_by should be ignored: {result:?}"
+    );
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_with_engine_rejects_missing_view(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "nonexistent_view")]),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "with engine, nonexistent view in referenced_by should fail: {result:?}"
+    );
+}
+
+// ---- Chain depth limit ----
+
+/// Pins the shipped default of `LAKEKEEPER__REFERENCED_BY__MAX_NESTING_DEPTH`.
+/// Asserted against the live config below so a changed default fails loudly
+/// here rather than as a puzzling boundary failure.
+const MAX_CHAIN_DEPTH: usize = 10;
+
+fn chain_idents(len: usize) -> Vec<TableIdent> {
+    (0..len)
+        .map(|i| table_ident("ns", &format!("chain_view_{i}")))
+        .collect()
+}
+
+async fn create_chain_views<A: Authorizer>(
+    ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    len: usize,
+) {
+    for i in 0..len {
+        create_invoker_view(ctx, wh, &format!("chain_view_{i}")).await;
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_referenced_by_at_limit_succeeds(pool: PgPool) {
+    assert_eq!(
+        lakekeeper::CONFIG.referenced_by.max_nesting_depth,
+        MAX_CHAIN_DEPTH
+    );
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH).await;
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(chain_idents(MAX_CHAIN_DEPTH)),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a chain of exactly {MAX_CHAIN_DEPTH} views is accepted: {result:?}"
+    );
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_referenced_by_over_limit_rejected(pool: PgPool) {
+    assert_eq!(
+        lakekeeper::CONFIG.referenced_by.max_nesting_depth,
+        MAX_CHAIN_DEPTH
+    );
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_chain_views(&ctx, &wh, MAX_CHAIN_DEPTH + 1).await;
+
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(chain_idents(MAX_CHAIN_DEPTH + 1)),
+        request_with_engine(),
+    )
+    .await
+    .expect_err("a chain one over the limit is rejected");
+
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+    assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
+}
+
+/// Untrusted-engine counterpart: the cap is a property of the request at this
+/// call site too, not a consequence of engine trust.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_referenced_by_over_limit_rejected_without_trusted_engine(
+    pool: PgPool,
+) {
+    assert_eq!(
+        lakekeeper::CONFIG.referenced_by.max_nesting_depth,
+        MAX_CHAIN_DEPTH
+    );
+
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(chain_idents(MAX_CHAIN_DEPTH + 1)),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("rejected even though the chain would be ignored");
+
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+    assert_eq!(err.error.r#type, "ReferencedByDepthExceeded");
+}
+
+// ---- Hiding tests (global) ----
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_hidden_view_in_chain_denied(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_invoker_view(&ctx, &wh, "my_view").await;
+
+    let key = view_object_key(&ctx, whi, &table_ident("ns", "my_view")).await;
+    authz.hide(&key);
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "my_view")]),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "load_generic_table_credentials should fail when view in chain is hidden"
+    );
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_hidden_generic_table_denied(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_invoker_view(&ctx, &wh, "my_view").await;
+
+    let key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.hide(&key);
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "my_view")]),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "load_generic_table_credentials should fail when generic table is hidden"
+    );
+}
+
+/// Write credentials can read, so a caller allowed to write but not to read gets none.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_need_read_even_with_write(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    authz.block_action(&format!(
+        "generic_table:{:?}",
+        CatalogGenericTableAction::ReadData
+    ));
+
+    let err = load_credentials(&ctx, &wh, "my_gt", None, random_request_metadata())
+        .await
+        .expect_err("write without read must vend nothing");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchGenericTableException", "{err:?}");
+}
+
+// ---- DEFINER delegation ----
+
+/// User A cannot access the generic table directly, but succeeds through a
+/// DEFINER view because owner B's permissions are used for the GT check.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_definer_delegates_generic_table_access_to_owner(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.hide_for_user(&user("user_a"), &gt_key);
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_user("user_a"),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "user_a should access generic table via DEFINER view: {result:?}"
+    );
+}
+
+/// When the DEFINER view owner loses generic-table access, load fails.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_definer_fails_when_owner_loses_generic_table_access(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.hide_for_user(&user("owner_b"), &gt_key);
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_user("user_a"),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "should fail when DEFINER owner loses generic-table access"
+    );
+}
+
+/// Chain: `User_A` → View1(DEFINER, owner=B) → View2(INVOKER) → View3(DEFINER, owner=C) → `GenericTable`
+///
+/// Authorization checks:
+///   View1: as `User_A`
+///   View2: as B (View1 runs as B)
+///   View3: as `User_A` (View2 runs as the caller)
+///   GT:    as C (View3 runs as C)
+///
+/// We hide the GT for `user_a` AND `owner_b` — only `owner_c` (final DEFINER owner)
+/// must be used for the GT check.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_chain_definer_invoker_definer_succeeds_for_generic_table(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "view1_definer_b", "owner_b").await;
+    create_invoker_view(&ctx, &wh, "view2_invoker").await;
+    create_definer_view(&ctx, &wh, "view3_definer_c", "owner_c").await;
+
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.hide_for_user(&user("user_a"), &gt_key);
+    authz.hide_for_user(&user("owner_b"), &gt_key);
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![
+            table_ident("ns", "view1_definer_b"),
+            table_ident("ns", "view2_invoker"),
+            table_ident("ns", "view3_definer_c"),
+        ]),
+        request_as_user("user_a"),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "only owner_c should be checked for the generic table: {result:?}"
+    );
+}
+
+/// INVOKER view checks the calling user (`user_a`), not any owner.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_invoker_view_checks_calling_user_for_generic_table(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_invoker_view(&ctx, &wh, "invoker_view").await;
+
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "invoker_view")).await;
+    authz.hide_for_user(&user("user_a"), &view_key);
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "invoker_view")]),
+        request_as_user("user_a"),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "INVOKER view should check user_a's permissions"
+    );
+}
+
+/// Instance admins bypass control-plane authz on generic tables, but MUST NOT
+/// traverse a DEFINER view they lack `Select` on into the owner's context.
+/// Regression guard for the data-plane carve-out.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_instance_admin_cannot_traverse_definer_chain_to_generic_table(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    authz.hide_for_user(&user("admin"), &view_key);
+
+    let result = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_instance_admin("admin"),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "instance admin with `Select` denied on DEFINER entry view must not traverse into owner's context for generic tables",
+    );
+}
+
+/// A caller refused on the DEFINER entry view never makes the authorizer
+/// decide anything for the view's owner, even one whose lookup would fail.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_generic_table_credentials_refused_caller_never_sends_owner_checks(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    authz.fail_tabular_checks_for_user(&user("owner_b"));
+    authz.hide_for_user(&user("user_a"), &view_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchViewException", "{err:?}");
+    let check = |action: &str| RecordedTabularCheck {
+        object: view_key.clone(),
+        action: action.to_string(),
+        user: None,
+        is_delegated_execution: false,
+    };
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![vec![check("GetMetadata"), check("Select")]]
+    );
+}
+
+fn tabular_check(object: &str, action: &str, owner: Option<&str>) -> RecordedTabularCheck {
+    RecordedTabularCheck {
+        object: object.to_string(),
+        action: action.to_string(),
+        user: owner.map(user),
+        is_delegated_execution: owner.is_some(),
+    }
+}
+
+/// The checks of one chain entry; `owner` when decided for a DEFINER owner.
+fn checks(object: &str, actions: &[&str], owner: Option<&str>) -> Vec<RecordedTabularCheck> {
+    actions
+        .iter()
+        .map(|action| tabular_check(object, action, owner))
+        .collect()
+}
+
+/// The caller may traverse, the owner may not read the generic table: the owner
+/// is decided in a second call and the refusal is reported for delegated execution.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_generic_table_credentials_refused_owner_is_decided_after_the_caller(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.hide_for_user(&user("owner_b"), &gt_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    let expected = AuthZCannotSeeGenericTable::new_forbidden(whi, table_ident("ns", "my_gt"))
+        .with_delegated_execution(true)
+        .into_error_model();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchGenericTableException", "{err:?}");
+    assert_eq!(err.error.message, expected.message, "{err:?}");
+    assert_eq!(
+        err.error.stack,
+        vec!["Access denied during delegated execution via DEFINER view chain".to_string()],
+        "{err:?}"
+    );
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![
+            checks(&view_key, &["GetMetadata", "Select"], None),
+            checks(
+                &gt_key,
+                &["GetMetadata", "ReadData", "WriteData"],
+                Some("owner_b")
+            ),
+        ]
+    );
+}
+
+/// A caller allowed to traverse reaches the owner, whose failing lookup
+/// surfaces as 503.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_generic_table_credentials_failing_owner_lookup_surfaces_when_caller_allowed(
+    pool: PgPool,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.fail_tabular_checks_for_user(&user("owner_b"));
+
+    let since = authz.tabular_checks().len();
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "definer_view")]),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        err.error.code,
+        StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+        "{err:?}"
+    );
+    assert_eq!(err.error.r#type, "AuthorizationBackendError", "{err:?}");
+    assert_eq!(
+        err.error.message, "Authorization service is unavailable",
+        "{err:?}"
+    );
+    assert_eq!(
+        err.error
+            .source
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("Tabular checks for this principal fail in the test authorizer"),
+        "{err:?}"
+    );
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![
+            checks(&view_key, &["GetMetadata", "Select"], None),
+            checks(
+                &gt_key,
+                &["GetMetadata", "ReadData", "WriteData"],
+                Some("owner_b")
+            ),
+        ]
+    );
+}
+
+/// The generic table being loaded cannot appear in its own referenced-by chain.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table_credentials_referenced_by_itself_is_rejected(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![table_ident("ns", "my_gt")]),
+        request_with_engine(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "ReferencedByContainsTarget", "{err:?}");
+    assert_eq!(
+        err.error.message, "A referenced-by chain must not contain the object being loaded",
+        "{err:?}"
+    );
+}
+
+/// DEFINER(`owner_b`) → INVOKER → generic table: the generic table is checked as
+/// `user_a`, so `owner_b`'s access does not reach it through the INVOKER view.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_generic_table_credentials_below_invoker_view_in_definer_chain_is_checked_as_caller(
+    pool: PgPool,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_generic_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_b", "owner_b").await;
+    create_invoker_view(&ctx, &wh, "invoker").await;
+    let definer_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_b")).await;
+    let invoker_key = view_object_key(&ctx, whi, &table_ident("ns", "invoker")).await;
+    let gt_key = generic_table_object_key(&ctx, whi, &table_ident("ns", "my_gt")).await;
+    authz.hide_for_user(&user("user_a"), &gt_key);
+
+    let since = authz.tabular_checks().len();
+    let err = load_credentials(
+        &ctx,
+        &wh,
+        "my_gt",
+        Some(vec![
+            table_ident("ns", "definer_b"),
+            table_ident("ns", "invoker"),
+        ]),
+        request_as_user("user_a"),
+    )
+    .await
+    .unwrap_err();
+
+    let expected = AuthZCannotSeeGenericTable::new_forbidden(whi, table_ident("ns", "my_gt"))
+        .with_delegated_execution(false)
+        .into_error_model();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16(), "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchGenericTableException", "{err:?}");
+    assert_eq!(err.error.message, expected.message, "{err:?}");
+    assert_eq!(err.error.stack, expected.stack, "{err:?}");
+    assert_eq!(
+        authz.tabular_checks()[since..].to_vec(),
+        vec![
+            checks(&definer_key, &["GetMetadata", "Select"], None),
+            checks(&invoker_key, &["GetMetadata", "Select"], Some("owner_b")),
+            checks(&gt_key, &["GetMetadata", "ReadData", "WriteData"], None),
+        ]
+    );
+}

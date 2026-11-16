@@ -305,7 +305,7 @@ impl GrantAssignmentRow {
             },
             // The stored kind is just `tabular`; which of the three it is comes from
             // the joined tabular row. A tabular grant whose tabular is gone cannot
-            // exist — grant_tabular_fkey cascades — so a missing typ is corruption.
+            // exist — the tabular key cascades — so a missing typ is corruption.
             StoredResourceType::Tabular => {
                 let warehouse_id = warehouse_id()?;
                 let tabular_id = tabular_id()?;
@@ -1051,6 +1051,25 @@ fn split_principal(principal: Option<&UserOrRoleId>) -> (Option<String>, Option<
     }
 }
 
+/// A principal set as the user-id and role-id arrays the evaluation reads bind, each
+/// sorted and deduplicated: Postgres costs `= ANY` per element, so a repeat inflates the
+/// estimate.
+fn split_principals(principals: &[UserOrRoleId]) -> (Vec<String>, Vec<Uuid>) {
+    let mut user_ids: Vec<String> = Vec::new();
+    let mut role_ids: Vec<Uuid> = Vec::new();
+    for principal in principals {
+        match principal {
+            UserOrRoleId::User(user_id) => user_ids.push(user_id.to_string()),
+            UserOrRoleId::Role(role_id) => role_ids.push(**role_id),
+        }
+    }
+    user_ids.sort_unstable();
+    user_ids.dedup();
+    role_ids.sort_unstable();
+    role_ids.dedup();
+    (user_ids, role_ids)
+}
+
 /// The decoded keyset position and page size every listing statement binds.
 #[derive(Clone, Copy)]
 pub(crate) struct PageBounds {
@@ -1351,14 +1370,7 @@ where
         return Ok(Vec::new());
     }
 
-    let mut user_ids: Vec<String> = Vec::new();
-    let mut role_ids: Vec<Uuid> = Vec::new();
-    for principal in principals {
-        match principal {
-            UserOrRoleId::User(user_id) => user_ids.push(user_id.to_string()),
-            UserOrRoleId::Role(role_id) => role_ids.push(**role_id),
-        }
-    }
+    let (user_ids, role_ids) = split_principals(principals);
 
     // One arm per level, columns split per arm so each probes its own index. The SQL
     // matches the warehouse-scoped arrays as an over-approximating cross product —
@@ -1439,7 +1451,6 @@ where
     // tabulars. The arrays are independent `= ANY` sets, not zipped by position. Do not
     // remove.
     for ids in [
-        &mut role_ids,
         &mut warehouse_ids,
         &mut namespace_warehouses,
         &mut namespace_ids,
@@ -1450,10 +1461,8 @@ where
         ids.sort_unstable();
         ids.dedup();
     }
-    for ids in [&mut user_ids, &mut project_ids] {
-        ids.sort_unstable();
-        ids.dedup();
-    }
+    project_ids.sort_unstable();
+    project_ids.dedup();
 
     let rows = sqlx::query_as!(
         GrantAssignmentRow,
@@ -1553,6 +1562,276 @@ where
             )
         })
         .collect()
+}
+
+/// The entries of `containers` that have a live object strictly below them on which one
+/// of `principals` holds one of `privileges` as a direct grant.
+///
+/// One statement per project, one for the warehouses and one per warehouse for its
+/// namespaces, run one after another, so a pool lends a connection per statement and none
+/// is held between them.
+pub(crate) async fn list_containers_with_grants_below<'e, 'c: 'e, E>(
+    principals: &[UserOrRoleId],
+    containers: &[GrantResource],
+    privileges: &[&str],
+    connection: E,
+) -> Result<Vec<GrantResource>, ListGrantsStoreError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres> + Copy,
+{
+    if principals.is_empty() || containers.is_empty() || privileges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (user_ids, role_ids) = split_principals(principals);
+
+    let mut projects: Vec<&ProjectId> = Vec::new();
+    let mut warehouses: Vec<WarehouseId> = Vec::new();
+    let mut namespaces: HashMap<WarehouseId, Vec<Uuid>> = HashMap::new();
+    for container in containers {
+        match container {
+            GrantResource::Project(project_id) => projects.push(project_id),
+            GrantResource::Warehouse(warehouse_id) => warehouses.push(*warehouse_id),
+            GrantResource::Namespace {
+                warehouse_id,
+                namespace_id,
+            } => namespaces
+                .entry(*warehouse_id)
+                .or_default()
+                .push(**namespace_id),
+            GrantResource::Server
+            | GrantResource::Table { .. }
+            | GrantResource::View { .. }
+            | GrantResource::GenericTable { .. }
+            | GrantResource::Tag(_) => {}
+        }
+    }
+    projects.sort_unstable();
+    projects.dedup();
+    warehouses.sort_unstable();
+    warehouses.dedup();
+
+    let mut below = Vec::new();
+    for project_id in projects {
+        if project_has_grants_below(&user_ids, &role_ids, privileges, project_id, connection)
+            .await?
+        {
+            below.push(GrantResource::Project(project_id.clone()));
+        }
+    }
+    if !warehouses.is_empty() {
+        let warehouses_below =
+            warehouses_with_grants_below(&user_ids, &role_ids, privileges, &warehouses, connection)
+                .await?;
+        below.extend(warehouses_below.into_iter().map(GrantResource::Warehouse));
+    }
+    for (warehouse_id, mut namespace_ids) in namespaces {
+        namespace_ids.sort_unstable();
+        namespace_ids.dedup();
+        let hits = namespaces_with_grants_below(
+            &user_ids,
+            &role_ids,
+            privileges,
+            warehouse_id,
+            &namespace_ids,
+            connection,
+        )
+        .await?;
+        below.extend(
+            hits.into_iter()
+                .map(|namespace_id| GrantResource::Namespace {
+                    warehouse_id,
+                    namespace_id: namespace_id.into(),
+                }),
+        );
+    }
+    Ok(below)
+}
+
+/// Whether the principals hold one of `privileges` on a warehouse, namespace or live
+/// tabular of `project_id`.
+async fn project_has_grants_below<'e, 'c: 'e, E>(
+    user_ids: &[String],
+    role_ids: &[Uuid],
+    privileges: &[&str],
+    project_id: &ProjectId,
+    connection: E,
+) -> Result<bool, ListGrantsStoreError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
+    sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            -- Namespace and tabular grants: the arms of `warehouses_with_grants_below`, for each
+            -- warehouse of the project.
+            SELECT 1 FROM warehouse w
+            WHERE w.project_id = $4::text
+              AND EXISTS (
+                (SELECT 1 FROM grant_assignment ga
+                 LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
+                 WHERE ga.user_id = ANY($1::text[]) AND ga.warehouse_id = w.warehouse_id
+                   AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])
+                   AND t.deleted_at IS NULL
+                 ORDER BY ga.user_id, ga.warehouse_id, ga.namespace_name LIMIT 1)
+                UNION ALL
+                (SELECT 1 FROM grant_assignment ga
+                 LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
+                 WHERE ga.role_id = ANY($2::uuid[]) AND ga.warehouse_id = w.warehouse_id
+                   AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])
+                   AND t.deleted_at IS NULL
+                 ORDER BY ga.role_id, ga.warehouse_id, ga.namespace_name LIMIT 1)
+              )
+        ) OR EXISTS (
+            -- Warehouse grants: a principal holds few, so read them all on grant_unique, one
+            -- privilege at a time. With `privilege = ANY($3)`, a PG16 generic plan scans the grants
+            -- of every role.
+            SELECT 1
+            FROM unnest($3::text[]) AS p(privilege)
+            CROSS JOIN LATERAL (
+                SELECT ga.warehouse_id FROM grant_assignment ga
+                WHERE ga.principal_type = 'user' AND ga.user_id = ANY($1::text[]) AND ga.role_id IS NULL
+                  AND ga.resource_type = 'warehouse' AND ga.privilege = p.privilege
+                  AND ga.project_id IS NULL
+                UNION ALL
+                SELECT ga.warehouse_id FROM grant_assignment ga
+                WHERE ga.principal_type = 'role' AND ga.user_id IS NULL AND ga.role_id = ANY($2::uuid[])
+                  AND ga.resource_type = 'warehouse' AND ga.privilege = p.privilege
+                  AND ga.project_id IS NULL
+            ) g
+            JOIN warehouse w ON w.warehouse_id = g.warehouse_id
+            WHERE w.project_id = $4::text
+        ) AS "below!"
+        "#,
+        user_ids,
+        role_ids,
+        privileges as &[&str],
+        project_id.as_str(),
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)
+    .map_err(ListGrantsStoreError::from)
+}
+
+/// The ids of `warehouse_ids` in which the principals hold one of `privileges` on a
+/// namespace or live tabular. One path-index range per warehouse and principal id, so a
+/// "no" costs a few index probes however many grants the principals hold.
+async fn warehouses_with_grants_below<'e, 'c: 'e, E>(
+    user_ids: &[String],
+    role_ids: &[Uuid],
+    privileges: &[&str],
+    warehouse_ids: &[WarehouseId],
+    connection: E,
+) -> Result<Vec<WarehouseId>, ListGrantsStoreError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
+    let warehouse_ids: Vec<Uuid> = warehouse_ids.iter().map(|id| **id).collect();
+    let below = sqlx::query_scalar!(
+        r#"
+        SELECT w.warehouse_id AS "warehouse_id!"
+        FROM unnest($4::uuid[]) AS w(warehouse_id)
+        WHERE EXISTS (
+            -- Only namespace and tabular grants carry a path. Each arm reads the path index in
+            -- order with LIMIT 1: a seq scan would have to sort every match first, so Postgres keeps
+            -- the index even when one principal holds most grants.
+            (SELECT 1 FROM grant_assignment ga
+             -- A namespace grant joins no tabular row and passes; a tabular grant passes if live.
+             LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
+             WHERE ga.user_id = ANY($1::text[]) AND ga.warehouse_id = w.warehouse_id
+               AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])
+               AND t.deleted_at IS NULL
+             ORDER BY ga.user_id, ga.warehouse_id, ga.namespace_name LIMIT 1)
+            -- Postgres drops ORDER BY and LIMIT from a plain EXISTS, so the arms stay a UNION ALL.
+            UNION ALL
+            (SELECT 1 FROM grant_assignment ga
+             LEFT JOIN tabular t ON t.warehouse_id = ga.warehouse_id AND t.tabular_id = ga.tabular_id
+             WHERE ga.role_id = ANY($2::uuid[]) AND ga.warehouse_id = w.warehouse_id
+               AND ga.namespace_name IS NOT NULL AND ga.privilege = ANY($3::text[])
+               AND t.deleted_at IS NULL
+             ORDER BY ga.role_id, ga.warehouse_id, ga.namespace_name LIMIT 1)
+        )
+        "#,
+        user_ids,
+        role_ids,
+        privileges as &[&str],
+        &warehouse_ids,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)
+    .map_err(ListGrantsStoreError::from)?;
+    Ok(below.into_iter().map(WarehouseId::from).collect())
+}
+
+/// The ids of `namespace_ids`, all in `warehouse_id`, with a descendant namespace or a live
+/// tabular in them or in a descendant on which the principals hold one of `privileges`.
+/// Reads the namespace path that each grant row carries, so a "no" costs a few index
+/// probes however many grants the principals hold.
+async fn namespaces_with_grants_below<'e, 'c: 'e, E>(
+    user_ids: &[String],
+    role_ids: &[Uuid],
+    privileges: &[&str],
+    warehouse_id: WarehouseId,
+    namespace_ids: &[Uuid],
+    connection: E,
+) -> Result<Vec<Uuid>, ListGrantsStoreError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
+    sqlx::query_scalar!(
+        r#"
+        WITH c AS MATERIALIZED (
+            -- One index probe per id: `namespace_id = ANY(...)` after `warehouse_id`
+            -- in an index scans all namespaces of the warehouse in a generic plan.
+            SELECT x.namespace_id, x.path FROM (
+                SELECT i.id AS namespace_id,
+                       (SELECT n.namespace_name FROM namespace n
+                        WHERE n.namespace_id = i.id AND n.warehouse_id = $1) AS path
+                FROM unnest($2::uuid[]) AS i(id)
+            ) x
+            WHERE x.path IS NOT NULL
+        )
+        SELECT c.namespace_id AS "namespace_id!" FROM c
+        WHERE EXISTS (
+            -- The paths at or below P are one index range from P to P plus a NULL element,
+            -- which sorts after every name. Never add a COLLATE: it changes the comparison
+            -- and the index stops bounding the scan.
+            SELECT 1 FROM grant_assignment ga
+            WHERE ga.user_id = ANY($3::text[]) AND ga.warehouse_id = $1
+              -- `array_append` with a typed NULL: `P || NULL` appends nothing, so the range is empty.
+              AND ga.namespace_name >= c.path AND ga.namespace_name < array_append(c.path, NULL::text)
+              -- If an ICU upgrade leaves the index stale, this re-check drops rows that are not below P.
+              AND ga.namespace_name[1:cardinality(c.path)] = c.path
+              AND ga.privilege = ANY($5::text[])
+              -- A namespace grant counts strictly below P, a tabular grant also in P if live.
+              AND (ga.resource_type = 'namespace' AND ga.namespace_name > c.path
+                   OR ga.resource_type = 'tabular'
+                      AND EXISTS (SELECT 1 FROM tabular t WHERE t.warehouse_id = $1
+                                    AND t.tabular_id = ga.tabular_id AND t.deleted_at IS NULL))
+            UNION ALL
+            -- The same for the roles, on the index of the role column.
+            SELECT 1 FROM grant_assignment ga
+            WHERE ga.role_id = ANY($4::uuid[]) AND ga.warehouse_id = $1
+              AND ga.namespace_name >= c.path AND ga.namespace_name < array_append(c.path, NULL::text)
+              AND ga.namespace_name[1:cardinality(c.path)] = c.path
+              AND ga.privilege = ANY($5::text[])
+              AND (ga.resource_type = 'namespace' AND ga.namespace_name > c.path
+                   OR ga.resource_type = 'tabular'
+                      AND EXISTS (SELECT 1 FROM tabular t WHERE t.warehouse_id = $1
+                                    AND t.tabular_id = ga.tabular_id AND t.deleted_at IS NULL))
+        )
+        "#,
+        *warehouse_id,
+        namespace_ids,
+        user_ids,
+        role_ids,
+        privileges as &[&str],
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)
+    .map_err(ListGrantsStoreError::from)
 }
 
 /// Apply a grant diff in one transaction: deletes first, then inserts, so a diff
@@ -2248,20 +2527,35 @@ fn map_revoke_error(err: sqlx::Error) -> RevokeSubtreeGrantsStoreError {
 
 #[cfg(test)]
 mod tests {
-    use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+    use iceberg::{
+        NamespaceIdent, TableIdent,
+        spec::{NestedField, PrimitiveType, Schema, Type},
+    };
     use lakekeeper::{
-        api::iceberg::v1::PageToken,
+        api::{
+            iceberg::v1::{PageToken, namespace::NamespaceDropFlags},
+            management::v1::warehouse::TabularDeleteProfile,
+        },
         service::{
-            CatalogCreateRoleRequest, CatalogCreateTagDefinitionRequest, OnRoleConflict, RoleId,
-            RoleProviderId, RoleSourceId, TagScope, TagValueSpec,
+            CatalogCreateRoleRequest, CatalogCreateTagDefinitionRequest,
+            CatalogCreateWarehouseRequest, OnRoleConflict, RoleId, RoleProviderId, RoleSourceId,
+            TagScope, TagValueSpec,
         },
     };
     use sqlx::PgPool;
 
     use super::*;
     use crate::{
-        CatalogState, role::create_roles, tabular::table::tests::create_table_with_schema,
-        tag::create_tag_definition, warehouse::test::initialize_warehouse,
+        CatalogState,
+        migrations::{MigrationState, check_migration_status, migrate_core_only},
+        namespace::{drop_namespace, move_namespace, tests::initialize_namespace},
+        role::create_roles,
+        tabular::{
+            drop_tabular, rename_tabular,
+            table::tests::{apply_migrations, create_table_with_schema, initialize_table},
+        },
+        tag::create_tag_definition,
+        warehouse::test::initialize_warehouse,
     };
 
     /// `users` requires a NOT-NULL `last_updated_with`; `name` is nullable.
@@ -2349,7 +2643,7 @@ mod tests {
 
     // ─── schema constraints ───────────────────────────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn accepts_server_grant(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         sqlx::query(
@@ -2362,7 +2656,7 @@ mod tests {
         .expect("server grant inserts");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_server_grant_to_a_role(pool: PgPool) {
         let role_id = seed_role(&pool).await;
         let err = sqlx::query(
@@ -2379,7 +2673,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_namespace_grant_without_warehouse(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let err = sqlx::query(
@@ -2397,7 +2691,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_two_principals_on_one_grant(pool: PgPool) {
         // Sets both principal columns.
         let user = seed_user(&pool, "oidc~alice").await;
@@ -2418,7 +2712,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_principal_type_mismatch(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let project_id = seed_project(&pool).await;
@@ -2438,7 +2732,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn unique_rejects_duplicate(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let insert = || {
@@ -2461,7 +2755,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_overlong_privilege(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let err = sqlx::query(
@@ -2478,7 +2772,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_unknown_resource_type(pool: PgPool) {
         // The enum type rejects the value before any constraint runs, so an unknown
         // resource kind can never reach a row. 22P02 is invalid_text_representation.
@@ -2498,7 +2792,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rejects_unknown_principal_type(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let err = sqlx::query(
@@ -2518,7 +2812,7 @@ mod tests {
 
     // ─── apply / list ─────────────────────────────────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn apply_reports_the_exact_delta_and_is_idempotent(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let spec = user_spec(&user, GrantResource::Server, "admin");
@@ -2564,7 +2858,7 @@ mod tests {
 
     /// A server grant is the one level that populates no resource column, so its
     /// round trip exercises a distinct read path from every other level.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_server_grant_round_trips_through_apply_and_list(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let spec = user_spec(&user, GrantResource::Server, "admin");
@@ -2590,7 +2884,7 @@ mod tests {
         assert!(grants[0].created_at.is_some());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_missing_user_is_named(pool: PgPool) {
         let spec = user_spec("oidc~ghost", GrantResource::Server, "admin");
         let mut txn = pool.begin().await.unwrap();
@@ -2608,7 +2902,7 @@ mod tests {
     /// a tabular's kind — the disagreement is inexpressible rather than rejected. The
     /// same privilege on the same tabular is one row however it was addressed, and it
     /// always reads back as the kind the tabular actually is.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_grant_on_a_tabular_takes_the_tabulars_own_kind(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2693,7 +2987,7 @@ mod tests {
 
     /// Revokes are issued one statement per distinct resource. A diff spanning two
     /// resources must still remove exactly the grants it names.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_revoke_spanning_two_resources_removes_both(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2752,7 +3046,7 @@ mod tests {
     /// needs for its own foreign-key waits must not outlive it. The diff path sets the
     /// same transaction-local `lock_timeout` and deliberately keeps it — asserted here as
     /// the contrast.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn bootstrapping_grants_leaves_the_transaction_settings_alone(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2803,7 +3097,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_diff_that_revokes_and_regrants_ends_granted(pool: PgPool) {
         // Deletes run before inserts, so the same privilege appearing on both sides
         // resolves to granted rather than revoked.
@@ -2873,7 +3167,7 @@ mod tests {
     /// wait on each other's uncommitted rows until the deadlock detector killed one.
     /// Probed with `pg_try_advisory_xact_lock`, which reports contention instead of
     /// waiting for it.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn applying_a_diff_holds_the_resource_lock_until_commit(pool: PgPool) {
         let alice = seed_user(&pool, "oidc~alice").await;
         let spec = user_spec(&alice, GrantResource::Server, "admin");
@@ -2923,7 +3217,7 @@ mod tests {
     /// The SQLSTATEs must actually reach that mapping. Asserting the rendering alone
     /// would let a typo'd code ship as a 503 that reads as "backend unavailable", which
     /// tells a client to give up rather than retry.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn lock_contention_sqlstates_map_to_the_retriable_error(pool: PgPool) {
         // `lock_timeout` elapsing on the advisory lock. Provoked for real: hold the
         // lock in one transaction, then try to take it in another with a short bound.
@@ -2966,7 +3260,7 @@ mod tests {
     /// is what proves none of them leaks: a mis-bound parameter surfaces as a
     /// neighbour's grant rather than as an error. A second user and an ungranted role
     /// pin the principal narrowing; the decoy resources pin the chain narrowing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_returns_exactly_the_requested_chain(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3093,7 +3387,7 @@ mod tests {
 
     /// One read for several principals returns each grant under the principal that holds
     /// it, so a caller may split the result by grantee.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_attributes_each_grant_to_its_grantee(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, _warehouse_id) =
@@ -3172,7 +3466,7 @@ mod tests {
     /// than the id array beside it. They must stay independent `= ANY` sets: zipping them
     /// positionally would drop every object after the first. Two namespaces and two tables
     /// in one warehouse is the shape that shows it.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_matches_every_object_in_one_warehouse(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3219,7 +3513,7 @@ mod tests {
         assert_eq!(fetched, resources);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_cross_warehouse_id_match_is_dropped_not_echoed(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3271,7 +3565,7 @@ mod tests {
     /// keyed code. `namespace_id` is globally unique today, so the cross-request can
     /// only name a pair that does not exist — but the contract accepts arbitrary
     /// resource lists, and the map keying is the only thing enforcing the tightening.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_cross_warehouse_namespace_match_is_dropped_not_echoed(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3328,7 +3622,7 @@ mod tests {
     /// The evaluation fetch includes grants on soft-deleted tabulars — undrop needs its
     /// authorization intact. A hygiene `deleted_at` filter added here would break that
     /// silently, so the documented contract is pinned.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_includes_grants_on_soft_deleted_tabulars(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3365,7 +3659,7 @@ mod tests {
     /// A principal's own grants and their roles' grants arrive in one fetch: the caller
     /// passes the effective set and the two arms of the principal predicate — which read
     /// different columns — must both contribute.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_evaluation_fetch_unions_a_users_grants_with_their_roles(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3413,12 +3707,671 @@ mod tests {
         assert_eq!(fetched, expected);
     }
 
+    // ─── grants below containers ──────────────────────────────────────────────
+
+    /// The privileges every below-read here asks about; `read_grants` is not one of them.
+    const PRIVILEGES_ASKED: [&str; 6] = [
+        "describe",
+        "select",
+        "write",
+        "create",
+        "manage",
+        "manage_tags",
+    ];
+
+    /// Project P with warehouses W1 and W2, project Q with W3. W1 holds the namespaces
+    /// `A`, `A.X` and `D`, table `T1` in `A.X` and table `Gone` in `D`, which is
+    /// soft-deleted after its grant is written; W2 holds the empty namespaces `A` and `B`.
+    struct BelowWorld {
+        p: ProjectId,
+        q: ProjectId,
+        w1: WarehouseId,
+        w2: WarehouseId,
+        w3: WarehouseId,
+        a: NamespaceId,
+        a_x: NamespaceId,
+        d: NamespaceId,
+        b: NamespaceId,
+        a2: NamespaceId,
+        /// User with `select` on `T1`, `describe` on `A.X` and `create` on W3.
+        u: UserOrRoleId,
+        /// Role in P with `describe` on `A.X`.
+        r: UserOrRoleId,
+        /// User whose grants never count: `manage` on P, `select` on the server,
+        /// `describe` on a tag definition of P, `select` on `Gone`, `read_grants` on `T1`.
+        z: UserOrRoleId,
+    }
+
+    async fn seed_below_world(pool: &PgPool) -> BelowWorld {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let p = ProjectId::new_random();
+        let q = ProjectId::new_random();
+        let (_, w1) = initialize_warehouse(state.clone(), None, Some(&p), None, true).await;
+        let (_, w3) = initialize_warehouse(state.clone(), None, Some(&q), None, true).await;
+        let mut txn = pool.begin().await.unwrap();
+        let w2 = crate::warehouse::create_warehouse(
+            &p,
+            CatalogCreateWarehouseRequest::builder()
+                .warehouse_name("second".to_string())
+                .storage_profile(crate::test_utils::memory_io_profile())
+                .delete_profile(TabularDeleteProfile::Hard {})
+                .build(),
+            &mut txn,
+        )
+        .await
+        .unwrap()
+        .warehouse_id;
+        txn.commit().await.unwrap();
+
+        let ident = |path: &[&str]| NamespaceIdent::from_strs(path).unwrap();
+        let namespace = async |warehouse_id, path: &[&str]| {
+            initialize_namespace(state.clone(), warehouse_id, &ident(path), None)
+                .await
+                .namespace_id()
+        };
+        let a = namespace(w1, &["A"]).await;
+        let a_x = namespace(w1, &["A", "X"]).await;
+        let d = namespace(w1, &["D"]).await;
+        let b = namespace(w2, &["B"]).await;
+        let a2 = namespace(w2, &["A"]).await;
+        let table = async |warehouse_id, path: &[&str], name: &str| {
+            let name = Some(name.to_string());
+            initialize_table(
+                warehouse_id,
+                state.clone(),
+                false,
+                Some(ident(path)),
+                None,
+                name,
+            )
+            .await
+            .table_id
+        };
+        let t1 = table(w1, &["A", "X"], "t1").await;
+        let gone = table(w1, &["D"], "gone").await;
+        let tabular = |warehouse_id, table_id| GrantResource::Table {
+            warehouse_id,
+            table_id,
+        };
+
+        let tag = TagDefinitionId::new_random();
+        let mut txn = pool.begin().await.unwrap();
+        create_tag_definition(
+            &p,
+            CatalogCreateTagDefinitionRequest::builder()
+                .tag_definition_id(tag)
+                .name("pii")
+                .description(None)
+                .scope(&[TagScope::Table])
+                .value_spec(TagValueSpec::Marker)
+                .build(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        let u = seed_user(pool, "oidc~u").await;
+        let z = seed_user(pool, "oidc~z").await;
+        let r = seed_role_in(pool, &p, "r").await;
+        insert_grants(
+            &[
+                user_spec(&u, tabular(w1, t1), "select"),
+                user_spec(
+                    &u,
+                    GrantResource::Namespace {
+                        warehouse_id: w1,
+                        namespace_id: a_x,
+                    },
+                    "describe",
+                ),
+                user_spec(&u, GrantResource::Warehouse(w3), "create"),
+                role_spec(
+                    r,
+                    GrantResource::Namespace {
+                        warehouse_id: w1,
+                        namespace_id: a_x,
+                    },
+                    "describe",
+                ),
+                user_spec(&z, GrantResource::Project(p.clone()), "manage"),
+                user_spec(&z, GrantResource::Server, "select"),
+                user_spec(&z, GrantResource::Tag(tag), "describe"),
+                user_spec(&z, tabular(w1, gone), "select"),
+                user_spec(&z, tabular(w1, t1), "read_grants"),
+            ],
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+        sqlx::query("UPDATE tabular SET deleted_at = now() WHERE tabular_id = $1")
+            .bind(*gone)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let user = |id: &str| UserOrRoleId::User(UserId::try_from(id).unwrap());
+        BelowWorld {
+            p,
+            q,
+            w1,
+            w2,
+            w3,
+            a,
+            a_x,
+            d,
+            b,
+            a2,
+            u: user(&u),
+            r: UserOrRoleId::Role(r),
+            z: user(&z),
+        }
+    }
+
+    /// The below-read for one principal, sorted so answers compare as sets that keep
+    /// duplicates visible.
+    async fn below(
+        pool: &PgPool,
+        principal: &UserOrRoleId,
+        containers: &[GrantResource],
+    ) -> Vec<GrantResource> {
+        let answer = list_containers_with_grants_below(
+            std::slice::from_ref(principal),
+            containers,
+            &PRIVILEGES_ASKED,
+            pool,
+        )
+        .await
+        .unwrap();
+        sorted(answer)
+    }
+
+    fn sorted(mut resources: Vec<GrantResource>) -> Vec<GrantResource> {
+        resources.sort_by_key(|resource| format!("{resource:?}"));
+        resources
+    }
+
+    /// Each principal's answer for every project, warehouse and namespace of the world.
+    /// The warehouses and the namespaces are asked together, then each alone, so every
+    /// statement sees every principal. W2's `A` has the path of W1's `A`: a grant read in
+    /// the wrong warehouse shows.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn containers_with_grants_below_count_live_grants_strictly_below(pool: PgPool) {
+        let BelowWorld {
+            p,
+            q,
+            w1,
+            w2,
+            w3,
+            a,
+            a_x,
+            d,
+            b,
+            a2,
+            u,
+            r,
+            z,
+        } = seed_below_world(&pool).await;
+        let project = |id: &ProjectId| GrantResource::Project(id.clone());
+        let namespace = |warehouse_id, namespace_id| GrantResource::Namespace {
+            warehouse_id,
+            namespace_id,
+        };
+        let projects = [project(&p), project(&q)];
+        let warehouses = [
+            GrantResource::Warehouse(w1),
+            GrantResource::Warehouse(w2),
+            GrantResource::Warehouse(w3),
+        ];
+        let namespaces = [
+            namespace(w1, a),
+            namespace(w1, a_x),
+            namespace(w1, d),
+            namespace(w2, b),
+            namespace(w2, a2),
+        ];
+
+        let cases = [
+            // A tabular grant counts at its namespace and every container above; a
+            // warehouse grant only for its project.
+            (
+                u,
+                vec![project(&p), project(&q)],
+                vec![GrantResource::Warehouse(w1)],
+                vec![namespace(w1, a), namespace(w1, a_x)],
+            ),
+            // A namespace grant counts strictly above its namespace, also through a role.
+            (
+                r,
+                vec![project(&p)],
+                vec![GrantResource::Warehouse(w1)],
+                vec![namespace(w1, a)],
+            ),
+            // Project, server and tag grants, a soft-deleted tabular and a privilege not
+            // asked never count.
+            (z, vec![], vec![], vec![]),
+        ];
+        for (principal, in_projects, in_warehouses, in_namespaces) in cases {
+            assert_eq!(
+                below(&pool, &principal, &projects).await,
+                sorted(in_projects),
+                "projects for {principal:?}"
+            );
+            for (kind, containers, expected) in [
+                ("warehouses", &warehouses[..], in_warehouses),
+                ("namespaces", &namespaces[..], in_namespaces),
+            ] {
+                let expected = sorted(expected);
+                assert_eq!(
+                    below(&pool, &principal, containers).await,
+                    expected,
+                    "{kind} together for {principal:?}"
+                );
+                let mut alone = Vec::new();
+                for one in containers {
+                    alone.extend(below(&pool, &principal, std::slice::from_ref(one)).await);
+                }
+                assert_eq!(sorted(alone), expected, "{kind} alone for {principal:?}");
+            }
+        }
+    }
+
+    // ─── namespace path on grants ─────────────────────────────────────────────
+
+    /// The migration that copies the namespace path into grants.
+    const PATH_MIGRATION: i64 = 20_261_111_120_000;
+
+    /// Warehouse W with the namespaces `HR`, `HR.salary` and `Other` and the table `t` in
+    /// `HR.salary`; a user and a role in W's project. No grants.
+    struct PathWorld {
+        warehouse_id: WarehouseId,
+        hr: NamespaceId,
+        hr_salary: NamespaceId,
+        other: NamespaceId,
+        t: TableId,
+        user: String,
+        role: RoleId,
+    }
+
+    async fn seed_path_world(pool: &PgPool) -> PathWorld {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project = ProjectId::new_random();
+        let (_, warehouse_id) =
+            initialize_warehouse(state.clone(), None, Some(&project), None, true).await;
+        let namespace = async |path: &[&str]| {
+            let ident = NamespaceIdent::from_strs(path).unwrap();
+            initialize_namespace(state.clone(), warehouse_id, &ident, None)
+                .await
+                .namespace_id()
+        };
+        let hr = namespace(&["HR"]).await;
+        let hr_salary = namespace(&["HR", "salary"]).await;
+        let other = namespace(&["Other"]).await;
+        let t = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(NamespaceIdent::from_strs(["HR", "salary"]).unwrap()),
+            None,
+            Some("t".to_string()),
+        )
+        .await;
+        PathWorld {
+            warehouse_id,
+            hr,
+            hr_salary,
+            other,
+            t: t.table_id,
+            user: seed_user(pool, "oidc~u").await,
+            role: seed_role_in(pool, &project, "r").await,
+        }
+    }
+
+    impl PathWorld {
+        fn namespace(&self, namespace_id: NamespaceId) -> GrantResource {
+            GrantResource::Namespace {
+                warehouse_id: self.warehouse_id,
+                namespace_id,
+            }
+        }
+
+        fn table(&self) -> GrantResource {
+            GrantResource::Table {
+                warehouse_id: self.warehouse_id,
+                table_id: self.t,
+            }
+        }
+
+        /// `describe` on `HR.salary` and `select` on `t` for the user, `select` on `t` and
+        /// `create` on W for the role.
+        async fn grant(&self, pool: &PgPool) {
+            let mut transaction = pool.begin().await.unwrap();
+            insert_grants(
+                &[
+                    user_spec(&self.user, self.namespace(self.hr_salary), "describe"),
+                    user_spec(&self.user, self.table(), "select"),
+                    role_spec(self.role, self.table(), "select"),
+                    role_spec(
+                        self.role,
+                        GrantResource::Warehouse(self.warehouse_id),
+                        "create",
+                    ),
+                ],
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+        }
+    }
+
+    /// The path each namespace and tabular grant stores, next to the id of its object.
+    async fn stored_paths(pool: &PgPool) -> Vec<(Uuid, Option<Vec<String>>)> {
+        let mut rows: Vec<(Uuid, Option<Vec<String>>)> = sqlx::query_as(
+            "SELECT coalesce(namespace_id, tabular_id), namespace_name FROM grant_assignment \
+             WHERE resource_type IN ('namespace', 'tabular')",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        rows.sort();
+        rows
+    }
+
+    fn paths(rows: &[(Uuid, &[&str])]) -> Vec<(Uuid, Option<Vec<String>>)> {
+        let mut rows: Vec<_> = rows
+            .iter()
+            .map(|(id, path)| (*id, Some(path.iter().map(ToString::to_string).collect())))
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// The trigger stores the path of the granted object, also over a path the insert
+    /// supplies, byte for byte as the object stores it. Other grants get none.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn the_trigger_copies_the_path_of_the_granted_object(pool: PgPool) {
+        let w = seed_path_world(&pool).await;
+        w.grant(&pool).await;
+        // Another namespace's path, and the right path in other letter case.
+        sqlx::query(
+            "INSERT INTO grant_assignment (principal_type, role_id, resource_type, privilege, \
+             warehouse_id, namespace_id, namespace_name) \
+             VALUES ('role', $1, 'namespace', 'describe', $2, $3, ARRAY['HR', 'salary'])",
+        )
+        .bind(*w.role)
+        .bind(*w.warehouse_id)
+        .bind(*w.other)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO grant_assignment (principal_type, role_id, resource_type, privilege, \
+             warehouse_id, tabular_id, namespace_name) \
+             VALUES ('role', $1, 'tabular', 'write', $2, $3, ARRAY['hr', 'SALARY'])",
+        )
+        .bind(*w.role)
+        .bind(*w.warehouse_id)
+        .bind(*w.t)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let hr_salary: &[&str] = &["HR", "salary"];
+        assert_eq!(
+            stored_paths(&pool).await,
+            paths(&[
+                (*w.hr_salary, hr_salary),
+                (*w.t, hr_salary),
+                (*w.t, hr_salary),
+                (*w.t, hr_salary),
+                (*w.other, &["Other"]),
+            ])
+        );
+        let warehouse_path: Option<Vec<String>> = sqlx::query_scalar(
+            "SELECT namespace_name FROM grant_assignment WHERE resource_type = 'warehouse'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(warehouse_path, None);
+    }
+
+    /// A grant on a namespace that does not exist fails in the trigger and reports the target
+    /// as not found.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn a_grant_on_a_missing_target_is_reported_as_not_found(pool: PgPool) {
+        let w = seed_path_world(&pool).await;
+        let mut transaction = pool.begin().await.unwrap();
+        let missing = user_spec(&w.user, w.namespace(NamespaceId::new_random()), "describe");
+        let err = insert_grants(&[missing], &mut transaction)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ApplyGrantsStoreError::GrantTargetNotFound(_)),
+            "{err:?}"
+        );
+    }
+
+    /// Renames, also of the letter case alone, and table moves rewrite the copied path;
+    /// deletes remove the grants.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn the_copied_path_follows_renames_moves_and_deletes(pool: PgPool) {
+        let w = seed_path_world(&pool).await;
+        w.grant(&pool).await;
+        let rename = async |path: &[&str]| {
+            let mut transaction = pool.begin().await.unwrap();
+            let destination = NamespaceIdent::from_strs(path).unwrap();
+            move_namespace(
+                w.warehouse_id,
+                w.hr_salary,
+                &destination,
+                false,
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            transaction.commit().await.unwrap();
+        };
+
+        rename(&["HR", "pay"]).await;
+        let pay: &[&str] = &["HR", "pay"];
+        let expected = paths(&[(*w.hr_salary, pay), (*w.t, pay), (*w.t, pay)]);
+        assert_eq!(stored_paths(&pool).await, expected);
+
+        rename(&["HR", "PAY"]).await;
+        let upper: &[&str] = &["HR", "PAY"];
+        let expected = paths(&[(*w.hr_salary, upper), (*w.t, upper), (*w.t, upper)]);
+        assert_eq!(stored_paths(&pool).await, expected);
+
+        let mut transaction = pool.begin().await.unwrap();
+        let source = TableIdent::new(NamespaceIdent::from_strs(upper).unwrap(), "t".to_string());
+        let destination = TableIdent::new(
+            NamespaceIdent::from_strs(["Other"]).unwrap(),
+            "t".to_string(),
+        );
+        rename_tabular(
+            w.warehouse_id,
+            w.t.into(),
+            w.hr_salary,
+            w.other,
+            &source,
+            &destination,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        let other: &[&str] = &["Other"];
+        let expected = paths(&[(*w.hr_salary, upper), (*w.t, other), (*w.t, other)]);
+        assert_eq!(stored_paths(&pool).await, expected);
+
+        let mut transaction = pool.begin().await.unwrap();
+        drop_tabular(w.warehouse_id, w.t.into(), false, None, &mut transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(stored_paths(&pool).await, paths(&[(*w.hr_salary, upper)]));
+
+        let mut transaction = pool.begin().await.unwrap();
+        let flags = NamespaceDropFlags {
+            force: false,
+            purge: false,
+            recursive: false,
+        };
+        drop_namespace(w.warehouse_id, w.hr_salary, flags, &mut transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(stored_paths(&pool).await, Vec::new());
+    }
+
+    /// Older rows can store a child's path with its parent's name in other letter case. The
+    /// grants below still count for the parent, and a case-only rewrite of the child reaches
+    /// its grants.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn a_child_stored_in_other_letter_case_counts_below_its_parent(pool: PgPool) {
+        let w = seed_path_world(&pool).await;
+        w.grant(&pool).await;
+        sqlx::query(
+            "UPDATE namespace SET namespace_name = ARRAY['Hr', 'salary'] WHERE namespace_id = $1",
+        )
+        .bind(*w.hr_salary)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let drifted: &[&str] = &["Hr", "salary"];
+        let expected = paths(&[(*w.hr_salary, drifted), (*w.t, drifted), (*w.t, drifted)]);
+        assert_eq!(stored_paths(&pool).await, expected);
+
+        let asked = [w.namespace(w.hr), w.namespace(w.hr_salary)];
+        let user = UserOrRoleId::User(UserId::try_from(w.user.as_str()).unwrap());
+        assert_eq!(below(&pool, &user, &asked).await, sorted(asked.to_vec()));
+        // The role's only grant below HR is on `t`; its warehouse grant is above.
+        let role = UserOrRoleId::Role(w.role);
+        assert_eq!(below(&pool, &role, &asked).await, sorted(asked.to_vec()));
+        let mut transaction = pool.begin().await.unwrap();
+        delete_grants(&[role_spec(w.role, w.table(), "select")], &mut transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(below(&pool, &role, &asked).await, Vec::new());
+        // A namespace grant counts for HR, never for `Hr.salary` itself.
+        let mut transaction = pool.begin().await.unwrap();
+        insert_grants(
+            &[role_spec(w.role, w.namespace(w.hr_salary), "manage")],
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(below(&pool, &role, &asked).await, vec![w.namespace(w.hr)]);
+    }
+
+    /// Path keys, path CHECKs and the old keys with `convalidated`; the path indexes with
+    /// `indisvalid`.
+    #[derive(Debug, PartialEq)]
+    struct PathSchema {
+        constraints: Vec<(String, bool)>,
+        indexes: Vec<(String, bool)>,
+    }
+
+    async fn path_schema(pool: &PgPool) -> PathSchema {
+        let constraints = sqlx::query_as(
+            "SELECT conname::text, convalidated FROM pg_constraint \
+             WHERE conrelid = 'grant_assignment'::regclass AND conname = ANY($1) ORDER BY 1",
+        )
+        .bind(
+            &[
+                "grant_namespace_fkey",
+                "grant_tabular_fkey",
+                "grant_namespace_path_fkey",
+                "grant_tabular_path_fkey",
+                "grant_target_path",
+                "grant_target_path_shape",
+            ][..],
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        let indexes = sqlx::query_as(
+            "SELECT c.relname::text, i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
+             WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ANY($1) ORDER BY 1",
+        )
+        .bind(
+            &[
+                "tabular_warehouse_id_tabular_id_namespace_name_key",
+                "grant_user_path_idx",
+                "grant_role_path_idx",
+            ][..],
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        PathSchema {
+            constraints,
+            indexes,
+        }
+    }
+
+    fn named(rows: &[(&str, bool)]) -> Vec<(String, bool)> {
+        rows.iter()
+            .map(|(name, flag)| ((*name).to_string(), *flag))
+            .collect()
+    }
+
+    async fn migration_complete(pool: &PgPool) -> bool {
+        match check_migration_status(pool).await.unwrap() {
+            MigrationState::Complete => true,
+            MigrationState::Missing => false,
+            state => panic!("unexpected migration state {state:?}"),
+        }
+    }
+
+    /// In a catalog with grants, `migrate` copies the path of each namespace and tabular grant,
+    /// and adds the keys, the CHECKs and the indexes. The old keys stay.
+    #[sqlx::test(migrations = false)]
+    async fn migrate_copies_the_paths_into_existing_grants(pool: PgPool) {
+        assert!(sqlx::migrate!().iter().any(|m| m.version == PATH_MIGRATION));
+        apply_migrations(&pool, |version| version < PATH_MIGRATION).await;
+        let w = seed_path_world(&pool).await;
+        w.grant(&pool).await;
+        assert!(!migration_complete(&pool).await);
+
+        migrate_core_only(&pool).await.unwrap();
+        let hr_salary: &[&str] = &["HR", "salary"];
+        assert_eq!(
+            stored_paths(&pool).await,
+            paths(&[
+                (*w.hr_salary, hr_salary),
+                (*w.t, hr_salary),
+                (*w.t, hr_salary)
+            ])
+        );
+        let complete = PathSchema {
+            constraints: named(&[
+                ("grant_namespace_fkey", true),
+                ("grant_namespace_path_fkey", true),
+                ("grant_tabular_fkey", true),
+                ("grant_tabular_path_fkey", true),
+                ("grant_target_path", true),
+                ("grant_target_path_shape", true),
+            ]),
+            indexes: named(&[
+                ("grant_role_path_idx", true),
+                ("grant_user_path_idx", true),
+                ("tabular_warehouse_id_tabular_id_namespace_name_key", true),
+            ]),
+        };
+        assert_eq!(path_schema(&pool).await, complete);
+        assert!(migration_complete(&pool).await);
+    }
+
     /// A resource listing narrowed to one principal must return that principal's rows
     /// and nothing else — including for a role, whose id lives in a different column.
     /// The two narrowing parameters sit between the resource columns and the keyset in
     /// the statement, so a mis-numbered bind would show up here as rows from the wrong
     /// principal rather than as an error.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn resource_listing_narrows_to_one_principal(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, _) = initialize_warehouse(state, None, None, None, true).await;
@@ -3468,7 +4421,7 @@ mod tests {
     /// resource it names. Grants on warehouses, projects and tag definitions each
     /// take a different join, so a listing that only joined warehouses would
     /// silently drop the other two.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn principal_listing_covers_every_project_scoped_resource(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3547,7 +4500,7 @@ mod tests {
     /// A soft-deleted table still has its row, so its grants survive for undrop.
     /// They must not surface in a principal's access list while the table is in the
     /// trash.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn principal_listing_hides_grants_on_soft_deleted_tables(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3606,7 +4559,7 @@ mod tests {
         assert_eq!(page.grants.len(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn listing_paginates_on_a_stable_keyset(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let specs: Vec<_> = ["a", "b", "c"]
@@ -3639,7 +4592,7 @@ mod tests {
         assert_eq!(seen, vec!["a", "b", "c"]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn deleting_a_user_removes_their_grants(pool: PgPool) {
         let user = seed_user(&pool, "oidc~alice").await;
         let other = seed_user(&pool, "oidc~bob").await;

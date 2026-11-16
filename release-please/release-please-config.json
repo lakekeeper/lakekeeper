@@ -80,6 +80,11 @@
             "type": "toml",
             "path": "Cargo.lock",
             "jsonpath": "$.package[?(@.name.value == \"lakekeeper-storage-postgres\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-test-macros\")].version"
         }
     ],
     "changelog-sections": [

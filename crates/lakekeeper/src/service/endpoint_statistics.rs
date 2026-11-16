@@ -236,8 +236,12 @@ impl EndpointStatisticsTracker {
     }
 
     async fn flush_storage(&mut self) {
-        let mut stats = HashMap::new();
-        std::mem::swap(&mut stats, &mut self.endpoint_statistics);
+        // With no counted calls the sinks would write nothing, so they are not called.
+        if self.endpoint_statistics.is_empty() {
+            tracing::trace!("No endpoint calls counted, skipping flush.");
+            return;
+        }
+        let stats = std::mem::take(&mut self.endpoint_statistics);
 
         let s: HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>> = stats
             .into_iter()
@@ -248,7 +252,8 @@ impl EndpointStatisticsTracker {
             tracing::debug!("Sinking stats for '{}'", sink.sink_id());
             if let Err(e) = sink.consume_endpoint_statistics(s.clone()).await {
                 tracing::error!(
-                    "Failed to consume stats for sink '{}' due to: {}",
+                    lost_stats = ?s,
+                    "Failed to write endpoint statistics to sink '{}', they are lost: {}",
                     sink.sink_id(),
                     e.error
                 );
@@ -331,10 +336,107 @@ impl EndpointStatisticsTracker {
 // E.g. postgres consumer which populates some postgres tables
 #[async_trait::async_trait]
 pub trait EndpointStatisticsSink: Debug + Send + Sync + 'static {
+    /// Writes the calls counted since the last flush. The tracker calls it only when it counted
+    /// at least one call. On an error, the tracker logs it and drops `stats`.
     async fn consume_endpoint_statistics(
         &self,
         stats: HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>>,
     ) -> crate::api::Result<()>;
 
     fn sink_id(&self) -> &'static str;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc, time::Duration};
+
+    use http::StatusCode;
+
+    use super::{
+        EndpointIdentifier, EndpointStatisticsMessage, EndpointStatisticsSink,
+        EndpointStatisticsTracker, FlushMode,
+    };
+    use crate::{
+        ProjectId,
+        api::endpoints::{CatalogV1Endpoint, Endpoint},
+        request_metadata::RequestMetadataTestBuilder,
+        service::ArcProjectId,
+    };
+
+    type Batch = HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>>;
+
+    #[derive(Debug, Default)]
+    struct RecordingSink {
+        batches: std::sync::Mutex<Vec<Batch>>,
+    }
+
+    impl RecordingSink {
+        fn batches(&self) -> Vec<Batch> {
+            self.batches.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EndpointStatisticsSink for RecordingSink {
+        async fn consume_endpoint_statistics(&self, stats: Batch) -> crate::api::Result<()> {
+            self.batches.lock().unwrap().push(stats);
+            Ok(())
+        }
+
+        fn sink_id(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn flush_writes_only_when_calls_were_counted() {
+        let sink = Arc::new(RecordingSink::default());
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
+        let tracker = EndpointStatisticsTracker::new(
+            rx,
+            vec![sink.clone()],
+            Duration::from_secs(1),
+            FlushMode::Automatic,
+        );
+        let tracker_handle = tokio::spawn(tracker.run());
+
+        // Ten flush intervals without a call write nothing.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert_eq!(sink.batches(), Vec::<Batch>::new());
+
+        let endpoint: Endpoint = CatalogV1Endpoint::LoadTable.into();
+        let (method, path) = endpoint.as_http_route().split_once(' ').unwrap();
+        let project: ArcProjectId = Arc::new(ProjectId::new_random());
+        tx.send(EndpointStatisticsMessage::EndpointCalled {
+            request_metadata: RequestMetadataTestBuilder::builder()
+                .project_id(Some(project.clone()))
+                .matched_path(Some(Arc::from(path)))
+                .request_method(method.parse().unwrap())
+                .build(),
+            response_status: StatusCode::OK,
+            path_params: HashMap::new(),
+            query_params: HashMap::new(),
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        // Shutting down with nothing counted writes nothing more.
+        tx.send(EndpointStatisticsMessage::Shutdown).await.unwrap();
+        tracker_handle.await.unwrap();
+
+        let expected = HashMap::from([(
+            project,
+            HashMap::from([(
+                EndpointIdentifier {
+                    uri: endpoint.into(),
+                    status_code: StatusCode::OK,
+                    warehouse: None,
+                    warehouse_name: None,
+                },
+                1,
+            )]),
+        )]);
+        assert_eq!(sink.batches(), vec![expected]);
+    }
 }

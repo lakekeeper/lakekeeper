@@ -638,7 +638,7 @@ mod tests {
         TaskQueueName::from(format!("test-{}", Uuid::now_v7()))
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_nonexistent_task(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let task_id = TaskId::from(Uuid::now_v7());
@@ -658,7 +658,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_active_task_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -753,7 +753,7 @@ mod tests {
         assert!(result.attempts.is_empty());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_completed_task_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -825,7 +825,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_single_terminal_failure(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -881,7 +881,7 @@ mod tests {
         assert_eq!(result.message, Some("only attempt failed".to_string()));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_with_retry_history(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -977,7 +977,7 @@ mod tests {
         assert_eq!(attempt1.message, Some("First attempt failed".to_string()));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_active_with_history(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1056,7 +1056,7 @@ mod tests {
         assert_eq!(attempt1.message, Some("First attempt failed".to_string()));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_limit_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1128,7 +1128,7 @@ mod tests {
         assert!(matches!(result.task.status, TaskStatus::Success));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_with_parent_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1198,7 +1198,7 @@ mod tests {
         assert_eq!(result.data, serde_json::json!({"type": "child"}));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_wrong_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1241,7 +1241,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_task_details_retrieve_project_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
 

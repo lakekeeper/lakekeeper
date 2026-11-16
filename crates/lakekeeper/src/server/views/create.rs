@@ -193,6 +193,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         metadata: view_metadata,
         // Views carry no storage access: engines load the tables behind a view with loadTable.
         config: None,
+        labels: None,
     };
 
     Ok(load_view_result)

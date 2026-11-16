@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH c AS MATERIALIZED (\n            -- One index probe per id: `namespace_id = ANY(...)` after `warehouse_id`\n            -- in an index scans all namespaces of the warehouse in a generic plan.\n            SELECT x.namespace_id, x.path FROM (\n                SELECT i.id AS namespace_id,\n                       (SELECT n.namespace_name FROM namespace n\n                        WHERE n.namespace_id = i.id AND n.warehouse_id = $1) AS path\n                FROM unnest($2::uuid[]) AS i(id)\n            ) x\n            WHERE x.path IS NOT NULL\n        )\n        SELECT c.namespace_id AS \"namespace_id!\" FROM c\n        WHERE EXISTS (\n            -- The paths at or below P are one index range from P to P plus a NULL element,\n            -- which sorts after every name. Never add a COLLATE: it changes the comparison\n            -- and the index stops bounding the scan.\n            SELECT 1 FROM grant_assignment ga\n            WHERE ga.user_id = ANY($3::text[]) AND ga.warehouse_id = $1\n              -- `array_append` with a typed NULL: `P || NULL` appends nothing, so the range is empty.\n              AND ga.namespace_name >= c.path AND ga.namespace_name < array_append(c.path, NULL::text)\n              -- If an ICU upgrade leaves the index stale, this re-check drops rows that are not below P.\n              AND ga.namespace_name[1:cardinality(c.path)] = c.path\n              AND ga.privilege = ANY($5::text[])\n              -- A namespace grant counts strictly below P, a tabular grant also in P if live.\n              AND (ga.resource_type = 'namespace' AND ga.namespace_name > c.path\n                   OR ga.resource_type = 'tabular'\n                      AND EXISTS (SELECT 1 FROM tabular t WHERE t.warehouse_id = $1\n                                    AND t.tabular_id = ga.tabular_id AND t.deleted_at IS NULL))\n            UNION ALL\n            -- The same for the roles, on the index of the role column.\n            SELECT 1 FROM grant_assignment ga\n            WHERE ga.role_id = ANY($4::uuid[]) AND ga.warehouse_id = $1\n              AND ga.namespace_name >= c.path AND ga.namespace_name < array_append(c.path, NULL::text)\n              AND ga.namespace_name[1:cardinality(c.path)] = c.path\n              AND ga.privilege = ANY($5::text[])\n              AND (ga.resource_type = 'namespace' AND ga.namespace_name > c.path\n                   OR ga.resource_type = 'tabular'\n                      AND EXISTS (SELECT 1 FROM tabular t WHERE t.warehouse_id = $1\n                                    AND t.tabular_id = ga.tabular_id AND t.deleted_at IS NULL))\n        )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "TextArray",
+        "UuidArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2562a784fc31ed5ee589521ebda15d310cd2dc5239f8db5b858afd9090585bbb"
+}

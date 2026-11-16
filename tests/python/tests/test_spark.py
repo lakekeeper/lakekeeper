@@ -448,7 +448,7 @@ def drop_table_and_assert_that_table_is_gone(
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table((namespace, drop_table_name))
     if storage_config["storage-profile"]["type"] == "s3":
-        if "s3.access-key-id" not in storage_config:
+        if "aws-access-key-id" not in storage_config["storage-credential"]:
             pytest.skip(
                 "S3 purge test requires s3 credentials to be set in the storage profile."
             )
@@ -469,14 +469,17 @@ def drop_table_and_assert_that_table_is_gone(
     else:
         properties = table_0.io.properties
     file_io = io._infer_file_io_from_scheme(table_0.location(), properties)
-    # sleep to give time for the table to be gone
-    time.sleep(5)
     # On filesystems with hierarchies like HDFS and ADLS/Onelake we might leave
     # empty directories. This is a known issue:
     # https://github.com/lakekeeper/lakekeeper/issues/1064
     location = table_0.location().rstrip("/") + "/"
     inp = file_io.new_input(location)
     if storage_config["storage-profile"]["type"] not in ("adls", "onelake"):
+        # The purge runs as a background task. Its duration depends on the
+        # server: an emulated architecture takes several times longer.
+        deadline = time.monotonic() + 60
+        while inp.exists() and time.monotonic() < deadline:
+            time.sleep(1)
         assert not inp.exists(), f"Table location {location} still exists"
     tables = warehouse.pyiceberg_catalog.list_tables(namespace)
     assert len(tables) == 1

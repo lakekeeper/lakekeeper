@@ -6,6 +6,11 @@ on:
       test_name:
         required: true
         type: string
+      skip:
+        description: "Report the test as skipped without running it"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,6 +21,7 @@ permissions:
 jobs:
   test:
     name: ${{ inputs.test_name }}
+    if: ${{ !inputs.skip }}
     env:
       current_test: ${{ inputs.test_name }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -73,6 +79,14 @@ jobs:
           LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN }}
           LAKEKEEPER_TEST__AWS_KMS_S3_BUCKET: ${{ secrets.LAKEKEEPER_TEST__AWS_KMS_S3_BUCKET }}
           LAKEKEEPER_TEST__AWS_S3_KMS_ARN: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_KMS_ARN }}
+          # Read by docker-compose-s3-system-identity-overlay.yaml.
+          LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_ACCESS_KEY_ID: ${{ secrets.LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_ACCESS_KEY_ID }}
+          LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_SECRET_ACCESS_KEY: ${{ secrets.LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_SECRET_ACCESS_KEY }}
+          LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_ASSUME_ROLE_ARN: ${{ secrets.LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_ASSUME_ROLE_ARN }}
+          LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_ASSUME_ROLE_EXTERNAL_ID: ${{ secrets.LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_ASSUME_ROLE_EXTERNAL_ID }}
+          LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_BUCKET: ${{ secrets.LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_BUCKET }}
+          LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_BUCKET_REGION: ${{ secrets.LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_BUCKET_REGION }}
+          LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_KEY_PREFIX: ${{ secrets.LAKEKEEPER_TEST__SYSTEM_IDENTITY_AWS_S3_KEY_PREFIX }}
       # A debugging aid: a stuck dump must not hold the job, nor a failed one fail it.
       - name: Dump DB
         if: always()

@@ -16,6 +16,23 @@ For Lakekeeper+ releases, see the [Lakekeeper+ Release Notes](enterprise-release
 
 _[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
 
+## v0.15.1 (2026-11-15)
+
+### Features
+
+- **Console v0.31.0** with a Contents tab and details panel, and a query history with query plans in LoQE ([#2305](https://github.com/lakekeeper/lakekeeper/pull/2305), [#2312](https://github.com/lakekeeper/lakekeeper/pull/2312)).
+- **Owners of a managed warehouse** can change its soft-deletion settings and format-version policy. See [Managed Warehouses](https://docs.lakekeeper.io/docs/0.15.x/instance-admins/#managed-warehouses) ([#2279](https://github.com/lakekeeper/lakekeeper/pull/2279)).
+
+### Bug Fixes
+
+- **Listings return full pages** when some entries are hidden from the user, so clients such as PyIceberg see every entry ([#2278](https://github.com/lakekeeper/lakekeeper/pull/2278), [#2304](https://github.com/lakekeeper/lakekeeper/pull/2304)).
+- **A dropped table's location stays reserved until its purge has finished.** Creating a table there earlier returns `409` ([#2270](https://github.com/lakekeeper/lakekeeper/pull/2270)).
+- **Concurrent namespace property updates** keep each other's changes ([#2283](https://github.com/lakekeeper/lakekeeper/pull/2283)).
+- **GCS buckets with hierarchical namespace:** writes into new folders succeed ([#2289](https://github.com/lakekeeper/lakekeeper/pull/2289)).
+- **Headless task workers** leave scheduling and statistics to the API processes and keep their database connections for tasks ([#2281](https://github.com/lakekeeper/lakekeeper/pull/2281)).
+- **Task queue config:** reading the config of a queue the server does not have returns `404` ([#2280](https://github.com/lakekeeper/lakekeeper/pull/2280)).
+- **Security:** `quinn-udp` updated (RUSTSEC-2026-0538) ([#2299](https://github.com/lakekeeper/lakekeeper/pull/2299)).
+
 ## v0.15.0 (2026-11-06)
 
 Lakekeeper 0.15 is here, and it is a big one! The new `write` privilege lets pipelines and dbt change tables without being able to drop them, Lakekeeper instances keep their caches in sync, and task workers scale up and down with the work. Views run more safely, and concurrent commits and busy storage are handled more gracefully. Several security improvements change existing behavior, so please read the Breaking Changes and Upgrade Notes before you upgrade.

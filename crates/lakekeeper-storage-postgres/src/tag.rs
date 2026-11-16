@@ -1442,7 +1442,7 @@ mod tests {
         t.commit().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_tag_definition(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1514,7 +1514,7 @@ mod tests {
         ));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_enumerated_tag_definition(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1558,7 +1558,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_tag_definition(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1598,7 +1598,7 @@ mod tests {
         assert_eq!(cross, None);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_tag_definition_by_name(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1642,7 +1642,7 @@ mod tests {
         assert_eq!(cross, None);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tag_definitions(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1735,7 +1735,7 @@ mod tests {
         assert_eq!(p2, vec!["c.three"]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_get_tag_allowed_values(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1798,7 +1798,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_update_tag_definition(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = ProjectId::new_random();
@@ -1911,7 +1911,7 @@ mod tests {
         ));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_column_tags_for_tabular(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -2015,7 +2015,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_apply_tag(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -2113,7 +2113,7 @@ mod tests {
         assert!(matches!(err, ApplyTagError::TagDefinitionIdNotFound(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_and_remove_tags(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -2282,7 +2282,7 @@ mod tests {
         assert!(list_tags_for_target(wh, &pool).await.unwrap().is_empty());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tag_attachments(pool: sqlx::PgPool) {
         use lakekeeper::api::iceberg::types::PageToken;
 
@@ -2616,7 +2616,7 @@ mod tests {
 
     /// Each row lands on the target it belongs to, with the definition name joined, and a
     /// tabular's column tags stay out of the tabular's own set.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tags_on_targets(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -2769,7 +2769,7 @@ mod tests {
 
     /// Column targets match as a cross product of three arrays, so a tag on a pair nobody
     /// asked for can satisfy the SQL. The per-tuple tightening drops it.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tags_on_targets_drops_unrequested_column_pairs(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -2861,7 +2861,7 @@ mod tests {
     /// Two requested targets can together name a pair neither of them is. Only the
     /// tuple-keyed map stops it being reported, and a tabular id can be reused across
     /// warehouses, so that pair can really exist.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tags_on_targets_drops_cross_warehouse_tabular_pairs(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2915,7 +2915,7 @@ mod tests {
     /// The namespace arm cross-matches the same way, through separate code. A namespace id
     /// is unique today, so the crossed pair cannot exist — but the map keying is still the
     /// only thing enforcing it.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tags_on_targets_drops_cross_warehouse_namespace_pairs(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2971,7 +2971,7 @@ mod tests {
 
     /// These four WHERE arms duplicate four in `list_tags_for_target` and will drift. For a
     /// single target both must answer the same, as a set: only the per-target read orders.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tags_on_targets_agrees_with_the_per_target_read(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3038,7 +3038,7 @@ mod tests {
     /// Nothing joins back to `tabular`, so a soft-deleted table keeps its tags — like the
     /// per-target read and the grant fetch, which keep a dropped table's state for undrop.
     /// A `deleted_at` filter added here would break it silently.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tags_on_targets_includes_soft_deleted_tabulars(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3086,7 +3086,7 @@ mod tests {
     /// The fixture: a table under `x.y`, a sibling branch `x.z` in the same batch, one
     /// definition at every level, one on the two `x` namespaces only, one on the warehouse
     /// only, and a column tag.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_folded_chain_matches_the_effective_tags_api(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3285,7 +3285,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_effective_tag_candidates(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
@@ -3419,7 +3419,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_tag_definition(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =

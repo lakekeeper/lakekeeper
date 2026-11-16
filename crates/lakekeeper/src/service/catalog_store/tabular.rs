@@ -1505,8 +1505,24 @@ define_transparent_error! {
         InvalidNamespaceIdentifier,
         InternalParseLocationError,
         TabularAlreadyExists,
-        TabularNotFound
+        TabularNotFound,
+        TabularHasRunningExpiration
     ]
+}
+
+define_simple_tabular_err!(
+    TabularHasRunningExpiration,
+    "Tabular {tabular} cannot be undropped because its expiration task is already deleting it. If the task fails, undrop it again."
+);
+impl From<TabularHasRunningExpiration> for ErrorModel {
+    fn from(err: TabularHasRunningExpiration) -> Self {
+        ErrorModel::builder()
+            .code(StatusCode::CONFLICT.as_u16())
+            .r#type("TabularHasRunningExpiration")
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
 }
 
 // --------------------------- Soft-Delete Tabulars ----------------

@@ -45,6 +45,9 @@ use uuid::Uuid;
 
 use crate::{CatalogState, PostgresBackend, SecretsState, migrations::migrate_core_only};
 
+mod test_db;
+pub use test_db::run_test;
+
 #[must_use]
 pub fn memory_io_profile() -> StorageProfile {
     lakekeeper::service::storage::MemoryProfile::default().into()

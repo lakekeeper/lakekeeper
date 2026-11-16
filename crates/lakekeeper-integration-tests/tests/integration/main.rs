@@ -1,0 +1,74 @@
+//! One test binary for all integration tests that can share a process. Every binary links
+//! `lakekeeper` on its own, so one binary per file multiplies the build time.
+//!
+//! A test that changes process-wide state, such as audit settings or extension endpoints,
+//! goes in a file of its own directly under `tests/`.
+
+mod audit_corpus;
+mod audit_schema;
+mod cache_invalidation;
+mod commit_state_unknown;
+mod drop_recursive;
+mod drop_warehouse;
+mod endpoint_stats;
+mod generic_table_location_collision;
+mod generic_table_name_collision;
+mod generic_table_protection;
+mod grant_ops;
+mod grant_resource_lifecycle;
+mod grant_user_lifecycle;
+mod list_read_pool;
+mod management_check;
+mod management_query_arrays;
+mod management_search_tabular;
+mod management_tasks_schedule_lifecycle;
+mod management_warehouse;
+mod namespace_ops;
+mod namespace_storage_cleanup;
+mod openfga_grant_ops;
+mod openfga_move_namespace;
+mod openfga_register;
+mod openfga_rename_tabular;
+mod openfga_role_membership;
+mod openfga_soft_deletion_skip;
+mod openfga_warehouse_id;
+mod openfga_write;
+mod project_list_fallback;
+mod referenced_by;
+mod referenced_by_generic_table;
+mod role_membership_ops;
+mod role_ops;
+mod server_config;
+mod server_generic_table_signing;
+mod server_generic_tables;
+mod server_idempotency;
+mod server_load_labels;
+mod server_load_table;
+mod server_namespace;
+mod server_tables_commit_unchanged;
+mod server_tables_postgres;
+mod server_views;
+mod server_views_commit;
+mod server_views_create;
+mod server_views_drop;
+mod server_views_exists;
+mod server_views_list;
+mod server_views_load;
+mod server_views_rename;
+mod service_authz_table;
+mod service_post_migration_hooks;
+mod service_tabular_expiration_queue;
+mod soft_deletion;
+mod soft_deletion_skip;
+mod stats;
+mod subtree_grant_ops;
+mod tag_ops;
+mod task_schedules;
+mod tasks;
+mod user_cache;
+mod user_lifecycle_events;
+mod user_stub_backfill;
+mod view_owner_router;
+mod view_security_mode;
+mod warehouse_ops;
+mod warehouse_validate;
