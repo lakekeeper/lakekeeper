@@ -609,14 +609,26 @@ impl StorageProfile {
                     .transpose()
                     .map_err(CredentialsError::from)?,
             ),
-            StorageProfile::Adls(prof) => prof.normalize(),
+            StorageProfile::Adls(prof) => {
+                credential
+                    .map(StorageCredential::try_to_az)
+                    .transpose()
+                    .map_err(CredentialsError::from)?;
+                prof.normalize()
+            }
             StorageProfile::OneLake(prof) => prof.normalize(
                 credential
                     .map(|s| s.try_to_az())
                     .transpose()
                     .map_err(CredentialsError::from)?,
             ),
-            StorageProfile::Gcs(profile) => profile.normalize(),
+            StorageProfile::Gcs(profile) => {
+                credential
+                    .map(StorageCredential::try_to_gcs)
+                    .transpose()
+                    .map_err(CredentialsError::from)?;
+                profile.normalize()
+            }
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(()),
         }
@@ -2236,7 +2248,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_credential_accepts_only_the_credential_type_of_the_profile() {
+    fn test_credential_must_have_the_storage_type_of_the_profile() {
         let s3_credential: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
             access_key_id: "test-access-key-id".to_string(),
             secret_access_key: "test-secret-access-key".to_string(),
@@ -2303,10 +2315,18 @@ mod tests {
             (gcs, &gcs_credential, "gcs"),
         ] {
             profile.check_credential(Some(own_credential)).unwrap();
+            let expected = format!("Expected storage of type {expected_type}, is: s3");
             let err = profile.check_credential(Some(&s3_credential)).unwrap_err();
             assert_eq!(
                 err.to_string(),
-                format!("Expected storage of type {expected_type}, is: s3"),
+                expected,
+                "profile {}",
+                profile.storage_type()
+            );
+            let err = profile.clone().normalize(Some(&s3_credential)).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                expected,
                 "profile {}",
                 profile.storage_type()
             );
