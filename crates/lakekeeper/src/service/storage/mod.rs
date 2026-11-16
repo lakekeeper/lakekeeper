@@ -609,14 +609,26 @@ impl StorageProfile {
                     .transpose()
                     .map_err(CredentialsError::from)?,
             ),
-            StorageProfile::Adls(prof) => prof.normalize(),
+            StorageProfile::Adls(prof) => {
+                credential
+                    .map(StorageCredential::try_to_az)
+                    .transpose()
+                    .map_err(CredentialsError::from)?;
+                prof.normalize()
+            }
             StorageProfile::OneLake(prof) => prof.normalize(
                 credential
                     .map(|s| s.try_to_az())
                     .transpose()
                     .map_err(CredentialsError::from)?,
             ),
-            StorageProfile::Gcs(profile) => profile.normalize(),
+            StorageProfile::Gcs(profile) => {
+                credential
+                    .map(StorageCredential::try_to_gcs)
+                    .transpose()
+                    .map_err(CredentialsError::from)?;
+                profile.normalize()
+            }
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(()),
         }
@@ -638,10 +650,27 @@ impl StorageProfile {
                     .transpose()
                     .map_err(CredentialsError::from)?,
             )?),
-            StorageProfile::Stackit(_)
-            | StorageProfile::Adls(_)
-            | StorageProfile::OneLake(_)
-            | StorageProfile::Gcs(_) => Ok(()),
+            StorageProfile::Stackit(_) => {
+                credential
+                    .map(StorageCredential::try_to_stackit)
+                    .transpose()
+                    .map_err(CredentialsError::from)?;
+                Ok(())
+            }
+            StorageProfile::Adls(_) | StorageProfile::OneLake(_) => {
+                credential
+                    .map(StorageCredential::try_to_az)
+                    .transpose()
+                    .map_err(CredentialsError::from)?;
+                Ok(())
+            }
+            StorageProfile::Gcs(_) => {
+                credential
+                    .map(StorageCredential::try_to_gcs)
+                    .transpose()
+                    .map_err(CredentialsError::from)?;
+                Ok(())
+            }
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(()),
         }
@@ -2216,6 +2245,92 @@ mod tests {
                 external_id: None
             }))
         );
+    }
+
+    #[test]
+    fn test_credential_must_have_the_storage_type_of_the_profile() {
+        let s3_credential: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
+            access_key_id: "test-access-key-id".to_string(),
+            secret_access_key: "test-secret-access-key".to_string(),
+            external_id: None,
+        })
+        .into();
+        let stackit_credential: StorageCredential =
+            StackitCredential::AccessKey(StackitAccessKeyCredential {
+                access_key_id: "test-access-key-id".to_string(),
+                secret_access_key: "test-secret-access-key".to_string(),
+            })
+            .into();
+        let az_credential: StorageCredential = AzCredential::SharedAccessKey {
+            key: "test-key".to_string(),
+        }
+        .into();
+        let gcs_credential: StorageCredential = GcsCredential::GcpSystemIdentity {}.into();
+
+        let stackit: StorageProfile = StackitProfile::builder()
+            .bucket("my-bucket".to_string())
+            .region("eu01".to_string())
+            .credentials_group_urn(
+                "urn:sgws:identity::12345678901234567890:group/credentials-group-a1b2c3"
+                    .to_string(),
+            )
+            .build()
+            .into();
+        let adls: StorageProfile = GenericAdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: None,
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        }
+        .into();
+        let onelake: StorageProfile = OneLakeProfile {
+            workspace_id: uuid::uuid!("00000000-0000-0000-0000-000000000001"),
+            lakehouse_id: uuid::uuid!("00000000-0000-0000-0000-000000000002"),
+            directory_rel_path: None,
+            top_level_folder: TopLevelFolder::default(),
+            endpoint_mode: EndpointMode::Default,
+            sas_token_validity_seconds: None,
+            sas_enabled: true,
+            authority_host: None,
+            storage_layout: None,
+        }
+        .into();
+        let gcs: StorageProfile = GcsProfile {
+            bucket: "my-bucket".to_string(),
+            key_prefix: None,
+            sts_enabled: false,
+            storage_layout: None,
+        }
+        .into();
+
+        for (profile, own_credential, expected_type) in [
+            (stackit, &stackit_credential, "stackit"),
+            (adls, &az_credential, "adls"),
+            (onelake, &az_credential, "adls"),
+            (gcs, &gcs_credential, "gcs"),
+        ] {
+            profile.check_credential(Some(own_credential)).unwrap();
+            let expected = format!("Expected storage of type {expected_type}, is: s3");
+            let err = profile.check_credential(Some(&s3_credential)).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                expected,
+                "profile {}",
+                profile.storage_type()
+            );
+            let err = profile.clone().normalize(Some(&s3_credential)).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                expected,
+                "profile {}",
+                profile.storage_type()
+            );
+        }
     }
 
     #[test]
