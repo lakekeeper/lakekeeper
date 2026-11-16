@@ -24,7 +24,7 @@ mod test {
 
     use crate::endpoint_statistics::sink::PostgresStatisticsSink;
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_insert_all_variants(pool: sqlx::PgPool) {
         let conn = pool.begin().await.unwrap();
         let (_api, warehouse) = crate::tests::setup(
@@ -66,7 +66,7 @@ mod test {
 
     /// The `api_endpoints` type is frozen and holds every name stored before names were
     /// stored as text. Each of them must still resolve.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_every_legacy_name_resolves(pool: sqlx::PgPool) {
         let (_api, _warehouse) = crate::tests::setup(
             pool.clone(),
@@ -134,7 +134,7 @@ mod test {
     }
 
     /// The listing leaves out names this server does not know.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_listing_skips_unknown_names(pool: sqlx::PgPool) {
         let (_api, _warehouse) = crate::tests::setup(
             pool.clone(),
@@ -184,7 +184,7 @@ mod test {
         assert_eq!(stats[0].count, 4);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_listing_filters_by_warehouse(pool: sqlx::PgPool) {
         let (_api, warehouse) = crate::tests::setup(
             pool.clone(),

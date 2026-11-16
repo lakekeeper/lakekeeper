@@ -64,7 +64,7 @@ mod test {
     use super::*;
 
     /// Purge drops on storage without directory entities reach the backend and succeed.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_purge_drop_with_nested_locations_on_memory_storage(pool: PgPool) {
         let mut profile = MemoryProfile::default();
         profile.storage_layout =
@@ -190,7 +190,7 @@ mod test {
             entries.iter().any(|e| e.starts_with(dir.as_str()))
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn test_drop_removes_empty_namespace_directories(pool: PgPool) {
             let layout =
                 StorageLayout::try_new_full("{name}".to_string(), "{uuid}".to_string()).unwrap();
@@ -243,7 +243,7 @@ mod test {
             io.remove_all(base.as_str()).await.unwrap();
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn test_drop_keeps_empty_warehouse_base(pool: PgPool) {
             let (ctx, prefix, io, base) = setup_adls(pool, None).await;
             // Replace whatever warehouse validation left with an empty base directory.

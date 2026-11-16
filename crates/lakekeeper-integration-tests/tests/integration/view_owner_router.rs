@@ -117,7 +117,7 @@ async fn create_definer_view(
     (status, serde_json::from_slice(&bytes).unwrap_or_default())
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn router_with_authenticator_applies_the_owner_property_rules(pool: PgPool) {
     let (mut ctx, namespace, warehouse_id, _) = views_test_setup(pool, None).await;
     // The router decides from its authenticator, not from the state it gets.
@@ -135,7 +135,7 @@ async fn router_with_authenticator_applies_the_owner_property_rules(pool: PgPool
     assert_eq!(body["error"]["type"], "ProtectedPropertyModification");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn router_without_authenticator_does_not_apply_the_owner_property_rules(pool: PgPool) {
     let (mut ctx, namespace, warehouse_id, _) = views_test_setup(pool, None).await;
     ctx.v1_state.authentication = ServerAuthentication::Enabled;

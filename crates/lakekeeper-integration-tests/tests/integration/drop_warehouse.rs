@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     let storage_profile = lakekeeper_integration_tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer::default();
@@ -346,7 +346,7 @@ fn row(queue_name: &TaskQueueName, status: &str) -> (String, String) {
     (queue_name.to_string(), status.to_string())
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_warehouse_cancels_tasks_of_cancel_queues(pool: PgPool) {
     let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 1).await;
     let [succeeding, failing] = enqueue_cancel_queue_tasks(&ctx, &warehouse).await;
@@ -382,7 +382,7 @@ async fn test_delete_warehouse_cancels_tasks_of_cancel_queues(pool: PgPool) {
     assert!(elapsed < Duration::from_secs(3), "took {elapsed:?}");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_block_queue_task_fails_warehouse_delete(pool: PgPool) {
     let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 1).await;
     enqueue_cancel_queue_tasks(&ctx, &warehouse).await;
@@ -412,7 +412,7 @@ async fn test_block_queue_task_fails_warehouse_delete(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_warehouse_cancels_only_tasks_of_that_warehouse(pool: PgPool) {
     let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 2).await;
     let (_, other_warehouse_id, _) = warehouse.additional_warehouses[0].clone();
@@ -456,7 +456,7 @@ async fn test_delete_warehouse_cancels_only_tasks_of_that_warehouse(pool: PgPool
 
 /// The cancel runs before the warehouse row is locked, so a worker that holds its task row and
 /// then enqueues its next run in the same transaction finishes without deadlocking.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_warehouse_cancels_before_locking_the_warehouse(pool: PgPool) {
     let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 1).await;
     enqueue(&ctx, &CANCEL_QUEUE, &warehouse).await;
@@ -507,7 +507,7 @@ async fn test_delete_warehouse_cancels_before_locking_the_warehouse(pool: PgPool
 
 /// Schedules are deleted before the warehouse row is locked, so a materializer that holds a
 /// schedule row and then inserts its task finishes without deadlocking.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_warehouse_deletes_schedules_before_locking_the_warehouse(pool: PgPool) {
     let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 1).await;
     let mut transaction =
@@ -571,7 +571,7 @@ async fn test_delete_warehouse_deletes_schedules_before_locking_the_warehouse(po
     assert_eq!(schedules, 0);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_protected_warehouse_delete_keeps_cancel_queue_tasks(pool: PgPool) {
     let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 1).await;
     enqueue_cancel_queue_tasks(&ctx, &warehouse).await;
@@ -624,7 +624,7 @@ async fn task_attempts(pool: &PgPool, warehouse_id: WarehouseId) -> Vec<(Uuid, S
     .unwrap()
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_non_empty_warehouse_delete_keeps_cancel_queue_tasks(pool: PgPool) {
     let (ctx, warehouse) = setup_with_test_queues(pool.clone(), 1).await;
     let prefix = warehouse.warehouse_id.to_string();
@@ -661,7 +661,7 @@ async fn test_non_empty_warehouse_delete_keeps_cancel_queue_tasks(pool: PgPool) 
 }
 
 /// Every queue the built-in registration adds keeps the default: its tasks block the delete.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_built_in_queue_tasks_block_warehouse_delete(pool: PgPool) {
     let (ctx, warehouse, _registry) = setup_with_registry(
         pool.clone(),

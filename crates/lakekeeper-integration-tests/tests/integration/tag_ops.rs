@@ -162,7 +162,7 @@ async fn create_generic_table_returning_id(
 
 /// Create + get a `marker` definition: create echoes scope/kind and reports no
 /// allowed values; get likewise reports `None` allowed values.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_get_marker_definition(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -195,7 +195,7 @@ async fn test_create_get_marker_definition(pool: PgPool) {
 }
 
 /// Create + get a `free_text` definition: no allowed values on either path.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_get_free_text_definition(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -224,7 +224,7 @@ async fn test_create_get_free_text_definition(pool: PgPool) {
 
 /// Create + get an `enumerated` definition: create echoes the request's allowed
 /// values; get returns them (sorted) from the store.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_get_enumerated_definition(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -261,7 +261,7 @@ async fn test_create_get_enumerated_definition(pool: PgPool) {
 
 /// List returns the created definitions; the `name` filter returns exactly the
 /// single match, and an unknown name yields zero entries and no page token.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_definitions_and_name_filter(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -341,7 +341,7 @@ async fn test_list_definitions_and_name_filter(pool: PgPool) {
 
 /// Widening scope (subset -> superset) is accepted; the returned scope is the
 /// requested superset.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_widen_scope(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -374,7 +374,7 @@ async fn test_update_widen_scope(pool: PgPool) {
 }
 
 /// Narrowing scope (removing a configured scope) is rejected with `TagScopeNarrowed`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_narrow_scope_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -408,7 +408,7 @@ async fn test_update_narrow_scope_rejected(pool: PgPool) {
 }
 
 /// Renaming a definition (keeping scope) is accepted.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_rename(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -441,7 +441,7 @@ async fn test_update_rename(pool: PgPool) {
 }
 
 /// Renaming a definition into a reserved namespace is rejected with `ReservedTagNamespace`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_reserved_name_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -475,7 +475,7 @@ async fn test_update_reserved_name_rejected(pool: PgPool) {
 }
 
 /// Adding allowed values to a non-enumerated definition is rejected with `InvalidTagDefinition`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_add_allowed_values_to_non_enumerated_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -509,7 +509,7 @@ async fn test_update_add_allowed_values_to_non_enumerated_rejected(pool: PgPool)
 }
 
 /// Creating a definition in a reserved namespace is rejected with `ReservedTagNamespace`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_reserved_prefix_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -529,7 +529,7 @@ async fn test_create_reserved_prefix_rejected(pool: PgPool) {
 }
 
 /// Creating an enumerated definition without allowed values is rejected with `InvalidTagDefinition`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_enumerated_without_allowed_values_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -549,7 +549,7 @@ async fn test_create_enumerated_without_allowed_values_rejected(pool: PgPool) {
 }
 
 /// Creating a non-enumerated definition with allowed values is rejected with `InvalidTagDefinition`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_marker_with_allowed_values_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -569,7 +569,7 @@ async fn test_create_marker_with_allowed_values_rejected(pool: PgPool) {
 }
 
 /// A duplicate name (case-insensitive) is rejected with `TagNameAlreadyExists` (409).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_duplicate_name_case_insensitive_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -600,7 +600,7 @@ async fn test_create_duplicate_name_case_insensitive_rejected(pool: PgPool) {
 }
 
 /// An unused definition can be deleted; a subsequent get reports not-found.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_unused_definition(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -632,7 +632,7 @@ async fn test_delete_unused_definition(pool: PgPool) {
 
 /// Apply a `free_text` tag to the warehouse, list it, remove it, and confirm
 /// removal is idempotent.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_warehouse_tag_apply_list_remove_idempotent(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -711,7 +711,7 @@ async fn test_warehouse_tag_apply_list_remove_idempotent(pool: PgPool) {
 }
 
 /// Applying a value to a `marker` tag is rejected with `InvalidTagValue`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_warehouse_tag_marker_with_value_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -745,7 +745,7 @@ async fn test_warehouse_tag_marker_with_value_rejected(pool: PgPool) {
 
 /// Enumerated value legality: a value outside the allowed set is rejected with
 /// `InvalidTagValue`; an allowed value is accepted.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_warehouse_tag_enumerated_value_legality(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -794,7 +794,7 @@ async fn test_warehouse_tag_enumerated_value_legality(pool: PgPool) {
 }
 
 /// A tag scoped only to `table` cannot be applied to a warehouse: `TagScopeNotAllowed`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_warehouse_tag_scope_not_allowed(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -826,7 +826,7 @@ async fn test_warehouse_tag_scope_not_allowed(pool: PgPool) {
 
 /// A definition attached to a target cannot be deleted (`TagDefinitionInUse`);
 /// after removing the attachment it deletes.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_definition_in_use(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -880,7 +880,7 @@ async fn test_delete_definition_in_use(pool: PgPool) {
 // ==================== Attachment: table + column ====================
 
 /// Apply a `table`-scoped tag to a table and confirm it is listed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_table_tag_apply_and_list(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -929,7 +929,7 @@ async fn test_table_tag_apply_and_list(pool: PgPool) {
 }
 
 /// Apply a `column`-scoped tag to column `email` by name.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_table_column_tag_by_name(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -980,7 +980,7 @@ async fn test_table_column_tag_by_name(pool: PgPool) {
 /// plus a table-level tag, then read every column's tags in one call. Verifies per-column
 /// grouping (id's two tags merge into a single entry, not one entry per attachment) and
 /// that the table-level tag is excluded (columns only).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_column_tags(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1093,7 +1093,7 @@ async fn test_list_column_tags(pool: PgPool) {
 }
 
 /// Applying a column tag to a non-existent column is rejected with `ColumnNotFound` (404).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_table_column_tag_unknown_column_not_found(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1131,7 +1131,7 @@ async fn test_table_column_tag_unknown_column_not_found(pool: PgPool) {
 /// Updating an enumerated definition (adding a value) returns the merged,
 /// sorted allowed values on the update response, and `get` agrees. Marker and
 /// free-text updates report `None` allowed values.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_enumerated_returns_allowed_values(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1233,7 +1233,7 @@ async fn test_update_enumerated_returns_allowed_values(pool: PgPool) {
 
 /// Apply a `free_text` tag to a namespace, list it, remove it, and confirm
 /// removal is idempotent.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_namespace_tag_apply_list_remove_idempotent(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1318,7 +1318,7 @@ async fn test_namespace_tag_apply_list_remove_idempotent(pool: PgPool) {
 
 /// Apply a `free_text` tag to a view, list it, remove it, and confirm removal
 /// is idempotent.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_view_tag_apply_list_remove_idempotent(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1403,7 +1403,7 @@ async fn test_view_tag_apply_list_remove_idempotent(pool: PgPool) {
 
 /// Apply a `free_text` tag to a generic table, list it, remove it, and confirm
 /// removal is idempotent.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_tag_apply_list_remove_idempotent(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1489,7 +1489,7 @@ async fn test_generic_table_tag_apply_list_remove_idempotent(pool: PgPool) {
 
 /// Apply a table tag and a column tag, then remove each independently and
 /// confirm the listings reflect the removals without disturbing the other.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_table_and_column_tag_remove(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1624,7 +1624,7 @@ async fn test_table_and_column_tag_remove(pool: PgPool) {
 
 /// A definition attached to a non-warehouse target (a table) cannot be deleted
 /// (`TagDefinitionInUse`); after removing the attachment it deletes.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_definition_in_use_by_table(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1684,7 +1684,7 @@ async fn test_delete_definition_in_use_by_table(pool: PgPool) {
 /// project B: with the request scoped to project A, the target resolves in a
 /// different project and the attachment is rejected as `TagTargetNotFound`
 /// (404) before the definition is even resolved.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cross_project_target_rejected(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1753,7 +1753,7 @@ async fn test_cross_project_target_rejected(pool: PgPool) {
 /// Apply one definition to every target type, then reverse-list its attachments.
 /// Exercises target-subtype reconstruction end-to-end: warehouse, namespace, table,
 /// column (by field-id), view, and generic-table each come back as the right variant.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_tag_attachments_across_targets(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -1911,7 +1911,7 @@ async fn test_list_tag_attachments_across_targets(pool: PgPool) {
 }
 
 /// Reverse lookup with a value filter and keyset pagination.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -2064,7 +2064,7 @@ async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
 
 /// An unused definition reverse-lists as empty; an unknown definition is hidden as
 /// not-found (the `ReadAttachments` authz resolves the definition first).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_list_tag_attachments_empty_and_unknown(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -2181,7 +2181,7 @@ async fn create_table_in(
 
 /// Effective tags on a namespace: inherits from parent namespaces + warehouse,
 /// most-specific-wins, with provenance. Direct list stays unchanged.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_effective_tags_namespace_inheritance(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -2305,7 +2305,7 @@ async fn test_effective_tags_namespace_inheritance(pool: PgPool) {
 /// Effective tags on a table: inherits from its namespace chain; a direct table tag
 /// shadows an inherited one; a tag on the table's *column* is excluded from the
 /// table's effective set (columns do not propagate up).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_effective_tags_table_inheritance_and_column_exclusion(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -2427,7 +2427,7 @@ async fn test_effective_tags_table_inheritance_and_column_exclusion(pool: PgPool
 /// scope does NOT list `view`, proving inheritance is scope-independent — plus the
 /// no-op targets: `?effective=true` on a warehouse (no ancestors) and on a column
 /// (columns never inherit) both equal the direct list.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_effective_tags_view_and_noop_targets(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -2559,7 +2559,7 @@ async fn test_effective_tags_view_and_noop_targets(pool: PgPool) {
 
 /// Re-applying a tag with an identical value is a no-op: `applied_at` does not move.
 /// Applying a different value does move it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_reapply_same_value_is_noop(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
     let pid = &wh.project_id;
@@ -2616,7 +2616,7 @@ async fn test_reapply_same_value_is_noop(pool: PgPool) {
 /// enforceable but invisible to a console. Driven through the real router, which also
 /// proves the route is mounted; under AllowAll every action is permitted, pinning the
 /// full list.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn tag_actions_lists_every_action(pool: PgPool) {
     let (ctx, warehouse) = setup_catalog(pool).await;
     let project_id = (*warehouse.project_id).clone();
@@ -2659,7 +2659,7 @@ async fn tag_actions_lists_every_action(pool: PgPool) {
 
 /// A definition in another project must read as absent, not as a denial that would
 /// confirm it exists.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn tag_actions_hides_a_definition_from_another_project(pool: PgPool) {
     let (ctx, warehouse) = setup_catalog(pool).await;
     let project_id = (*warehouse.project_id).clone();
@@ -2725,7 +2725,7 @@ async fn tag_actions_request(
 /// The second request is identical to the first, so `require_project_action`
 /// passes again while the catalog rejects the duplicate definition name — a
 /// write failure reachable only once authorization has already been decided.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
     let (ctx, warehouse) = setup_catalog(pool).await;
     let project_id = &warehouse.project_id;
@@ -2770,7 +2770,7 @@ async fn test_create_tag_definition_audits_authz_before_failing_write(pool: PgPo
 /// Same contract on the update path: renaming onto an existing definition name
 /// is rejected by the write, after `require_tag_action` has already allowed the
 /// update.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_update_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
     let (ctx, warehouse) = setup_catalog(pool).await;
     let pid = &warehouse.project_id;
@@ -2827,7 +2827,7 @@ async fn test_update_tag_definition_audits_authz_before_failing_write(pool: PgPo
 
 /// Same contract on the delete path: the in-use rejection comes from the delete
 /// statement, after `require_tag_action` has already allowed the delete.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_delete_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
     let (ctx, warehouse) = setup_catalog(pool).await;
     let pid = &warehouse.project_id;
@@ -2911,7 +2911,7 @@ async fn seed_reserved_definition(
 ///
 /// A reserved definition stays *readable*, which is why the guard is not in
 /// `check_tag_definition_action`; the final read below pins that.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_reserved_tag_definition_guards_audit_as_denials(pool: PgPool) {
     let (ctx, warehouse) = setup_catalog(pool).await;
     let pid = &warehouse.project_id;
@@ -2991,7 +2991,7 @@ async fn test_reserved_tag_definition_guards_audit_as_denials(pool: PgPool) {
 /// catalog byte-identical. The authorizer is the only thing that can halt a
 /// request between the check and the write, so this is where the boundary is
 /// observable from outside.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_check_phase_has_no_side_effects(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 

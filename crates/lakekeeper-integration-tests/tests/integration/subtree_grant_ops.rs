@@ -405,7 +405,7 @@ impl EventListener for RevokedRecorder {
 /// The whole point of the endpoint: one request instead of one per resource. The root's
 /// own grants are in, the warehouse's are not, and a tabular inside a descendant
 /// namespace comes back with the kind it actually is.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_namespace_listing_covers_the_root_its_descendants_and_their_tabulars(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -464,7 +464,7 @@ async fn a_namespace_listing_covers_the_root_its_descendants_and_their_tabulars(
 /// A sibling subtree is not under the root, however similar its name. `parent2` sorts
 /// immediately after `parent` in the path btree, which is exactly where the range start
 /// bound puts it — so only the prefix recheck keeps it out.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_sibling_namespace_is_not_in_the_subtree(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -502,7 +502,7 @@ async fn a_sibling_namespace_is_not_in_the_subtree(pool: PgPool) {
 
 /// The warehouse-rooted listing covers the warehouse's own grants too — the subtree
 /// contains its root — and `includeRootLevel=false` narrows it to strictly-below.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_warehouse_listing_includes_the_warehouses_own_grants(pool: PgPool) {
     let f = setup(pool).await;
     build_tree(&f).await;
@@ -543,7 +543,7 @@ async fn a_warehouse_listing_includes_the_warehouses_own_grants(pool: PgPool) {
 
 /// `resourceType` names kinds exactly: asking for tables does not imply views, and asking
 /// for namespaces excludes the tabulars inside them.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_resource_type_filter_names_kinds_exactly(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -591,7 +591,7 @@ async fn the_resource_type_filter_names_kinds_exactly(pool: PgPool) {
 
 /// A kind nothing under the root can be is refused, for the same reason an unrecognized
 /// privilege is: matching nothing and answering `200` reads as "already clean".
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_resource_type_outside_the_subtree_is_refused(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -646,7 +646,7 @@ async fn a_resource_type_outside_the_subtree_is_refused(pool: PgPool) {
 
 /// A privilege the authorizer does not publish is a typo: answering `200` with nothing
 /// would read as "that access is gone".
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_filter_privilege_outside_the_vocabulary_is_refused(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -688,7 +688,7 @@ async fn a_filter_privilege_outside_the_vocabulary_is_refused(pool: PgPool) {
 /// A grant on a table in the recycle bin is listed by default, because the matching
 /// revoke removes it — and hidden on request, for an access review that only cares about
 /// live objects.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn soft_deleted_tables_are_listed_by_default(pool: PgPool) {
     let f = setup_soft_deleting(pool).await;
     let tree = build_tree(&f).await;
@@ -724,7 +724,7 @@ async fn soft_deleted_tables_are_listed_by_default(pool: PgPool) {
 
 /// Deactivating a warehouse is defined to hide its children's grants, so the listing that
 /// walks every child must not be the way around that.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_warehouse_listing_refuses_an_inactive_warehouse(pool: PgPool) {
     let f = setup(pool).await;
     build_tree(&f).await;
@@ -747,7 +747,7 @@ async fn a_warehouse_listing_refuses_an_inactive_warehouse(pool: PgPool) {
 /// Pages are keyset-walked across both arms at once: a namespace grant and a tabular
 /// grant are ordered by the same key, so a page boundary that falls between them still
 /// resumes correctly.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_listing_pages_across_both_arms(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -780,7 +780,7 @@ async fn the_listing_pages_across_both_arms(pool: PgPool) {
 
 /// The straightforward case: everything under the root goes, the warehouse's own grant
 /// stays, and every removed grant is announced individually.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_namespace_revoke_clears_the_subtree_and_leaves_the_warehouse(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -832,7 +832,7 @@ async fn a_namespace_revoke_clears_the_subtree_and_leaves_the_warehouse(pool: Pg
 /// A request matching more than one call may take is refused outright, and refused
 /// *before* anything is removed — a partially applied "success" would be a security
 /// misreport.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_batch_larger_than_the_limit_revokes_nothing(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -872,7 +872,7 @@ async fn a_batch_larger_than_the_limit_revokes_nothing(pool: PgPool) {
 /// The loop: repeat the same request with the ceiling echoed back until `has-more` is
 /// false. Every pass strictly shrinks the set at or below the ceiling, and a grant
 /// created after it is deliberately left behind.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_bounded_loop_drains_the_subtree_and_leaves_later_grants(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -956,7 +956,7 @@ async fn a_bounded_loop_drains_the_subtree_and_leaves_later_grants(pool: PgPool)
 /// The caller's own grants are revoked like anyone else's — there is no self-exemption.
 /// The way to keep the administration plane, including the grant the caller's own
 /// authority flows through, is to leave the root level out.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_actors_own_root_grant_goes_with_the_rest(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -988,7 +988,7 @@ async fn the_actors_own_root_grant_goes_with_the_rest(pool: PgPool) {
 
 /// Keeping the root level keeps every grant on the root, the caller's included, and
 /// clears everything beneath it — the deterministic replacement for a self-exemption.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn leaving_the_root_level_out_keeps_the_actors_own_grant(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -1033,7 +1033,7 @@ async fn leaving_the_root_level_out_keeps_the_actors_own_grant(pool: PgPool) {
 /// A namespace-rooted read costs in proportion to the namespaces it spans, so an
 /// oversized root is refused before that read starts — with the size it would have read,
 /// rather than after running into a timeout. The warehouse-rooted form has no such bound.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_oversized_namespace_subtree_is_refused(pool: PgPool) {
     let f = setup(pool.clone()).await;
     let tree = build_tree(&f).await;
@@ -1092,7 +1092,7 @@ async fn an_oversized_namespace_subtree_is_refused(pool: PgPool) {
 /// A table created but never committed still has an id, and a grant on that id is real
 /// access to it. Both operations therefore cover it, on the same footing as one in the
 /// recycle bin.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_staged_table_is_in_scope(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -1148,7 +1148,7 @@ async fn a_staged_table_is_in_scope(pool: PgPool) {
 /// A revoke reaches into the recycle bin whatever a listing would show: an undrop
 /// restores a table together with its grants, so leaving them behind would restore access
 /// the operator believed removed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_revoke_removes_grants_on_soft_deleted_tables(pool: PgPool) {
     let f = setup_soft_deleting(pool).await;
     let tree = build_tree(&f).await;
@@ -1172,7 +1172,7 @@ async fn a_revoke_removes_grants_on_soft_deleted_tables(pool: PgPool) {
 /// A subtree contains its root: the default revoke takes the warehouse's own grants,
 /// because a grant on the warehouse confers access to everything beneath it. Opting out
 /// keeps the administration plane in place.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_warehouse_revoke_takes_the_warehouse_level_unless_opted_out(pool: PgPool) {
     let f = setup(pool).await;
     build_tree(&f).await;
@@ -1214,7 +1214,7 @@ async fn a_warehouse_revoke_takes_the_warehouse_level_unless_opted_out(pool: PgP
 
 /// The namespace root gets the same opt-out: `include-root-level: false` keeps the
 /// grants on the addressed namespace itself and still clears everything beneath it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_namespace_revoke_keeps_the_roots_own_grants_on_request(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -1253,7 +1253,7 @@ async fn a_namespace_revoke_keeps_the_roots_own_grants_on_request(pool: PgPool) 
 /// The page token pins the walk's ceiling: every page reads under the instant page one
 /// bound, a grant created mid-walk never joins it, and a `createdBefore` that disagrees
 /// with the token is refused.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_page_token_pins_the_walk_to_one_snapshot(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -1338,7 +1338,7 @@ async fn the_page_token_pins_the_walk_to_one_snapshot(pool: PgPool) {
 /// A caller-supplied ceiling finer than a token can carry is answered at the token's
 /// precision, and echoing it back alongside the token is not read as changing the
 /// filter — a walk that pins `as-of` must not fail on its own second page.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_sub_microsecond_ceiling_survives_pagination(pool: PgPool) {
     let f = setup(pool).await;
     build_tree(&f).await;
@@ -1392,7 +1392,7 @@ async fn a_sub_microsecond_ceiling_survives_pagination(pool: PgPool) {
 /// A dry run answers with the batch and removes nothing. It is not refused for size —
 /// `has-more: true` is how the caller learns the live call needs `allow-partial` — and
 /// the live call under the same ceiling removes exactly what was previewed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_dry_run_previews_the_batch_and_removes_nothing(pool: PgPool) {
     let f = setup(pool).await;
     build_tree(&f).await;
@@ -1458,7 +1458,7 @@ async fn a_dry_run_previews_the_batch_and_removes_nothing(pool: PgPool) {
 /// Membership is resolved per call, so a table renamed into the subtree between two calls
 /// is swept by the second — and the response says so rather than pretending the first
 /// call covered it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_tabular_moved_into_the_subtree_is_swept_by_the_next_call(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -1523,7 +1523,7 @@ async fn a_tabular_moved_into_the_subtree_is_swept_by_the_next_call(pool: PgPool
 
 /// Two overlapping revokes running at once must both finish. Every batch locks its rows
 /// in `grant_id` order, a canonical one, so they cannot form a wait-for cycle.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn overlapping_revokes_do_not_deadlock(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -1565,7 +1565,7 @@ async fn overlapping_revokes_do_not_deadlock(pool: PgPool) {
 /// guard against matching the other principal kind. A wrong guard in one arm answers
 /// `200` having matched less than it should, which reads as "that access is gone" — so
 /// each arm is asserted: warehouse level, namespace, and tabular.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_user_principal_filter_matches_every_arm(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -1695,7 +1695,7 @@ async fn a_user_principal_filter_matches_every_arm(pool: PgPool) {
 
 /// The role filter is the other half of every guard: a role-held grant must match by
 /// role and a user-held one must not, in each arm.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_role_principal_filter_matches_only_that_role(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;
@@ -1804,7 +1804,7 @@ async fn a_role_principal_filter_matches_only_that_role(pool: PgPool) {
 /// where an off-by-one in the slice bound would show: `analytics.finance_archive` sorts
 /// after `analytics.finance` and shares its first element, so only the slice equality
 /// keeps it out of `analytics.finance`'s subtree.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_deeper_root_excludes_a_sibling_sharing_its_prefix(pool: PgPool) {
     let f = setup(pool).await;
     let analytics = create_namespace(&f.ctx, f.warehouse_id, &["analytics"]).await;
@@ -1944,7 +1944,7 @@ async fn a_deeper_root_excludes_a_sibling_sharing_its_prefix(pool: PgPool) {
 /// `ReadSubtreeGrants` on the root covers every member: a resource the caller could not
 /// grant-read on its own is still part of the answer, and pages come back full. Losing
 /// the root itself loses entry.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn subtree_read_at_the_root_covers_members_the_caller_cannot_see(pool: PgPool) {
     let authorizer = HidingAuthorizer::new();
     let (ctx, warehouse) = SetupTestCatalog::builder()
@@ -2088,7 +2088,7 @@ async fn denying_tree(
 /// "successful" call that left grants in place would be a security misreport. The
 /// refusal names no privilege: with a content-independent gate there is nothing
 /// content-derived to leak.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn no_revoke_authority_refuses_the_whole_batch(pool: PgPool) {
     let (ctx, metadata, warehouse_id, parent, child) =
         denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
@@ -2128,7 +2128,7 @@ async fn no_revoke_authority_refuses_the_whole_batch(pool: PgPool) {
 /// The warehouse-rooted gate is a separate branch from the namespace-rooted one, with
 /// its own refusal shape: both mask as not-found, each naming the resource it was asked
 /// about.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_warehouse_revoke_without_subtree_read_is_refused(pool: PgPool) {
     let (ctx, metadata, warehouse_id, _parent, child) =
         denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
@@ -2165,7 +2165,7 @@ async fn a_warehouse_revoke_without_subtree_read_is_refused(pool: PgPool) {
 
 /// Reading a warehouse's subtree grants does not carry revoking them: the batch is
 /// refused, by an error that names no privilege.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_warehouse_revoke_without_revoke_authority_is_refused(pool: PgPool) {
     let (ctx, metadata, warehouse_id, _parent, child) =
         denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
@@ -2205,7 +2205,7 @@ async fn a_warehouse_revoke_without_revoke_authority_is_refused(pool: PgPool) {
 /// the warehouse is told the permission is missing. The revoke asks the action bare —
 /// an authority holder needs no `describe` — and therefore masks every refusal as
 /// not-found. A caller who may not see the warehouse gets not-found from either.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_warehouse_listing_without_subtree_read_is_refused(pool: PgPool) {
     let (ctx, metadata, warehouse_id, _parent, _child) = denying_tree(pool, &[]).await;
     ctx.v1_state
@@ -2244,7 +2244,7 @@ async fn a_warehouse_listing_without_subtree_read_is_refused(pool: PgPool) {
 /// Subtree grant-read stands on its own: it carries entry to the root it is held on, so
 /// a caller who administers grants without seeing the data reads the subtree. Matches
 /// what the revoke's bare ask already allows.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn subtree_read_without_namespace_visibility_lists(pool: PgPool) {
     let (ctx, metadata, warehouse_id, parent, _child) = denying_tree(pool, &[]).await;
     ctx.v1_state.authz.block_action(&format!(
@@ -2266,7 +2266,7 @@ async fn subtree_read_without_namespace_visibility_lists(pool: PgPool) {
 }
 
 /// The same at the warehouse root: `ReadSubtreeGrants` carries entry without `use`.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn subtree_read_without_warehouse_visibility_lists(pool: PgPool) {
     let (ctx, metadata, warehouse_id, _parent, _child) = denying_tree(pool, &[]).await;
     ctx.v1_state.authz.block_action(&format!(
@@ -2292,7 +2292,7 @@ async fn subtree_read_without_warehouse_visibility_lists(pool: PgPool) {
 ///
 /// Only `ReadSubtreeGrants` is blocked, so the refusal can only come from the read
 /// gate — not from the revoke action, which stays allowed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_revoke_without_grant_read_on_the_root_is_refused(pool: PgPool) {
     let (ctx, metadata, warehouse_id, parent, child) =
         denying_tree(pool, &[GrantOp::Grant, GrantOp::Revoke]).await;
@@ -2332,7 +2332,7 @@ async fn a_revoke_without_grant_read_on_the_root_is_refused(pool: PgPool) {
 
 /// `RevokeSubtreeGrants` at the root is the whole authorization: the descendant's grant
 /// goes on the same one answer, with no per-grant or per-pair question asked.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn revoke_authority_at_the_root_covers_the_descendants(pool: PgPool) {
     let (ctx, metadata, warehouse_id, parent, _child) =
         denying_tree(pool, &[GrantOp::Revoke]).await;
@@ -2398,7 +2398,7 @@ async fn with_listener(ctx: &Ctx, listener: Arc<RevokedRecorder>) -> Ctx {
 /// Phase 2 therefore re-derives membership under the lock instead of deleting on id alone,
 /// so a grant that has left the subtree is not removed by an authority that never covered
 /// it. Driven phase-by-phase rather than raced, so the window is deterministic.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_tabular_renamed_out_between_the_phases_keeps_its_grant(pool: PgPool) {
     let f = setup(pool).await;
     let tree = build_tree(&f).await;

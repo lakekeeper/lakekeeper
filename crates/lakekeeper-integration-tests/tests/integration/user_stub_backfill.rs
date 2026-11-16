@@ -119,7 +119,7 @@ fn config_query(project: &lakekeeper::ProjectId, warehouse_name: &str) -> GetCon
 
 /// A role-provider NULL-name stub renders as the placeholder at read time,
 /// before any login backfills it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn null_stub_renders_placeholder_name(pool: PgPool) {
     let (ctx, project_id, _warehouse_name) = setup(pool.clone()).await;
     let alice = UserId::new_unchecked("oidc", "alice");
@@ -132,7 +132,7 @@ async fn null_stub_renders_placeholder_name(pool: PgPool) {
 }
 
 /// A role-provider stub (NULL name) is backfilled from the token on first login.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn first_login_backfills_role_provider_stub(pool: PgPool) {
     let (ctx, project_id, warehouse_name) = setup(pool.clone()).await;
     let alice = UserId::new_unchecked("oidc", "alice");
@@ -159,7 +159,7 @@ async fn first_login_backfills_role_provider_stub(pool: PgPool) {
 
 /// A row with a real, human-set name (non-`RoleProvider`) is never overwritten by
 /// a login, even if the token's name differs.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn first_login_does_not_overwrite_real_name(pool: PgPool) {
     let (ctx, project_id, warehouse_name) = setup(pool).await;
     let bob = UserId::new_unchecked("oidc", "bob");
@@ -184,7 +184,7 @@ async fn first_login_does_not_overwrite_real_name(pool: PgPool) {
 /// still-placeholder name and lock out a later name-bearing login or SCIM
 /// full-sync. The stub must survive unchanged (still `RoleProvider`, still
 /// NULL → placeholder render).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn nameless_token_does_not_backfill_stub(pool: PgPool) {
     let (ctx, project_id, warehouse_name) = setup(pool.clone()).await;
     let dave = UserId::new_unchecked("oidc", "dave");
@@ -207,7 +207,7 @@ async fn nameless_token_does_not_backfill_stub(pool: PgPool) {
 
 /// A `RoleProvider` row with a real (non-placeholder) name — e.g. a SCIM-synced
 /// "Alice Smith" — is NOT a stub and must be left untouched by login.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn first_login_does_not_overwrite_real_role_provider_name(pool: PgPool) {
     let (ctx, project_id, warehouse_name) = setup(pool).await;
     let carol = UserId::new_unchecked("oidc", "carol");
@@ -236,7 +236,7 @@ async fn first_login_does_not_overwrite_real_role_provider_name(pool: PgPool) {
 /// A role-provider stub that already carries a synced email must keep it when
 /// first login backfills the name from a token with no email claim — the backfill
 /// adds the name, it must not clear the email.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn first_login_keeps_existing_provider_email(pool: PgPool) {
     let (ctx, project_id, warehouse_name) = setup(pool.clone()).await;
     let erin = UserId::new_unchecked("oidc", "erin");

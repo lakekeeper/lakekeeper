@@ -376,7 +376,7 @@ fn label_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         .collect()
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_without_tags_has_no_labels(pool: PgPool) {
     let f = Fixture::new(pool).await;
     f.create_namespace().await;
@@ -391,7 +391,7 @@ async fn test_load_table_without_tags_has_no_labels(pool: PgPool) {
 /// Warehouse and namespace tags are inherited, the table's own tag overrides the
 /// namespace's, each value kind maps to its label value, and column tags group per
 /// field id.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_labels_from_governance_tags(pool: PgPool) {
     let f = Fixture::new(pool).await;
     let namespace_id = f.create_namespace().await;
@@ -456,7 +456,7 @@ async fn test_load_table_labels_from_governance_tags(pool: PgPool) {
 /// A column label is keyed by field id, so it follows a rename. Once the column is
 /// dropped from the current schema the label stays, since an older schema of the
 /// table still has the field.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_column_labels_follow_field_ids_across_schema_changes(pool: PgPool) {
     let f = Fixture::new(pool).await;
     f.create_namespace().await;
@@ -481,7 +481,7 @@ async fn test_column_labels_follow_field_ids_across_schema_changes(pool: PgPool)
 }
 
 /// Views carry their effective object tags; they have no field labels.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_view_labels_from_governance_tags(pool: PgPool) {
     let f = Fixture::new(pool).await;
     let namespace_id = f.create_namespace().await;
@@ -523,7 +523,7 @@ async fn test_load_view_labels_from_governance_tags(pool: PgPool) {
 
 /// An idempotent replay reproduces the `createTable` response — no labels, and
 /// the same tag — even when the table now has inherited labels.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_create_table_replay_carries_no_labels(pool: PgPool) {
     let f = Fixture::new(pool).await;
     let namespace_id = f.create_namespace().await;
@@ -552,7 +552,7 @@ async fn test_create_table_replay_carries_no_labels(pool: PgPool) {
 
 /// A conditional load returns `304` while the labels hold and a body once a tag on
 /// the table, an ancestor or a column changes, though the metadata never does.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_etag_follows_tag_changes(pool: PgPool) {
     let f = Fixture::new(pool).await;
     let namespace_id = f.create_namespace().await;

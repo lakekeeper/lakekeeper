@@ -47,7 +47,7 @@ use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_soft_deletion(pool: PgPool) {
     let storage_profile = lakekeeper_integration_tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer::default();
@@ -288,7 +288,7 @@ async fn test_soft_deletion(pool: PgPool) {
     assert_eq!(deleted_tabulars.len(), 9);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
     use lakekeeper::api::{
         data::v1::generic_tables::{
@@ -572,7 +572,7 @@ async fn control_tasks(
 
 /// Cancelling a soft-deletion task undrops the table, so it needs `undrop` on the table even
 /// when the caller may control all tasks of the warehouse.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cancel_soft_deletion_task_requires_undrop(pool: PgPool) {
     let SoftDeletedTable {
         ctx,
@@ -596,7 +596,7 @@ async fn test_cancel_soft_deletion_task_requires_undrop(pool: PgPool) {
     assert_eq!(soft_deleted_names(&ctx, warehouse_id).await, vec!["tbl"]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cancel_soft_deletion_task_with_undrop_restores_the_table(pool: PgPool) {
     let SoftDeletedTable {
         ctx,
@@ -728,7 +728,7 @@ async fn no_undrop(events: &mut tokio::sync::mpsc::UnboundedReceiver<UndropTabul
 }
 
 /// Cancelling a soft-deletion task announces the undrop as `undrop_tabulars` does.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cancel_soft_deletion_task_emits_the_undrop(pool: PgPool) {
     let SoftDeletedTable {
         ctx,
@@ -798,7 +798,7 @@ async fn scheduled_purge_task(table: &SoftDeletedTable, name: &str) -> TaskId {
 
 /// One request cancelling a soft-deletion task and a task of another queue still needs
 /// `undrop` on the soft-deleted table, and a refusal cancels neither task.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cancel_soft_deletion_task_together_with_another_task_requires_undrop(pool: PgPool) {
     let table = soft_deleted_table_with_task(pool).await;
     let purge_task_id = scheduled_purge_task(&table, "other").await;
@@ -829,7 +829,7 @@ async fn test_cancel_soft_deletion_task_together_with_another_task_requires_undr
 
 /// One request cancelling a soft-deletion task and a task of another queue cancels both and
 /// undrops only the soft-deleted table.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cancel_soft_deletion_task_together_with_another_task(pool: PgPool) {
     let table = soft_deleted_table_with_task(pool).await;
     let purge_task_id = scheduled_purge_task(&table, "other").await;
@@ -864,7 +864,7 @@ async fn test_cancel_soft_deletion_task_together_with_another_task(pool: PgPool)
 
 /// Cancelling a soft-deletion task that an undrop already cancelled changes nothing and
 /// announces no undrop.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cancel_stale_soft_deletion_task_of_an_active_table(pool: PgPool) {
     let SoftDeletedTable {
         ctx,
@@ -895,7 +895,7 @@ async fn test_cancel_stale_soft_deletion_task_of_an_active_table(pool: PgPool) {
 
 /// Cancelling the soft-deletion task of an earlier drop leaves a table dropped again
 /// soft-deleted, with its newer task still scheduled.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_cancel_stale_soft_deletion_task_keeps_a_newer_drop(pool: PgPool) {
     let SoftDeletedTable {
         ctx,

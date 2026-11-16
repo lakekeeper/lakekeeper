@@ -323,7 +323,7 @@ async fn setup_table_with_snapshots(
 /// storage config — the one body shape the `CatalogDefaultsOnly` ETag axis exists
 /// for. It must still carry the advertisement, and must still carry a `config`
 /// map at all, which is what distinguishes it from a commit response.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_without_storage_access_still_advertises_planning(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse) = SetupTestCatalog::builder()
@@ -376,7 +376,7 @@ async fn test_load_table_without_storage_access_still_advertises_planning(pool: 
 }
 
 /// Write credentials can read, so a caller allowed to write but not to read gets none.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_table_credentials_need_read_even_with_write(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse) = SetupTestCatalog::builder()
@@ -414,7 +414,7 @@ async fn test_table_credentials_need_read_even_with_write(pool: PgPool) {
 /// The spec puts `scan-planning-mode` in the `loadTable` config map, and we serve
 /// no `planTableScan` endpoint, so every load must say `client`. Asserted on the
 /// response rather than on the helper, since the helper is easy to leave unwired.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_advertises_client_side_scan_planning(pool: PgPool) {
     let (ctx, ns_params, table_ident, _) = setup_table_with_snapshots(pool).await;
 
@@ -442,7 +442,7 @@ async fn test_load_table_advertises_client_side_scan_planning(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_snapshots_filter_all(pool: PgPool) {
     let (ctx, ns_params, table_ident, _) = setup_table_with_snapshots(pool).await;
 
@@ -496,7 +496,7 @@ async fn test_load_table_snapshots_filter_all(pool: PgPool) {
     assert_eq!(snapshot3.manifest_list(), "/path/to/manifest3.avro");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_snapshots_filter_refs(pool: PgPool) {
     let (ctx, ns_params, table_ident, _) = setup_table_with_snapshots(pool).await;
 
@@ -549,7 +549,7 @@ async fn test_load_table_snapshots_filter_refs(pool: PgPool) {
     assert!(result.metadata.snapshot_by_id(1).is_none());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_snapshots_filter_default_behavior(pool: PgPool) {
     let (ctx, ns_params, table_ident, _) = setup_table_with_snapshots(pool).await;
 
@@ -585,7 +585,7 @@ async fn test_load_table_snapshots_filter_default_behavior(pool: PgPool) {
     assert!(snapshots.contains(&3));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_snapshots_filter_with_no_refs(pool: PgPool) {
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let (ctx, warehouse) = setup_simple(
@@ -728,7 +728,7 @@ async fn test_load_table_snapshots_filter_with_no_refs(pool: PgPool) {
     assert!(snapshots_all.contains(&1));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_snapshots_filter_behavior_difference(pool: PgPool) {
     let (ctx, ns_params, table_ident, _) = setup_table_with_snapshots(pool).await;
 
@@ -806,7 +806,7 @@ async fn test_load_table_snapshots_filter_behavior_difference(pool: PgPool) {
     assert_eq!(diff, vec![1]); // Only snapshot 1 should be filtered out
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_returns_not_modified_with_single_matching_etag(pool: PgPool) {
     let (api_context, namespace_parameters, table_identifier, table) =
         setup_simple_table(pool).await;
@@ -837,7 +837,7 @@ async fn test_load_table_returns_not_modified_with_single_matching_etag(pool: Pg
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_returns_not_modified_when_given_multiple_etags_and_one_matches(
     pool: PgPool,
 ) {
@@ -874,7 +874,7 @@ async fn test_load_table_returns_not_modified_when_given_multiple_etags_and_one_
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_returns_not_modified_when_given_wildcard(pool: PgPool) {
     let (api_context, namespace_parameters, table_identifier, table) =
         setup_simple_table(pool).await;
@@ -912,7 +912,7 @@ async fn test_load_table_returns_not_modified_when_given_wildcard(pool: PgPool) 
 /// ETag, then revalidate asking for `snapshots=all`. That must return a full
 /// body, not a 304 — otherwise the client keeps using the truncated snapshot
 /// list as if it were complete.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_does_not_return_not_modified_across_snapshot_filters(pool: PgPool) {
     let (api_context, namespace_parameters, table_identifier, _) =
         setup_table_with_snapshots(pool).await;
@@ -1010,7 +1010,7 @@ async fn test_load_table_does_not_return_not_modified_across_snapshot_filters(po
 /// Drives the `load_table` handler on the in-memory profile, which vends no
 /// expiring credentials — so the `vends_credentials` gate never fires and the
 /// response shape is the only thing preventing the 304.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_load_table_does_not_return_not_modified_across_delegation_modes(pool: PgPool) {
     let (api_context, namespace_parameters, table_identifier, _) = setup_simple_table(pool).await;
     let parameters = TableParameters {

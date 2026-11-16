@@ -91,7 +91,7 @@ async fn eventually(ctx: &Ctx, user_id: &UserId, expected: UserEmail) {
 
 /// Absence is cached: once read, a user that appears without an event stays unknown,
 /// which shows the second lookup read nothing.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_unknown_user_is_cached_as_unknown(pool: PgPool) {
     let ctx = setup(pool).await;
     let user = UserId::new_unchecked("oidc", "cache-unknown");
@@ -102,7 +102,7 @@ async fn an_unknown_user_is_cached_as_unknown(pool: PgPool) {
 }
 
 /// A user without an email is cached as such, the same way.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_user_without_email_is_cached_as_such(pool: PgPool) {
     let ctx = setup(pool).await;
     let user = UserId::new_unchecked("oidc", "cache-no-email");
@@ -115,7 +115,7 @@ async fn a_user_without_email_is_cached_as_such(pool: PgPool) {
 
 /// A user created after a negative was cached is served by the next lookup, through
 /// the event, not the TTL; an update and a delete likewise.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn lifecycle_events_replace_the_cached_answer(pool: PgPool) {
     let ctx = setup(pool).await;
     let user = UserId::new_unchecked("oidc", "cache-lifecycle");
@@ -157,7 +157,7 @@ async fn lifecycle_events_replace_the_cached_answer(pool: PgPool) {
 }
 
 /// Several ids resolve in one call, each to its own answer, and the answers are cached.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn several_ids_resolve_together(pool: PgPool) {
     let ctx = setup(pool).await;
     let with_email = UserId::new_unchecked("oidc", "cache-batch-email");
@@ -184,7 +184,7 @@ async fn several_ids_resolve_together(pool: PgPool) {
 }
 
 /// More ids than one statement reads: every chunk's answers come back, each under its own id.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn ids_beyond_one_read_resolve_together(pool: PgPool) {
     let ctx = setup(pool).await;
     let first = UserId::new_unchecked("oidc", "cache-chunk-first");

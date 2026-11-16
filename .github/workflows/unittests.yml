@@ -285,6 +285,16 @@ jobs:
           # A pull request checks out its merge commit; the first parent is the base branch.
           fetch-depth: 2
 
+      # The tests throw their databases away, so Postgres need not wait for its writes to
+      # reach the disk.
+      - name: Turn off Postgres durability
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
+
       - name: Start Minio Docker Container
         run: |
           docker run -d --name minio -p 9000:9000 -p 9001:9001 \

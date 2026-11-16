@@ -144,7 +144,7 @@ const PAIRS: [(Kind, Kind); 5] = [
 /// A second tabular at the first one's location, at its parent directory, or
 /// inside it is refused with `LocationAlreadyTaken`, for every pairing with a
 /// generic table.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_location_collides_across_kinds(pool: PgPool) {
     let warehouse = make_warehouse(pool).await;
 
@@ -195,7 +195,7 @@ async fn test_generic_table_location_collides_across_kinds(pool: PgPool) {
 
 /// A location that only shares a string prefix with another tabular's -- no path
 /// segment -- is free, across kinds.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_sibling_with_shared_prefix_does_not_collide(pool: PgPool) {
     let warehouse = make_warehouse(pool).await;
 

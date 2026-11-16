@@ -253,7 +253,7 @@ fn with_key(key: IdempotencyKey) -> RequestMetadata {
 }
 
 /// An empty commit returns the stored metadata and its location and writes no metadata file.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_empty_commit_returns_the_stored_metadata_and_writes_nothing(pool: PgPool) {
     let (ctx, ns_params) = setup(pool).await;
     let created = create_table(&ctx, &ns_params, "t", false).await;
@@ -291,7 +291,7 @@ async fn test_empty_commit_returns_the_stored_metadata_and_writes_nothing(pool: 
 
 /// An update that leaves the metadata as it is writes nothing either. An update the metadata
 /// builder records as a change writes, even if it sets a property to its current value.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_updates_that_change_nothing_write_nothing(pool: PgPool) {
     let (ctx, ns_params) = setup(pool).await;
     let created = create_table(&ctx, &ns_params, "t", false).await;
@@ -329,7 +329,7 @@ async fn test_updates_that_change_nothing_write_nothing(pool: PgPool) {
 }
 
 /// The requirements of a commit that changes nothing are still checked.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_empty_commit_with_a_failing_requirement_is_a_conflict(pool: PgPool) {
     let (ctx, ns_params) = setup(pool).await;
     let created = create_table(&ctx, &ns_params, "t", false).await;
@@ -355,7 +355,7 @@ async fn test_empty_commit_with_a_failing_requirement_is_a_conflict(pool: PgPool
 }
 
 /// A commit to a staged table writes its first metadata file, even if it has no updates.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_empty_commit_activates_a_staged_table(pool: PgPool) {
     let (ctx, ns_params) = setup(pool).await;
     let staged = create_table(&ctx, &ns_params, "t", true).await;
@@ -376,7 +376,7 @@ async fn test_empty_commit_activates_a_staged_table(pool: PgPool) {
 
 /// A contract verifier still checks a commit that changes nothing, and its refusal is the
 /// answer.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_contract_verifier_refusing_an_empty_commit_is_the_answer(pool: PgPool) {
     let (mut ctx, ns_params) = setup(pool).await;
     let created = create_table(&ctx, &ns_params, "t", false).await;
@@ -404,7 +404,7 @@ async fn test_contract_verifier_refusing_an_empty_commit_is_the_answer(pool: PgP
 }
 
 /// A staged table in a transaction gets its first metadata file, so every table is written.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_transaction_with_a_staged_table_writes_every_table(pool: PgPool) {
     let (ctx, ns_params) = setup(pool).await;
     let existing = create_table(&ctx, &ns_params, "existing", false).await;
@@ -438,7 +438,7 @@ async fn test_transaction_with_a_staged_table_writes_every_table(pool: PgPool) {
 }
 
 /// A transaction without table changes is a bad request and records no idempotency key.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_transaction_without_table_changes_is_a_bad_request(pool: PgPool) {
     let (ctx, ns_params) = setup(pool.clone()).await;
     let key = new_key();
@@ -462,7 +462,7 @@ async fn test_transaction_without_table_changes_is_a_bad_request(pool: PgPool) {
 }
 
 /// If one table of a transaction changes, every table is written.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_transaction_with_one_changed_table_writes_every_table(pool: PgPool) {
     let (ctx, ns_params) = setup(pool).await;
     let a = create_table(&ctx, &ns_params, "a", false).await;
@@ -572,7 +572,7 @@ impl ContractVerification for TableCommitVerifier {
 /// A transaction that changes `a` and only requires that `main` of `b` did not move fails if
 /// another commit moves it after the tables were loaded: `b` is written too, so its change
 /// is detected, and the retry finds the requirement broken.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_unchanged_table_of_a_transaction_still_conflicts_when_changed_meanwhile(
     pool: PgPool,
 ) {
@@ -622,7 +622,7 @@ async fn test_unchanged_table_of_a_transaction_still_conflicts_when_changed_mean
 }
 
 /// The idempotency key of a commit that changes nothing is recorded, so a retry is a replay.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_retry_of_an_unchanged_commit_is_replayed(pool: PgPool) {
     let (ctx, ns_params) = setup(pool.clone()).await;
     let created = create_table(&ctx, &ns_params, "t", false).await;
@@ -709,7 +709,7 @@ impl EventListener for CommitRecorder {
 }
 
 /// Lakekeeper does not call `transaction_committed` for a table commit that changes nothing.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_unchanged_commit_does_not_call_transaction_committed(pool: PgPool) {
     let (ctx, ns_params) = setup(pool).await;
     create_table(&ctx, &ns_params, "t", false).await;

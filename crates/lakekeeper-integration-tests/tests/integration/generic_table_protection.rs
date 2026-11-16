@@ -82,7 +82,7 @@ async fn drop_via_catalog_api(
     .await
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_set_get_protection_round_trip(pool: PgPool) {
     let (ctx, prefix, ns_name, warehouse_id) = make_ns(pool).await;
     let name = "gt_protect";
@@ -180,7 +180,7 @@ async fn test_set_get_protection_round_trip(pool: PgPool) {
     assert!(!resp.protected);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_drop_protected_generic_table_without_force_fails(pool: PgPool) {
     let (ctx, prefix, ns_name, warehouse_id) = make_ns(pool).await;
     let name = "gt_protect_drop";
@@ -238,7 +238,7 @@ async fn test_drop_protected_generic_table_without_force_fails(pool: PgPool) {
 // separate code branch from `drop_tabular` (hard-delete path) tested above.
 // Both branches share the `(NOT protected) OR force` predicate but each has
 // its own statement.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_soft_delete_protected_generic_table_without_force_fails(pool: PgPool) {
     let (ctx, prefix, ns_name, warehouse_id) = make_ns_with_profile(
         pool,

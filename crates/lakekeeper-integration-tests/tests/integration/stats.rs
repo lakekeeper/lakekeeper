@@ -28,7 +28,7 @@ mod test {
     // deltas (length grew by exactly 1 across a boundary-crossing action,
     // 0 across an in-bucket action) and on the latest-by-timestamp row's
     // counts, rather than absolute counts.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {
         let setup = super::setup_stats_test(pool, 1, 1).await;
 

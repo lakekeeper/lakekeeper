@@ -161,7 +161,7 @@ mod move_namespace {
         /// Uses reconcile's own drift detection as the oracle: if the hook wrote the wrong
         /// edges, failed to delete the old ones, or was skipped, reconcile would report
         /// tuples it needs to add or delete.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn move_namespace_leaves_no_authz_drift(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool.clone()).await;
             let md = metadata(&admin, &project_id);
@@ -211,7 +211,7 @@ mod move_namespace {
         /// A move to the warehouse root crosses parent *kinds*, so the inverse relation
         /// changes from `child` to `namespace`. Re-checked here against the real model
         /// because getting this wrong is invisible to a fake authorizer.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn move_namespace_to_warehouse_root_leaves_no_authz_drift(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool.clone()).await;
             let md = metadata(&admin, &project_id);
@@ -243,7 +243,7 @@ mod move_namespace {
         /// is denied. If `can_move` were missing from the model the check would error rather
         /// than cleanly deny, and if it were defined too permissively this would pass the
         /// move through.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn move_namespace_denied_for_unprivileged_principal(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool.clone()).await;
             let admin_md = metadata(&admin, &project_id);
@@ -290,7 +290,7 @@ mod move_namespace {
 
         /// The owner of a namespace may move it under a parent where they hold `create`.
         /// Under a parent with managed access, they also need `manage_grants` there.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn moving_a_namespace_into_a_managed_parent_needs_grant_authority_there(
             pool: PgPool,
         ) {
@@ -358,7 +358,7 @@ mod move_namespace {
 
         /// Under an assumed role, managed access cannot be evaluated, so moving a namespace
         /// is refused. A user holding the same grants may move it.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn an_assumed_role_cannot_move_a_namespace(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let admin_md = metadata(&admin, &project_id);

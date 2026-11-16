@@ -24,7 +24,7 @@ use lakekeeper_storage_postgres::{
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_queue_expiration_queue_task(pool: PgPool) {
     migrate_core_only(&pool).await.unwrap();
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -199,7 +199,7 @@ async fn test_queue_expiration_queue_task(pool: PgPool) {
     cancellation_token.cancel();
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_expiration_queue_drops_generic_table(pool: PgPool) {
     migrate_core_only(&pool).await.unwrap();
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -324,7 +324,7 @@ async fn test_expiration_queue_drops_generic_table(pool: PgPool) {
 }
 
 /// A soft-deleted table expires on schedule even while its warehouse is inactive.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_expiration_queue_drops_table_in_inactive_warehouse(pool: PgPool) {
     migrate_core_only(&pool).await.unwrap();
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());

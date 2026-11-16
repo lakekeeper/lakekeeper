@@ -15,7 +15,7 @@ use lakekeeper_integration_tests::{SetupTestCatalog, eventually, memory_io_profi
 use lakekeeper_storage_postgres::{PostgresBackend, test_utils::create_ns};
 use sqlx::PgPool;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_change_logged_by_another_instance_evicts_the_cached_warehouse(pool: PgPool) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -96,7 +96,7 @@ impl CacheChangeReceiver for Recording {
 }
 
 /// A change an extension logs for its own domain reaches the receiver of that domain.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_change_of_an_extension_domain_reaches_its_receiver(pool: PgPool) {
     let (ctx, _) = SetupTestCatalog::builder()
         .pool(pool.clone())
@@ -133,7 +133,7 @@ async fn a_change_of_an_extension_domain_reaches_its_receiver(pool: PgPool) {
 /// or a sync record delete, that recorded no cache change of its domain, and a warehouse
 /// write that recorded another warehouse, so a write path that forgets to record fails its
 /// tests.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn the_test_setup_refuses_unrecorded_writes(pool: PgPool) {
     let (ctx, warehouse) = SetupTestCatalog::builder()
         .pool(pool.clone())

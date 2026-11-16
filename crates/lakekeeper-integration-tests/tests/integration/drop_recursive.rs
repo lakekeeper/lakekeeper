@@ -39,7 +39,7 @@ mod test {
 
     use super::setup_drop_test;
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_recursive_drop_drops(pool: PgPool) {
         let setup = setup_drop_test(pool, 1, 1, 2, TabularDeleteProfile::Hard {}).await;
         let ctx = setup.ctx;
@@ -113,7 +113,7 @@ mod test {
         .unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_recursive_drop_with_nested_ns(pool: PgPool) {
         let setup = setup_drop_test(pool, 0, 0, 0, TabularDeleteProfile::Hard {}).await;
         let ctx = setup.ctx;
@@ -213,7 +213,7 @@ mod test {
         .unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_recursive_drop_with_soft_delete(pool: PgPool) {
         let setup = setup_drop_test(
             pool,
@@ -264,7 +264,7 @@ mod test {
         assert_eq!(e.error.code, 404);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_recursive_drop_namespace_with_protected_view(pool: PgPool) {
         let setup = setup_drop_test(pool, 1, 1, 1, TabularDeleteProfile::Hard {}).await;
         let ctx = setup.ctx;
@@ -338,7 +338,7 @@ mod test {
         assert_eq!(e.error.code, 404);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_recursive_drop_namespace_with_protected_namespace(pool: PgPool) {
         let setup = setup_drop_test(
             pool,
@@ -443,7 +443,7 @@ mod test {
         assert_eq!(e.error.code, 404);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_recursive_drop_namespace_with_protected_table(pool: PgPool) {
         let setup = setup_drop_test(pool, 1, 1, 1, TabularDeleteProfile::Hard {}).await;
         let ctx = setup.ctx;
@@ -518,7 +518,7 @@ mod test {
         assert_eq!(e.error.code, 404);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_can_drop_namespace_with_staged_tabulars(pool: PgPool) {
         let setup = setup_drop_test(pool, 0, 0, 1, TabularDeleteProfile::Hard {}).await;
         let ctx = setup.ctx;
@@ -808,12 +808,12 @@ mod recursive_purge {
         cancellation_token.cancel();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_recursive_purge_hard_deletion(pool: PgPool) {
         recursive_purge_removes_all_tabular_files(pool, TabularDeleteProfile::Hard {}, false).await;
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_recursive_purge_soft_deletion_force(pool: PgPool) {
         recursive_purge_removes_all_tabular_files(
             pool,
@@ -1032,7 +1032,7 @@ mod purge_after_takeover {
     }
 
     /// Registering the dropped table's own metadata file would adopt its location and id.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_register_from_the_dropped_metadata_waits_for_the_purge(pool: PgPool) {
         let catalog = Catalog::new(pool).await;
         let dropped = catalog.drop_table_with_purge(None).await;
@@ -1052,7 +1052,7 @@ mod purge_after_takeover {
 
     /// The inner location is empty, so only the pending purge stops the create. After the
     /// purge, the location is free.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_inside_the_location_waits_for_the_purge(pool: PgPool) {
         let catalog = Catalog::new(pool).await;
         let dropped = catalog.drop_table_with_purge(None).await;
@@ -1075,7 +1075,7 @@ mod purge_after_takeover {
 
     /// The parent folder holds the dropped table's files, so a generic table created there
     /// needs `RegisterTable` on the warehouse.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_generic_table_at_a_parent_location_waits_for_the_purge(pool: PgPool) {
         let catalog = Catalog::new(pool).await;
         let parent = catalog.base_location().await.cloning_push("p");

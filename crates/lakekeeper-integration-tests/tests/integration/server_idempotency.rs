@@ -84,7 +84,7 @@ fn new_key() -> IdempotencyKey {
 
 /// The spec makes the key globally unique. Reusing one across operations must be
 /// rejected rather than served a replay of the other operation's response.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_key_reused_across_operations_is_rejected(pool: PgPool) {
     let (ctx, prefix, ns) = setup(pool).await;
     let key = new_key();
@@ -148,7 +148,7 @@ async fn test_key_reused_across_operations_is_rejected(pool: PgPool) {
 
 /// The same key on the same endpoint still replays — the operation check must
 /// not break ordinary replay.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_same_operation_still_replays(pool: PgPool) {
     let (ctx, prefix, ns) = setup(pool).await;
     let key = new_key();
@@ -183,7 +183,7 @@ async fn test_same_operation_still_replays(pool: PgPool) {
 /// A `stage_create` table is persisted with no metadata location, and that is
 /// what the original response carried. Replaying must reproduce it rather than
 /// 404 through the active-only load path.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_staged_create_replays_as_staged(pool: PgPool) {
     let (ctx, prefix, ns) = setup(pool).await;
     let key = new_key();
@@ -225,7 +225,7 @@ async fn test_staged_create_replays_as_staged(pool: PgPool) {
 
 /// A retry whose table has since been dropped cannot be replayed — but that is a
 /// 404, not a server fault. The replay used to wrap every load error as internal.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_replay_of_a_dropped_table_is_not_an_internal_error(pool: PgPool) {
     let (ctx, prefix, ns) = setup(pool).await;
     let key = new_key();
@@ -279,7 +279,7 @@ async fn test_replay_of_a_dropped_table_is_not_an_internal_error(pool: PgPool) {
 /// staged tables outright, so a plain create's key must not become a way to read
 /// one — which matters because the record binds the key to an endpoint, not to a
 /// target.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_a_plain_create_key_does_not_expose_a_staged_table(pool: PgPool) {
     let (ctx, prefix, ns) = setup(pool).await;
     let params = NamespaceParameters {
@@ -327,7 +327,7 @@ async fn test_a_plain_create_key_does_not_expose_a_staged_table(pool: PgPool) {
 /// A recursive drop commits a single transaction, so it can carry the key like
 /// every other mutation. Previously the key was silently dropped and the retry
 /// re-executed against an already-gone namespace.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_recursive_namespace_drop_replays(pool: PgPool) {
     let (ctx, prefix, ns) = setup(pool).await;
     let key = new_key();
@@ -437,7 +437,7 @@ fn generic_table_request(name: &str) -> CreateGenericTableRequest {
 ///
 /// All seven in one test on purpose: the failure mode is one of seven identical
 /// sites silently omitting a line, which only an enumeration catches.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_every_replayed_204_is_audited(pool: PgPool) {
     let (ctx, prefix, ns) = setup(pool).await;
     let ns_params = NamespaceParameters {

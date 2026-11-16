@@ -33,7 +33,7 @@ type TestTabularAction<'a> = ActionOnTableOrView<
     CatalogGenericTableAction,
 >;
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_are_allowed_tabular_actions_vec_all_allowed(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -143,7 +143,7 @@ async fn test_are_allowed_tabular_actions_vec_all_allowed(pool: PgPool) {
     assert_eq!(result, vec![true, true]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_are_allowed_tabular_actions_vec_hidden_table(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -255,7 +255,7 @@ async fn test_are_allowed_tabular_actions_vec_hidden_table(pool: PgPool) {
     assert_eq!(result, vec![false, true]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_are_allowed_tabular_actions_vec_mixed_order(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -458,7 +458,7 @@ async fn load_generic_table_test_ctx(
     (warehouse, ns_hierarchy, gt_info)
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_actions_all_allowed(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -517,7 +517,7 @@ async fn test_generic_table_actions_all_allowed(pool: PgPool) {
     assert_eq!(result, vec![true, true, true, true, true]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_actions_hidden(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -581,7 +581,7 @@ async fn test_generic_table_actions_hidden(pool: PgPool) {
     assert_eq!(result, vec![false, false]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_generic_table_actions_blocked(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()
@@ -650,7 +650,7 @@ async fn test_generic_table_actions_blocked(pool: PgPool) {
 
 /// Verify that a hidden generic table is denied in the batch tabular authz path
 /// (`are_allowed_tabular_actions_vec`), not auto-allowed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_tabular_batch_with_hidden_generic_table(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse_resp) = SetupTestCatalog::builder()

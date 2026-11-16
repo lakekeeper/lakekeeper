@@ -170,7 +170,7 @@ fn member_id_string(m: &RoleMember) -> String {
 
 // ==================== add + list ====================
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn add_and_list_user_member(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -209,7 +209,7 @@ async fn add_and_list_user_member(pool: PgPool) {
     // end (see `list_members_pagination`). So we don't assert `None` here.
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn add_role_member_and_member_of(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let parent = make_role(&ctx, &project_id, "parent", "p-src").await;
@@ -251,7 +251,7 @@ async fn add_role_member_and_member_of(pool: PgPool) {
     assert_eq!(parents.roles[0].name, "parent");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn batch_add_mixed(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -283,7 +283,7 @@ async fn batch_add_mixed(pool: PgPool) {
 
 // ==================== error / atomicity ====================
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn add_unknown_user_404_and_atomic(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -312,7 +312,7 @@ async fn add_unknown_user_404_and_atomic(pool: PgPool) {
     assert_eq!(page.members.len(), 0);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn add_nonexistent_role_member_404(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -331,7 +331,7 @@ async fn add_nonexistent_role_member_404(pool: PgPool) {
     assert_eq!(err.error.code, http::StatusCode::NOT_FOUND.as_u16());
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn add_cycle_409(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let a = make_role(&ctx, &project_id, "A", "a-src").await;
@@ -366,7 +366,7 @@ async fn add_cycle_409(pool: PgPool) {
 
 // ==================== idempotency / remove ====================
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn idempotent_add_user(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -394,7 +394,7 @@ async fn idempotent_add_user(pool: PgPool) {
     assert_eq!(page.members.len(), 1);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn remove_member_and_remove_absent(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -443,7 +443,7 @@ async fn remove_member_and_remove_absent(pool: PgPool) {
 
 // ==================== filtering / pagination / user roles ====================
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_members_type_filter(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -485,7 +485,7 @@ async fn list_members_type_filter(pool: PgPool) {
     assert!(same(&roles.members[0], &role_member(member_role)));
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_members_pagination(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -532,7 +532,7 @@ async fn list_members_pagination(pool: PgPool) {
     assert_eq!(seen, expected);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_user_roles(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let r1 = make_role(&ctx, &project_id, "R1", "r1-src").await;
@@ -577,7 +577,7 @@ async fn list_user_roles(pool: PgPool) {
 }
 
 /// A user that was never provisioned → 404 (the catalog reader returns `None`).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_user_roles_unknown_user_404(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let ghost = UserId::new_unchecked("oidc", "ghost");
@@ -592,7 +592,7 @@ async fn list_user_roles_unknown_user_404(pool: PgPool) {
 /// A provisioned user with zero role assignments → 200 with an empty page, NOT a
 /// 404 — the reader returns `Some(empty)`, distinguishing "exists, no roles" from
 /// "no such user" (previous test).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn list_user_roles_existing_user_no_roles_returns_empty(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let alice = UserId::new_unchecked("oidc", "alice");
@@ -609,7 +609,7 @@ async fn list_user_roles_existing_user_no_roles_returns_empty(pool: PgPool) {
 /// EARLIER successful insert is rolled back. The wrapper inserts users before role
 /// edges, so a valid user + a cycle-inducing role member exercises real rollback
 /// (unlike a first-op failure, which never reaches the second insert).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn batch_add_rolls_back_user_on_cycle(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let a = make_role(&ctx, &project_id, "A", "a-src").await;
@@ -653,7 +653,7 @@ async fn batch_add_rolls_back_user_on_cycle(pool: PgPool) {
 
 /// A member repeated in one request is deduplicated in both persistence and the
 /// echoed response.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn add_dedups_repeated_member(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -702,7 +702,7 @@ fn page_query() -> lakekeeper::api::management::v1::role_membership::ListRolesPa
 /// Nested fixture A ⊃ B ⊃ user U, plus user V direct on A. Transitive members of
 /// A are the role B, the direct user V, and the via-B user U; direct members are
 /// only B and V.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn transitive_role_members(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let a = make_role(&ctx, &project_id, "A", "a-src").await;
@@ -827,7 +827,7 @@ async fn transitive_role_members(pool: PgPool) {
 /// one per page and remove C→D after the first page (D stays reachable via R→D).
 /// Pre-fix, D's key jumps from the C→D edge time to the R→D edge time and D is
 /// returned a second time; with the immutable key each member appears exactly once.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn transitive_role_members_keyset_stable_under_edge_removal(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     // Roles created in order, so role.created_at is R < C < D (the immutable keys).
@@ -901,7 +901,7 @@ async fn transitive_role_members_keyset_stable_under_edge_removal(pool: PgPool) 
 
 /// Same fixture from the user's side: U is directly assigned only to B, but its
 /// effective (transitive) roles are B and A. Names are embedded.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn transitive_user_roles(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let a = make_role(&ctx, &project_id, "A", "a-src").await;
@@ -963,7 +963,7 @@ async fn transitive_user_roles(pool: PgPool) {
 
 /// The transitive user-roles reader keeps the direct reader's unknown-user
 /// contract: a never-provisioned user → 404 (catalog reader returns `None`).
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn transitive_user_roles_unknown_user_404(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let ghost = UserId::new_unchecked("oidc", "ghost");
@@ -983,7 +983,7 @@ async fn transitive_user_roles_unknown_user_404(pool: PgPool) {
 /// Ancestor walk: C ∈ B ∈ A. C is directly a member only of B, but its transitive
 /// member-of set (the roles it effectively belongs to) is B and A. Names are
 /// embedded.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn transitive_role_member_of(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let a = make_role(&ctx, &project_id, "A", "a-src").await;
@@ -1047,7 +1047,7 @@ async fn transitive_role_member_of(pool: PgPool) {
 /// Rebinding a role's source system changes its `RoleIdent`, which is cached per
 /// row in every assignee's USER_ASSIGNMENTS closure. After the rebind, the cached
 /// reads reflect the NEW ident (and return a fresh `Arc`): the commit evicted them.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn source_system_rebind_evicts_user_assignment_closures(pool: PgPool) {
     use lakekeeper::{
         api::management::v1::role::{Service as _, UpdateRoleSourceSystemRequest},
@@ -1158,7 +1158,7 @@ fn assignments(users: &[&UserId]) -> (String, Vec<String>) {
 /// An edge change records the users holding the member role, directly or through a role
 /// nested in it, and the ancestor sets. An edge that already exists or is already gone
 /// records nothing.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn edge_writes_record_the_users_beneath_and_the_ancestor_sets(pool: PgPool) {
     let (ctx, project_id) = setup(pool.clone()).await;
     let state = ctx.v1_state.catalog.clone();
@@ -1205,7 +1205,7 @@ async fn edge_writes_record_the_users_beneath_and_the_ancestor_sets(pool: PgPool
 }
 
 /// A direct assignment write records only the users whose assignment it changed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn assignment_writes_record_the_users_they_change(pool: PgPool) {
     let (ctx, project_id) = setup(pool.clone()).await;
     let state = ctx.v1_state.catalog.clone();
@@ -1266,7 +1266,7 @@ fn sync_role<'a>(ident: &'a ArcRoleIdent, name: &'a str) -> CatalogRoleForAssign
 
 /// A role-member sync records the members it added or removed, and the role when it
 /// renamed it.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn role_member_syncs_record_changed_members_and_a_renamed_role(pool: PgPool) {
     let (ctx, project_id) = setup(pool.clone()).await;
     let state = ctx.v1_state.catalog.clone();
@@ -1314,7 +1314,7 @@ async fn role_member_syncs_record_changed_members_and_a_renamed_role(pool: PgPoo
 
 /// A user sync records the user when its assignments changed and the roles it renamed,
 /// and leaves the user's synced assignments cached on this instance.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn user_syncs_record_changed_assignments_and_renamed_roles(pool: PgPool) {
     let (ctx, project_id) = setup(pool.clone()).await;
     let state = ctx.v1_state.catalog.clone();
@@ -1379,7 +1379,7 @@ async fn user_syncs_record_changed_assignments_and_renamed_roles(pool: PgPool) {
 }
 
 /// A user delete records the user.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_user_delete_records_the_user(pool: PgPool) {
     let (ctx, project_id) = setup(pool.clone()).await;
     let state = ctx.v1_state.catalog.clone();
@@ -1410,7 +1410,7 @@ async fn a_user_delete_records_the_user(pool: PgPool) {
 }
 
 /// A project delete records the users whose sync records it removed.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_project_delete_records_the_users_synced_into_it(pool: PgPool) {
     let (ctx, project_id) = setup(pool.clone()).await;
     let state = ctx.v1_state.catalog.clone();
@@ -1459,7 +1459,7 @@ async fn a_project_delete_records_the_users_synced_into_it(pool: PgPool) {
 /// `ManageRoleAssignments` via the `AllowAll` authorizer) is rejected with
 /// `SystemRoleMembershipRequiresInstanceAdmin` on both operations; an instance
 /// admin succeeds on both.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn system_role_membership_requires_instance_admin(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let system_role =
@@ -1563,7 +1563,7 @@ async fn system_role_membership_requires_instance_admin(pool: PgPool) {
 /// is not supported. A non-admin caller sending the same request is rejected by
 /// the instance-admin check first (`403`), pinning that the admin gate runs
 /// before the member-type check.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn system_role_rejects_role_type_members(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let system_role =
@@ -1610,7 +1610,7 @@ async fn system_role_rejects_role_type_members(pool: PgPool) {
 /// `RoleNotManuallyAssignable`, permits `lakekeeper`/`system` members, so this edge
 /// is a state the catalog itself allows to exist) and confirm the removal path
 /// stays open as the cleanup route the guard's doc comment promises.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn instance_admin_removes_role_member_from_system_role(pool: PgPool) {
     use lakekeeper::service::CatalogRoleAssignmentOps as _;
 
@@ -1655,7 +1655,7 @@ async fn instance_admin_removes_role_member_from_system_role(pool: PgPool) {
 /// Non-`system` roles are completely unaffected by the guard: a plain caller
 /// with `ManageRoleAssignments` (the `AllowAll` authorizer) can add both a user
 /// and a role member, and remove both.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn ordinary_role_membership_unaffected(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
     let role = make_role(&ctx, &project_id, "R", "r-src").await;
@@ -1724,7 +1724,7 @@ async fn ordinary_role_membership_unaffected(pool: PgPool) {
 ///
 /// The member need not exist — the guard fires on the target role, before any
 /// member is resolved.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn managed_role_membership_write_audits_as_a_single_denial(pool: PgPool) {
     use lakekeeper::service::authz::tests::HidingAuthorizer;
 
@@ -1819,7 +1819,7 @@ async fn drop_while_committing<T: std::fmt::Debug + Send + 'static>(
 
 /// A member removal whose request is dropped while it commits still removes the
 /// member from the cached effective roles.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_member_removal_dropped_while_committing_still_updates_the_cache(pool: PgPool) {
     use lakekeeper::service::CatalogRoleAssignmentOps as _;
     use lakekeeper_integration_tests::{CommitGate, eventually};
@@ -1867,7 +1867,7 @@ async fn a_member_removal_dropped_while_committing_still_updates_the_cache(pool:
 
 /// An edge removal whose request is dropped while it commits still removes the
 /// former parent from the cached effective roles of the member's users.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn an_edge_removal_dropped_while_committing_still_updates_the_cache(pool: PgPool) {
     use lakekeeper::service::{CatalogRoleAssignmentOps as _, RoleMembershipDirection};
     use lakekeeper_integration_tests::{CommitGate, eventually};
@@ -1935,7 +1935,7 @@ async fn an_edge_removal_dropped_while_committing_still_updates_the_cache(pool: 
 
 /// A role delete whose request is dropped while it commits still removes the role
 /// from its members' cached effective roles and from the role cache.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn a_role_delete_dropped_while_committing_still_updates_the_caches(pool: PgPool) {
     use lakekeeper::{
         api::management::v1::role::{DeleteRoleQuery, Service as _},

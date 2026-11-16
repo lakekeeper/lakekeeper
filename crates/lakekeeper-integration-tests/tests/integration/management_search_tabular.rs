@@ -63,7 +63,7 @@ async fn search(
     .collect()
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_search_tabular_by_path_of_a_data_file(pool: PgPool) {
     let (ctx, warehouse_id) = sales_warehouse(pool).await;
     let prefix = warehouse_id.to_string();
@@ -87,7 +87,7 @@ async fn test_search_tabular_by_path_of_a_data_file(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_search_tabular_by_path_outside_every_table(pool: PgPool) {
     let (ctx, warehouse_id) = sales_warehouse(pool).await;
     let prefix = warehouse_id.to_string();
@@ -106,7 +106,7 @@ async fn test_search_tabular_by_path_outside_every_table(pool: PgPool) {
     assert_eq!(search(ctx, warehouse_id, &path).await, vec![]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_search_tabular_by_name_that_looks_like_a_url(pool: PgPool) {
     let (ctx, warehouse_id) = sales_warehouse(pool).await;
     create_table(

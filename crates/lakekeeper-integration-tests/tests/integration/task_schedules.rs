@@ -178,7 +178,7 @@ async fn enqueue_legacy_cleanup(state: CatalogState, project_id: &ArcProjectId) 
     *task_id
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_task_log_cleanup_runs_from_its_schedule(pool: PgPool) {
     let (ctx, state, project_id) = setup(&pool).await;
 
@@ -239,7 +239,7 @@ async fn test_task_log_cleanup_runs_from_its_schedule(pool: PgPool) {
 /// A cleanup task without a schedule comes from a server that predates schedules, for example an
 /// older server finishing a scheduled run during a rolling upgrade. It is completed without a
 /// successor, so it never becomes a second cleanup chain.
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_legacy_cleanup_task_is_absorbed_by_the_schedule(pool: PgPool) {
     let (ctx, state, project_id) = setup(&pool).await;
     let schedule = cleanup_schedules(state.clone(), &project_id).await[0].clone();
@@ -326,7 +326,7 @@ async fn test_legacy_cleanup_task_is_absorbed_by_the_schedule(pool: PgPool) {
     assert_first_run_within_an_interval(&recreated[0]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_changing_the_cleanup_period_applies_to_the_schedule(pool: PgPool) {
     use lakekeeper::api::management::v1::{
         ApiServer, project::Service as _, task_queue::SetTaskQueueConfigRequest,
@@ -379,7 +379,7 @@ async fn test_changing_the_cleanup_period_applies_to_the_schedule(pool: PgPool) 
     assert_first_run_within_an_interval(&created[0]);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_post_migration_hooks_sync_cleanup_schedules_with_the_config(pool: PgPool) {
     let (_ctx, state, project_id) = setup(&pool).await;
     let existing = cleanup_schedules(state.clone(), &project_id).await;
@@ -468,7 +468,7 @@ async fn test_post_migration_hooks_sync_cleanup_schedules_with_the_config(pool: 
     assert_eq!(cleanup_schedules(state, &invalid).await, defaulted);
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn test_post_migration_hooks_skip_a_project_deleted_during_the_sync(pool: PgPool) {
     let (_ctx, state, project_id) = setup(&pool).await;
     sqlx::query("DELETE FROM task_schedule WHERE project_id = $1")

@@ -406,7 +406,7 @@ mod soft_deletion_skip {
             );
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn namespace_modify_cannot_skip_soft_deletion(pool: PgPool) {
             let s = Setup::new(pool, Setup::soft()).await;
             let (_, source_location) = s.source("source").await;
@@ -446,7 +446,7 @@ mod soft_deletion_skip {
             assert!(s.table_is_active("t1").await);
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn warehouse_modify_can_skip_soft_deletion(pool: PgPool) {
             let s = Setup::new(pool, Setup::soft()).await;
             let (source_id, source_location) = s.source("source").await;
@@ -463,7 +463,7 @@ mod soft_deletion_skip {
             assert!(!s.table_is_active("t1").await);
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn warehouse_modify_deletes_namespace_recursively(pool: PgPool) {
             let s = Setup::new(pool, Setup::soft()).await;
             let md = s.warehouse_modifier().await;
@@ -472,7 +472,7 @@ mod soft_deletion_skip {
             assert!(!s.table_is_active("t1").await);
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn namespace_modify_force_drops_in_hard_deletion_warehouse(pool: PgPool) {
             let s = Setup::new(pool, TabularDeleteProfile::Hard {}).await;
             ApiServer::set_table_protection(
