@@ -235,9 +235,11 @@ Regenerating makes the schema and fixture tests pass whether or not you wrote a 
 
 Checked by declaration, for every registered type: **fields, their JSON types, whether they are required, and every value of every vocabulary**. The schema is generated from the types, so it covers fields no fixture exercises. Values are keyed by the type that owns them, so a rename in one enum shows even when other action enums emit the same name, such as `get_metadata`. The comparison fails closed:
 
-- `minor`: a property added.
+- `minor`: a property added, a definition added.
 - `major`: a property removed, a required flag changed, a value removed, a closed set gaining a value, a tagged union gaining a kind, and any difference without a rule.
 - `none`: a value added to an open set, a description changed.
+
+A new vocabulary for a field that already has a set of values adds values to that field: `major` if one of its sets is closed, `none` if the new vocabulary is open and shaped like one of its open sets, such as another action enum for `action_name`.
 
 Checked by example only: **whether an optional field is omitted or `null`, and the switch between singular and plural fields**. Fixtures pin only the scenarios they cover. If you change a code path no fixture exercises, add a fixture: write a test that builds the event, run `just update-audit-fixtures`, and add the name to `FIXTURE_NAMES`.
 

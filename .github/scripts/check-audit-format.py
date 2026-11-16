@@ -866,19 +866,47 @@ def _split_branches(branches: list) -> tuple[dict, list]:
     return keyed, rest
 
 
+def _added_definition(name: str, spec: object, existing: dict) -> tuple[str, str, str]:
+    """The finding for a definition `spec` that only `head` holds. `existing` holds the
+    definitions of both schemas, as `head` has them.
+
+    A new vocabulary for a field that already has a set of values adds values to that field:
+    `major` when one of the field's sets is closed, `none` when the new vocabulary is open and
+    shaped like one of the field's open sets. Any other definition added is `minor`.
+    """
+    if not isinstance(spec, dict) or spec.get("x-audit-kind") != "enum":
+        return ("minor", name, "definition added")
+    field = spec.get("x-audit-field")
+    values, closed = _values(spec)
+    if field is None or values is None:
+        return ("minor", name, "definition added")
+    field_sets = [
+        other
+        for other in existing.values()
+        if isinstance(other, dict) and other.get("x-audit-field") == field and _values(other)[0] is not None
+    ]
+    if any(_values(other)[1] for other in field_sets):
+        return ("major", name, f"definition added, with values for the closed field `{field}`")
+    shape = lambda vocabulary: fingerprint({k: v for k, v in vocabulary.items() if k != "x-audit-values"})
+    if not closed and any(shape(other) == shape(spec) for other in field_sets):
+        return ("none", name, f"definition added, with values for the open field `{field}`")
+    return ("minor", name, "definition added")
+
+
 def schema_findings(base: dict, head: dict) -> list[tuple[str, str, str]]:
     """Every difference from `base` to `head` as `(level, path, reason)`.
 
-    Definitions are compared by name: one removed is `major`, one added `minor`, and a pair
-    is compared by [`diff_schemas`].
+    Definitions are compared by name: one removed is `major`, one added as
+    [`_added_definition`] says, and a pair is compared by [`diff_schemas`].
     """
     found: list[tuple[str, str, str]] = []
     base, head = canonical(base), canonical(head)
     base_defs, head_defs = base.get("$defs") or {}, head.get("$defs") or {}
     for name in sorted(set(base_defs) - set(head_defs)):
         found.append(("major", name, "definition removed"))
+    existing = {name: spec for name, spec in head_defs.items() if name in base_defs}
     for name in sorted(set(head_defs) - set(base_defs)):
-        found.append(("minor", name, "definition added"))
+        found.append(_added_definition(name, head_defs[name], existing))
     for name in sorted(set(base_defs) & set(head_defs)):
         diff_schemas(base_defs[name], head_defs[name], name, found)
     rest_base = {k: v for k, v in base.items() if k != "$defs"}
@@ -2165,6 +2193,18 @@ def self_test() -> int:
     check("schema: closing a set is breaking", verdict({"D": reopened}, {"D": closed_set}), "breaking")
     check("schema: a vocabulary changing its field is breaking", verdict({"V": open_set}, {"V": {**open_set, "x-audit-field": "decision"}}), "breaking")
     check("schema: a vocabulary changing kind is breaking", verdict({"V": open_set}, {"V": {**open_set, "x-audit-kind": "part"}}), "breaking")
+    # A new vocabulary for a field adds values to the field.
+    more_outcomes = {**open_set, "x-audit-values": ["deferred"]}
+    open_decisions = {**more_outcomes, "x-audit-field": "decision"}
+    closed_decisions = {**closed_set, "enum": ["deferred"]}
+    check("schema: a new open vocabulary for an open field is none", verdict({"D": open_set}, {"D": open_set, "E": more_outcomes}), "none")
+    check("schema: the open field is named", names({"D": open_set}, {"D": open_set, "E": more_outcomes}, "values for the open field `outcome`"), True)
+    check("schema: a new open vocabulary for a closed field is breaking", verdict({"D": closed_set}, {"D": closed_set, "E": open_decisions}), "breaking")
+    check("schema: a new closed vocabulary for a closed field is breaking", verdict({"D": closed_set}, {"D": closed_set, "E": closed_decisions}), "breaking")
+    check("schema: the closed field is named", names({"D": closed_set}, {"D": closed_set, "E": closed_decisions}, "values for the closed field `decision`"), True)
+    check("schema: a new vocabulary for a field opened alongside is none", verdict({"D": closed_set}, {"D": reopened, "E": open_decisions}), "none")
+    check("schema: a new vocabulary shaped unlike the field's sets is additive", verdict({"D": open_set}, {"D": open_set, "E": {**more_outcomes, "x-audit-new": True}}), "additive")
+    check("schema: the first vocabulary for a field is additive", verdict({"A": actor}, {"A": actor, "E": more_outcomes}), "additive")
     check("schema: an unknown x-audit keyword changing is breaking", verdict({"V": open_set}, {"V": {**open_set, "x-audit-new": True}}), "breaking")
     check("schema: a format changing is breaking", verdict({"T": {"type": "string"}}, {"T": {"type": "string", "format": "date-time"}}), "breaking")
 
