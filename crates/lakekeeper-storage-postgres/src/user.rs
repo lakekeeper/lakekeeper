@@ -602,7 +602,7 @@ mod test {
         result
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_create_or_update_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -671,7 +671,7 @@ mod test {
 
     /// What a write reports is what the user lifecycle events fire on: created,
     /// updated with the previous row, or unchanged when only `last_updated_with` moved.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn create_or_update_user_reports_what_the_write_did(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let user_id = UserId::new_unchecked("oidc", "lifecycle");
@@ -730,7 +730,7 @@ mod test {
 
     /// The delete reports the row as it was, before it scrubbed the name and email.
     /// Creating the user again reads as an update of the deleted row.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn delete_user_reports_the_row_before_the_delete(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let user_id = UserId::new_unchecked("oidc", "deleted");
@@ -768,7 +768,7 @@ mod test {
     }
 
     /// The first-login backfill leaves a named row alone, and says so.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_skipped_backfill_is_unchanged(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let user_id = UserId::new_unchecked("oidc", "named");
@@ -795,7 +795,7 @@ mod test {
         assert!(matches!(&backfill, CreateOrUpdateUserResponse::Unchanged(u) if u.name == "Carol"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_search_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -843,7 +843,7 @@ mod test {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -888,7 +888,7 @@ mod test {
     /// matching the tombstone row and resetting its `deleted_at`. A `None` return
     /// means the `deleted_at IS NULL` guard matched zero rows, so the original
     /// tombstone is left untouched.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_user_already_deleted_is_noop(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let user_id = UserId::new_unchecked("oidc", "test_user_1");
@@ -913,7 +913,7 @@ mod test {
         assert!(second.is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_paginate_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         for i in 0..10 {

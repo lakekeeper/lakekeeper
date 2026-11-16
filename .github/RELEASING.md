@@ -252,22 +252,20 @@ git switch --no-track -c "release-notes-$VERSION" origin/main
       --notes-file <(awk -v t="## $TAG" 'index($0,t)==1{f=1;next} f&&/^## /{exit} f' "$NOTES")
     ```
 
-6. **Refresh the versioned docs.** Replace the `X.Y.x` folder on the `docs` branch with the tag's docs, keeping the folder's `site_name`:
+6. **Refresh the versioned docs.** Apply the tag's docs changes since the previous release of the line to the `X.Y.x` folder on the `docs` branch. Never replace the folder: it also holds fixes made directly on the `docs` branch and the Lakekeeper Plus pages, which no tag of this repository has.
 
     ```bash
     VERSION=0.14.1        # the release just cut, without the leading v
+    PREV=v0.14.0          # the previous release of the line
     TAG="v$VERSION"
     MINOR="${VERSION%.*}.x"                                  # e.g. 0.14.x
     git fetch origin && git fetch --tags
     git worktree add ../lakekeeper-docs origin/docs -b "docs-$VERSION"
-    rm -r "../lakekeeper-docs/$MINOR"
-    mkdir "../lakekeeper-docs/$MINOR"
-    git archive "$TAG" docs/docs docs/hooks docs/mkdocs.yml | tar -x -C "../lakekeeper-docs/$MINOR" --strip-components=1
-    sed -i.bak -E "s|^(site_name:[[:space:]]+docs/).*|\1$MINOR|" "../lakekeeper-docs/$MINOR/mkdocs.yml" && rm "../lakekeeper-docs/$MINOR/mkdocs.yml.bak"
+    git diff "$PREV" "$TAG" -- docs/docs docs/hooks | git -C ../lakekeeper-docs apply -p2 --directory="$MINOR"
     git -C ../lakekeeper-docs add -A "$MINOR" && git -C ../lakekeeper-docs diff --cached --stat
     ```
 
-    The diff should show only the docs changes backported since the last refresh. Commit the folder to the `docs` branch through a pull request. Merging it deploys the site.
+    The diff should show only the docs changes backported since the last release. Once Lakekeeper Plus has released its matching patch, also replace `$MINOR/docs/api/management-open-api-plus.yaml` with `api/management-open-api.yaml` of its tag. Commit the folder to the `docs` branch. Pushing it deploys the site.
 
 ### After the release
 

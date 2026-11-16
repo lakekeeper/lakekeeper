@@ -1,0 +1,1128 @@
+// Extracted from crates/lakekeeper/src/server/generic_tables.rs.
+// Original location was `#[cfg(any())] pub(crate) mod test` (VAK-437 split).
+
+use std::collections::HashMap;
+
+use http::StatusCode;
+use iceberg::NamespaceIdent;
+use lakekeeper::{
+    api::{
+        ApiContext, RequestMetadata,
+        data::v1::generic_tables::{
+            CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
+            ListGenericTablesQuery, LoadGenericTableResponse, RenameGenericTableRequest,
+            RenameGenericTableTarget,
+        },
+        iceberg::{
+            types::DropParams,
+            v1::{DataAccessMode, namespace::NamespaceParameters},
+        },
+        management::v1::warehouse::TabularDeleteProfile,
+    },
+    server::CatalogServer,
+    service::{
+        CatalogTabularOps as _, GenericTableFormat, State, TabularId, Transaction as _, UserId,
+        authz::{AllowAllAuthorizer, CatalogWarehouseAction, tests::HidingAuthorizer},
+        idempotency::IdempotencyKey,
+        storage::{MemoryProfile, StorageProfile},
+    },
+};
+use lakekeeper_integration_tests::{
+    REFUSED_NEW_TABULAR_NAMES, create_ns, create_table, drop_table, get_api_context,
+    impl_pagination_tests, memory_io_profile, random_request_metadata, setup_simple,
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
+    warehouse::test::initialize_warehouse,
+};
+use sqlx::PgPool;
+
+type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
+
+async fn setup(pool: PgPool) -> (Ctx, NamespaceIdent, lakekeeper::WarehouseId) {
+    lakekeeper_storage_postgres::migrations::migrate_core_only(&pool)
+        .await
+        .unwrap();
+    let api_context = get_api_context(&pool, AllowAllAuthorizer::default()).await;
+    let state = api_context.v1_state.catalog.clone();
+    let (_project_id, warehouse_id) = initialize_warehouse(
+        state.clone(),
+        Some(StorageProfile::Memory(MemoryProfile::default())),
+        None,
+        None,
+        true,
+    )
+    .await;
+
+    let namespace = initialize_namespace(
+        state,
+        warehouse_id,
+        &NamespaceIdent::new(uuid::Uuid::now_v7().to_string()),
+        None,
+    )
+    .await
+    .namespace_ident()
+    .clone();
+
+    (api_context, namespace, warehouse_id)
+}
+
+fn rename_target(namespace: &NamespaceIdent, name: &str) -> RenameGenericTableTarget {
+    RenameGenericTableTarget {
+        namespace: namespace.clone().inner(),
+        name: name.to_string(),
+    }
+}
+
+fn create_request(name: &str) -> CreateGenericTableRequest {
+    CreateGenericTableRequest {
+        name: name.to_string(),
+        format: GenericTableFormat::Unknown("lance".to_string()),
+        base_location: None,
+        doc: Some("test doc".to_string()),
+        properties: HashMap::default(),
+        schema: None,
+        statistics: None,
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_create_invalid_format_fails(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let params = NamespaceParameters {
+        prefix: Some(whi.to_string().into()),
+        namespace,
+    };
+    for bad in [
+        "",
+        "LANCE",
+        "1lance",
+        "lance!",
+        "lance space",
+        &"a".repeat(65),
+    ] {
+        let mut req = create_request("gt");
+        req.format = GenericTableFormat::Unknown(bad.to_string());
+        let err = CatalogServer::create_generic_table(
+            params.clone(),
+            req,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err(&format!("format `{bad}` should be rejected"));
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{err:?}");
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_create_oversized_blob_fails(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let params = NamespaceParameters {
+        prefix: Some(whi.to_string().into()),
+        namespace,
+    };
+    let big = serde_json::Value::String("x".repeat(1024 * 1024 + 1));
+    let mut req = create_request("gt-schema");
+    req.schema = Some(big.clone());
+    let err = CatalogServer::create_generic_table(
+        params.clone(),
+        req,
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("oversized schema must fail");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
+
+    let mut req = create_request("gt-stats");
+    req.statistics = Some(big);
+    let err = CatalogServer::create_generic_table(params, req, ctx, random_request_metadata())
+        .await
+        .expect_err("oversized statistics must fail");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_create_generic_table(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+
+    let result = CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.into()),
+            namespace: namespace.clone(),
+        },
+        create_request("my-gt"),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.table.name, "my-gt");
+    assert_eq!(
+        result.table.format,
+        GenericTableFormat::Unknown("lance".to_string())
+    );
+    assert_eq!(result.table.doc, Some("test doc".to_string()));
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_create_duplicate_fails(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+    let params = NamespaceParameters {
+        prefix: Some(prefix.into()),
+        namespace: namespace.clone(),
+    };
+
+    CatalogServer::create_generic_table(
+        params.clone(),
+        create_request("dup-gt"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let err = CatalogServer::create_generic_table(
+        params,
+        create_request("dup-gt"),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("duplicate should fail");
+
+    assert_eq!(err.error.code, StatusCode::CONFLICT);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_create_empty_name_fails(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+
+    let err = CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(whi.to_string().into()),
+            namespace,
+        },
+        create_request(""),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("empty name should fail");
+
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_generic_table(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+
+    let created = CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        },
+        create_request("load-gt"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let loaded = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.into()),
+            namespace,
+            table_name: "load-gt".to_string(),
+        },
+        ctx,
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(loaded.table.name, "load-gt");
+    assert_eq!(loaded.table.base_location, created.table.base_location);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_load_not_found(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+
+    let err = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(whi.to_string().into()),
+            namespace,
+            table_name: "does-not-exist".to_string(),
+        },
+        ctx,
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("should not exist");
+
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_list_generic_tables(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+    let params = NamespaceParameters {
+        prefix: Some(prefix.clone().into()),
+        namespace: namespace.clone(),
+    };
+
+    let list = CatalogServer::list_generic_tables(
+        params.clone(),
+        ListGenericTablesQuery::default(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert!(list.identifiers.is_empty());
+
+    CatalogServer::create_generic_table(
+        params.clone(),
+        create_request("gt-a"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    CatalogServer::create_generic_table(
+        params.clone(),
+        create_request("gt-b"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let list = CatalogServer::list_generic_tables(
+        params,
+        ListGenericTablesQuery::default(),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(list.identifiers.len(), 2);
+    let names: Vec<&str> = list.identifiers.iter().map(|i| i.name.as_str()).collect();
+    assert!(names.contains(&"gt-a"));
+    assert!(names.contains(&"gt-b"));
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_drop_generic_table(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+    let ns_params = NamespaceParameters {
+        prefix: Some(prefix.clone().into()),
+        namespace: namespace.clone(),
+    };
+
+    CatalogServer::create_generic_table(
+        ns_params.clone(),
+        create_request("drop-gt"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::drop_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+            table_name: "drop-gt".to_string(),
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let list = CatalogServer::list_generic_tables(
+        ns_params,
+        ListGenericTablesQuery::default(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert!(list.identifiers.is_empty());
+
+    let err = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.into()),
+            namespace,
+            table_name: "drop-gt".to_string(),
+        },
+        ctx,
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("should be gone");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_drop_not_found(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+
+    let err = CatalogServer::drop_generic_table(
+        GenericTableParameters {
+            prefix: Some(whi.to_string().into()),
+            namespace,
+            table_name: "ghost".to_string(),
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("should not exist");
+
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_create_generic_table_idempotent_replay(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+    let params = NamespaceParameters {
+        prefix: Some(prefix.clone().into()),
+        namespace: namespace.clone(),
+    };
+
+    let key = IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string()).unwrap();
+    let mut metadata = random_request_metadata();
+    metadata.with_idempotency_key(key);
+
+    let r1 = CatalogServer::create_generic_table(
+        params.clone(),
+        create_request("idem-gt"),
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+
+    let r2 = CatalogServer::create_generic_table(
+        params,
+        create_request("idem-gt"),
+        ctx.clone(),
+        metadata,
+    )
+    .await
+    .expect("replay with same idempotency key should succeed");
+
+    assert_eq!(r1.table.name, r2.table.name);
+    assert_eq!(r1.table.base_location, r2.table.base_location);
+
+    let list = CatalogServer::list_generic_tables(
+        NamespaceParameters {
+            prefix: Some(prefix.into()),
+            namespace,
+        },
+        ListGenericTablesQuery::default(),
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        list.identifiers.len(),
+        1,
+        "replay must not create a duplicate"
+    );
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_cannot_drop_protected_generic_table(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        },
+        create_request("protected-gt"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    let listed = CatalogServer::list_generic_tables(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        },
+        ListGenericTablesQuery::default(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    let gt_id_value = listed
+        .identifiers
+        .iter()
+        .find(|i| i.name == "protected-gt")
+        .and_then(|i| i.id)
+        .expect("generic table id");
+
+    let mut t = <PostgresBackend as lakekeeper::service::CatalogStore>::Transaction::begin_write(
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    PostgresBackend::set_tabular_protected(
+        whi,
+        TabularId::GenericTable(gt_id_value),
+        true,
+        t.transaction(),
+    )
+    .await
+    .unwrap();
+    t.commit().await.unwrap();
+
+    let err = CatalogServer::drop_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+            table_name: "protected-gt".to_string(),
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("protected drop without force must fail");
+    assert_eq!(err.error.code, StatusCode::CONFLICT, "{err:?}");
+
+    CatalogServer::drop_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.into()),
+            namespace,
+            table_name: "protected-gt".to_string(),
+        },
+        DropParams {
+            purge_requested: false,
+            force: true,
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_generic_table(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        },
+        create_request("orig"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::rename_generic_table(
+        Some(prefix.clone().into()),
+        RenameGenericTableRequest {
+            source: rename_target(&namespace, "orig"),
+            destination: rename_target(&namespace, "renamed"),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let err = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+            table_name: "orig".to_string(),
+        },
+        ctx.clone(),
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("source should be gone");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+
+    let loaded = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.into()),
+            namespace,
+            table_name: "renamed".to_string(),
+        },
+        ctx,
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(loaded.table.name, "renamed");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_generic_table_cross_namespace(pool: PgPool) {
+    let (ctx, source_ns, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+    let dest_ns = initialize_namespace(
+        ctx.v1_state.catalog.clone(),
+        whi,
+        &NamespaceIdent::new(uuid::Uuid::now_v7().to_string()),
+        None,
+    )
+    .await
+    .namespace_ident()
+    .clone();
+
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: source_ns.clone(),
+        },
+        create_request("movable"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::rename_generic_table(
+        Some(prefix.clone().into()),
+        RenameGenericTableRequest {
+            source: rename_target(&source_ns, "movable"),
+            destination: rename_target(&dest_ns, "movable"),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let loaded = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.into()),
+            namespace: dest_ns,
+            table_name: "movable".to_string(),
+        },
+        ctx,
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(loaded.table.name, "movable");
+}
+
+/// Two namespaces and a generic table `movable` in the first, under a `HidingAuthorizer`.
+async fn move_generic_table_setup(
+    pool: PgPool,
+) -> (
+    lakekeeper::api::ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    HidingAuthorizer,
+    String,
+    NamespaceIdent,
+    NamespaceIdent,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let source_ns = create_ns(ctx.clone(), prefix.clone(), "from_ns".to_string())
+        .await
+        .namespace;
+    let dest_ns = create_ns(ctx.clone(), prefix.clone(), "to_ns".to_string())
+        .await
+        .namespace;
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: source_ns.clone(),
+        },
+        create_request("movable"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    (ctx, authz, prefix, source_ns, dest_ns)
+}
+
+/// Moving a generic table into another namespace needs `move` on it, not just `rename`.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_move_generic_table_without_move_on_source(pool: PgPool) {
+    let (ctx, authz, prefix, source_ns, dest_ns) = move_generic_table_setup(pool).await;
+    authz.block_action("generic_table:Move");
+
+    let err = CatalogServer::rename_generic_table(
+        Some(prefix.clone().into()),
+        RenameGenericTableRequest {
+            source: rename_target(&source_ns, "movable"),
+            destination: rename_target(&dest_ns, "movable"),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "GenericTableActionForbidden");
+
+    // A rename within the namespace does not ask `move`.
+    CatalogServer::rename_generic_table(
+        Some(prefix.into()),
+        RenameGenericTableRequest {
+            source: rename_target(&source_ns, "movable"),
+            destination: rename_target(&source_ns, "renamed"),
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+}
+
+/// Moving a generic table into another namespace needs `accept_moved_tabular` on the
+/// destination, not just `create_generic_table`; the refusal is recorded as `move`.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_move_generic_table_without_accept_moved_tabular_on_destination(pool: PgPool) {
+    use lakekeeper::service::events::{EventListener, context::ActionContextKey};
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, prefix, source_ns, dest_ns) = move_generic_table_setup(pool).await;
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+    authz.block_action("namespace:AcceptMovedTabular");
+
+    let err = CatalogServer::rename_generic_table(
+        Some(prefix.into()),
+        RenameGenericTableRequest {
+            source: rename_target(&source_ns, "movable"),
+            destination: rename_target(&dest_ns, "movable"),
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+
+    assert_eq!(listener.settled_counts(0, 1).await, (0, 1));
+    assert_eq!(
+        listener.recorded_actions(),
+        (
+            vec![],
+            vec![vec![RecordedAction {
+                action_name: "move".to_string(),
+                context: vec![ActionContextKey::Destination(vec!["to_ns".to_string()])],
+            }]],
+        )
+    );
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_generic_table_source_missing(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+
+    let err = CatalogServer::rename_generic_table(
+        Some(whi.to_string().into()),
+        RenameGenericTableRequest {
+            source: rename_target(&namespace, "ghost"),
+            destination: rename_target(&namespace, "renamed"),
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("missing source must fail");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_generic_table_idempotent_replay(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        },
+        create_request("idem-src"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let key = IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string()).unwrap();
+    let mut metadata = random_request_metadata();
+    metadata.with_idempotency_key(key);
+
+    let req = RenameGenericTableRequest {
+        source: rename_target(&namespace, "idem-src"),
+        destination: rename_target(&namespace, "idem-dst"),
+    };
+
+    CatalogServer::rename_generic_table(
+        Some(prefix.clone().into()),
+        req.clone(),
+        ctx.clone(),
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::rename_generic_table(Some(prefix.into()), req, ctx, metadata)
+        .await
+        .expect("idempotent replay should succeed");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_list_generic_tables_pagination(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+    let params = NamespaceParameters {
+        prefix: Some(prefix.clone().into()),
+        namespace: namespace.clone(),
+    };
+
+    let total: usize = 7;
+    for i in 0..total {
+        CatalogServer::create_generic_table(
+            params.clone(),
+            create_request(&format!("page-gt-{i}")),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+    }
+
+    let mut pages = Vec::new();
+    let mut page_token: Option<String> = None;
+    for _ in 0..3 {
+        let res = CatalogServer::list_generic_tables(
+            params.clone(),
+            ListGenericTablesQuery {
+                page_size: Some(3),
+                page_token: page_token.clone(),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        pages.push(
+            res.identifiers
+                .into_iter()
+                .map(|ident| ident.name)
+                .collect::<Vec<_>>(),
+        );
+        page_token = res.next_page_token;
+    }
+
+    let expected: Vec<Vec<String>> = [0..3, 3..6, 6..total]
+        .into_iter()
+        .map(|range| range.map(|i| format!("page-gt-{i}")).collect())
+        .collect();
+    assert_eq!(pages, expected);
+    assert_eq!(page_token, None);
+}
+
+/// Generic tables named `0` to `n - 1`; those with an index in `hidden_ranges` are hidden.
+async fn pagination_test_setup(
+    pool: PgPool,
+    n_generic_tables: usize,
+    hidden_ranges: &[(usize, usize)],
+) -> (HidingCtx, NamespaceParameters) {
+    let authz = HidingAuthorizer::new();
+    // Prevent hidden generic tables from becoming visible through `can_list_everything`.
+    authz.block_can_list_everything();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "ns1".to_string()).await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(prefix.into()),
+        namespace: ns.namespace,
+    };
+    for i in 0..n_generic_tables {
+        CatalogServer::create_generic_table(
+            ns_params.clone(),
+            create_request(&i.to_string()),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // The create response carries no id, so read the ids from a listing before hiding.
+    let mut page_token = None;
+    loop {
+        let page = CatalogServer::list_generic_tables(
+            ns_params.clone(),
+            ListGenericTablesQuery {
+                page_size: Some(100),
+                page_token,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        for ident in &page.identifiers {
+            let index: usize = ident.name.parse().unwrap();
+            if hidden_ranges
+                .iter()
+                .any(|(start, end)| (*start..*end).contains(&index))
+            {
+                authz.hide(&format!(
+                    "generic_table:{}/{}",
+                    warehouse.warehouse_id,
+                    ident.id.unwrap()
+                ));
+            }
+        }
+        page_token = page.next_page_token;
+        if page_token.is_none() {
+            break;
+        }
+    }
+
+    (ctx, ns_params)
+}
+
+impl_pagination_tests!(
+    generic_table,
+    pagination_test_setup,
+    CatalogServer,
+    ListGenericTablesQuery,
+    identifiers,
+    |ident| { ident.name }
+);
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_generic_tables_refuse_invalid_names(pool: PgPool) {
+    let (ctx, namespace, whi) = setup(pool).await;
+    let prefix = whi.to_string();
+
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        },
+        create_request("daily_sales"),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::rename_generic_table(
+            Some(prefix.clone().into()),
+            RenameGenericTableRequest {
+                source: rename_target(&namespace, "daily_sales"),
+                destination: rename_target(&namespace, name),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("The destination name must be refused.");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+
+        let err = CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+            },
+            create_request(name),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("The name must be refused.");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+
+    let loaded = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(prefix.into()),
+            namespace,
+            table_name: "daily_sales".to_string(),
+        },
+        ctx,
+        DataAccessMode::ClientManaged,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(loaded.table.name, "daily_sales");
+}
+
+type HidingCtx = ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>;
+
+/// A namespace `landing` and the location of a dropped table whose files stay in storage.
+async fn location_with_files_setup(
+    pool: PgPool,
+) -> (HidingCtx, HidingAuthorizer, NamespaceParameters, String) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "landing".to_string()).await;
+    let dropped = create_table(ctx.clone(), prefix.clone(), "landing", "dropped", false)
+        .await
+        .unwrap();
+    drop_table(
+        ctx.clone(),
+        &prefix,
+        "landing",
+        "dropped",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    let ns_params = NamespaceParameters {
+        prefix: Some(prefix.into()),
+        namespace: ns.namespace,
+    };
+    (
+        ctx,
+        authz,
+        ns_params,
+        dropped.metadata.location().to_string(),
+    )
+}
+
+async fn create_at(
+    ctx: &HidingCtx,
+    ns_params: &NamespaceParameters,
+    name: &str,
+    base_location: &str,
+) -> lakekeeper::api::Result<LoadGenericTableResponse> {
+    let mut request = create_request(name);
+    request.base_location = Some(base_location.to_string());
+    CatalogServer::create_generic_table(
+        ns_params.clone(),
+        request,
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+}
+
+/// Creating a generic table on a location that holds files takes the files over, as
+/// registering a table does, so it needs the register right on the warehouse. An empty
+/// location does not.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_create_generic_table_on_files_needs_the_register_right(pool: PgPool) {
+    let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
+    let register_right = format!("warehouse:{:?}", CatalogWarehouseAction::RegisterTable);
+
+    authz.block_action(&register_right);
+    let err = create_at(&ctx, &ns_params, "adopted", &with_files)
+        .await
+        .expect_err("a location with files needs the register right");
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden", "{err:?}");
+
+    let empty_sibling = format!("{with_files}-empty");
+    let created = create_at(&ctx, &ns_params, "fresh", &empty_sibling)
+        .await
+        .expect("an empty location needs no register right");
+    assert_eq!(created.table.base_location, empty_sibling);
+
+    authz.unblock_action(&register_right);
+    let adopted = create_at(&ctx, &ns_params, "adopted", &with_files)
+        .await
+        .expect("the register right allows taking the files over");
+    assert_eq!(adopted.table.base_location, with_files);
+}
+
+/// Re-creating a generic table at its own location, which holds files, without the register
+/// right gets 409, as a re-create with the right does, not a refusal.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recreate_generic_table_on_its_files_without_the_register_right(pool: PgPool) {
+    let (ctx, authz, ns_params, with_files) = location_with_files_setup(pool).await;
+    create_at(&ctx, &ns_params, "events", &with_files)
+        .await
+        .unwrap();
+
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterTable
+    ));
+    let err = create_at(&ctx, &ns_params, "events", &with_files)
+        .await
+        .expect_err("the name is in use");
+    assert_eq!(err.error.code, StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(err.error.r#type, "GenericTableAlreadyExists", "{err:?}");
+}

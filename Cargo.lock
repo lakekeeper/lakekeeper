@@ -4062,8 +4062,8 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.29.0"
-source = "git+https://github.com/lakekeeper/console?rev=v0.29.0#8dcc6eed05979ea512e5eb7e8913deba655366be"
+version = "0.31.0"
+source = "git+https://github.com/lakekeeper/console?rev=v0.31.0#4d7e8eadd3e1ae3652ca2763f5a42ad4fb8496c1"
 dependencies = [
  "flate2",
  "fs_extra",
@@ -4240,6 +4240,7 @@ dependencies = [
  "chrono",
  "crc",
  "derive_more",
+ "dotenvy",
  "fastrand",
  "figment",
  "futures",
@@ -4251,6 +4252,7 @@ dependencies = [
  "lakekeeper",
  "lakekeeper-io",
  "lakekeeper-storage-postgres",
+ "lakekeeper-test-macros",
  "metrics",
  "pretty_assertions",
  "serde",
@@ -4268,6 +4270,15 @@ dependencies = [
  "url",
  "uuid",
  "xxhash-rust",
+]
+
+[[package]]
+name = "lakekeeper-test-macros"
+version = "0.15.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

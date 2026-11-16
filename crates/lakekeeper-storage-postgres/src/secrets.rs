@@ -180,7 +180,7 @@ mod tests {
 
     use super::*;
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_write_read_secret(pool: sqlx::PgPool) {
         let state = SecretsState::from_pools(pool.clone(), pool);
 
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(&*read_secret.secret, &secret);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_read_missing_secret(pool: sqlx::PgPool) {
         let state = SecretsState::from_pools(pool.clone(), pool);
         let missing_secret_id = SecretId::from(uuid::Uuid::new_v4());
@@ -208,7 +208,7 @@ mod tests {
         assert!(read_secret.unwrap().is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_delete_secret(pool: sqlx::PgPool) {
         let state = SecretsState::from_pools(pool.clone(), pool);
 

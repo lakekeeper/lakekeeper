@@ -159,7 +159,7 @@ class TestGenericTableApi:
         assert r.status_code == 200
         resp = r.json()
         assert len(resp["identifiers"]) == 1
-        assert "next-page-token" in resp
+        assert "next-page-token" not in resp
 
         entry = resp["identifiers"][0]
         assert entry["namespace"] == [ns_name]

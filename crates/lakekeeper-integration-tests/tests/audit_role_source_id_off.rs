@@ -91,7 +91,7 @@ fn assert_without_source_id(
     assert!(value.get("source_id").is_none(), "{place}: {value:#}");
 }
 
-#[sqlx::test]
+#[lakekeeper_storage_postgres::db_test]
 async fn roles_are_named_without_their_source_id(pool: PgPool) {
     omit_role_source_id_in_tests();
     let logs = CapturedLogs::default();

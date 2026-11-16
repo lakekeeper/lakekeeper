@@ -18,8 +18,9 @@ use lakekeeper::{
         LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
         SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
-        TabularId, TabularIdentBorrowed, TabularNotFound, ViewDeletionInfo, ViewInfo,
-        ViewOrTableDeletionInfo, ViewOrTableInfo, storage::join_location, tasks::TaskId,
+        TabularHasRunningExpiration, TabularId, TabularIdentBorrowed, TabularNotFound,
+        ViewDeletionInfo, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        storage::join_location, tasks::TaskId,
     },
 };
 use lakekeeper_io::Location;
@@ -1897,14 +1898,44 @@ async fn clear_deleted_at(
         }
     })?;
 
-    undrop_tabular_informations
+    let undropped = undrop_tabular_informations
         .into_iter()
         .map(|undrop_tabular_information| {
-            undrop_tabular_information
-                .try_into_table_or_view(warehouse_id)
-                .map_err(Into::into)
+            undrop_tabular_information.try_into_table_or_view(warehouse_id)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure_no_running_expiration(&undropped, warehouse_id, transaction).await?;
+    Ok(undropped)
+}
+
+/// A running expiration task would still drop the tabular after the undrop.
+/// The task rows must already be locked by `transaction`.
+async fn ensure_no_running_expiration(
+    undropped: &[ViewOrTableDeletionInfo],
+    warehouse_id: WarehouseId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), ClearTabularDeletedAtError> {
+    let undropped_ids: Vec<Uuid> = undropped.iter().map(|t| *t.tabular_id()).collect();
+    let running_expiration = sqlx::query_scalar!(
+        r#"SELECT entity_id AS "entity_id!" FROM task
+        WHERE warehouse_id = $1
+            AND entity_id = ANY($2::uuid[])
+            AND entity_type IN ('table', 'view', 'generic-table')
+            AND queue_name IN ('soft_deletion', 'tabular_expiration')
+            AND status IN ('running', 'should-stop')
+        LIMIT 1"#,
+        *warehouse_id,
+        &undropped_ids,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| e.into_catalog_backend_error())?;
+    if let Some(tabular) =
+        running_expiration.and_then(|id| undropped.iter().find(|t| *t.tabular_id() == id))
+    {
+        return Err(TabularHasRunningExpiration::new(warehouse_id, tabular.tabular_id()).into());
+    }
+    Ok(())
 }
 
 impl From<FromTabularRowError> for MarkTabularAsDeletedError {
@@ -2217,7 +2248,7 @@ mod tests {
     /// expresses neither pair; only the prefix keys make them collide. The second
     /// pair sits directly under the bucket, as shallow as a tabular can be, and is
     /// the pair a key set that dropped one segment too many would miss.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_create_locks_out_a_colliding_one(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2289,7 +2320,7 @@ mod tests {
     /// what this asserts is no longer possible. The range half is unaffected: it
     /// still catches an exact duplicate at `bkt/dir`, since `bkt/dir/` falls inside
     /// `["bkt/dir/", "bkt/dir0")`.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_trailing_slash_does_not_hide_a_location(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2345,7 +2376,7 @@ mod tests {
     /// tabulars write into one prefix. The rest guard the other direction, where a
     /// location is refused that merely resembles an occupied one -- which is what a
     /// pattern match did, reading `\`, `%` and `_` as metacharacters.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn ensure_location_available_finds_collisions_reading_locations_literally(
         pool: sqlx::PgPool,
     ) {
@@ -2497,7 +2528,7 @@ mod tests {
     /// `ensure_location_available` refuses a location while a purge task of the warehouse
     /// will delete it, a folder inside it, or a parent folder. The tasks are queued as a drop
     /// queues them, so this test also fails if the queue name or the payload key changes.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn ensure_location_available_waits_for_pending_purges(pool: sqlx::PgPool) {
         use lakekeeper::service::{
             ArcProjectId, ProjectId,
@@ -2719,7 +2750,7 @@ mod tests {
         tabular_info.into_table_info().unwrap()
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_tabular_table_not_found_returns_404(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2741,7 +2772,7 @@ mod tests {
         assert!(matches!(error, DropTabularError::TabularNotFound(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_tabular_protected_table_without_force_returns_protected_error(
         pool: sqlx::PgPool,
     ) {
@@ -2766,7 +2797,7 @@ mod tests {
         ));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_tabular_protected_table_with_force_succeeds(pool: sqlx::PgPool) {
         let table_info = setup_test_tabular(&pool, true).await;
 
@@ -2786,7 +2817,7 @@ mod tests {
         assert!(location.as_str().starts_with("s3://test-bucket/"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_tabular_concurrent_update_error_wrong_metadata_location(pool: sqlx::PgPool) {
         let table_info = setup_test_tabular(&pool, false).await;
 
@@ -2809,7 +2840,7 @@ mod tests {
         assert!(matches!(error, DropTabularError::ConcurrentUpdateError(_)));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_tabular_with_correct_metadata_location_succeeds(pool: sqlx::PgPool) {
         let table_info = setup_test_tabular(&pool, false).await;
 
@@ -2829,7 +2860,7 @@ mod tests {
         assert!(location.as_str().starts_with("s3://test-bucket/"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_tabular_without_metadata_location_check_succeeds(pool: sqlx::PgPool) {
         let table_info = setup_test_tabular(&pool, false).await;
 
@@ -2849,7 +2880,7 @@ mod tests {
         assert!(location.as_str().starts_with("s3://test-bucket/"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_tabular_view_not_found_returns_404(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2872,7 +2903,7 @@ mod tests {
     }
 
     /// Expiry drops soft-deleted tabulars of inactive warehouses too.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_tabular_inactive_warehouse_succeeds(pool: sqlx::PgPool) {
         let table_info = setup_test_tabular(&pool, false).await;
 
@@ -2901,7 +2932,7 @@ mod tests {
         assert_eq!(result.unwrap(), table_info.location);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_search_tabular_no_results(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2917,7 +2948,7 @@ mod tests {
         assert!(res.search_results.is_empty());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_search_tabular(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2983,7 +3014,7 @@ mod tests {
         assert_eq!(res.tabular.tabular_ident().name, "test_region_42");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_search_tabular_by_uuid(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3061,7 +3092,7 @@ mod tests {
     /// joined rows, not tabulars. This test would catch that: one tabular
     /// carries two tasks in unrelated queues, and a page of two must still
     /// return both tabulars.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tabulars_unaffected_by_tasks_in_unrelated_queues(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3148,7 +3179,7 @@ mod tests {
     /// A copy that differs from its namespace row only in case satisfies the foreign key, so the
     /// repair has to find it byte-wise. Soft-deleted rows count: undropping one would otherwise
     /// restore the old spelling.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_repair_tabular_namespace_path_casing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;

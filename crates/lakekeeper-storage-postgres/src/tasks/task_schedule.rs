@@ -771,7 +771,7 @@ mod tests {
         done
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_schedule_tasks_are_warehouse_scoped_and_name_their_schedule(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         clear_schedules(&pool).await;
@@ -830,7 +830,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_two_schedules_on_one_queue_in_one_warehouse_run_at_their_own_intervals(
         pool: PgPool,
     ) {
@@ -909,7 +909,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_interval_below_one_minute_is_refused(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let mut t = PostgresTransaction::begin_write(crate::CatalogState::from_pools(
@@ -947,7 +947,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_key_outside_1_to_512_characters_is_refused(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let mut t = PostgresTransaction::begin_write(crate::CatalogState::from_pools(
@@ -987,7 +987,7 @@ mod tests {
         assert_eq!(schedule.schedule_key.chars().count(), 512);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_new_schedule_without_its_project_or_warehouse_is_scope_not_found(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         sqlx::query("INSERT INTO project (project_id, project_name) VALUES ('other', 'other')")
@@ -1038,7 +1038,7 @@ mod tests {
         assert_eq!(get(&pool, &created).await, created);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_materializer_skips_schedules_another_one_holds(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         clear_schedules(&pool).await;
@@ -1081,7 +1081,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_concurrent_materializers_create_one_task_per_tick(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         clear_schedules(&pool).await;
@@ -1132,7 +1132,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_concurrent_first_upserts_create_one_schedule(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q = queue();
@@ -1191,7 +1191,7 @@ mod tests {
         assert_eq!(get(&pool, &created).await, updated);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rows_load_with_an_empty_search_path(pool: PgPool) {
         // `pg_restore` loads rows with an empty search path, so the id check must not depend on
         // the caller's.
@@ -1226,7 +1226,7 @@ mod tests {
         assert_eq!(id, expected);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_interval_check_refuses_rows_over_100_years(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let err = sqlx::query(
@@ -1245,7 +1245,7 @@ mod tests {
         assert_eq!(db_err.constraint(), Some("task_schedule_interval_check"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_id_check_refuses_an_id_not_derived_from_the_scope(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let err = sqlx::query(
@@ -1264,7 +1264,7 @@ mod tests {
         assert_eq!(db_err.constraint(), Some("task_schedule_id_check"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_warehouse_schedule_must_belong_to_its_warehouses_project(pool: PgPool) {
         let (warehouse_id, _) = setup_warehouse(pool.clone()).await;
         sqlx::query("INSERT INTO project (project_id, project_name) VALUES ('other', 'other')")
@@ -1286,7 +1286,7 @@ mod tests {
         assert_eq!(db_err.constraint(), Some("task_schedule_warehouse_fk"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_upsert_writes_only_when_its_condition_holds(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q = queue();
@@ -1343,7 +1343,7 @@ mod tests {
         assert_eq!(get(&pool, &created).await.interval, hours(2));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_project_schedule_states_list_every_project_once(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q = queue();
@@ -1415,7 +1415,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_deleting_a_warehouses_schedules_includes_newer_versions(pool: PgPool) {
         let (project_id, warehouse_id, other_warehouse_id) =
             setup_two_warehouses(pool.clone()).await;
@@ -1478,7 +1478,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_schedule_ids_keep_their_encoding(pool: PgPool) {
         let ids: (Uuid, Uuid) = sqlx::query_as(
             "SELECT task_schedule_id('p', NULL, 'q', 'k'), \
@@ -1496,7 +1496,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_tick_while_instance_active_waits_and_its_run_covers_the_missed_ticks(
         pool: PgPool,
     ) {
@@ -1550,7 +1550,7 @@ mod tests {
         assert_eq!(scheduled_for, tick.tick);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_recreated_schedule_keeps_its_id_and_waits_for_its_active_instance(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         clear_schedules(&pool).await;
@@ -1594,7 +1594,7 @@ mod tests {
         assert_ne!(second, first);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_enabling_a_disabled_schedule_moves_its_next_run_to_its_next_tick(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         clear_schedules(&pool).await;
@@ -1642,7 +1642,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_schedule_of_a_newer_spec_version_is_left_alone(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         clear_schedules(&pool).await;
@@ -1703,7 +1703,7 @@ mod tests {
         assert_eq!(interval, 60);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_trigger_adds_a_run_and_leaves_next_run_untouched(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         clear_schedules(&pool).await;
@@ -1771,7 +1771,7 @@ mod tests {
         assert_eq!(e.schedule_id, missing);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_upsert_keeps_next_run_unless_timing_changes(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         clear_schedules(&pool).await;
@@ -1848,7 +1848,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_failed_attempts_back_off_then_go_terminal_without_stopping_the_schedule(
         pool: PgPool,
     ) {
@@ -1932,7 +1932,7 @@ mod tests {
         assert_eq!(get(&pool, &schedule).await.missed_runs, 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_enqueue_reports_inserted_then_existing(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q: &'static TaskQueueName = Box::leak(Box::new(queue()));
@@ -2036,7 +2036,7 @@ mod tests {
         t.commit().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_reparent_moves_pending_task_and_payload_together(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q: &'static TaskQueueName = Box::leak(Box::new(queue()));
@@ -2170,7 +2170,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_by_parent_spans_task_and_task_log(pool: PgPool) {
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
         let q: &'static TaskQueueName = Box::leak(Box::new(queue()));

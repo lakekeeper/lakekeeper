@@ -2623,7 +2623,7 @@ mod tests {
     /// A role deleted while a sync assigns it fails the sync's assignment insert on
     /// the foreign key. The standalone sync retries once, and the retry recreates
     /// the role the provider still reports, under a new id.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn sync_retries_when_its_role_is_deleted_concurrently(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -2695,7 +2695,7 @@ mod tests {
     /// user-assignments cache key lock: no sync waits for that lock with its transaction
     /// open, so DDL queued behind the sync cannot also hold up the load and close a
     /// cycle. The sync's result is cached once the load releases the lock.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn sync_commits_while_a_load_of_the_same_user_holds_the_key_lock(pool: sqlx::PgPool) {
         // A one-connection read pool, held below, parks the load inside the key lock.
         let read_pool = sqlx::postgres::PgPoolOptions::new()
@@ -2762,7 +2762,7 @@ mod tests {
 
     /// The by-ident member lookup answers for the requested ident after the role's
     /// source id is rebound.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_by_ident_follow_a_source_id_rebind(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -2848,7 +2848,7 @@ mod tests {
     /// Expiring sync records removes the named users' records for that provider
     /// only: their records for other providers, other users' records, and every
     /// assignment stay.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn expiring_syncs_removes_only_the_named_users_provider_records(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -2917,7 +2917,7 @@ mod tests {
     /// its members both complete: the sync writes its record only after its
     /// assignments, so it holds no record while it waits on the role, and it retries
     /// after the delete commits and recreates the role.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_delete_and_member_sync_do_not_deadlock(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -2989,7 +2989,7 @@ mod tests {
 
     /// Expiring the members' sync records in the role delete's transaction commits
     /// or rolls back with the delete.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_delete_and_sync_expiry_share_one_transaction(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3081,7 +3081,7 @@ mod tests {
     /// the user, a repeat add reports nothing; the first remove reports the user,
     /// a repeat remove reports nothing. The assignment is visible in the merged
     /// members listing in between.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_add_remove_idempotent(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3162,7 +3162,7 @@ mod tests {
 
     /// Provision-then-assign: assigning an unknown user is rejected with
     /// `RoleAssignmentUserNotFound` (→404) as a typed error.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_add_unknown_user_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3191,7 +3191,7 @@ mod tests {
     /// and the valid user is NOT partially assigned (the single-statement insert
     /// is gated on the whole batch being valid, so nothing is written on the
     /// error path).
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_add_partial_invalid_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3240,7 +3240,7 @@ mod tests {
 
     /// Assigning to a role that does not exist in the project is rejected with
     /// `RoleIdNotFoundInProject` (→404).
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_add_unknown_role_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3264,7 +3264,7 @@ mod tests {
     /// A user cannot be manually assigned to an externally-provided (e.g. LDAP)
     /// role — its membership is provider-driven. Rejected with
     /// `RoleNotManuallyAssignable`.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_add_external_role_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3287,7 +3287,7 @@ mod tests {
 
     /// Empty input still validates the role (consistent with `add_role_members`):
     /// adding to an unknown role with no members is a 404, not a silent success.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_add_empty_still_validates_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3321,7 +3321,7 @@ mod tests {
     /// Duplicate user ids in one request insert one row and are reported once.
     /// Dedup lives in the backend-independent `*Ops` layer, so this goes through
     /// the `*Ops` method (not the storage free fn, which trusts a unique set).
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_add_deduplicates(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3348,7 +3348,7 @@ mod tests {
     /// Duplicate user ids in one remove request delete the row once and are
     /// reported once. Dedup lives in the `*Ops` layer (like the add path), so this
     /// goes through the `*Ops` method, not the storage free fn.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_remove_deduplicates(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3387,7 +3387,7 @@ mod tests {
     /// Deleting a user removes their role assignments (matching the OpenFGA
     /// authorizer): `delete_user` returns the affected roles, and the user no
     /// longer appears as a member.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn delete_user_removes_role_assignments(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3456,7 +3456,7 @@ mod tests {
     /// `remove_user_role_assignments_and_invalidate` evicts the user's cached
     /// effective-roles entry, so a subsequent read on this instance reflects the
     /// change immediately.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_role_assignments_and_invalidate_evicts_cache(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3508,7 +3508,7 @@ mod tests {
     /// External provider sync must refuse the reserved `system`/`lakekeeper`
     /// providers (they are catalog-managed). Enforced in the backend-independent
     /// `*Ops` layer, so it holds for every sync entry point.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn sync_rejects_reserved_providers(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3561,7 +3561,7 @@ mod tests {
     /// `list_direct_user_roles_page` keyset-paginates a user's direct role assignments:
     /// each assigned role appears exactly once across pages, page sizes are exact,
     /// and the final page carries no continuation token.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_direct_user_roles_page_paginates(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3691,7 +3691,7 @@ mod tests {
     /// user is deleted between page 1 and page 2 (a race, or a forged token for a
     /// since-deleted user), the empty page 2 must still resolve to `None` (the
     /// handler 404s) rather than a `Some(empty page)` that hides the deletion.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn page_1_exists_user_deleted_page_2_should_404(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3770,7 +3770,7 @@ mod tests {
     /// of either kind appears exactly once across pages — including across the
     /// user/role type boundary mid-pagination — and the union equals the inserted
     /// set.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_direct_role_members_page_merges_users_and_roles(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3850,7 +3850,7 @@ mod tests {
 
     /// `?type=` restricts the merged listing to one member kind: `User` returns
     /// only user members, `Role` only member roles.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_direct_role_members_page_type_filter(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -3933,7 +3933,7 @@ mod tests {
 
     /// Project scoping: listing members of a role while passing a different
     /// project's id returns nothing — the role does not belong to that project.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_direct_role_members_page_scoped_to_project(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_a = make_project(&state).await;
@@ -3984,7 +3984,7 @@ mod tests {
 
     /// `list_direct_user_roles_page` is project-scoped: a user assigned to roles in two
     /// projects sees only the roles of the requested project.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_direct_user_roles_page_scoped_to_project(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_a = make_project(&state).await;
@@ -4033,7 +4033,7 @@ mod tests {
     /// `list_direct_role_member_of_page` keyset-paginates the direct roles a role is a
     /// member of: each appears once across pages, the final non-empty page still
     /// carries a token, and the drained page is empty with no token.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_direct_role_member_of_page_paginates(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4125,7 +4125,7 @@ mod tests {
 
     // ── role_membership graph ──────────────────────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_add_is_idempotent(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4180,7 +4180,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_direct_cycle_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4211,7 +4211,7 @@ mod tests {
         assert_eq!(cycle.member_role_id, a);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_self_cycle_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4231,7 +4231,7 @@ mod tests {
         assert_eq!(cycle.member_role_id, a);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_transitive_cycle_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4269,7 +4269,7 @@ mod tests {
     /// A chain whose longest path through the new edge is *exactly* `max_depth`
     /// edges is allowed. With `max_depth = 3`: r0→r1→r2 already exists (2 edges),
     /// adding r2→r3 makes the longest chain r0→r1→r2→r3 = 3 edges = the limit.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_depth_at_limit_allowed(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4304,7 +4304,7 @@ mod tests {
 
     /// One edge deeper than the limit is rejected. With `max_depth = 3`:
     /// r0→r1→r2→r3 already exists (3 edges); adding r3→r4 would make a 4-edge chain.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_depth_exceeded(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4349,7 +4349,7 @@ mod tests {
     /// neither side alone exceeds it: the parent has 1 edge above it (g→p) and the
     /// member has 2 edges below it (m→m1→m2). Adding p→m makes the longest chain
     /// g→p→m→m1→m2 = 4 edges, so it must be rejected even though each side is small.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_depth_counts_both_directions(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4397,7 +4397,7 @@ mod tests {
     /// `[shallow, deep]` to a parent rejects because `deep` has a 2-edge subtree
     /// (`deep→d1→d2`), so `p→deep→d1→d2` = 3 edges; `p→shallow` (1 edge) is fine
     /// but must not be persisted either.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_depth_batch_is_all_or_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4452,7 +4452,7 @@ mod tests {
     /// (`PostgresBackend::add_role_members`), which reads
     /// `CONFIG.role.max_nesting_depth` — proving the config is wired end-to-end,
     /// not just the free fn. A 10-edge chain is allowed; the 11th edge is rejected.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_default_depth_enforced_via_trait_path(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4491,7 +4491,7 @@ mod tests {
     /// `max_depth = 0` disables role nesting entirely: any role→role edge is a
     /// 1-edge chain (`0 + 1 + 0 > 0`), so it is rejected. This is the documented
     /// flat-roles-only policy — `0` is a valid configured value, not clamped away.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_depth_zero_disables_nesting(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4519,7 +4519,7 @@ mod tests {
     /// because a chain that skips one stops resolving there. The seed role is excluded — the
     /// caller already has it — and a role nested in nothing yields an empty set rather than
     /// an error, which is what makes the common case free of special handling.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_ancestors_are_the_whole_chain_flattened(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4591,7 +4591,7 @@ mod tests {
     /// A role can be a member of several roles at the same level, and two roles can share an
     /// ancestor. Both are what "flat set" means; a chain test cannot tell a correct
     /// implementation from one that follows a single parent per level.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_ancestors_cover_multiple_parents_and_a_shared_ancestor(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4644,7 +4644,7 @@ mod tests {
     ///
     /// The empty answer is the documented precondition: it cannot be told apart from a role
     /// nested in nothing, which is safe only because callers pass roles they already resolved.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_ancestors_handle_unknown_and_repeated_seeds(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4677,7 +4677,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn effective_roles_resolve_ancestor_closure_depth_3(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4747,7 +4747,7 @@ mod tests {
     /// log, NOT the per-(user, project, provider) `role_assignment_sync` log that
     /// `provider_sync_times` reads from. Hence `provider_sync_times` is exactly
     /// empty.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn effective_roles_transitive_roles_add_no_phantom_sync_times(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4809,7 +4809,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_remove_is_idempotent(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4886,7 +4886,7 @@ mod tests {
         assert_eq!(second.removed, Vec::<RoleId>::new());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_cross_project_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_a = make_project(&state).await;
@@ -4910,7 +4910,7 @@ mod tests {
         assert_eq!(e.project_id.as_ref(), project_a.as_ref());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_external_provider_member_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4933,7 +4933,7 @@ mod tests {
         assert_eq!(e.provider_id, RoleProviderId::new_unchecked("ldap"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_add_dedups_batch(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4964,7 +4964,7 @@ mod tests {
         assert_eq!(members, HashSet::from([b, c]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_list_parents_direct(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -4997,7 +4997,7 @@ mod tests {
         assert_eq!(parents, HashSet::from([parent1, parent2]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_parent_not_found_rejected(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5019,7 +5019,7 @@ mod tests {
         assert_eq!(e.role_id, missing_parent);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_add_empty_members_still_validates_parent(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5040,7 +5040,7 @@ mod tests {
         assert_eq!(e.role_id, missing_parent);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_empty_input_is_noop(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5070,7 +5070,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn edge_change_invalidates_deep_descendant_user(pool: sqlx::PgPool) {
         // top <- mid <- leaf; user assigned to leaf. Adding the top<-mid edge must
         // invalidate the user even though they are a DEPTH-2 descendant of `mid`,
@@ -5149,7 +5149,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_remove_and_invalidate_evicts(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5217,7 +5217,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_membership_add_lock_timeout(pool: sqlx::PgPool) {
         // Hold the per-project advisory lock on a separate connection, then a
         // concurrent `add_role_members` must wait `lock_timeout` (3s) and fail
@@ -5256,7 +5256,7 @@ mod tests {
 
     // ── sync_role_members_by_ident ─────────────────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_initial_sync(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5298,7 +5298,7 @@ mod tests {
         assert!(list.last_synced_at.is_some());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_incremental_add_and_remove(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5351,7 +5351,7 @@ mod tests {
         assert!(!member_ids.contains(&u1));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_empty_clears_all(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5398,7 +5398,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_idempotent(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5428,7 +5428,7 @@ mod tests {
         assert_eq!(list.members.len(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_updates_role_name_on_sync(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5470,7 +5470,7 @@ mod tests {
     /// not be written (no `updated_at` bump).  The `updated_at` trigger fires
     /// only when a row is actually written, so comparing timestamps before and
     /// after an identical re-sync is the precise observable test.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_no_write_when_role_unchanged(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5536,7 +5536,7 @@ mod tests {
     }
 
     /// Counter-test: when the role name changes, `updated_at` MUST advance.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_write_when_role_name_changes(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5591,7 +5591,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_empty_from_start(pool: sqlx::PgPool) {
         // First sync is empty — member_changes returns 0 rows; tests that
         // added_ids! / removed_ids! / role_id! / synced_at! are all non-null.
@@ -5625,7 +5625,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_empty_twice(pool: sqlx::PgPool) {
         // Two consecutive empty syncs — second sync has 0 rows in member_changes.
         // Core invariant: `last_synced_at` returned by the list function must
@@ -5712,7 +5712,7 @@ mod tests {
 
     /// Both list functions return `None` when no role with the given ident / id
     /// exists in the database.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_role_by_ident_returns_none_for_unknown(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5727,7 +5727,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_role_by_id_returns_none_for_unknown(pool: sqlx::PgPool) {
         let pool2 = pool.clone();
         let result = list_role_assignments_for_role(RoleId::new(Uuid::new_v4()), &pool2)
@@ -5741,7 +5741,7 @@ mod tests {
 
     /// Listing by ID and listing by ident return equivalent results: same
     /// `role_id`, same members, same `last_synced_at`.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_role_by_id_matches_list_by_ident(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5784,7 +5784,7 @@ mod tests {
 
     /// `last_synced_at` on the list result must equal the `synced_at` returned
     /// by the most recent sync call.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn list_role_last_synced_at_matches_sync_result(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5846,7 +5846,7 @@ mod tests {
 
     // ── sync_user_role_assignments_by_provider ─────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_initial_sync(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5897,7 +5897,7 @@ mod tests {
         assert_eq!(list.provider_sync_times[0].provider_id, provider);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_incremental_add_and_remove(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -5978,7 +5978,7 @@ mod tests {
         assert!(!source_ids.contains("admin"));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_empty_removes_all(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6041,7 +6041,7 @@ mod tests {
         assert_eq!(list.provider_sync_times[0].provider_id, provider);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_isolates_by_provider(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6118,7 +6118,7 @@ mod tests {
         assert_eq!(list.roles[0].role_ident.provider_id(), &provider_b);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_isolates_by_project(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let p1 = make_project(&state).await;
@@ -6173,7 +6173,7 @@ mod tests {
         assert_eq!(*list.roles[0].project_id, p2);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_empty_from_start(pool: sqlx::PgPool) {
         // First sync with no roles — assignment_changes returns 0 rows; tests
         // that added_ids! / removed_ids! / synced_at! are all non-null.
@@ -6222,7 +6222,7 @@ mod tests {
         assert_eq!(list.provider_sync_times[0].provider_id, provider);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_empty_twice(pool: sqlx::PgPool) {
         // Two consecutive empty syncs — second sync has 0 rows in assignment_changes.
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -6321,7 +6321,7 @@ mod tests {
 
     /// When the role's name and description are unchanged, the role row must
     /// not be written (no `updated_at` bump).
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_no_write_when_role_unchanged(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6381,7 +6381,7 @@ mod tests {
     }
 
     /// Counter-test: when the role name changes, `updated_at` MUST advance.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_write_when_role_name_changes(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6444,7 +6444,7 @@ mod tests {
     /// `all_roles` must include roles from *all* providers, not just the one
     /// being synced.  This is the core invariant that lets the trait's default
     /// impl build `ListUserRoleAssignmentsResult` without an extra DB query.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_all_roles_across_providers(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6507,7 +6507,7 @@ mod tests {
     }
 
     /// After clearing `provider_a`'s roles, `all_roles` must still contain `provider_b`'s roles — clearing one provider must not affect others.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_all_roles_after_clear_one_provider(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6600,7 +6600,7 @@ mod tests {
     ///   * Because the edge change invalidated the entry, the second call
     ///     re-fetches from the DB, yielding a fresh, pointer-distinct `Arc`
     ///     whose effective set has grown to `{child, parent}`.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn edge_change_invalidates_descendant_member_users(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6670,7 +6670,7 @@ mod tests {
 
     /// A rebind that waits for an assignment to its role records the assigned user: it
     /// reads the role's users after the lock it waited on.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_rebind_records_a_user_assigned_while_it_waits(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6734,7 +6734,7 @@ mod tests {
 
     /// A project delete that waits for a sync into the project records the synced user: it
     /// reads the sync records after the lock it waited on.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_project_delete_records_a_user_synced_while_it_waits(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6803,7 +6803,7 @@ mod tests {
 
     /// A sync whose commit fails removes the user's cached entry: a commit error can
     /// hide a commit that landed, so the next read loads from the database.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_sync_whose_commit_fails_removes_the_cached_entry(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6838,7 +6838,7 @@ mod tests {
     }
 
     /// A member removal whose commit fails removes the member's cached entry.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_member_removal_whose_commit_fails_removes_the_cached_entry(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -6883,7 +6883,7 @@ mod tests {
 
     /// Direct assignments only: a role the user reaches through nesting is absent, and
     /// each row carries its project.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn direct_role_assignments_leave_out_nesting_parents(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let user = UserId::new_unchecked("oidc", "test-user-direct-rows");
@@ -7102,7 +7102,7 @@ mod tests {
 
     /// A sync for another user with a sync record refreshes it like a caller
     /// sync: it converges the assignments, updates the user and stamps the record.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_refreshes_an_existing_record(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7195,7 +7195,7 @@ mod tests {
 
     /// A sync for another user who has sync records, but none for this project and
     /// provider, writes nothing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_without_a_record_for_the_provider_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7248,7 +7248,7 @@ mod tests {
 
     /// A sync for another user who does not exist creates no user, no role, no
     /// assignment and no sync record.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_of_an_unknown_user_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7280,7 +7280,7 @@ mod tests {
     /// A sync for another user whose record a role delete expired writes nothing:
     /// it recreates neither the deleted role nor its assignment, creates no role and
     /// writes no sync record.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_after_a_role_delete_expired_the_record_writes_nothing(
         pool: sqlx::PgPool,
     ) {
@@ -7348,7 +7348,7 @@ mod tests {
 
     /// A sync for another user leaves a deleted user deleted and writes nothing: a
     /// deleted user has no sync record.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_of_a_deleted_user_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7406,7 +7406,7 @@ mod tests {
 
     /// A sync for another user leaves a deleted user deleted and writes nothing,
     /// even when a sync record of the user survives.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_of_a_deleted_user_with_a_record_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7481,7 +7481,7 @@ mod tests {
 
     /// A sync for another user without a sync record ends before its first write:
     /// it does not wait on a role row another transaction holds.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_without_a_record_ends_before_locking_a_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7539,7 +7539,7 @@ mod tests {
 
     /// The standalone sync for another user without a sync record commits nothing,
     /// returns `NoSyncRecord` and leaves the user's cached assignments untouched.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn standalone_other_user_sync_without_a_record_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7578,7 +7578,7 @@ mod tests {
     /// A role delete that expires the user's record while a sync for another user
     /// runs, after the sync read the record, ends the sync with `NoSyncRecord` at
     /// its refresh of the record, and the sync writes nothing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_whose_record_is_expired_mid_sync_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7669,7 +7669,7 @@ mod tests {
     /// The standalone sync for another user whose record a role delete expires
     /// after the sync read it, by the delete of a role the sync removes, returns
     /// `NoSyncRecord` without a retry and writes nothing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn standalone_other_user_sync_whose_record_is_expired_mid_sync_writes_nothing(
         pool: sqlx::PgPool,
     ) {
@@ -7769,7 +7769,7 @@ mod tests {
     /// A standalone sync for another user that waits on the delete of a role it
     /// assigns, and whose record the delete expires, retries after the delete
     /// commits; the retry finds no record, and the sync writes nothing.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn standalone_other_user_sync_retried_after_a_role_delete_writes_nothing(
         pool: sqlx::PgPool,
     ) {
@@ -7848,7 +7848,7 @@ mod tests {
 
     /// A user delete that waits on a sync of the user sees what the sync committed:
     /// the sync's assignment and sync record are removed with the user.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_delete_waiting_on_a_sync_removes_the_sync_rows(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7906,7 +7906,7 @@ mod tests {
     /// A sync for another user that waits on a user delete sees the committed
     /// delete, which removed the user's sync record: the sync returns
     /// `NoSyncRecord`, and the user stays deleted with no assignment and no record.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn other_user_sync_waiting_on_a_user_delete_writes_nothing(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -7963,7 +7963,7 @@ mod tests {
     }
 
     /// A sync for the caller restores a deleted user and assigns the roles.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn user_assignments_caller_sync_restores_deleted_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
@@ -8004,7 +8004,7 @@ mod tests {
 
     /// A role member sync leaves a deleted member deleted and unassigned, and
     /// reports it neither as added nor as removed.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn role_members_sync_skips_deleted_member(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;

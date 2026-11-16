@@ -40,6 +40,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 | iceberg-ext | crates/iceberg-ext | Iceberg format extensions |
 | lakekeeper-authz-openfga | crates/authz-openfga | OpenFGA authorization |
 | lakekeeper-audit-macros | crates/audit-macros | `#[audit_part]` attribute for audit types |
+| lakekeeper-test-macros | crates/test-macros | `#[lakekeeper_storage_postgres::db_test]`: a test on a copy of a migrated database |
 | lakekeeper-storage-postgres | crates/lakekeeper-storage-postgres | PostgreSQL catalog backend and migrations |
 | lakekeeper-events-kafka | crates/lakekeeper-events-kafka | Kafka cloud-events publisher |
 | lakekeeper-events-nats | crates/lakekeeper-events-nats | NATS cloud-events publisher |
@@ -49,6 +50,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 ## Authz
 
 - OpenFGA model: `authz/openfga/` — validate with `just test-openfga`, update JSON with `just update-openfga`
+- Don't re-encode the OpenFGA model in Rust: check the relation each action maps to, even where the model defines it like another (`can_get_config` is `can_use` today). Fix slow checks in the model or in how we ask OpenFGA, never by reusing one relation's answer for another.
 - OPA policies: `authz/opa-bridge/` — check with `just check-opa` (requires `opa` and `regal` CLIs)
 
 ## Code Style
@@ -110,7 +112,7 @@ Follow `crates/lakekeeper/src/api/management/v1/lakekeeper_actions.rs` as the re
 - Never build a wire value from a bare string: emit `Variant::as_wire()` of a vocabulary enum. Never hand-write an `as_str` on one.
 - Everything this log names is `lower_snake_case`. The attribute checks values and keys; record and part field names are checked in review.
 - Never add a `_ =>` arm to an `action_descriptor` match: a new action would emit no context.
-- A fixture must describe a record the server can produce: build it from `action_descriptor()` or the handler's `event_actions()`. Add one for every new emission path, and extend `crates/lakekeeper-integration-tests/tests/audit_corpus.rs` for every new record shape.
+- A fixture must describe a record the server can produce: build it from `action_descriptor()` or the handler's `event_actions()`. Add one for every new emission path, and extend `crates/lakekeeper-integration-tests/tests/integration/audit_corpus.rs` for every new record shape.
 - Never suppress a log line because "the audit record covers it" without asking `crate::audit::log_enabled()` first.
 - After a change: `just update-audit-fixtures` and `just update-audit-schema`, review both diffs, commit, then run `just check-audit-format` (it reads `HEAD`). Never edit `AUDIT_FORMAT`, the fixtures or `docs/docs/audit/schema.json` by hand.
 
@@ -128,6 +130,7 @@ Follow `crates/lakekeeper/src/api/management/v1/lakekeeper_actions.rs` as the re
 
 ## Testing
 
+- Write Postgres tests with `#[lakekeeper_storage_postgres::db_test]`: it copies a migrated template database. Use `#[sqlx::test]` only for a test that needs an empty database, such as a migration test.
 - Assert exact expected values. Never `assert x in (a, b)` or approximate matches — ambiguity in tests hides real bugs. If you're unsure which value is correct, find out first.
 
 ## Downstream: Lakekeeper Plus

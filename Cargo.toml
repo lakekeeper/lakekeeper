@@ -12,6 +12,7 @@ members = [
     "crates/lakekeeper-integration-tests",
     "crates/lakekeeper-secrets-kv2",
     "crates/lakekeeper-storage-postgres",
+    "crates/test-macros",
 ]
 resolver = "2"
 
@@ -89,6 +90,7 @@ chrono = "^0.4"
 cloudevents-sdk = { version = "0.9.0" }
 crc = "3"
 derive_more = { version = "^2.0.0", features = ["from", "debug"] }
+dotenvy = "0.15.7"
 fastrand = "2.3.0"
 figment = { version = "^0.10", features = ["env"] }
 figment_file_provider_adapter = "0.1.1"
@@ -235,6 +237,11 @@ valuable = "0.1.1"
 veil = "0.2.0"
 webpki-root-certs = "1.0"
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
+
+# Backtraces keep file and line numbers. Full debug info doubles the time to rebuild the
+# tests after an edit. For variables in a debugger, set `CARGO_PROFILE_DEV_DEBUG=true`.
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.dev.build-override]
 debug-assertions = true

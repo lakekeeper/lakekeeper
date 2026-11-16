@@ -5,6 +5,10 @@
 //! backend, [`PostgresAdvisoryLock`] for cross-replica maintenance
 //! coordination, and the migrations runner used at startup.
 
+// `#[lakekeeper_storage_postgres::db_test]` expands to paths through the crate name.
+#[cfg(any(test, feature = "test-utils"))]
+extern crate self as lakekeeper_storage_postgres;
+
 mod advisory_lock;
 mod bootstrap;
 mod cache_change_log;
@@ -34,6 +38,7 @@ use std::{str::FromStr, sync::Arc};
 pub use advisory_lock::PostgresAdvisoryLock;
 use anyhow::anyhow;
 use async_trait::async_trait;
+pub use dbutils::DBErrorHandler;
 pub use endpoint_statistics::sink::PostgresStatisticsSink;
 use lakekeeper::{
     api::{ErrorModel, Result},
@@ -42,6 +47,8 @@ use lakekeeper::{
         health::{Health, HealthExt, HealthStatus},
     },
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use lakekeeper_test_macros::db_test;
 pub use secrets::SecretsState;
 use sqlx::{
     ConnectOptions, PgPool,
@@ -54,7 +61,7 @@ use tokio::sync::RwLock;
 
 use self::{
     config::{CONFIG, DynAppConfig, PgSchema, PgSslMode},
-    dbutils::{DBErrorHandler, commit_state_unknown},
+    dbutils::commit_state_unknown,
 };
 
 /// # Errors
@@ -461,7 +468,7 @@ mod transaction_tests {
 
     use super::*;
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn read_transactions_refuse_writes(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool);
         let mut transaction = PostgresTransaction::begin_read(state).await.unwrap();

@@ -1,0 +1,4793 @@
+// Extracted from crates/lakekeeper/src/server/tables.rs (VAK-437 split).
+// Original location was `#[cfg(any())] pub(crate) mod test`.
+
+use std::{collections::HashMap, sync::Arc};
+
+use http::StatusCode;
+use iceberg::{
+    NamespaceIdent, TableIdent, TableUpdate,
+    spec::{
+        EncryptedKey, FormatVersion, MAIN_BRANCH, NestedField, Operation, PrimitiveType, Schema,
+        Snapshot, SnapshotReference, SnapshotRetention, Summary, TableMetadata, TableProperties,
+        Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
+    },
+};
+use iceberg_ext::catalog::rest::{
+    CommitTableRequest, CommitTransactionRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+    CreateTableRequest, LoadTableResult, RenameTableRequest,
+};
+use itertools::Itertools;
+use lakekeeper::{
+    WarehouseId,
+    api::{
+        ApiContext, RequestMetadata,
+        iceberg::{
+            types::{PageToken, Prefix},
+            v1::{
+                DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
+                NamespaceParameters, TableParameters,
+                tables::{LoadTableRequest, TablesService as _},
+            },
+        },
+        management::v1::{
+            ApiServer as ManagementApiServer,
+            table::TableManagementService,
+            warehouse::{
+                Service as _, TabularDeleteProfile, UpdateWarehouseFormatVersionPolicyRequest,
+            },
+        },
+    },
+    server::{
+        CatalogServer,
+        tables::{CommitContext, commit_tables_with_authz},
+    },
+    service::{
+        CatalogNamespaceOps, CatalogStore, CatalogTabularOps, NamespaceId, SecretStore, State,
+        TableId, TabularListFlags, UserId, WriteTransaction,
+        authz::{
+            AllowAllAuthorizer, CatalogTableAction, CatalogWarehouseAction,
+            tests::{HidingAuthorizer, RecordedTabularCheck},
+        },
+    },
+};
+use lakekeeper_integration_tests::{
+    REFUSED_NEW_TABULAR_NAMES, assert_advertises_client_planning, create_ns,
+    create_table as create_table_helper, create_table_request as create_request, create_view,
+    drop_table as drop_table_helper, impl_pagination_tests, memory_io_profile, setup_simple,
+    tabular_test_multi_warehouse_setup,
+};
+use lakekeeper_io::LakekeeperStorage as _;
+use lakekeeper_storage_postgres::{
+    PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
+    test_utils::random_request_metadata,
+};
+use sqlx::PgPool;
+use uuid::Uuid;
+fn partition_spec() -> UnboundPartitionSpec {
+    UnboundPartitionSpec::builder()
+        .with_spec_id(0)
+        .add_partition_field(
+            UnboundPartitionField::builder()
+                .source_ids(vec![2])
+                .name("y")
+                .transform(Transform::Identity)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .build()
+}
+
+// Helper functions to reduce repetitive code in tests
+
+/// Creates a standard test schema with id and name fields
+fn create_test_schema() -> Schema {
+    Schema::builder()
+        .with_fields(vec![
+            NestedField::required(1, "id", iceberg::spec::Type::Primitive(PrimitiveType::Int))
+                .into(),
+            NestedField::required(
+                2,
+                "name",
+                iceberg::spec::Type::Primitive(PrimitiveType::String),
+            )
+            .into(),
+        ])
+        .build()
+        .unwrap()
+}
+
+/// Creates a `CreateTableRequest` with the given name and format version.
+/// Named to disambiguate from `create_request` (the imported helper, which
+/// can't set a format version).
+fn create_table_request_with_format(
+    name: &str,
+    format_version: Option<FormatVersion>,
+) -> CreateTableRequest {
+    let mut properties = None;
+    if let Some(version) = format_version {
+        properties = Some(HashMap::from([(
+            TableProperties::PROPERTY_FORMAT_VERSION.to_string(),
+            match version {
+                FormatVersion::V1 => "1".to_string(),
+                FormatVersion::V2 => "2".to_string(),
+                FormatVersion::V3 => "3".to_string(),
+            },
+        )]));
+    }
+
+    CreateTableRequest {
+        name: name.to_string(),
+        location: None,
+        schema: create_test_schema(),
+        partition_spec: Some(UnboundPartitionSpec::builder().build()),
+        write_order: None,
+        stage_create: Some(false),
+        properties,
+    }
+}
+
+/// Helper to load a table using `CatalogServer`
+async fn load_table(
+    ctx: &ApiContext<
+        State<impl lakekeeper::service::authz::Authorizer, impl CatalogStore, impl SecretStore>,
+    >,
+    ns_params: &NamespaceParameters,
+    table_name: &str,
+) -> LoadTableResult {
+    let table_ident = TableIdent {
+        namespace: ns_params.namespace.clone(),
+        name: table_name.to_string(),
+    };
+
+    let load_table_result = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident,
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(load_table_result) = load_table_result else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+    load_table_result
+}
+
+/// Helper to commit table changes
+async fn commit_table_changes(
+    ctx: &ApiContext<
+        State<impl lakekeeper::service::authz::Authorizer, impl CatalogStore, impl SecretStore>,
+    >,
+    ns_params: &NamespaceParameters,
+    table_ident: &TableIdent,
+    updates: Vec<TableUpdate>,
+) -> CommitContext {
+    Arc::unwrap_or_clone(
+        commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_committed(),
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+}
+
+/// Helper to create a standard snapshot for testing
+fn create_test_snapshot_v3(
+    snapshot_id: i64,
+    timestamp_ms: i64,
+    sequence_number: i64,
+    manifest_list: &str,
+    row_range: Option<(u64, u64)>,
+    added_records: u64,
+    key_id: &str,
+) -> Snapshot {
+    let base_builder = Snapshot::builder()
+        .with_snapshot_id(snapshot_id)
+        .with_timestamp_ms(timestamp_ms)
+        .with_sequence_number(sequence_number)
+        .with_schema_id(0)
+        .with_manifest_list(manifest_list)
+        .with_encryption_key_id(Some(key_id.to_string()))
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::from_iter(vec![
+                ("added-data-files".to_string(), "1".to_string()),
+                ("added-records".to_string(), added_records.to_string()),
+            ]),
+        });
+
+    if let Some((first_row_id, added_rows_count)) = row_range {
+        base_builder
+            .with_row_range(first_row_id, added_rows_count)
+            .build()
+    } else {
+        base_builder.build()
+    }
+}
+
+/// Helper to create a snapshot reference
+fn create_snapshot_reference(snapshot_id: i64) -> SnapshotReference {
+    SnapshotReference {
+        snapshot_id,
+        retention: SnapshotRetention::Branch {
+            min_snapshots_to_keep: Some(10),
+            max_snapshot_age_ms: None,
+            max_ref_age_ms: None,
+        },
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_set_properties_commit_table(pool: sqlx::PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+
+    let table_metadata = (*table.metadata)
+        .clone()
+        .into_builder(table.metadata_location)
+        .set_properties(HashMap::from([
+            ("p1".into(), "v2".into()),
+            ("p2".into(), "v2".into()),
+        ]))
+        .unwrap()
+        .build()
+        .unwrap();
+    let updates = table_metadata.changes;
+    let _ = Arc::unwrap_or_clone(
+        commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns.namespace.clone(),
+                        name: "tab-1".to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_committed(),
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+    .new_metadata;
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix,
+            table: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "tab-1".to_string(),
+            },
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
+}
+
+fn schema() -> Schema {
+    Schema::builder()
+        .with_fields(vec![
+            NestedField::required(1, "x", Type::Primitive(PrimitiveType::Long)).into(),
+            NestedField::required(2, "y", Type::Primitive(PrimitiveType::Long)).into(),
+            NestedField::required(3, "z", Type::Primitive(PrimitiveType::Long)).into(),
+        ])
+        .build()
+        .unwrap()
+}
+
+/// `expected` with the `last-updated-ms` the server stamped on `stored`.
+fn with_server_time(expected: &TableMetadata, stored: &TableMetadata) -> TableMetadata {
+    expected
+        .clone()
+        .into_builder(None)
+        .set_last_updated_ms(stored.last_updated_ms())
+        .build()
+        .unwrap()
+        .metadata
+}
+
+fn assert_table_metadata_are_equal(expected: &TableMetadata, actual: &TableMetadata) {
+    assert_eq!(actual.location(), expected.location());
+    assert_eq!(actual.properties(), expected.properties());
+    assert_eq!(
+        actual
+            .snapshots()
+            .sorted_by_key(|s| s.snapshot_id())
+            .collect_vec(),
+        expected
+            .snapshots()
+            .sorted_by_key(|s| s.snapshot_id())
+            .collect_vec()
+    );
+    assert_eq!(
+        actual
+            .partition_specs_iter()
+            .sorted_by_key(|ps| ps.spec_id())
+            .collect_vec(),
+        expected
+            .partition_specs_iter()
+            .sorted_by_key(|ps| ps.spec_id())
+            .collect_vec()
+    );
+    assert_eq!(
+        actual
+            .partition_statistics_iter()
+            .sorted_by_key(|s| (s.snapshot_id, &s.statistics_path))
+            .collect_vec(),
+        expected
+            .partition_statistics_iter()
+            .sorted_by_key(|s| (s.snapshot_id, &s.statistics_path))
+            .collect_vec()
+    );
+    assert_eq!(
+        actual
+            .sort_orders_iter()
+            .sorted_by_key(|s| s.order_id)
+            .collect_vec(),
+        expected
+            .sort_orders_iter()
+            .sorted_by_key(|s| s.order_id)
+            .collect_vec()
+    );
+    assert_eq!(
+        actual
+            .statistics_iter()
+            .sorted_by_key(|s| (s.snapshot_id, &s.statistics_path))
+            .collect_vec(),
+        expected
+            .statistics_iter()
+            .sorted_by_key(|s| (s.snapshot_id, &s.statistics_path))
+            .collect_vec()
+    );
+    assert_eq!(actual.history(), expected.history());
+    assert_eq!(actual.current_schema_id(), expected.current_schema_id());
+    assert_eq!(actual.current_snapshot_id(), expected.current_snapshot_id());
+    assert_eq!(
+        actual.default_partition_spec(),
+        expected.default_partition_spec()
+    );
+    assert_eq!(actual.default_sort_order(), expected.default_sort_order());
+    assert_eq!(actual.format_version(), expected.format_version());
+    assert_eq!(actual.last_column_id(), expected.last_column_id());
+    assert_eq!(
+        actual.last_sequence_number(),
+        expected.last_sequence_number()
+    );
+    assert_eq!(actual.last_partition_id(), expected.last_partition_id());
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_add_partition_spec_commit_table(pool: sqlx::PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+
+    let added_spec = UnboundPartitionSpec::builder()
+        .with_spec_id(10)
+        .add_partition_fields(vec![
+            // The previous field - has field_id set
+            UnboundPartitionField::builder()
+                .source_ids(vec![2])
+                .name("y")
+                .field_id(1000)
+                .transform(Transform::Identity)
+                .build()
+                .unwrap(),
+            // A new field without field id - should still be without field id in changes
+            UnboundPartitionField::builder()
+                .source_ids(vec![3])
+                .name("z")
+                .transform(Transform::Identity)
+                .build()
+                .unwrap(),
+        ])
+        .unwrap()
+        .build();
+
+    let table_metadata = (*table.metadata)
+        .clone()
+        .into_builder(table.metadata_location)
+        .add_schema(schema())
+        .unwrap()
+        .set_current_schema(-1)
+        .unwrap()
+        .add_partition_spec(partition_spec())
+        .unwrap()
+        .add_partition_spec(added_spec.clone())
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let updates = table_metadata.changes;
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: "tab-1".to_string(),
+                }),
+                requirements: vec![],
+                updates,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix,
+            table: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "tab-1".to_string(),
+            },
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_set_default_partition_spec(pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+
+    let added_spec = UnboundPartitionSpec::builder()
+        .with_spec_id(10)
+        .add_partition_field(
+            UnboundPartitionField::builder()
+                .source_ids(vec![1])
+                .name("y_bucket[2]")
+                .transform(Transform::Bucket(2))
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .build();
+
+    let table_metadata = (*table.metadata)
+        .clone()
+        .into_builder(table.metadata_location)
+        .add_partition_spec(added_spec)
+        .unwrap()
+        .set_default_partition_spec(-1)
+        .unwrap()
+        .build()
+        .unwrap();
+    let updates = table_metadata.changes;
+
+    let _ = Arc::unwrap_or_clone(
+        commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns.namespace.clone(),
+                        name: "tab-1".to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_committed(),
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+    .new_metadata;
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix,
+            table: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "tab-1".to_string(),
+            },
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_set_ref(pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+    let last_updated = table.metadata.last_updated_ms();
+    let builder = (*table.metadata)
+        .clone()
+        .into_builder(table.metadata_location);
+
+    let snapshot = Snapshot::builder()
+        .with_snapshot_id(1)
+        .with_timestamp_ms(last_updated + 1)
+        .with_sequence_number(0)
+        .with_schema_id(0)
+        .with_manifest_list("/snap-1.avro")
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::from_iter(vec![
+                (
+                    "spark.app.id".to_string(),
+                    "local-1662532784305".to_string(),
+                ),
+                ("added-data-files".to_string(), "4".to_string()),
+                ("added-records".to_string(), "4".to_string()),
+                ("added-files-size".to_string(), "6001".to_string()),
+            ]),
+        })
+        .build();
+
+    let builder = builder
+        .add_snapshot(snapshot.clone())
+        .unwrap()
+        .set_ref(
+            MAIN_BRANCH,
+            SnapshotReference {
+                snapshot_id: 1,
+                retention: SnapshotRetention::Branch {
+                    min_snapshots_to_keep: Some(10),
+                    max_snapshot_age_ms: None,
+                    max_ref_age_ms: None,
+                },
+            },
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+    let updates = builder.changes;
+
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: "tab-1".to_string(),
+                }),
+                requirements: vec![],
+                updates,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "tab-1".to_string(),
+            },
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_expire_metadata_log(pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let builder = (*table.metadata)
+        .clone()
+        .into_builder(table.metadata_location)
+        .set_properties(HashMap::from_iter([(
+            TableProperties::PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX.to_string(),
+            "2".to_string(),
+        )]))
+        .unwrap()
+        .build()
+        .unwrap();
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: builder.changes,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
+
+    let builder = builder
+        .metadata
+        .into_builder(tab.metadata_location)
+        .set_properties(HashMap::from_iter(vec![(
+            "change_nr".to_string(),
+            "1".to_string(),
+        )]))
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let committed = Arc::unwrap_or_clone(
+        commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: builder.changes,
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_committed(),
+    )
+    .into_iter()
+    .next()
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
+
+    let builder = (*committed.new_metadata)
+        .clone()
+        .into_builder(tab.metadata_location)
+        .set_properties(HashMap::from_iter(vec![(
+            "change_nr".to_string(),
+            "2".to_string(),
+        )]))
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let _ = Arc::unwrap_or_clone(
+        commit_tables_with_authz(
+            ns_params.prefix.clone(),
+            CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: builder.changes,
+                }],
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap_committed(),
+    )
+    .into_iter()
+    .next()
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix,
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
+}
+
+/// A registered table's metadata log is client-supplied: expiring it deletes only the entries
+/// inside the table location.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_expire_registered_metadata_log_stays_in_table_location(pool: PgPool) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
+    let io = memory_io_profile().file_io(None).await.unwrap();
+
+    let other = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("other".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let other_metadata_location = other.metadata_location.unwrap();
+
+    let table = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("tab-1".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Register the table again with a metadata log that also names the other table's file.
+    let table_location = table.metadata.location().to_string();
+    let own_metadata_location = format!("{table_location}/metadata/00000-own.metadata.json");
+    let crafted_metadata_location =
+        format!("{table_location}/metadata/00001-crafted.metadata.json");
+    io.write(&own_metadata_location, bytes::Bytes::from_static(b"{}"))
+        .await
+        .unwrap();
+    let last_updated_ms = table.metadata.last_updated_ms();
+    let mut crafted = serde_json::to_value(&*table.metadata).unwrap();
+    crafted["metadata-log"] = serde_json::json!([
+        {"metadata-file": other_metadata_location, "timestamp-ms": last_updated_ms - 2},
+        {"metadata-file": own_metadata_location, "timestamp-ms": last_updated_ms - 1},
+    ]);
+    crafted["properties"][TableProperties::PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX] =
+        serde_json::json!("1");
+    io.write(
+        &crafted_metadata_location,
+        serde_json::to_vec(&crafted).unwrap().into(),
+    )
+    .await
+    .unwrap();
+    CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("tab-1".to_string())
+            .metadata_location(crafted_metadata_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Any commit expires both entries.
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident),
+                requirements: vec![],
+                updates: vec![TableUpdate::SetProperties {
+                    updates: HashMap::from_iter([("change_nr".to_string(), "1".to_string())]),
+                }],
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap()
+    .unwrap_committed();
+
+    let lakekeeper_io::ReadError::IOError(err) =
+        io.read_single(&own_metadata_location).await.unwrap_err()
+    else {
+        panic!("expected an IO error reading a deleted file");
+    };
+    assert_eq!(err.kind(), lakekeeper_io::ErrorKind::NotFound);
+    io.read_single(&other_metadata_location)
+        .await
+        .expect("a file outside the table location must not be deleted");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_default_format_version_is_v2(pg_pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let create_request = create_table_request_with_format("my_table", None);
+    let table = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request,
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(table.metadata.format_version(), FormatVersion::V2);
+}
+
+/// `createTable` returns a `LoadTableResult`, so it carries the same advertisement
+/// `loadTable` does.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_create_table_advertises_client_side_scan_planning(pg_pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let table = CatalogServer::create_table(
+        ns_params,
+        create_table_request_with_format("planning_advertised", None),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_advertises_client_planning(table.config.as_ref(), "createTable");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+#[allow(clippy::too_many_lines)]
+async fn test_table_v3(pg_pool: PgPool) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let create_request = create_table_request_with_format("my_table", Some(FormatVersion::V3));
+    let table = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request,
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(table.metadata.format_version(), FormatVersion::V3);
+    assert_eq!(table.metadata.next_row_id(), 0);
+
+    // Create table identifier for commits
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "my_table".to_string(),
+    };
+
+    // Add a snapshot with row_range (0, 100)
+    let last_updated = table.metadata.last_updated_ms();
+
+    let snapshot1 = create_test_snapshot_v3(
+        1,
+        last_updated + 1,
+        1,
+        "/snap-1.avro",
+        Some((0, 100)),
+        100,
+        "key-1",
+    );
+
+    // Commit using Catalog
+    let encryption_key = EncryptedKey::builder()
+        .key_id("key-1")
+        .encrypted_key_metadata("key-metadata".as_bytes().to_vec())
+        .encrypted_by_id("my-vault".to_string())
+        .build();
+
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot1,
+            },
+            TableUpdate::SetSnapshotRef {
+                ref_name: MAIN_BRANCH.to_string(),
+                reference: create_snapshot_reference(1),
+            },
+            TableUpdate::AddEncryptionKey {
+                encryption_key: encryption_key.clone(),
+            },
+        ],
+    )
+    .await;
+
+    // Load using Catalog and assert next_row_id = 100
+    let loaded_table = load_table(&ctx, &ns_params, "my_table").await;
+    assert_eq!(loaded_table.metadata.next_row_id(), 100);
+    let current_snapshot = loaded_table
+        .metadata
+        .current_snapshot()
+        .expect("There should be a current snapshot");
+    assert_eq!(current_snapshot.snapshot_id(), 1);
+    assert_eq!(current_snapshot.row_range(), Some((0, 100)));
+    assert_eq!(
+        loaded_table.metadata.encryption_key("key-1"),
+        Some(&encryption_key)
+    );
+    assert_eq!(current_snapshot.encryption_key_id(), Some("key-1"));
+
+    let snapshot2_invalid = create_test_snapshot_v3(
+        2,
+        last_updated + 2,
+        2,
+        "/snap-2-invalid.avro",
+        Some((50, 100)),
+        100,
+        "key-1",
+    );
+
+    // This commit should fail due to row range overlap
+    let invalid_commit_result = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: vec![TableUpdate::AddSnapshot {
+                    snapshot: snapshot2_invalid,
+                }],
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await;
+
+    // Assert that the commit fails as a conflict the client can retry
+    let err = invalid_commit_result.as_ref().unwrap_err();
+    assert_eq!(
+        (err.error.code, err.error.r#type.as_str()),
+        (StatusCode::CONFLICT.as_u16(), "CommitFailedException")
+    );
+    let err_string = err.to_string();
+    assert!(
+        err_string.contains("first-row-id is behind table next-row-id"),
+        "The error message `{err_string}` did not contain the expected text",
+    );
+
+    // Add another snapshot with row_range (100, 50) - this should succeed
+    // because it doesn't overlap (rows 100-149)
+    let loaded_table2 = load_table(&ctx, &ns_params, "my_table").await;
+
+    assert_eq!(loaded_table2.metadata.next_row_id(), 100);
+    assert_eq!(loaded_table2.metadata.format_version(), FormatVersion::V3);
+
+    let snapshot3_valid = create_test_snapshot_v3(
+        3,
+        last_updated + 3,
+        2,
+        "/snap-3-valid.avro",
+        Some((100, 50)), // first_row_id: 100, added_rows_count: 50
+        50,              // added_records: 50
+        "key-1",
+    );
+
+    // This commit should succeed
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![TableUpdate::AddSnapshot {
+            snapshot: snapshot3_valid,
+        }],
+    )
+    .await;
+
+    // Load again and check next_row_id should now be 150
+    let final_table = load_table(&ctx, &ns_params, "my_table").await;
+
+    assert_eq!(final_table.metadata.next_row_id(), 150);
+    println!(
+        "Available snapshot ids: {:?}",
+        final_table
+            .metadata
+            .snapshots()
+            .map(|s| s.snapshot_id())
+            .collect::<Vec<_>>()
+    );
+    let snapshot = final_table.metadata.snapshot_by_id(3).unwrap();
+    assert_eq!(snapshot.row_range(), Some((100, 50)));
+    assert_eq!(snapshot.manifest_list(), "/snap-3-valid.avro");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_v2_to_v3_migration(pg_pool: PgPool) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
+
+    // Create a v2 table (default version)
+    let create_request = CreateTableRequest {
+        name: "my_migration_table".to_string(),
+        location: None,
+        schema: Schema::builder()
+            .with_fields(vec![
+                NestedField::required(1, "id", iceberg::spec::Type::Primitive(PrimitiveType::Int))
+                    .into(),
+                NestedField::required(
+                    2,
+                    "name",
+                    iceberg::spec::Type::Primitive(PrimitiveType::String),
+                )
+                .into(),
+            ])
+            .build()
+            .unwrap(),
+        partition_spec: Some(UnboundPartitionSpec::builder().build()),
+        write_order: None,
+        stage_create: Some(false),
+        properties: None, // No format version specified, should default to V2
+    };
+
+    let table = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request,
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Verify it's a V2 table
+    assert_eq!(table.metadata.format_version(), FormatVersion::V2);
+
+    // Create table identifier for commits
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "my_migration_table".to_string(),
+    };
+
+    // Add a snapshot to the V2 table (without row_range, as V2 snapshots don't have it)
+    let last_updated = table.metadata.last_updated_ms();
+    let builder = (*table.metadata)
+        .clone()
+        .into_builder(table.metadata_location);
+
+    let snapshot1 = Snapshot::builder()
+        .with_snapshot_id(1)
+        .with_timestamp_ms(last_updated + 1)
+        .with_sequence_number(1)
+        .with_schema_id(0)
+        .with_manifest_list("/snap-1.avro")
+        // No row_range for V2 table - this is the realistic scenario
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::from_iter(vec![
+                ("added-data-files".to_string(), "1".to_string()),
+                ("added-records".to_string(), "100".to_string()),
+            ]),
+        })
+        .build();
+
+    let builder = builder
+        .add_snapshot(snapshot1)
+        .unwrap()
+        .set_ref(
+            MAIN_BRANCH,
+            SnapshotReference {
+                snapshot_id: 1,
+                retention: SnapshotRetention::Branch {
+                    min_snapshots_to_keep: Some(10),
+                    max_snapshot_age_ms: None,
+                    max_ref_age_ms: None,
+                },
+            },
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+    // Commit the snapshot
+    commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: builder.changes,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Load table and verify it's still V2
+    let loaded_table_v2 = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(loaded_table_v2) = loaded_table_v2 else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_eq!(loaded_table_v2.metadata.format_version(), FormatVersion::V2);
+
+    // Upgrade to V3 using TableUpdate::UpgradeFormatVersion
+    commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: vec![TableUpdate::UpgradeFormatVersion {
+                    format_version: FormatVersion::V3,
+                }],
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Load table again -> should be V3 and next_row_id should be 0 (NULL equivalent)
+    let loaded_table_v3 = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(loaded_table_v3) = loaded_table_v3 else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_eq!(loaded_table_v3.metadata.format_version(), FormatVersion::V3);
+    assert_eq!(loaded_table_v3.metadata.next_row_id(), 0); // Should be 0 after migration
+
+    // Add a snapshot with row_range to the V3 table
+    let snapshot2 = Snapshot::builder()
+        .with_snapshot_id(2)
+        .with_timestamp_ms(last_updated + 2)
+        .with_sequence_number(2)
+        .with_schema_id(0)
+        .with_manifest_list("/snap-2.avro")
+        .with_row_range(0, 50) // first_row_id: 0, added_rows_count: 50
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::from_iter(vec![
+                ("added-data-files".to_string(), "1".to_string()),
+                ("added-records".to_string(), "50".to_string()),
+            ]),
+        })
+        .build();
+
+    commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: vec![TableUpdate::AddSnapshot {
+                    snapshot: snapshot2,
+                }],
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Load table -> next_row_id should now be increased to 50
+    let final_table = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(final_table) = final_table else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_eq!(final_table.metadata.format_version(), FormatVersion::V3);
+    assert_eq!(final_table.metadata.next_row_id(), 50);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_remove_snapshot_commit(pg_pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pg_pool).await;
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let last_updated = table.metadata.last_updated_ms();
+    let builder = (*table.metadata)
+        .clone()
+        .into_builder(table.metadata_location);
+
+    let snap = Snapshot::builder()
+        .with_snapshot_id(1)
+        .with_timestamp_ms(last_updated + 1)
+        .with_sequence_number(0)
+        .with_schema_id(0)
+        .with_manifest_list("/snap-1.avro")
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::from_iter(vec![
+                (
+                    "spark.app.id".to_string(),
+                    "local-1662532784305".to_string(),
+                ),
+                ("added-data-files".to_string(), "4".to_string()),
+                ("added-records".to_string(), "4".to_string()),
+                ("added-files-size".to_string(), "6001".to_string()),
+            ]),
+        })
+        .build();
+
+    let builder = builder
+        .add_snapshot(snap)
+        .unwrap()
+        .set_ref(
+            MAIN_BRANCH,
+            SnapshotReference {
+                snapshot_id: 1,
+                retention: SnapshotRetention::Branch {
+                    min_snapshots_to_keep: Some(10),
+                    max_snapshot_age_ms: None,
+                    max_ref_age_ms: None,
+                },
+            },
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: builder.changes,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    let expected = with_server_time(&builder.metadata, &tab.metadata);
+    assert_eq!(tab.metadata.history(), expected.history());
+    assert_eq!(&*tab.metadata, &expected);
+
+    assert_json_diff::assert_json_eq!(
+        serde_json::to_value(tab.metadata.clone()).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+
+    let last_updated = tab.metadata.last_updated_ms();
+    let builder = (*tab.metadata).clone().into_builder(tab.metadata_location);
+
+    let snap = Snapshot::builder()
+        .with_snapshot_id(2)
+        .with_parent_snapshot_id(Some(1))
+        .with_timestamp_ms(last_updated + 1)
+        .with_sequence_number(1)
+        .with_schema_id(0)
+        .with_manifest_list("/snap-2.avro")
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::from_iter(vec![
+                (
+                    "spark.app.id".to_string(),
+                    "local-1662532784305".to_string(),
+                ),
+                ("added-data-files".to_string(), "4".to_string()),
+                ("added-records".to_string(), "4".to_string()),
+                ("added-files-size".to_string(), "6001".to_string()),
+            ]),
+        })
+        .build();
+
+    let builder = builder.add_snapshot(snap).unwrap().build().unwrap();
+
+    let updates = builder.changes;
+
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
+
+    let last_updated = tab.metadata.last_updated_ms();
+    let builder = (*tab.metadata).clone().into_builder(tab.metadata_location);
+
+    let snap = Snapshot::builder()
+        .with_snapshot_id(3)
+        .with_timestamp_ms(last_updated + 1)
+        .with_parent_snapshot_id(Some(2))
+        .with_sequence_number(2)
+        .with_schema_id(0)
+        .with_manifest_list("/snap-2.avro")
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::from_iter(vec![
+                (
+                    "spark.app.id".to_string(),
+                    "local-1662532784305".to_string(),
+                ),
+                ("added-data-files".to_string(), "4".to_string()),
+                ("added-records".to_string(), "4".to_string()),
+                ("added-files-size".to_string(), "6001".to_string()),
+            ]),
+        })
+        .build();
+
+    let builder = builder.add_snapshot(snap).unwrap().build().unwrap();
+
+    let updates = builder.changes;
+
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_eq!(
+        &*tab.metadata,
+        &with_server_time(&builder.metadata, &tab.metadata)
+    );
+
+    let builder = (*tab.metadata)
+        .clone()
+        .into_builder(tab.metadata_location)
+        .remove_snapshots(&[2])
+        .build()
+        .unwrap();
+
+    let updates = builder.changes;
+
+    let _ = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let tab = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(tab) = tab else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    assert_eq!(tab.metadata.history(), builder.metadata.history());
+    assert_eq!(
+        tab.metadata
+            .snapshots()
+            .sorted_by_key(|s| s.snapshot_id())
+            .collect_vec(),
+        builder
+            .metadata
+            .snapshots()
+            .sorted_by_key(|s| s.snapshot_id())
+            .collect_vec()
+    );
+    assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
+}
+
+/// Expiry plans its `RemoveSnapshots` on a table state; a tag created on one of those snapshots
+/// before the expiry commits must survive. The server refuses the stale expiry with a conflict,
+/// so the client reloads and plans again, and the tag and its snapshot stay.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pg_pool).await;
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let mut metadata = (*table.metadata).clone();
+    for snapshot_id in [1, 2] {
+        let snapshot = Snapshot::builder()
+            .with_snapshot_id(snapshot_id)
+            .with_parent_snapshot_id((snapshot_id > 1).then_some(snapshot_id - 1))
+            .with_timestamp_ms(metadata.last_updated_ms() + 1)
+            .with_sequence_number(snapshot_id)
+            .with_schema_id(0)
+            .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            })
+            .build();
+        commit_table_changes(
+            &ctx,
+            &ns_params,
+            &table_ident,
+            vec![
+                TableUpdate::AddSnapshot { snapshot },
+                TableUpdate::SetSnapshotRef {
+                    ref_name: MAIN_BRANCH.to_string(),
+                    reference: create_snapshot_reference(snapshot_id),
+                },
+            ],
+        )
+        .await;
+        metadata = (*load_table(&ctx, &ns_params, "tab-1").await.metadata).clone();
+    }
+
+    // The expiry plans on a table without tags: snapshot 1 is unreferenced.
+    let stale_expiry = metadata
+        .clone()
+        .into_builder(None)
+        .remove_snapshots(&[1])
+        .build()
+        .unwrap()
+        .changes;
+    assert_eq!(
+        stale_expiry,
+        vec![TableUpdate::RemoveSnapshots {
+            snapshot_ids: vec![1]
+        }]
+    );
+
+    let tag = SnapshotReference {
+        snapshot_id: 1,
+        retention: SnapshotRetention::Tag {
+            max_ref_age_ms: None,
+        },
+    };
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![TableUpdate::SetSnapshotRef {
+            ref_name: "keep".to_string(),
+            reference: tag.clone(),
+        }],
+    )
+    .await;
+
+    let err = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: stale_expiry,
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
+    assert_eq!(err.error.r#type, "CommitFailedException");
+
+    let reloaded = load_table(&ctx, &ns_params, "tab-1").await.metadata;
+    assert_eq!(reloaded.refs().get("keep"), Some(&tag));
+    assert_eq!(
+        reloaded
+            .snapshots()
+            .map(|s| s.snapshot_id())
+            .sorted()
+            .collect_vec(),
+        vec![1, 2]
+    );
+
+    // Removing the tag by name in the same commit is an intended drop.
+    let expiry = (*reloaded)
+        .clone()
+        .into_builder(None)
+        .remove_ref("keep")
+        .remove_snapshots(&[1])
+        .build()
+        .unwrap()
+        .changes;
+    commit_table_changes(&ctx, &ns_params, &table_ident, expiry).await;
+    let expired = load_table(&ctx, &ns_params, "tab-1").await.metadata;
+    assert_eq!(
+        expired.refs().keys().collect_vec(),
+        vec![&MAIN_BRANCH.to_string()]
+    );
+    assert_eq!(
+        expired.snapshots().map(|s| s.snapshot_id()).collect_vec(),
+        vec![2]
+    );
+}
+
+// ------------------- Commit times -------------------
+
+const HOUR_MS: i64 = 60 * 60 * 1000;
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn snapshot_at(
+    snapshot_id: i64,
+    parent: Option<i64>,
+    sequence_number: i64,
+    timestamp_ms: i64,
+) -> Snapshot {
+    Snapshot::builder()
+        .with_snapshot_id(snapshot_id)
+        .with_parent_snapshot_id(parent)
+        .with_timestamp_ms(timestamp_ms)
+        .with_sequence_number(sequence_number)
+        .with_schema_id(0)
+        .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+        .with_summary(Summary {
+            operation: Operation::Append,
+            additional_properties: HashMap::new(),
+        })
+        .build()
+}
+
+fn set_ref(ref_name: &str, snapshot_id: i64) -> TableUpdate {
+    TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: create_snapshot_reference(snapshot_id),
+    }
+}
+
+fn set_property(value: &str) -> TableUpdate {
+    TableUpdate::SetProperties {
+        updates: HashMap::from([("k".to_string(), value.to_string())]),
+    }
+}
+
+/// Commit the updates of the named tables in one transaction; the error's code and type.
+async fn try_commit_named(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    changes: Vec<(&str, Vec<TableUpdate>)>,
+) -> Result<(), (u16, String)> {
+    commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: changes
+                .into_iter()
+                .map(|(name, updates)| CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns_params.namespace.clone(),
+                        name: name.to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                })
+                .collect(),
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| (e.error.code, e.error.r#type))
+}
+
+async fn try_commit_tab_1(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    updates: Vec<TableUpdate>,
+) -> Result<(), (u16, String)> {
+    try_commit_named(ctx, ns_params, vec![("tab-1", updates)]).await
+}
+
+/// A table as an Iceberg client parses it.
+async fn load_as_client(
+    ctx: &ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    ns_params: &NamespaceParameters,
+    name: &str,
+) -> TableMetadata {
+    let loaded = load_table(ctx, ns_params, name).await;
+    serde_json::from_value(serde_json::to_value(&*loaded.metadata).unwrap())
+        .expect("clients must be able to load the table")
+}
+
+/// Every table of a commit gets the server clock as `last-updated-ms`; snapshot times and
+/// snapshot-log entries keep the client's time.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_commit_stamps_last_updated_ms_with_the_server_clock(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("tab-2".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let before = now_ms();
+    let client_ms = before - 5;
+    try_commit_named(
+        &ctx,
+        &ns_params,
+        vec![
+            (
+                "tab-1",
+                vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot_at(1, None, 1, client_ms),
+                    },
+                    set_ref(MAIN_BRANCH, 1),
+                ],
+            ),
+            ("tab-2", vec![set_property("v")]),
+        ],
+    )
+    .await
+    .unwrap();
+    let after = now_ms();
+
+    let tab_1 = load_as_client(&ctx, &ns_params, "tab-1").await;
+    let tab_2 = load_as_client(&ctx, &ns_params, "tab-2").await;
+    assert!(
+        (before..=after).contains(&tab_1.last_updated_ms()),
+        "{before} <= {} <= {after}",
+        tab_1.last_updated_ms()
+    );
+    assert_eq!(tab_2.last_updated_ms(), tab_1.last_updated_ms());
+    assert_eq!(tab_1.snapshot_by_id(1).unwrap().timestamp_ms(), client_ms);
+    assert_eq!(tab_1.history().last().unwrap().timestamp_ms, client_ms);
+}
+
+/// A client clock two hours ahead on a branch or a staged (WAP) snapshot leaves every stored
+/// metadata file loadable, and a client with a correct clock commits next.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadable(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let fast = now_ms() + 2 * HOUR_MS;
+    let before = now_ms();
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, fast),
+            },
+            set_ref("b", 2),
+        ],
+    )
+    .await
+    .unwrap();
+    let after = now_ms();
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.snapshot_by_id(2).unwrap().timestamp_ms(), fast);
+    assert!((before..=after).contains(&metadata.last_updated_ms()));
+
+    let commits = [
+        vec![set_property("after-branch")],
+        vec![
+            TableUpdate::RemoveSnapshotRef {
+                ref_name: "b".to_string(),
+            },
+            TableUpdate::RemoveSnapshots {
+                snapshot_ids: vec![2],
+            },
+        ],
+        vec![TableUpdate::AddSnapshot {
+            snapshot: snapshot_at(3, Some(1), 3, fast),
+        }],
+        vec![set_property("after-stage")],
+        vec![set_ref(MAIN_BRANCH, 3)],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(4, Some(3), 4, now_ms() + 1000),
+            },
+            set_ref(MAIN_BRANCH, 4),
+        ],
+    ];
+    for (i, updates) in commits.into_iter().enumerate() {
+        try_commit_tab_1(&ctx, &ns_params, updates)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e:?}"));
+        load_as_client(&ctx, &ns_params, "tab-1").await;
+    }
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.current_snapshot_id(), Some(4));
+    assert_eq!(metadata.snapshot_by_id(3).unwrap().timestamp_ms(), fast);
+}
+
+/// A writer whose clock is two minutes behind the server commits back to back on `main` and
+/// on a branch, as with Iceberg Java's REST catalog, and every stored file loads.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_slow_writer_commits(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let slow_ms = || now_ms() - 2 * 60 * 1000;
+    let commits = vec![
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, slow_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, slow_ms() + 1),
+            },
+            set_ref(MAIN_BRANCH, 2),
+        ],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(3, Some(2), 3, slow_ms() + 2),
+            },
+            set_ref("b", 3),
+        ],
+    ];
+    for (i, updates) in commits.into_iter().enumerate() {
+        try_commit_tab_1(&ctx, &ns_params, updates)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e:?}"));
+        load_as_client(&ctx, &ns_params, "tab-1").await;
+    }
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(metadata.current_snapshot_id(), Some(2));
+    assert_eq!(metadata.snapshot_for_ref("b").unwrap().snapshot_id(), 3);
+}
+
+/// A new `main` snapshot more than a minute ahead of the server clock is refused with 400, as
+/// Iceberg Java refuses it, and the table does not change.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_fast_client_on_main_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+    let before = load_table(&ctx, &ns_params, "tab-1").await;
+
+    let result = try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, now_ms() + 2 * HOUR_MS),
+            },
+            set_ref(MAIN_BRANCH, 2),
+        ],
+    )
+    .await;
+    assert_eq!(
+        result,
+        Err((400, "TimestampAheadOfServerClock".to_string()))
+    );
+    let after = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(after.metadata_location, before.metadata_location);
+    assert_eq!(after.metadata, before.metadata);
+}
+
+/// Setting `main` to a tag is refused with 400, as Iceberg Java refuses it, and the table does
+/// not change. Clients cannot append to a table whose `main` is a tag.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_main_as_tag_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    try_commit_tab_1(
+        &ctx,
+        &ns_params,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(1, None, 1, now_ms()),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await
+    .unwrap();
+    let before = load_table(&ctx, &ns_params, "tab-1").await;
+    let tag = |ref_name: &str, snapshot_id: i64| TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: SnapshotReference {
+            snapshot_id,
+            retention: SnapshotRetention::Tag {
+                max_ref_age_ms: None,
+            },
+        },
+    };
+
+    let commits = [
+        vec![tag(MAIN_BRANCH, 1)],
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot_at(2, Some(1), 2, now_ms()),
+            },
+            tag(MAIN_BRANCH, 2),
+        ],
+    ];
+    for updates in commits {
+        assert_eq!(
+            try_commit_tab_1(&ctx, &ns_params, updates).await,
+            Err((400, "SetMainToTagNotAllowed".to_string()))
+        );
+    }
+    let after = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(after.metadata_location, before.metadata_location);
+    assert_eq!(after.metadata, before.metadata);
+
+    try_commit_tab_1(&ctx, &ns_params, vec![tag("t", 1)])
+        .await
+        .unwrap();
+    let metadata = load_as_client(&ctx, &ns_params, "tab-1").await;
+    assert!(metadata.refs()[MAIN_BRANCH].is_branch());
+    assert!(!metadata.refs()["t"].is_branch());
+}
+
+/// Registered metadata whose `last-updated-ms` is two hours ahead of the server clock: a
+/// commit is refused with 400, and the stored metadata stays loadable.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_commit_to_registered_metadata_ahead_of_the_server_clock_is_refused(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let created = load_table(&ctx, &ns_params, "tab-1").await;
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent {
+                namespace: ns_params.namespace.clone(),
+                name: "tab-1".to_string(),
+            },
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let ahead = now_ms() + 2 * HOUR_MS;
+    let mut metadata = serde_json::to_value(&*created.metadata).unwrap();
+    metadata["last-updated-ms"] = serde_json::json!(ahead);
+    let metadata_location = format!(
+        "{}/metadata/00001-registered.metadata.json",
+        created.metadata.location()
+    );
+    let io = memory_io_profile().file_io(None).await.unwrap();
+    io.write(
+        &metadata_location,
+        serde_json::to_vec(&metadata).unwrap().into(),
+    )
+    .await
+    .unwrap();
+    CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("tab-1".to_string())
+            .metadata_location(metadata_location.clone())
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let result = try_commit_tab_1(&ctx, &ns_params, vec![set_property("v")]).await;
+    assert_eq!(
+        result,
+        Err((400, "TimestampAheadOfServerClock".to_string()))
+    );
+    let loaded = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(loaded.metadata_location, Some(metadata_location));
+    assert_eq!(
+        load_as_client(&ctx, &ns_params, "tab-1")
+            .await
+            .last_updated_ms(),
+        ahead
+    );
+}
+
+/// A snapshot for `main` computed before another branch's commit carries an outdated
+/// sequence number: the commit is a conflict, and the client's retry from the reloaded
+/// table commits.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_stale_snapshot_after_a_branch_commit_is_a_conflict(pool: PgPool) {
+    let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let ts = table.metadata.last_updated_ms();
+    let snapshot = |snapshot_id: i64, parent: Option<i64>, sequence_number: i64| {
+        Snapshot::builder()
+            .with_snapshot_id(snapshot_id)
+            .with_parent_snapshot_id(parent)
+            .with_timestamp_ms(ts + snapshot_id)
+            .with_sequence_number(sequence_number)
+            .with_schema_id(0)
+            .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+            .with_summary(Summary {
+                operation: Operation::Append,
+                additional_properties: HashMap::new(),
+            })
+            .build()
+    };
+    let set_ref = |ref_name: &str, snapshot_id: i64| TableUpdate::SetSnapshotRef {
+        ref_name: ref_name.to_string(),
+        reference: create_snapshot_reference(snapshot_id),
+    };
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(1, None, 1),
+            },
+            set_ref(MAIN_BRANCH, 1),
+        ],
+    )
+    .await;
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(2, Some(1), 2),
+            },
+            set_ref("audit", 2),
+        ],
+    )
+    .await;
+
+    let stale = commit_tables_with_authz(
+        ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(table_ident.clone()),
+                requirements: vec![],
+                updates: vec![
+                    TableUpdate::AddSnapshot {
+                        snapshot: snapshot(3, Some(1), 2),
+                    },
+                    set_ref(MAIN_BRANCH, 3),
+                ],
+            }],
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        (stale.error.code, stale.error.r#type.as_str()),
+        (StatusCode::CONFLICT.as_u16(), "CommitFailedException")
+    );
+
+    let reloaded = load_table(&ctx, &ns_params, "tab-1").await;
+    let next_sequence_number = reloaded.metadata.last_sequence_number() + 1;
+    commit_table_changes(
+        &ctx,
+        &ns_params,
+        &table_ident,
+        vec![
+            TableUpdate::AddSnapshot {
+                snapshot: snapshot(3, Some(1), next_sequence_number),
+            },
+            set_ref(MAIN_BRANCH, 3),
+        ],
+    )
+    .await;
+    let committed = load_table(&ctx, &ns_params, "tab-1").await;
+    assert_eq!(committed.metadata.current_snapshot_id(), Some(3));
+    assert_eq!(committed.metadata.last_sequence_number(), 3);
+}
+
+async fn commit_test_setup(
+    pool: PgPool,
+) -> (
+    ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    CreateNamespaceResponse,
+    NamespaceParameters,
+    LoadTableResult,
+) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
+    let table = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("tab-1".to_string()), Some(false)),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    (ctx, ns, ns_params, table)
+}
+
+async fn table_test_setup(
+    pool: PgPool,
+) -> (
+    ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
+    CreateNamespaceResponse,
+    NamespaceParameters,
+    String,
+) {
+    let prof = memory_io_profile();
+    let base_loc = prof.base_location().unwrap().to_string();
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        prof,
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "ns1".to_string(),
+    )
+    .await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: ns.namespace.clone(),
+    };
+    (ctx, ns, ns_params, base_loc)
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_can_create_tables_with_same_prefix_1(pool: PgPool) {
+    let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
+    let tmp_id = Uuid::now_v7();
+    let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
+    create_request_1.location = Some(format!("{base_location}/{tmp_id}/my-table-2"));
+    let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
+    create_request_2.location = Some(format!("{base_location}/{tmp_id}/my-table"));
+
+    let _ = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_1,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_2,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_can_create_tables_with_same_prefix_2(pool: PgPool) {
+    let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
+    let tmp_id = Uuid::now_v7();
+    let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
+    create_request_1.location = Some(format!("{base_location}/{tmp_id}/my-table"));
+    let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
+    create_request_2.location = Some(format!("{base_location}/{tmp_id}/my-table-2"));
+
+    let _ = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_1,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_2,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_cannot_create_table_at_same_location(pool: PgPool) {
+    let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
+    let tmp_id = Uuid::now_v7();
+    let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
+    create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket"));
+    let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
+    create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket"));
+
+    let _ = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_1,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let e = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_2,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("Table was created at same location which should not be possible");
+    assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+    assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_cannot_create_staged_tables_at_sublocations_1(pool: PgPool) {
+    let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
+    let tmp_id = Uuid::now_v7();
+    let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
+    create_request_1.stage_create = Some(true);
+    create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket/inner"));
+    let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
+    create_request_2.stage_create = Some(true);
+    create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket"));
+    let _ = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_1,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let e = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_2,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("Staged table could be created at sublocation which should not be possible");
+    assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+    assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_cannot_create_staged_tables_at_sublocations_2(pool: PgPool) {
+    let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
+    let tmp_id = Uuid::now_v7();
+    let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
+    create_request_1.stage_create = Some(true);
+    create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket"));
+    let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
+    create_request_2.stage_create = Some(true);
+    create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket/inner"));
+    let _ = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_1,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let e = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_2,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("Staged table could be created at sublocation which should not be possible");
+    assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+    assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_cannot_create_tables_at_sublocations_1(pool: PgPool) {
+    let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
+    let tmp_id = Uuid::now_v7();
+
+    let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
+    create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket"));
+    let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
+    create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket/sublocation"));
+    let _ = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_1,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let e = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request_2,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("Staged table could be created at sublocation which should not be possible");
+    assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+    assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
+}
+
+async fn pagination_test_setup(
+    pool: PgPool,
+    n_tables: usize,
+    hidden_ranges: &[(usize, usize)],
+) -> (
+    ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    NamespaceParameters,
+) {
+    let prof = memory_io_profile();
+    let base_location = prof.base_location().unwrap();
+    let authz = HidingAuthorizer::new();
+    // Prevent hidden tables from becoming visible through `can_list_everything`.
+    authz.block_can_list_everything();
+
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        prof,
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "ns1".to_string(),
+    )
+    .await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: ns.namespace.clone(),
+    };
+    for i in 0..n_tables {
+        let mut create_request = create_request(Some(format!("{i}")), Some(false));
+        create_request.location = Some(format!("{base_location}/bucket/{i}"));
+        let tab = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request,
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        for (start, end) in hidden_ranges.iter().copied() {
+            if i >= start && i < end {
+                authz.hide(&format!(
+                    "table:{}/{}",
+                    warehouse.warehouse_id,
+                    tab.metadata.uuid()
+                ));
+            }
+        }
+    }
+
+    (ctx, ns_params)
+}
+
+impl_pagination_tests!(
+    table,
+    pagination_test_setup,
+    CatalogServer,
+    ListTablesQuery,
+    identifiers,
+    |tid| { tid.name }
+);
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_table_pagination(pool: sqlx::PgPool) {
+    let prof = memory_io_profile();
+
+    let authz = HidingAuthorizer::new();
+    // Prevent hidden tables from becoming visible through `can_list_everything`.
+    authz.block_can_list_everything();
+
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        prof,
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "ns1".to_string(),
+    )
+    .await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: ns.namespace.clone(),
+    };
+    // create 10 staged tables
+    for i in 0..10 {
+        let _ = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some(format!("tab-{i}")), Some(false)),
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // list 1 more than existing tables
+    let all = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::NotSpecified,
+            page_size: Some(11),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.identifiers.len(), 10);
+
+    // list exactly amount of existing tables
+    let all = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::NotSpecified,
+            page_size: Some(10),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.identifiers.len(), 10);
+
+    // next page is empty
+    let next = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::Present(all.next_page_token.unwrap()),
+            page_size: Some(10),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(next.identifiers.len(), 0);
+    assert!(next.next_page_token.is_none());
+
+    let first_six = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::NotSpecified,
+            page_size: Some(6),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_six.identifiers.len(), 6);
+    assert!(first_six.next_page_token.is_some());
+    let first_six_items = first_six
+        .identifiers
+        .iter()
+        .map(|i| i.name.clone())
+        .sorted()
+        .collect::<Vec<_>>();
+
+    for (i, item) in first_six_items.iter().enumerate().take(6) {
+        assert_eq!(item, &format!("tab-{i}"));
+    }
+
+    let next_four = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::Present(first_six.next_page_token.unwrap()),
+            page_size: Some(6),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(next_four.identifiers.len(), 4);
+    // page-size > number of items left -> no next page
+    assert!(next_four.next_page_token.is_none());
+
+    let next_four_items = next_four
+        .identifiers
+        .iter()
+        .map(|i| i.name.clone())
+        .sorted()
+        .collect::<Vec<_>>();
+
+    for (idx, i) in (6..10).enumerate() {
+        assert_eq!(next_four_items[idx], format!("tab-{i}"));
+    }
+
+    let mut ids = all.table_uuids.unwrap();
+    ids.sort();
+    for t in ids.iter().take(6).skip(4) {
+        authz.hide(&format!("table:{}/{t}", warehouse.warehouse_id));
+    }
+
+    let page = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::NotSpecified,
+            page_size: Some(5),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(page.identifiers.len(), 5);
+    assert!(page.next_page_token.is_some());
+    let page_items = page
+        .identifiers
+        .iter()
+        .map(|i| i.name.clone())
+        .sorted()
+        .collect::<Vec<_>>();
+    for (i, item) in page_items.iter().enumerate() {
+        let tab_id = if i > 3 { i + 2 } else { i };
+        assert_eq!(item, &format!("tab-{tab_id}"));
+    }
+
+    let next_page = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::Present(page.next_page_token.unwrap()),
+            page_size: Some(6),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(next_page.identifiers.len(), 3);
+
+    let next_page_items = next_page
+        .identifiers
+        .iter()
+        .map(|i| i.name.clone())
+        .sorted()
+        .collect::<Vec<_>>();
+
+    for (idx, i) in (7..10).enumerate() {
+        assert_eq!(next_page_items[idx], format!("tab-{i}"));
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_list_tables(pool: sqlx::PgPool) {
+    let prof = memory_io_profile();
+
+    let authz = HidingAuthorizer::new();
+
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        prof,
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "ns1".to_string(),
+    )
+    .await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: ns.namespace.clone(),
+    };
+    // create 10 staged tables
+    for i in 0..10 {
+        let _ = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some(format!("tab-{i}")), Some(false)),
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // By default `HidingAuthorizer` allows everything, meaning the quick check path in
+    // `list_tables` will be hit since `can_list_everything: true`.
+    let all = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::NotSpecified,
+            page_size: Some(11),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.identifiers.len(), 10);
+
+    // Block `can_list_everything` to hit alternative code path.
+    ctx.v1_state.authz.block_can_list_everything();
+    let all = CatalogServer::list_tables(
+        ns_params.clone(),
+        ListTablesQuery {
+            page_token: PageToken::NotSpecified,
+            page_size: Some(11),
+            return_uuids: true,
+            return_protection_status: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.identifiers.len(), 10);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_cannot_drop_protected_table(pool: PgPool) {
+    let (ctx, _, ns_params, _) = table_test_setup(pool).await;
+    let table_ident = TableIdent {
+        namespace: ns_params.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let tab = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("tab-1".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    ManagementApiServer::set_table_protection(
+        tab.metadata.uuid().into(),
+        WarehouseId::from_str_or_internal(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+        true,
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let e = CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        DropParams {
+            purge_requested: true,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("Table was dropped which should not be possible");
+    assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+
+    ManagementApiServer::set_table_protection(
+        tab.metadata.uuid().into(),
+        WarehouseId::from_str_or_internal(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+        false,
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        DropParams {
+            purge_requested: true,
+            force: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_can_force_drop_protected_table(pool: PgPool) {
+    let (ctx, _, ns_params, _) = table_test_setup(pool).await;
+    let table_ident = TableIdent {
+        namespace: ns_params.namespace.clone(),
+        name: "tab-1".to_string(),
+    };
+    let tab = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("tab-1".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    ManagementApiServer::set_table_protection(
+        tab.metadata.uuid().into(),
+        WarehouseId::from_str_or_internal(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+        true,
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        DropParams {
+            purge_requested: true,
+            force: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("Table couldn't be force dropped which should be possible");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_table_without_can_rename(pool: sqlx::PgPool) {
+    let prof = memory_io_profile();
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        prof,
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+
+    let from_ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "from_ns".to_string(),
+    )
+    .await;
+    let to_ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "to_ns".to_string(),
+    )
+    .await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: from_ns.namespace.clone(),
+    };
+    let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+    let table_name = "from_table".to_string();
+    CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some(table_name.clone()), Some(false)),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Not authorized to rename the source table
+    authz.block_action(format!("table:{:?}", CatalogTableAction::Rename).as_str());
+    let rename_table_request = RenameTableRequest {
+        source: TableIdent {
+            namespace: ns_params.namespace.clone(),
+            name: table_name.clone(),
+        },
+        destination: TableIdent {
+            namespace: to_ns.namespace.clone(),
+            name: table_name.clone(),
+        },
+    };
+    let response = CatalogServer::rename_table(
+        prefix.clone(),
+        rename_table_request.clone(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(response.error.code, StatusCode::FORBIDDEN, "{response:?}");
+
+    // If we also block the get_metadata_action, the user is not allowed to know if the table exists.
+    // thus, we should get a 404 instead.
+    authz.block_action(format!("table:{:?}", CatalogTableAction::GetMetadata).as_str());
+    let response = CatalogServer::rename_table(
+        prefix,
+        rename_table_request,
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(response.error.code, StatusCode::NOT_FOUND, "{response:?}");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_table_without_can_create(pool: sqlx::PgPool) {
+    let prof = memory_io_profile();
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        prof,
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+
+    let from_ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "from_ns".to_string(),
+    )
+    .await;
+    let to_ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "to_ns".to_string(),
+    )
+    .await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: from_ns.namespace.clone(),
+    };
+    let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+    let table_name = "from_table".to_string();
+    CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some(table_name.clone()), Some(false)),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Not authorized to create a table in the destination namepsace
+    // Block any CreateTable namespace action (prefix match — fields are dynamic).
+    authz.block_action("namespace:CreateTable");
+    let response = CatalogServer::rename_table(
+        prefix,
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: ns_params.namespace.clone(),
+                name: table_name.clone(),
+            },
+            destination: TableIdent {
+                namespace: to_ns.namespace.clone(),
+                name: table_name,
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(response.error.code, StatusCode::FORBIDDEN);
+    assert_eq!(response.error.r#type, "NamespaceActionForbidden");
+}
+
+/// Two namespaces and a table in the first, under a `HidingAuthorizer`.
+async fn move_table_setup(
+    pool: sqlx::PgPool,
+) -> (
+    ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    HidingAuthorizer,
+    WarehouseId,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    create_ns(ctx.clone(), prefix.clone(), "from_ns".to_string()).await;
+    create_ns(ctx.clone(), prefix.clone(), "to_ns".to_string()).await;
+    create_table_helper(ctx.clone(), prefix, "from_ns", "tbl", false)
+        .await
+        .unwrap();
+    (ctx, authz, warehouse.warehouse_id)
+}
+
+async fn rename_table_between(
+    ctx: &ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    warehouse_id: WarehouseId,
+    from: (&str, &str),
+    to: (&str, &str),
+) -> lakekeeper::api::Result<()> {
+    CatalogServer::rename_table(
+        Some(Prefix(warehouse_id.to_string())),
+        RenameTableRequest {
+            source: TableIdent::new(NamespaceIdent::new(from.0.to_string()), from.1.to_string()),
+            destination: TableIdent::new(NamespaceIdent::new(to.0.to_string()), to.1.to_string()),
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+}
+
+async fn table_exists(
+    ctx: &ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    warehouse_id: WarehouseId,
+    namespace: &str,
+    name: &str,
+) -> bool {
+    PostgresBackend::get_table_info(
+        warehouse_id,
+        TableIdent::new(NamespaceIdent::new(namespace.to_string()), name.to_string()),
+        TabularListFlags::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .is_some()
+}
+
+/// Moving a table into another namespace needs `move` on the table, not just `rename`.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_move_table_without_move_on_source(pool: sqlx::PgPool) {
+    let (ctx, authz, warehouse_id) = move_table_setup(pool).await;
+    authz.block_action("table:Move");
+
+    let err = rename_table_between(&ctx, warehouse_id, ("from_ns", "tbl"), ("to_ns", "tbl"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "TableActionForbidden");
+    assert!(table_exists(&ctx, warehouse_id, "from_ns", "tbl").await);
+    assert!(!table_exists(&ctx, warehouse_id, "to_ns", "tbl").await);
+}
+
+/// Moving a table into another namespace needs `accept_moved_tabular` on the destination,
+/// not just `create_table`.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_move_table_without_accept_moved_tabular_on_destination(pool: sqlx::PgPool) {
+    let (ctx, authz, warehouse_id) = move_table_setup(pool).await;
+    authz.block_action("namespace:AcceptMovedTabular");
+
+    let err = rename_table_between(&ctx, warehouse_id, ("from_ns", "tbl"), ("to_ns", "tbl"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+    assert!(table_exists(&ctx, warehouse_id, "from_ns", "tbl").await);
+    assert!(!table_exists(&ctx, warehouse_id, "to_ns", "tbl").await);
+}
+
+/// A rename into another namespace is recorded as `move` with its destination, whether it is
+/// allowed or refused; a rename within one namespace, however its path is cased, is recorded
+/// as `rename`.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_move_table_is_recorded_as_move(pool: sqlx::PgPool) {
+    use lakekeeper::service::events::{EventListener, context::ActionContextKey};
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, warehouse_id) = move_table_setup(pool).await;
+    let listener = Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as Arc<dyn EventListener>)
+        .await;
+    let moved_to = |namespace: &str| RecordedAction {
+        action_name: "move".to_string(),
+        context: vec![ActionContextKey::Destination(vec![namespace.to_string()])],
+    };
+    let renamed = RecordedAction {
+        action_name: "rename".to_string(),
+        context: vec![],
+    };
+
+    // The source path differs from the destination path only in case: one namespace.
+    rename_table_between(&ctx, warehouse_id, ("FROM_NS", "tbl"), ("from_ns", "tbl2"))
+        .await
+        .unwrap();
+    rename_table_between(&ctx, warehouse_id, ("from_ns", "tbl2"), ("to_ns", "tbl2"))
+        .await
+        .unwrap();
+    authz.block_action("table:Move");
+    let err = rename_table_between(&ctx, warehouse_id, ("to_ns", "tbl2"), ("from_ns", "tbl2"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.r#type, "TableActionForbidden");
+
+    assert_eq!(listener.settled_counts(2, 1).await, (2, 1));
+    assert_eq!(
+        listener.recorded_actions(),
+        (
+            vec![vec![renamed], vec![moved_to("to_ns")]],
+            vec![vec![moved_to("from_ns")]],
+        )
+    );
+    assert!(table_exists(&ctx, warehouse_id, "to_ns", "tbl2").await);
+}
+
+/// With both move permissions a table moves; a rename within one namespace asks neither.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_move_table_with_move_permissions_and_in_place_rename_without(pool: sqlx::PgPool) {
+    let (ctx, authz, warehouse_id) = move_table_setup(pool).await;
+
+    rename_table_between(&ctx, warehouse_id, ("from_ns", "tbl"), ("to_ns", "tbl"))
+        .await
+        .unwrap();
+    assert!(!table_exists(&ctx, warehouse_id, "from_ns", "tbl").await);
+    assert!(table_exists(&ctx, warehouse_id, "to_ns", "tbl").await);
+
+    authz.block_action("table:Move");
+    authz.block_action("namespace:AcceptMovedTabular");
+    rename_table_between(&ctx, warehouse_id, ("to_ns", "tbl"), ("to_ns", "renamed"))
+        .await
+        .unwrap();
+    assert!(table_exists(&ctx, warehouse_id, "to_ns", "renamed").await);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_table_without_target_namespace(pool: sqlx::PgPool) {
+    let prof = memory_io_profile();
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        prof,
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+
+    let from_ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "from_ns".to_string(),
+    )
+    .await;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: from_ns.namespace.clone(),
+    };
+    let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+    let table_name = "from_table".to_string();
+    CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some(table_name.clone()), Some(false)),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // All actions are allowed but the target namespace does not exist
+    let response = CatalogServer::rename_table(
+        prefix,
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: ns_params.namespace.clone(),
+                name: table_name.clone(),
+            },
+            destination: TableIdent {
+                namespace: NamespaceIdent::new("to_ns".to_string()),
+                name: table_name,
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(response.error.code, StatusCode::NOT_FOUND);
+    assert_eq!(response.error.r#type, "NoSuchNamespaceException");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_table_without_source_table(pool: sqlx::PgPool) {
+    let prof = memory_io_profile();
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        prof,
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+
+    let from_ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "from_ns".to_string(),
+    )
+    .await;
+    let to_ns = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "to_ns".to_string(),
+    )
+    .await;
+    let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+    let table_name = "from_table".to_string();
+
+    // All actions are allowed but the origin table does not exist
+    let response = CatalogServer::rename_table(
+        prefix,
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: from_ns.namespace.clone(),
+                name: table_name.clone(),
+            },
+            destination: TableIdent {
+                namespace: to_ns.namespace.clone(),
+                name: table_name,
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(response.error.code, StatusCode::NOT_FOUND);
+}
+
+/// Tables, views and generic tables share one name space, so the spec's
+/// "already exists as a table **or view**" applies across types.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_table_onto_a_view_name_conflicts(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "rename_ns".to_string()).await;
+
+    create_table_helper(ctx.clone(), prefix.clone(), "rename_ns", "the_table", false)
+        .await
+        .unwrap();
+    create_view(ctx.clone(), &prefix, "rename_ns", "the_view", None)
+        .await
+        .unwrap();
+
+    let err = CatalogServer::rename_table(
+        Some(Prefix(prefix)),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_table".to_string(),
+            },
+            destination: TableIdent {
+                namespace: ns.namespace,
+                name: "the_view".to_string(),
+            },
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::CONFLICT);
+    assert_eq!(err.error.r#type, "AlreadyExistsException");
+}
+
+/// A rename must land in the namespace that bears the destination name *now*, not in the
+/// one a stale cache entry says bears it.
+///
+/// Namespace idents resolve through a per-process `ident -> id` map with no cross-replica
+/// invalidation, so a replica that did not serve a namespace move keeps answering with the
+/// namespace that used to hold the name. That is manufactured here by moving `after` away
+/// and letting a different namespace take the name, both written straight to the catalog as
+/// another replica's writes would arrive — the endpoint emits the events this process's
+/// cache listens to, the storage layer does not.
+///
+/// What this pins is the endpoint's side: the destination has to be read uncached, or the
+/// request authorizes the namespace that used to hold the name and hands its id down, and
+/// the write — which requires that id to still bear the name — refuses a rename the catalog
+/// can perfectly well perform. The write's side of the contract, that a destination id is
+/// used as given rather than re-resolved from the name, cannot be reached from here once the
+/// read is fresh; `test_rename_into_a_namespace_that_no_longer_bears_the_destination_name_fails`
+/// covers it directly.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_table_into_a_namespace_that_took_the_name_from_another(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let prefix = warehouse_id.to_string();
+
+    create_ns(ctx.clone(), prefix.clone(), "source_ns".to_string()).await;
+    create_ns(ctx.clone(), prefix.clone(), "after".to_string()).await;
+    create_table_helper(ctx.clone(), prefix.clone(), "source_ns", "tbl", false)
+        .await
+        .unwrap();
+
+    let after = NamespaceIdent::new("after".to_string());
+    let vacating_id =
+        PostgresBackend::get_namespace(warehouse_id, after.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .namespace_id();
+
+    // Another replica's writes: they are recorded, and this process's cache keeps mapping
+    // `after` to the namespace that has since been renamed away until its poller evicts it.
+    let mut t = WriteTransaction::<PostgresBackend>::begin(ctx.v1_state.catalog.clone())
+        .await
+        .unwrap();
+    PostgresBackend::move_namespace(
+        warehouse_id,
+        vacating_id,
+        &NamespaceIdent::new("elsewhere".to_string()),
+        false,
+        &mut t,
+    )
+    .await
+    .unwrap();
+    let taker_id = PostgresBackend::create_namespace(
+        warehouse_id,
+        NamespaceId::new_random(),
+        CreateNamespaceRequest {
+            namespace: after.clone(),
+            properties: None,
+        },
+        t.transaction(),
+    )
+    .await
+    .unwrap()
+    .namespace_id();
+    t.commit_as_another_instance().await.unwrap();
+    assert_ne!(taker_id, vacating_id);
+
+    // The premise of the test. Were the cached mapping to be repaired by something else, the
+    // rename below would pass without exercising anything.
+    let cached =
+        PostgresBackend::get_namespace(warehouse_id, after.clone(), ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .namespace_id();
+    assert_eq!(
+        cached, vacating_id,
+        "the cached `after` mapping must still be the stale one for this test to mean anything"
+    );
+
+    CatalogServer::rename_table(
+        Some(Prefix(prefix)),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: NamespaceIdent::new("source_ns".to_string()),
+                name: "tbl".to_string(),
+            },
+            destination: TableIdent {
+                namespace: after.clone(),
+                name: "tbl".to_string(),
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("`after` names a namespace that exists; the rename must not fail on a stale id");
+
+    let moved = PostgresBackend::get_table_info(
+        warehouse_id,
+        TableIdent {
+            namespace: after,
+            name: "tbl".to_string(),
+        },
+        TabularListFlags::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("the table must be findable under its new name");
+    assert_eq!(
+        moved.namespace_id, taker_id,
+        "the table must land in the namespace that bears `after` now, not the stale one"
+    );
+}
+
+/// A soft-deleted table does not hold its name — `createTable` reuses it, so
+/// `renameTable` must too.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_table_onto_a_soft_deleted_name_succeeds(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(3600),
+        },
+        None,
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "rename_ns".to_string()).await;
+
+    create_table_helper(
+        ctx.clone(),
+        prefix.clone(),
+        "rename_ns",
+        "the_source",
+        false,
+    )
+    .await
+    .unwrap();
+    create_table_helper(
+        ctx.clone(),
+        prefix.clone(),
+        "rename_ns",
+        "the_dropped",
+        false,
+    )
+    .await
+    .unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        &prefix,
+        "rename_ns",
+        "the_dropped",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::rename_table(
+        Some(Prefix(prefix.clone())),
+        RenameTableRequest {
+            source: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_source".to_string(),
+            },
+            destination: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "the_dropped".to_string(),
+            },
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(Prefix(prefix)),
+            table: TableIdent {
+                namespace: ns.namespace,
+                name: "the_dropped".to_string(),
+            },
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the renamed table must be loadable under the reused name");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_advertises_client_side_scan_planning(pool: PgPool) {
+    let (ctx, _ns, ns_params, _) = table_test_setup(pool).await;
+
+    // Register reuses an existing table's metadata file; overwrite lets it attach
+    // to a live name without a drop first.
+    let source = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("planning_register".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let registered = CatalogServer::register_table(
+        ns_params,
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("planning_register".to_string())
+            .metadata_location(source.metadata_location.unwrap())
+            .overwrite(true)
+            .build(),
+        DataAccess::not_specified(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("registering over the same name must succeed");
+
+    assert_advertises_client_planning(registered.config.as_ref(), "registerTable");
+}
+
+/// A namespace `reg_ns` holding table `existing`, and the metadata locations of `existing`
+/// and of a file that does not exist next to it.
+async fn register_table_setup(
+    pool: PgPool,
+) -> (
+    ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
+    HidingAuthorizer,
+    NamespaceParameters,
+    String,
+    String,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns = create_ns(ctx.clone(), prefix.clone(), "reg_ns".to_string()).await;
+    let created = create_table_helper(ctx.clone(), prefix.clone(), "reg_ns", "existing", false)
+        .await
+        .unwrap();
+    let existing_location = created.metadata_location.unwrap();
+    let missing_location = format!(
+        "{}/does-not-exist.metadata.json",
+        existing_location.rsplit_once('/').unwrap().0
+    );
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(prefix)),
+        namespace: ns.namespace,
+    };
+    (ctx, authz, ns_params, existing_location, missing_location)
+}
+
+/// Register checks that the caller can see the namespace before it reads the metadata file:
+/// a missing file is reported as a namespace the caller cannot see, not as a storage error.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_authorizes_namespace_before_reading_metadata(pool: PgPool) {
+    let (ctx, authz, ns_params, _, missing_location) = register_table_setup(pool).await;
+
+    authz.block_action("namespace:GetMetadata");
+    let err = CatalogServer::register_table(
+        ns_params,
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("registered".to_string())
+            .metadata_location(missing_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchNamespaceException");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_refuses_invalid_names(pool: PgPool) {
+    let (ctx, _, ns_params, existing_location, _) = register_table_setup(pool).await;
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name(name.to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+}
+
+/// `create_table` is checked after the metadata file is read: a caller who can see the
+/// namespace but may not create tables in it is refused.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_requires_create_table(pool: PgPool) {
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+
+    authz.block_action("namespace:CreateTable");
+    let err = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("registered".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+
+    let exists = CatalogServer::table_exists(
+        TableParameters {
+            prefix: ns_params.prefix,
+            table: TableIdent::new(ns_params.namespace, "registered".to_string()),
+        },
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(exists.error.code, StatusCode::NOT_FOUND, "{exists:?}");
+}
+
+/// `create_table` is checked before the file's contents are validated: a caller who may
+/// not create tables learns nothing about a file the warehouse would refuse.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_checks_create_table_before_validating_the_file(pool: PgPool) {
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let warehouse_id: WarehouseId = ns_params
+        .prefix
+        .as_ref()
+        .unwrap()
+        .as_str()
+        .parse::<Uuid>()
+        .unwrap()
+        .into();
+    ManagementApiServer::update_warehouse_format_version_policy(
+        warehouse_id,
+        UpdateWarehouseFormatVersionPolicyRequest {
+            allowed_format_versions: vec![FormatVersion::V1],
+            default_format_version: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    let register = || {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("registered".to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let err = register().await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{err:?}");
+    assert_eq!(err.error.r#type, "FormatVersionNotAllowed");
+
+    authz.block_action("namespace:CreateTable");
+    let err = register().await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+}
+
+/// Registering adopts existing files, so it needs the register right on the warehouse
+/// besides `create_table` on the namespace. It is checked before the metadata file is read. A
+/// refusal is recorded on the warehouse and, by the requested name, as a refused
+/// `create_table` on the namespace.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_requires_the_register_right(pool: PgPool) {
+    use lakekeeper::service::events::{
+        AuthorizationFailureReason, EventListener, context::ActionContextKey,
+    };
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, ns_params, existing_location, missing_location) =
+        register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterTable
+    ));
+    let listener = Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as Arc<dyn EventListener>)
+        .await;
+    let register = |metadata_location: String| {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("registered".to_string())
+                .metadata_location(metadata_location)
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    // Reading a missing file would fail with a storage error, not with a refusal.
+    let err = register(missing_location).await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    let err = register(existing_location).await.unwrap_err();
+    assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+    assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+
+    // Each refusal writes two records, from separate tasks, so they may arrive in any order.
+    assert_eq!(listener.settled_counts(0, 4).await, (0, 4));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::ActionForbidden; 4]
+    );
+    let (succeeded, mut failed) = listener.recorded_actions();
+    failed.sort_by(|a, b| a[0].action_name.cmp(&b[0].action_name));
+    assert_eq!(succeeded, Vec::<Vec<RecordedAction>>::new());
+    let create_table = vec![RecordedAction {
+        action_name: "create_table".to_string(),
+        context: vec![
+            ActionContextKey::Name("registered".to_string()),
+            ActionContextKey::Properties(std::collections::BTreeMap::new()),
+        ],
+    }];
+    let register_table = vec![RecordedAction {
+        action_name: "register_table".to_string(),
+        context: vec![],
+    }];
+    assert_eq!(
+        failed,
+        vec![
+            create_table.clone(),
+            create_table,
+            register_table.clone(),
+            register_table
+        ]
+    );
+
+    let exists = CatalogServer::table_exists(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent::new(ns_params.namespace.clone(), "registered".to_string()),
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(exists.error.code, StatusCode::NOT_FOUND, "{exists:?}");
+}
+
+/// Drops `existing` without purging its files, registers its metadata file as `adopted`
+/// with `blocked` refused, and loads `adopted` as the same caller. Returns both responses
+/// and the checks the register made after it created the table.
+async fn adopt_dropped_table(
+    pool: PgPool,
+    blocked: &[CatalogTableAction],
+) -> (
+    LoadTableResult,
+    LoadTableResult,
+    Vec<RecordedTabularCheck>,
+    String,
+) {
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    for action in blocked {
+        authz.block_action(&format!("table:{action:?}"));
+    }
+
+    let registered = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("adopted".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the register right and create_table are allowed");
+    let register_checks = authz.tabular_checks().last().cloned().unwrap();
+    let table_object = format!("table:{}/{}", prefix.as_str(), registered.metadata.uuid());
+
+    let LoadTableResultOrNotModified::LoadTableResult(loaded) = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(prefix),
+            table: TableIdent::new(ns_params.namespace, "adopted".to_string()),
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    (registered, loaded, register_checks, table_object)
+}
+
+/// A register asks on the table it registered what `loadTable` asks, and vends what
+/// `loadTable` vends the same caller. Both responses are tagged with the storage access
+/// they carry, so equal tags mean equal access.
+async fn assert_register_vends_as_load(pool: PgPool, blocked: &[CatalogTableAction]) {
+    let (registered, loaded, register_checks, table_object) =
+        adopt_dropped_table(pool, blocked).await;
+
+    let check = |action: &str| RecordedTabularCheck {
+        object: table_object.clone(),
+        action: action.to_string(),
+        user: None,
+        is_delegated_execution: false,
+    };
+    assert_eq!(
+        register_checks,
+        vec![check("GetMetadata"), check("ReadData"), check("WriteData")],
+        "{blocked:?}"
+    );
+    assert!(registered.etag.is_some(), "{blocked:?}");
+    assert_eq!(registered.etag, loaded.etag, "{blocked:?}");
+}
+
+/// A caller who may register and create a table but not see it gets what `loadTable` gives
+/// them: not found, with neither metadata nor credentials. The table stays registered, and
+/// the refusal is recorded on the table.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_returns_not_found_to_a_caller_who_cannot_see_the_table(pool: PgPool) {
+    use lakekeeper::service::events::{
+        AuthorizationFailureReason, EventListener, context::EntityType,
+    };
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    authz.block_action(&format!("table:{:?}", CatalogTableAction::GetMetadata));
+    let listener = Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as Arc<dyn EventListener>)
+        .await;
+
+    let err = CatalogServer::register_table(
+        ns_params.clone(),
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("adopted".to_string())
+            .metadata_location(existing_location)
+            .build(),
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("a caller who cannot see the table must get neither metadata nor credentials");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    assert_eq!(err.error.r#type, "NoSuchTableException");
+
+    let warehouse_id = WarehouseId::from_str_or_internal(prefix.as_str()).unwrap();
+    assert!(table_exists(&ctx, warehouse_id, "reg_ns", "adopted").await);
+
+    // The register and the create were allowed and recorded; only seeing the table was refused.
+    assert_eq!(listener.settled_counts(2, 1).await, (2, 1));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::CannotSeeResource]
+    );
+    assert_eq!(
+        listener.recorded_actions().1,
+        vec![vec![RecordedAction {
+            action_name: "get_metadata".to_string(),
+            context: vec![],
+        }]]
+    );
+    assert_eq!(
+        listener.failed_entity_types(),
+        vec![vec![EntityType::Table]]
+    );
+
+    let load_err = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(prefix),
+            table: TableIdent::new(ns_params.namespace, "adopted".to_string()),
+        },
+        LoadTableRequest::default(),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(load_err.error.code, err.error.code);
+    assert_eq!(load_err.error.r#type, err.error.r#type);
+    assert_eq!(load_err.error.message, err.error.message);
+}
+
+/// A register that fails after its commit leaves the table registered. A replay with the same
+/// idempotency key returns what `loadTable` returns, and a retry without a key is a conflict.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_replay_after_a_failure_after_the_commit(pool: PgPool) {
+    use lakekeeper::service::idempotency::IdempotencyKey;
+
+    let (ctx, authz, ns_params, existing_location, _) = register_table_setup(pool).await;
+    let prefix = ns_params.prefix.clone().unwrap();
+    drop_table_helper(
+        ctx.clone(),
+        prefix.as_str(),
+        "reg_ns",
+        "existing",
+        Some(false),
+        false,
+    )
+    .await
+    .unwrap();
+    let get_metadata = format!("table:{:?}", CatalogTableAction::GetMetadata);
+    authz.block_action(&get_metadata);
+
+    let mut with_key = RequestMetadata::new_unauthenticated();
+    with_key.with_idempotency_key(IdempotencyKey::parse(&Uuid::now_v7().to_string()).unwrap());
+    let register = |request_metadata: RequestMetadata| {
+        CatalogServer::register_table(
+            ns_params.clone(),
+            iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                .name("adopted".to_string())
+                .metadata_location(existing_location.clone())
+                .build(),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            request_metadata,
+        )
+    };
+    let load = || {
+        CatalogServer::load_table(
+            TableParameters {
+                prefix: Some(prefix.clone()),
+                table: TableIdent::new(ns_params.namespace.clone(), "adopted".to_string()),
+            },
+            LoadTableRequest::default(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let failed = register(with_key.clone()).await.unwrap_err();
+    assert_eq!(failed.error.code, StatusCode::NOT_FOUND, "{failed:?}");
+    assert_eq!(failed.error.r#type, "NoSuchTableException");
+
+    let replayed = register(with_key.clone()).await.unwrap_err();
+    let refused_load = load().await.unwrap_err();
+    assert_eq!(replayed.error.code, StatusCode::NOT_FOUND, "{replayed:?}");
+    assert_eq!(replayed.error.r#type, "NoSuchTableException");
+    assert_eq!(replayed.error.message, refused_load.error.message);
+
+    let retried = register(RequestMetadata::new_unauthenticated())
+        .await
+        .unwrap_err();
+    assert_eq!(retried.error.code, StatusCode::CONFLICT, "{retried:?}");
+    assert_eq!(retried.error.r#type, "AlreadyExistsException");
+
+    authz.unblock_action(&get_metadata);
+    let replayed = register(with_key)
+        .await
+        .expect("the replay loads the table once the caller may see it");
+    let LoadTableResultOrNotModified::LoadTableResult(loaded) = load().await.unwrap() else {
+        panic!("an unconditional load must not return 304");
+    };
+    assert_eq!(replayed.metadata_location, loaded.metadata_location);
+    assert!(replayed.etag.is_some());
+    assert_eq!(replayed.etag, loaded.etag);
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_vends_read_write_to_a_reader_and_writer(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[]).await;
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_vends_read_only_to_a_reader(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[CatalogTableAction::WriteData]).await;
+}
+
+/// Write credentials can read, so a caller who may write but not read gets none, as on load.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_vends_nothing_without_read(pool: PgPool) {
+    assert_register_vends_as_load(pool, &[CatalogTableAction::ReadData]).await;
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_with_overwrite(pool: PgPool) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
+
+    // Create a table first
+    let initial_table = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("test_overwrite".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Verify the table exists
+    let table_ident = TableIdent {
+        namespace: ns.namespace.clone(),
+        name: "test_overwrite".to_string(),
+    };
+
+    CatalogServer::table_exists(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: table_ident.clone(),
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Now create a second table to use for the overwrite test
+    let second_table = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("second_table".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Read table metadata
+
+    // Drop second table, keep data
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: ns_params.prefix.clone(),
+            table: TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "second_table".to_string(),
+            },
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("Failed to drop second table");
+
+    // Test without overwrite flag - should fail
+    let register_request = iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+        .name("test_overwrite".to_string())
+        .metadata_location(second_table.metadata_location.as_ref().unwrap().clone())
+        .build();
+
+    CatalogServer::register_table(
+        ns_params.clone(),
+        register_request.clone(),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("Registration should fail without overwrite flag");
+
+    // Test with overwrite flag - should succeed
+    let register_request_with_overwrite =
+        iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name("test_overwrite".to_string())
+            .metadata_location(second_table.metadata_location.as_ref().unwrap().clone())
+            .overwrite(true)
+            .build();
+
+    let result = CatalogServer::register_table(
+        ns_params.clone(),
+        register_request_with_overwrite,
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "Registration with overwrite flag should succeed, but failed with: {:?}",
+        result.err().map(|e| e.error.message)
+    );
+
+    // Verify the table exists and has the new metadata
+    let loaded_table = CatalogServer::load_table(
+        TableParameters {
+            prefix: ns_params.prefix,
+            table: table_ident,
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let LoadTableResultOrNotModified::LoadTableResult(loaded_table) = loaded_table else {
+        panic!("Expected LoadTableResult, got NotModified");
+    };
+
+    // The loaded table should have the UUID and content of the second table
+    assert_eq!(loaded_table.metadata.uuid(), second_table.metadata.uuid());
+    assert_ne!(loaded_table.metadata.uuid(), initial_table.metadata.uuid());
+}
+
+// Reasons for using a mix of PostgresCatalog and CatalogServer:
+//
+// - PostgresCatalog: required for specifying id of table to be created
+// - CatalogServer: required for taking TabularDeleteProfile into account
+#[lakekeeper_storage_postgres::db_test]
+async fn test_reuse_table_ids_hard_delete(pool: PgPool) {
+    let delete_profile = TabularDeleteProfile::Hard {};
+    let (ctx, mut wh_ns_data, _base_loc) =
+        tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+    let t_id = TableId::new_random();
+    let t_name = "t1".to_string();
+    let list_flags = TabularListFlags::all();
+
+    // Create tables with the same table ID across different warehouses.
+    for (wh_id, _ns_id, ns_params) in &wh_ns_data {
+        let _inited_table = initialize_table(
+            *wh_id,
+            ctx.v1_state.catalog.clone(),
+            false,
+            Some(ns_params.namespace.clone()),
+            Some(t_id),
+            Some(t_name.clone()),
+        )
+        .await;
+
+        // Verify table creation.
+        let _meta =
+            PostgresBackend::get_table_info(*wh_id, t_id, list_flags, ctx.v1_state.catalog.clone())
+                .await
+                .unwrap()
+                .expect("table and metadata should exist");
+    }
+
+    // Hard delete one of the tables.
+    let deleted_table_data = wh_ns_data.pop().unwrap();
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: deleted_table_data.2.prefix.clone(),
+            table: TableIdent {
+                namespace: deleted_table_data.2.namespace.clone(),
+                name: t_name.clone(),
+            },
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Deleted table cannot be accessed anymore.
+    let deleted_res = PostgresBackend::get_table_info(
+        deleted_table_data.0,
+        t_id,
+        list_flags,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(deleted_res.is_none(), "Table should be deleted");
+
+    // Tables in other warehouses are still there.
+    assert!(!wh_ns_data.is_empty());
+    for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
+        PostgresBackend::get_table_info(*wh_id, t_id, list_flags, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .expect("table and metadata should still exist");
+    }
+
+    // As the delete was hard, the table can be recreated in the warehouse.
+    let _inited_table = initialize_table(
+        deleted_table_data.0,
+        ctx.v1_state.catalog.clone(),
+        false,
+        Some(deleted_table_data.2.namespace.clone()),
+        Some(t_id),
+        Some(t_name.clone()),
+    )
+    .await;
+    let _meta = PostgresBackend::get_table_info(
+        deleted_table_data.0,
+        t_id,
+        list_flags,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("table and metadata should exist");
+}
+
+// Reasons for using a mix of PostgresCatalog and CatalogServer:
+//
+// - PostgresCatalog: required for specifying id of table to be created
+// - CatalogServer: required for taking TabularDeleteProfile into account
+#[lakekeeper_storage_postgres::db_test]
+async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
+    let delete_profile = TabularDeleteProfile::Soft {
+        expiration_seconds: chrono::Duration::seconds(10),
+    };
+    let (ctx, mut wh_ns_data, _base_loc) =
+        tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+    let t_id = TableId::new_random();
+    let t_name = "t1".to_string();
+    let list_flags_active = TabularListFlags::active();
+
+    // Create tables with the same table ID across different warehouses.
+    for (wh_id, _ns_id, ns_params) in &wh_ns_data {
+        let _inited_table = initialize_table(
+            *wh_id,
+            ctx.v1_state.catalog.clone(),
+            false,
+            Some(ns_params.namespace.clone()),
+            Some(t_id),
+            Some(t_name.clone()),
+        )
+        .await;
+
+        // Verify table creation.
+        let _meta = PostgresBackend::get_table_info(
+            *wh_id,
+            t_id,
+            list_flags_active,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("table and metadata should exist");
+    }
+
+    // Soft delete one of the tables.
+    let deleted_table_data = wh_ns_data.pop().unwrap();
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: deleted_table_data.2.prefix.clone(),
+            table: TableIdent {
+                namespace: deleted_table_data.2.namespace.clone(),
+                name: t_name.clone(),
+            },
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Check availability depending on list flags.
+    let deleted_res = PostgresBackend::get_table_info(
+        deleted_table_data.0,
+        t_id,
+        list_flags_active,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(deleted_res.is_none(), "Table should be soft deleted");
+    let deleted_res = PostgresBackend::get_table_info(
+        deleted_table_data.0,
+        t_id,
+        TabularListFlags::all(), // include soft deleted
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(deleted_res.is_some(), "Table should be only soft deleted");
+
+    // Tables in other warehouses are still there.
+    assert!(!wh_ns_data.is_empty());
+    for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
+        PostgresBackend::get_table_info(
+            *wh_id,
+            t_id,
+            list_flags_active,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("table and metadata should still exist");
+    }
+}
+
+/// `registerTable` is the only way a table enters a warehouse without going
+/// through `createTable`, so it has to honour the format-version policy too.
+/// Otherwise the setting is advisory: a warehouse restricted to v1/v2 quietly
+/// acquires a v3 table, and the failure surfaces later in whichever engine
+/// cannot read it.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_table_enforces_the_format_version_policy(pg_pool: PgPool) {
+    let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
+    let warehouse_id: WarehouseId = ns_params
+        .prefix
+        .as_ref()
+        .unwrap()
+        .as_str()
+        .parse::<Uuid>()
+        .unwrap()
+        .into();
+
+    // All three versions are allowed by default, so both tables can be created
+    // before the policy is tightened underneath them.
+    let mut metadata_locations = HashMap::new();
+    for (name, version) in [
+        ("v3_table", FormatVersion::V3),
+        ("v2_table", FormatVersion::V2),
+    ] {
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_table_request_with_format(name, Some(version)),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(table.metadata.format_version(), version);
+
+        // Registering reuses the metadata file, so the original table has to go
+        // first — two tables cannot share one table UUID. Keep the data.
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: name.to_string(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        metadata_locations.insert(version, table.metadata_location.clone().unwrap());
+    }
+
+    ManagementApiServer::update_warehouse_format_version_policy(
+        warehouse_id,
+        UpdateWarehouseFormatVersionPolicyRequest {
+            allowed_format_versions: vec![FormatVersion::V1, FormatVersion::V2],
+            default_format_version: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    let register = |name: &str, version: FormatVersion| {
+        let request = iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+            .name(name.to_string())
+            .metadata_location(metadata_locations[&version].clone())
+            .build();
+        CatalogServer::register_table(
+            ns_params.clone(),
+            request,
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+    };
+
+    let err = register("registered_v3", FormatVersion::V3)
+        .await
+        .expect_err("a v3 file must not register into a v1/v2 warehouse");
+    assert_eq!(err.error.r#type, "FormatVersionNotAllowed");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST.as_u16());
+
+    // A permitted version still registers, so the gate is not a blanket refusal.
+    register("registered_v2", FormatVersion::V2)
+        .await
+        .expect("a v2 file is allowed by the policy");
+}
+
+/// `data-access` on register is only observable against a storage profile that
+/// actually vends. The memory profile the rest of this file uses ignores it and
+/// returns an empty config, so these live against a real S3-compatible store.
+mod register_data_access {
+    /// Named so nextest's default profile filters it out; CI runs it against the
+    /// store configured via `LAKEKEEPER_TEST__S3_*`.
+    pub mod s3_compat_integration_tests {
+        use lakekeeper::api::iceberg::v1::DataAccessMode;
+        use lakekeeper_integration_tests::s3_compatible_profile;
+
+        use super::super::*;
+
+        type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
+
+        async fn drop_keeping_data(ctx: &Ctx, ns_params: &NamespaceParameters, table: &TableIdent) {
+            CatalogServer::drop_table(
+                TableParameters {
+                    prefix: ns_params.prefix.clone(),
+                    table: table.clone(),
+                },
+                DropParams {
+                    purge_requested: false,
+                    force: false,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .expect("dropping without purge must leave the metadata file in place");
+        }
+
+        async fn register(
+            ctx: &Ctx,
+            ns_params: &NamespaceParameters,
+            metadata_location: &str,
+            data_access: impl Into<DataAccessMode> + Send,
+        ) -> LoadTableResult {
+            CatalogServer::register_table(
+                ns_params.clone(),
+                iceberg_ext::catalog::rest::RegisterTableRequest::builder()
+                    .name("registered".to_string())
+                    .metadata_location(metadata_location.to_string())
+                    .build(),
+                data_access,
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap()
+        }
+
+        #[lakekeeper_storage_postgres::db_test]
+        async fn test_register_honors_the_requested_data_access(pool: PgPool) {
+            let (profile, cred) = s3_compatible_profile();
+            let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(
+                pool,
+                profile,
+                Some(cred),
+                AllowAllAuthorizer::default(),
+                TabularDeleteProfile::Hard {},
+                None,
+            )
+            .await;
+            let ns = create_ns(
+                ctx.clone(),
+                warehouse.warehouse_id.to_string(),
+                "ns1".to_string(),
+            )
+            .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            let table = TableIdent {
+                namespace: ns.namespace.clone(),
+                name: "registered".to_string(),
+            };
+
+            // Creating writes the metadata file that register then reads back.
+            let created = CatalogServer::create_table(
+                ns_params.clone(),
+                create_request(Some("registered".to_string()), Some(false)),
+                DataAccess::not_specified(),
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+            let metadata_location = created.metadata_location.clone().unwrap();
+
+            drop_keeping_data(&ctx, &ns_params, &table).await;
+            let client_managed = register(
+                &ctx,
+                &ns_params,
+                &metadata_location,
+                DataAccessMode::ClientManaged,
+            )
+            .await;
+            assert!(
+                client_managed.storage_credentials.is_none(),
+                "client-managed must suppress vending, got {:?}",
+                client_managed.storage_credentials
+            );
+
+            drop_keeping_data(&ctx, &ns_params, &table).await;
+            let vended = register(
+                &ctx,
+                &ns_params,
+                &metadata_location,
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+            )
+            .await;
+            let credentials = vended
+                .storage_credentials
+                .expect("vended-credentials must reach the modern storage-credentials field");
+            assert_eq!(credentials.len(), 1);
+            // The tag encodes the delegation the config was built for, so the two
+            // registrations must not hand a client a validator for the other's scope.
+            assert_ne!(
+                client_managed.etag, vended.etag,
+                "the ETag must distinguish the delegation the response was built for"
+            );
+            // A vended credential expires, so the tag must carry its revalidation
+            // point — `lk2.<hash>.<revalidate-after-hex>`. Without the third
+            // segment the client holds a validator that can never yield a 304.
+            let vended_etag = vended.etag.expect("a vending response must be taggable");
+            assert_eq!(
+                vended_etag.as_str().split('.').count(),
+                3,
+                "expected a revalidation point in {}",
+                vended_etag.as_str()
+            );
+            let client_managed_etag = client_managed.etag.expect("still taggable without creds");
+            assert_eq!(
+                client_managed_etag.as_str().split('.').count(),
+                2,
+                "no credential means no revalidation point: {}",
+                client_managed_etag.as_str()
+            );
+        }
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_rename_table_refuses_invalid_destination_names(pool: sqlx::PgPool) {
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let namespace = create_ns(
+        ctx.clone(),
+        warehouse.warehouse_id.to_string(),
+        "sales".to_string(),
+    )
+    .await
+    .namespace;
+    let ns_params = NamespaceParameters {
+        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+        namespace: namespace.clone(),
+    };
+    let table_id = CatalogServer::create_table(
+        ns_params.clone(),
+        create_request(Some("daily_sales".to_string()), None),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap()
+    .metadata
+    .uuid();
+    let source = TableIdent::new(namespace.clone(), "daily_sales".to_string());
+
+    for name in REFUSED_NEW_TABULAR_NAMES {
+        let err = CatalogServer::rename_table(
+            ns_params.prefix.clone(),
+            RenameTableRequest {
+                source: source.clone(),
+                destination: TableIdent::new(namespace.clone(), name.to_string()),
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+
+        let err = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some(name.to_string()), None),
+            DataAccess::not_specified(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{name:?}: {err:?}");
+        assert_eq!(err.error.r#type, "InvalidTableName", "{name:?}");
+    }
+
+    let loaded = load_table(&ctx, &ns_params, "daily_sales").await;
+    assert_eq!(loaded.metadata.uuid(), table_id);
+}

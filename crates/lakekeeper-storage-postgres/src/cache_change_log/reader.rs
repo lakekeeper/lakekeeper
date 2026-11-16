@@ -214,7 +214,7 @@ mod tests {
         )
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn the_first_poll_starts_the_log_and_returns_nothing(pool: PgPool) {
         record(&pool, "secret", "before").await;
         let mut log = started(&pool).await;
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_transaction_running_at_the_start_is_returned_when_it_commits(pool: PgPool) {
         let mut running = pool.begin().await.unwrap();
         record_in(&mut running, "secret", "k").await;
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "k")]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rows_of_more_subtransactions_than_a_snapshot_lists_are_returned(pool: PgPool) {
         // Postgres lists at most 64 subtransactions per backend; beyond that, snapshots
         // are marked overflowed. Rows carry the top-level xid either way.
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_transaction_open_across_polls_is_returned_once_after_it_commits(pool: PgPool) {
         let mut log = started(&pool).await;
         let mut long = pool.begin().await.unwrap();
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn malformed_key_arrays_are_read_without_nulls_in_one_dimension(pool: PgPool) {
         let mut log = started(&pool).await;
         for keys in [
@@ -326,7 +326,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_restored_row_with_the_xid_of_a_running_transaction_is_returned_once(pool: PgPool) {
         let mut log = started(&pool).await;
         let mut running = pool.begin().await.unwrap();
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn rows_with_an_xid_this_server_has_not_reached_are_never_returned(pool: PgPool) {
         // Such rows come from another server, by a dump and restore.
         sqlx::query(
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn more_rows_than_a_poll_returns_reset_and_the_next_poll_returns_the_later_changes(
         pool: PgPool,
     ) {
@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "later")]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_poll_past_the_statement_timeout_fails_and_the_next_returns_its_changes(
         pool: PgPool,
     ) {
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "a")]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn a_restarted_server_resets_and_the_next_poll_returns_the_later_changes(pool: PgPool) {
         let mut log = started(&pool).await;
         record(&pool, "secret", "a").await;
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(log.poll().await.unwrap(), changes(&[("secret", "b")]));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn transaction_ids_going_back_reset(pool: PgPool) {
         let mut log = started(&pool).await;
         log.cursor.as_mut().unwrap().snapshot = "1000000000000:1000000000000:".to_string();
@@ -479,7 +479,7 @@ mod tests {
 
     /// Poll while writers run. Every committed row is returned exactly once, and no row that
     /// was rolled back.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn concurrent_writers_lose_no_committed_row(pool: PgPool) {
         const SEEDS: u64 = 12;
         const WRITERS: u64 = 4;
