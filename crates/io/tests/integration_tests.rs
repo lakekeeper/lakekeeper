@@ -1177,8 +1177,8 @@ async fn test_large_files_impl(
 ) -> anyhow::Result<()> {
     let test_path = config.test_path("large-file.txt");
 
-    // Create a 128MB file
-    let large_data = generate_test_data(128);
+    // Larger than one request on every backend, so the write and the read are split into parts.
+    let large_data = generate_test_data(30);
 
     // Write large file
     storage.write(&test_path, large_data.clone()).await?;
