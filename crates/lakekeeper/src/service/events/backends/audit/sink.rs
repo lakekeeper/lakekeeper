@@ -1,85 +1,26 @@
 //! Where audit records go: the sinks, and the list a record is handed to.
 
-use std::{
-    cell::OnceCell,
-    sync::{Arc, OnceLock},
+use std::sync::{Arc, OnceLock};
+
+use super::{
+    AUDIT_FORMAT, AUDIT_TARGET, EVENT_SOURCE, RecordType,
+    shapes::{ArcAuditFields, AuditFields, authorization_keys, operation_keys, replay_keys},
 };
 
-use super::shapes::{AuthorizationRecord, OperationWire, ReplayRecord};
-
-/// One audit record, of any shape.
-#[derive(Debug)]
-pub(super) enum AuditRecord<'a> {
-    Authorization(AuthorizationRecord<'a>),
-    Replay(ReplayRecord<'a>),
-    Operation(OperationWire),
-}
-
-impl AuditRecord<'_> {
-    /// This record as one JSON object.
-    pub(super) fn to_json(&self) -> serde_json::Value {
-        match self {
-            Self::Authorization(record) => record.to_json(),
-            Self::Replay(record) => record.to_json(),
-            Self::Operation(record) => record.to_json(),
-        }
-    }
-
-    /// Write this record as one log line, with `message` as its text.
-    pub(super) fn emit(&self, message: &'static str) {
-        match self {
-            Self::Authorization(record) => record.emit(message),
-            Self::Replay(record) => record.emit(message),
-            Self::Operation(record) => record.emit(message),
-        }
-    }
-}
-
 /// One record on its way to the sinks.
-///
-/// A sink outside this crate reads the record only through [`Self::json`], so the audit
-/// format is defined in one place.
 #[derive(Debug)]
-pub struct AuditDelivery<'a> {
-    record: AuditRecord<'a>,
-    /// The text of the record's log line.
+pub struct AuditDelivery {
+    /// The record's fields, shared by every sink.
+    fields: ArcAuditFields,
+    /// The text of the record's log line. Only the log sink reads it.
     message: &'static str,
-    /// The record as JSON, built when a sink first asks for it.
-    json: OnceCell<serde_json::Value>,
 }
 
-impl<'a> AuditDelivery<'a> {
+impl AuditDelivery {
+    /// The record's fields. A sink that queues the record clones this `Arc`.
     #[must_use]
-    pub(super) fn new(record: AuditRecord<'a>, message: &'static str) -> Self {
-        Self {
-            record,
-            message,
-            json: OnceCell::new(),
-        }
-    }
-
-    /// The record as one JSON object. Built on the first call and shared by later callers.
-    #[must_use]
-    pub fn json(&self) -> &serde_json::Value {
-        self.json.get_or_init(|| self.record.to_json())
-    }
-
-    /// Whether a sink has asked for the JSON yet.
-    #[cfg(test)]
-    pub(super) fn json_is_built(&self) -> bool {
-        self.json.get().is_some()
-    }
-
-    /// The typed record, for the sink that writes the log line.
-    #[must_use]
-    pub(super) fn record(&self) -> &AuditRecord<'a> {
-        &self.record
-    }
-
-    /// The text of the record's log line.
-    #[must_use]
-    pub(super) fn message(&self) -> &'static str {
-        self.message
+    pub fn fields(&self) -> &ArcAuditFields {
+        &self.fields
     }
 }
 
@@ -91,9 +32,9 @@ pub trait AuditSink: Send + Sync + std::fmt::Debug {
 
     /// Hand one record to this sink.
     ///
-    /// Called on the request path, so it must not block: copy what you need out of `record`,
-    /// then queue it.
-    fn deliver(&self, record: &AuditDelivery<'_>);
+    /// Called on the request path, so it must not block: take what you need out of
+    /// `delivery`, such as a clone of its fields, then queue it.
+    fn deliver(&self, delivery: &AuditDelivery);
 
     /// Send the records that are still queued. The default does nothing.
     async fn shutdown(&self) {}
@@ -102,7 +43,26 @@ pub trait AuditSink: Send + Sync + std::fmt::Debug {
 /// Reference to [`AuditSink`] that can be cheaply cloned and shared.
 pub type ArcAuditSink = Arc<dyn AuditSink>;
 
+/// Write one audit record as one log line: the stamped keys, then each key of the record as a
+/// field, in the order the shape's key-list macro gives them.
+macro_rules! write_audit_line {
+    ($fields:expr, $message:expr ; $($key:ident),*) => {
+        ::tracing::info!(
+            target: AUDIT_TARGET,
+            event_source = EVENT_SOURCE,
+            audit_format = AUDIT_FORMAT,
+            record_type = $fields.record_type().as_wire().text(),
+            $($key = $fields.get(stringify!($key)).map(::tracing::field::valuable),)*
+            "{}",
+            $message
+        )
+    };
+}
+
 /// Writes every audit record to the log, as one line.
+///
+/// It asks no gate: a record reaches it only while it is in the dispatch, and `tracing` drops
+/// the line when the log filter does not keep [`AUDIT_TARGET`].
 #[derive(Debug, Default)]
 pub(crate) struct LogSink;
 
@@ -112,8 +72,14 @@ impl AuditSink for LogSink {
         "log"
     }
 
-    fn deliver(&self, record: &AuditDelivery<'_>) {
-        record.record().emit(record.message());
+    fn deliver(&self, delivery: &AuditDelivery) {
+        let fields = &delivery.fields;
+        let message = delivery.message;
+        match fields.record_type() {
+            RecordType::Authorization => authorization_keys!(write_audit_line!(fields, message)),
+            RecordType::Replay => replay_keys!(write_audit_line!(fields, message)),
+            RecordType::Operation => operation_keys!(write_audit_line!(fields, message)),
+        }
     }
 }
 
@@ -133,12 +99,23 @@ pub(super) struct ActiveSinks {
 /// Set once, by `activate_sinks`.
 static ACTIVE: OnceLock<ActiveSinks> = OnceLock::new();
 
-/// The sinks chosen at startup; the log alone until then, as in unit tests.
+/// The sinks chosen at startup. Until then, as in unit tests: the log sink as
+/// `LAKEKEEPER__AUDIT__TRACING__LOG__ENABLED` sets it, and no other sink.
 pub(super) fn active() -> ActiveSinks {
     ACTIVE.get().copied().unwrap_or(ActiveSinks {
-        log: true,
+        log: crate::CONFIG.audit.tracing.log.enabled,
         others: false,
     })
+}
+
+/// The dispatch a listener starts with: the log sink while it is active, and no other sink.
+pub(super) fn default_dispatch() -> AuditDispatch {
+    let sinks: Vec<ArcAuditSink> = if active().log {
+        vec![Arc::new(LogSink)]
+    } else {
+        Vec::new()
+    };
+    AuditDispatch::new(sinks)
 }
 
 /// The dispatch to `others`, after the log sink when `log` is set. Called once, at startup.
@@ -184,9 +161,13 @@ impl AuditDispatch {
         self.sinks.is_empty()
     }
 
-    /// Hand `record` to every sink, in order. All sinks share one [`AuditDelivery`].
-    pub(super) fn deliver(&self, record: AuditRecord<'_>, message: &'static str) {
-        let delivery = AuditDelivery::new(record, message);
+    /// Hand a record's `fields` to every sink, in order. All sinks share one
+    /// [`AuditDelivery`].
+    pub(super) fn deliver(&self, fields: AuditFields, message: &'static str) {
+        let delivery = AuditDelivery {
+            fields: Arc::new(fields),
+            message,
+        };
         for sink in &self.sinks {
             sink.deliver(&delivery);
         }

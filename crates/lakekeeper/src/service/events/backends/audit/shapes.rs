@@ -1,8 +1,9 @@
 //! The three shapes an audit record can have.
 //!
-//! A shape is what a consumer receives. `#[audit_part(shape = "...")]` writes its `emit()` and
-//! `to_json()`, the only code that encodes an audit record: they stamp `event_source`,
-//! `audit_format` and `record_type`, and put every field under its own name.
+//! A shape is what a consumer receives. `#[audit_part(shape = "...")]` writes its
+//! `into_fields()`, the only code that encodes an audit record, which puts every field under its
+//! own name in an [`AuditFields`], and `<shape>_keys!`, which lists those names in order. A
+//! record carries `event_source`, `audit_format` and `record_type` before its fields.
 //!
 //! Every record names its shape in `record_type` and its producers in `emitters`, carries its
 //! action and entity lists under one name whatever their length, and omits a field it has no
@@ -10,8 +11,10 @@
 
 use std::sync::Arc;
 
+use serde::{Serialize, ser::SerializeMap as _};
+
 use super::{
-    Decision,
+    AUDIT_FORMAT, Decision, EVENT_SOURCE, RecordType,
     parts::{
         ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityRecord, ErrorRecord, EventId,
         HandlerContext, RecordTime,
@@ -295,5 +298,57 @@ impl OperationWire {
             },
             record.message,
         )
+    }
+}
+
+/// A record's fields as JSON: built once per record and shared by every sink.
+#[derive(Debug)]
+pub struct AuditFields {
+    /// The record's shape.
+    record_type: RecordType,
+    /// Every field that has a value, in struct order.
+    fields: Vec<(&'static str, AuditJson)>,
+}
+
+/// Reference to [`AuditFields`] that can be cheaply cloned and shared.
+pub type ArcAuditFields = Arc<AuditFields>;
+
+impl AuditFields {
+    /// Called only by the `into_fields` that `#[audit_part(shape = "...")]` writes.
+    pub(crate) fn new(record_type: RecordType, fields: Vec<(&'static str, AuditJson)>) -> Self {
+        Self {
+            record_type,
+            fields,
+        }
+    }
+
+    /// The record's shape.
+    #[must_use]
+    pub fn record_type(&self) -> RecordType {
+        self.record_type
+    }
+
+    /// The value of the field `key`, or `None` when the record has no value for it.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&AuditJson> {
+        self.fields
+            .iter()
+            .find(|(field, _)| *field == key)
+            .map(|(_, value)| value)
+    }
+}
+
+/// The record as one JSON object: `event_source`, `audit_format`, `record_type`, then the
+/// fields in order. This is what every sink other than the log sends.
+impl Serialize for AuditFields {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.fields.len() + 3))?;
+        map.serialize_entry("event_source", EVENT_SOURCE)?;
+        map.serialize_entry("audit_format", AUDIT_FORMAT)?;
+        map.serialize_entry("record_type", &self.record_type.as_wire())?;
+        for (key, value) in &self.fields {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
     }
 }

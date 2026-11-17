@@ -8,7 +8,7 @@ use heck::{
 };
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{
     Attribute, Data, DeriveInput, Error, Expr, Fields, GenericParam, Lit, Meta, Result, Token,
     parse::{Parse, ParseStream},
@@ -136,10 +136,10 @@ fn lit_str(expr: &Expr, what: &str) -> Result<String> {
 /// - **A context** (`#[audit_part(context)]` on a struct): the `context` object of an operation
 ///   record. Same as a part, registered as a context.
 /// - **A shape** (`#[audit_part(shape = "authorization")]` on a struct, in `lakekeeper` only): a
-///   whole record. Expands to its schema, its registry entry, and `emit(self, message)`: the
-///   audit gate, then one `tracing::info!` stamping `event_source`, `audit_format` and
-///   `record_type`, with each field under its own name and fields that serialize to `null`
-///   left off. Record and schema share the struct's field list, so they cannot differ.
+///   whole record. Expands to its schema, its registry entry, `into_fields(self)` (each field
+///   as JSON under its own name, in struct order, fields that serialize to `null` left off)
+///   and `<shape>_keys!`, which hands the field names to another macro. Record and schema
+///   share the struct's field list, so they cannot differ.
 /// - **A value vocabulary** (`#[audit_part(field = "outcome")]`): its variant *names* are the
 ///   values of one wire field. Variants may carry data; only the name reaches the wire. Expands
 ///   to `as_wire(&self) -> Wire<Self>`, `as_str(&self) -> &'static str`,
@@ -623,11 +623,11 @@ fn strip_our_attrs(input: &DeriveInput) -> DeriveInput {
     out
 }
 
-/// The `emit` of a shape: the one way its record reaches the log.
+/// The `into_fields` and the key-list macro of a shape: the one encoding of its record.
 ///
-/// Each field goes on the line under its own name, in struct order, so record and schema list
-/// the same fields. Fields that serialize to `null` are left off. `record_type` comes from the
-/// attribute; the struct has no such field.
+/// Each field goes on the record under its own name, in struct order, so record and schema
+/// list the same fields. Fields that serialize to `null` are left off. `record_type` comes from
+/// the attribute; the struct has no such field.
 fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
     if std::env::var("CARGO_PKG_NAME").as_deref() != Ok("lakekeeper") {
         return Err(Error::new_spanned(
@@ -686,47 +686,32 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
     }
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let variant = format_ident!("{}", record_type.to_pascal_case());
+    let keys_macro = format_ident!("{}_keys", record_type);
+    let count = fields.len();
     Ok(quote! {
         impl #impl_generics #ident #ty_generics #where_clause {
-            /// Write this record as one log line, or nothing when the audit trail is off.
-            ///
-            /// The switch is checked before serializing, so a disabled trail costs nothing,
-            /// and it applies to every record whatever built it.
-            pub(crate) fn emit(&self, message: &'static str) {
-                if !crate::audit::log_enabled() {
-                    return;
-                }
-                #(let #fields = ::lakekeeper::audit::AuditJson::present(&self.#fields);)*
-                ::tracing::info!(
-                    target: crate::audit::AUDIT_TARGET,
-                    event_source = crate::service::events::backends::audit::EVENT_SOURCE,
-                    audit_format = crate::service::events::backends::audit::AUDIT_FORMAT,
-                    record_type = #record_type,
-                    #(#fields = #fields.as_ref().map(::tracing::field::valuable),)*
-                    "{}",
-                    message
-                );
-            }
-
-            /// This record as one JSON object: the keys and values of its log line, in the
-            /// same order, without the keys the log subscriber adds.
-            pub(crate) fn to_json(&self) -> ::serde_json::Value {
-                let mut map = ::serde_json::Map::new();
-                map.insert(
-                    "event_source".to_string(),
-                    crate::service::events::backends::audit::EVENT_SOURCE.into(),
-                );
-                map.insert(
-                    "audit_format".to_string(),
-                    crate::service::events::backends::audit::AUDIT_FORMAT.into(),
-                );
-                map.insert("record_type".to_string(), #record_type.into());
+            /// This record's fields as JSON, in struct order, without the fields that have no
+            /// value: the one encoding every sink reads.
+            pub(crate) fn into_fields(self) -> crate::service::events::backends::audit::AuditFields {
+                let mut values = ::std::vec::Vec::with_capacity(#count);
                 #(if let Some(value) = ::lakekeeper::audit::AuditJson::present(&self.#fields) {
-                    map.insert(stringify!(#fields).to_string(), value.into_value());
+                    values.push((stringify!(#fields), value));
                 })*
-                ::serde_json::Value::Object(map)
+                crate::service::events::backends::audit::AuditFields::new(
+                    crate::service::events::backends::audit::RecordType::#variant,
+                    values,
+                )
             }
         }
+
+        /// Call `$callback!` with its arguments, then `;` and this shape's keys in struct order.
+        macro_rules! #keys_macro {
+            ($callback:ident ! ( $($args:tt)* )) => {
+                $callback!( $($args)* ; #(#fields),* )
+            };
+        }
+        pub(crate) use #keys_macro;
     })
 }
 

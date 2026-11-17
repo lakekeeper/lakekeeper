@@ -32,9 +32,11 @@ pub use parts::{
     UserSubjectRecord,
 };
 pub use render::{AuditJson, log_format};
-pub use shapes::{AuthorizationRecord, OperationRecord, RecordOrigin, ReplayRecord};
+pub use shapes::{
+    ArcAuditFields, AuditFields, AuthorizationRecord, OperationRecord, RecordOrigin, ReplayRecord,
+};
 
-use self::sink::{AuditDispatch, AuditRecord, LogSink};
+use self::sink::AuditDispatch;
 use crate::{
     request_metadata::RequestMetadata,
     service::{
@@ -210,32 +212,29 @@ pub struct AuditEventListener {
     /// they name, from it. `None` puts only the token's email and an assumed role's own
     /// source on a record.
     catalog: Option<Arc<dyn EventCatalog>>,
-    /// The log, unless replaced with [`Self::with_dispatch`].
+    /// The sinks its records go to: the log while the log sink is active, unless replaced
+    /// with [`Self::with_dispatch`].
     dispatch: AuditDispatch,
 }
 
-/// A dispatch to the log alone.
-fn log_only() -> AuditDispatch {
-    AuditDispatch::new(vec![Arc::new(LogSink)])
-}
-
 impl AuditEventListener {
-    /// A listener that puts only the token's email on a record.
+    /// A listener that puts only the token's email on a record. It writes to the log while
+    /// the log sink is active.
     #[must_use]
     pub fn new() -> Self {
         Self {
             catalog: None,
-            dispatch: log_only(),
+            dispatch: sink::default_dispatch(),
         }
     }
 
     /// A listener that reads from `catalog`, such as the emails of user principals when the
-    /// operator enabled them.
+    /// operator enabled them. It writes to the log while the log sink is active.
     #[must_use]
     pub fn with_catalog(catalog: Arc<dyn EventCatalog>) -> Self {
         Self {
             catalog: Some(catalog),
-            dispatch: log_only(),
+            dispatch: sink::default_dispatch(),
         }
     }
 
@@ -308,7 +307,7 @@ fn emit_grant_records(
             .message(message)
             .into_event();
             let (record, message) = shapes::OperationWire::from_event(record);
-            dispatch.deliver(AuditRecord::Operation(record), message);
+            dispatch.deliver(record.into_fields(), message);
         }
     }
 }
@@ -322,10 +321,8 @@ impl EventListener for AuditEventListener {
         let named = assemble::NamedPrincipals::of(&event.actions, &event.authorizations);
         let enrichment = self.enrichment(&event.request_metadata, &named).await;
         let record = assemble::authorization_failed(&event, &enrichment);
-        self.dispatch.deliver(
-            AuditRecord::Authorization(record),
-            "Authorization failed event",
-        );
+        self.dispatch
+            .deliver(record.into_fields(), "Authorization failed event");
         Ok(())
     }
 
@@ -385,10 +382,8 @@ impl EventListener for AuditEventListener {
         let named = assemble::NamedPrincipals::of(&event.actions, &event.authorizations);
         let enrichment = self.enrichment(&event.request_metadata, &named).await;
         let record = assemble::authorization_succeeded(&event, &enrichment);
-        self.dispatch.deliver(
-            AuditRecord::Authorization(record),
-            "Authorization succeeded event",
-        );
+        self.dispatch
+            .deliver(record.into_fields(), "Authorization succeeded event");
         Ok(())
     }
 
@@ -405,7 +400,7 @@ impl EventListener for AuditEventListener {
         let enrichment = self.enrichment(&event.request_metadata, &named).await;
         let record = assemble::replay(&event, &enrichment);
         self.dispatch
-            .deliver(AuditRecord::Replay(record), "Idempotent replay served");
+            .deliver(record.into_fields(), "Idempotent replay served");
         Ok(())
     }
 
@@ -415,8 +410,7 @@ impl EventListener for AuditEventListener {
             return Ok(());
         }
         let (record, message) = shapes::OperationWire::from_event(event);
-        self.dispatch
-            .deliver(AuditRecord::Operation(record), message);
+        self.dispatch.deliver(record.into_fields(), message);
         Ok(())
     }
 }
