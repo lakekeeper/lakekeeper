@@ -636,6 +636,17 @@ fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
              through `OperationRecord`",
         ));
     }
+    if !is_lower_snake_case(record_type)
+        || record_type.to_pascal_case().to_snake_case() != record_type
+    {
+        return Err(Error::new_spanned(
+            &input.ident,
+            format!(
+                "`shape = \"{record_type}\"` must be lower_snake_case and come back unchanged \
+                 from its `RecordType` variant name"
+            ),
+        ));
+    }
     let Data::Struct(syn::DataStruct {
         fields: Fields::Named(named),
         ..
