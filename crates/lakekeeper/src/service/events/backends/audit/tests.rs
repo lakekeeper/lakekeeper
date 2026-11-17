@@ -1586,6 +1586,32 @@ fn an_operation_record_as_json_matches_its_log_line() {
     assert_json_matches_log_line(&json, line);
 }
 
+/// A listener starts with the log sink only while it is active, so with the log sink off a
+/// listener built with `new()` writes no audit line.
+#[test]
+fn a_listener_starts_with_the_log_sink_only_while_it_is_active() {
+    let lines_written_with = |log: bool| {
+        let dispatch = super::sink::dispatch_for(super::sink::ActiveSinks { log, others: false });
+        let event = IdempotentReplayEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
+            entities: Arc::new(EventEntities::one(fixture_table_entity())),
+            actions: Arc::new(vec![fixture_drop_action()]),
+            idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY)
+                .expect("fixed test key"),
+        };
+        emit_and_capture(|| async {
+            let fields = assemble::replay(&event, &Enrichment::default()).into_fields();
+            dispatch.deliver(fields, "Idempotent replay served");
+            Ok(())
+        })
+        .len()
+    };
+
+    assert_eq!(lines_written_with(true), 1);
+    assert_eq!(lines_written_with(false), 0);
+}
+
 /// A record handed to the log sink is written as the line the replay fixture pins.
 #[test]
 fn the_log_sink_writes_the_fixture_line() {
@@ -2388,21 +2414,26 @@ fn audit_part_is_only_implemented_through_the_attribute() {
     );
 }
 
-/// Only the shapes write an audit record. A `tracing::info!(event_source = "audit", …)`
-/// anywhere else would bypass the envelope, the schema and every check.
+/// Only the log sink writes an audit line. A `tracing::info!` with the audit `event_source`
+/// anywhere else would bypass the record's fields, the schema and every check.
 #[test]
-fn only_the_shapes_emit_audit_records() {
+fn only_the_log_sink_writes_audit_lines() {
+    let writes_an_audit_line = |code: &str| {
+        code.match_indices("event_source =").any(|(at, _)| {
+            let rest = code[at..].lines().next().unwrap_or_default();
+            rest.contains("\"audit\"") || rest.contains("EVENT_SOURCE")
+        })
+    };
     let offenders: Vec<String> = crate_sources()
         .into_iter()
-        // `tests.rs` names the literal in its own assertions. Nothing else holds such a line:
-        // the log sink stamps `EVENT_SOURCE`.
-        .filter(|(path, _)| !path.ends_with("tests.rs"))
-        .filter(|(_, text)| code_only(text).contains("event_source = \"audit\""))
+        // `tests.rs` names the literal in its own assertions.
+        .filter(|(path, _)| !path.ends_with("tests.rs") && !path.ends_with("audit/sink.rs"))
+        .filter(|(_, text)| writes_an_audit_line(&code_only(text)))
         .map(|(path, _)| path.display().to_string())
         .collect();
     assert!(
         offenders.is_empty(),
-        "`event_source = \"audit\"` outside the shapes: {offenders:?}"
+        "an audit line written outside the log sink: {offenders:?}"
     );
 }
 
@@ -2597,11 +2628,12 @@ fn the_generated_schema_is_self_contained_and_documented() {
     crate::audit::schema::assert_descriptions_are_prose(&schema);
 }
 
-/// The schema's description of a record's shape is what the emitter actually writes.
+/// Every shape's `record_type` is a value of the `RecordType` vocabulary, and every value
+/// names a shape.
 ///
-/// A shape's schema is derived from its struct, but the log sink writes the record key by
-/// key, and the two could drift. Every committed record is checked against the shape its
-/// `record_type` names.
+/// The schema takes a shape's `record_type` from its `shape = "..."` string, while the log
+/// line and the JSON take it from `RecordType::as_wire()`. The two agree only while the string
+/// comes back unchanged from its round trip through the variant name.
 #[test]
 fn the_shapes_and_the_record_type_vocabulary_declare_the_same_names() {
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
@@ -2792,8 +2824,8 @@ fn every_audit_record_example_in_the_docs_validates() {
 
 /// The gate and the emission name one target.
 ///
-/// `log_enabled()` asks the subscriber about a target, and the shapes write to one. If the two
-/// differed, the gate would answer for a target nothing writes to.
+/// `log_enabled()` asks the subscriber about a target, and the log sink writes to one. If the
+/// two differed, the gate would answer for a target nothing writes to.
 #[test]
 fn the_gate_and_the_emission_name_one_target() {
     let record = emit_and_capture_one(|| {

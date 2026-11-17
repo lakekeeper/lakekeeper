@@ -110,7 +110,12 @@ pub(super) fn active() -> ActiveSinks {
 
 /// The dispatch a listener starts with: the log sink while it is active, and no other sink.
 pub(super) fn default_dispatch() -> AuditDispatch {
-    let sinks: Vec<ArcAuditSink> = if active().log {
+    dispatch_for(active())
+}
+
+/// The dispatch a listener starts with when `active` are the sinks chosen.
+pub(super) fn dispatch_for(active: ActiveSinks) -> AuditDispatch {
+    let sinks: Vec<ArcAuditSink> = if active.log {
         vec![Arc::new(LogSink)]
     } else {
         Vec::new()
