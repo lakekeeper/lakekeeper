@@ -203,6 +203,34 @@ impl Location {
         starts_with_folder(self.as_str(), other.as_str())
     }
 
+    /// Whether this location lies below the folder `other`, compared as the catalog stores
+    /// locations: without the scheme or a trailing slash, so `s3a://bucket/t/f` is below
+    /// `s3://bucket/t`. `other` itself is not below it.
+    #[must_use]
+    pub fn is_below(&self, other: &Location) -> bool {
+        self.path_below(other).is_some_and(|rest| !rest.is_empty())
+    }
+
+    /// [`Self::is_below`], or the same folder as `other`.
+    #[must_use]
+    pub fn is_at_or_below(&self, other: &Location) -> bool {
+        self.path_below(other).is_some()
+    }
+
+    /// The path of this location below the folder `other`, empty for `other` itself. Compared
+    /// without the scheme or a trailing slash.
+    fn path_below(&self, other: &Location) -> Option<&str> {
+        let folder = other.authority_and_path.trim_end_matches('/');
+        match self
+            .authority_and_path
+            .trim_end_matches('/')
+            .strip_prefix(folder)?
+        {
+            "" => Some(""),
+            rest => rest.strip_prefix('/'),
+        }
+    }
+
     #[must_use]
     pub fn partial_locations<'a>(&'a self) -> impl IntoIterator<Item = &'a str> {
         let scheme_index = self.scheme().len() + 3; // 3 for "://"
@@ -707,6 +735,29 @@ mod tests {
         let mut location = Location::from_str("s3://user:pass@bucket/foo").unwrap();
         location.pop();
         assert_eq!(location.as_str(), "s3://user:pass@bucket/");
+    }
+
+    #[test]
+    fn test_is_below_ignores_the_scheme() {
+        let cases = [
+            ("s3://bucket/foo", "s3://bucket/foo", (false, true)),
+            ("s3://bucket/foo/", "s3://bucket/foo", (false, true)),
+            ("s3://bucket/foo", "s3a://bucket/foo/bar", (true, true)),
+            ("s3a://bucket/foo/", "s3://bucket/foo/bar/", (true, true)),
+            ("s3://bucket/foo", "s3://bucket/foo-bar", (false, false)),
+            ("s3://bucket/foo", "s3://bucket", (false, false)),
+            ("s3://bucket/foo", "s3://other/foo/bar", (false, false)),
+        ];
+
+        for (folder, location, expected) in cases {
+            let folder = Location::from_str(folder).unwrap();
+            let location = Location::from_str(location).unwrap();
+            assert_eq!(
+                (location.is_below(&folder), location.is_at_or_below(&folder)),
+                expected,
+                "{location} against {folder}",
+            );
+        }
     }
 
     #[test]

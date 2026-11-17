@@ -562,17 +562,10 @@ async fn check_view_location(
 /// locations, without scheme and trailing slash: `s3a://b/v` is the directory of `s3://b/v`.
 /// Fails if one is inside the other: removing the old location would remove the new metadata.
 fn is_move(previous: &Location, new: &Location) -> Result<bool> {
-    let previous = previous.authority_and_path().trim_end_matches('/');
-    let new = new.authority_and_path().trim_end_matches('/');
-    let inside = |inner: &str, outer: &str| {
-        inner
-            .strip_prefix(outer)
-            .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if previous == new {
+    if new.is_at_or_below(previous) && previous.is_at_or_below(new) {
         return Ok(false);
     }
-    if inside(new, previous) || inside(previous, new) {
+    if new.is_below(previous) || previous.is_below(new) {
         return Err(ErrorModel::bad_request(
             "Cannot move a view into its own location or into a parent of it",
             "SetLocationNotAllowed",
