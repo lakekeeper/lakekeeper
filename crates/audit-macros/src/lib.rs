@@ -230,7 +230,7 @@ fn expand(args: &Args, input: &DeriveInput) -> Result<TokenStream2> {
 
 /// A part, a context or a shape: derives, `AuditPart`, registration with the schema.
 ///
-/// A shape derives no `Serialize`: its `emit()` writes each field to the log event directly.
+/// A shape derives no `Serialize`: its `into_fields()` serializes each field on its own.
 /// A serialized struct would be a nested object no consumer sees, and would require
 /// `Serialize` on every vocabulary enum it holds.
 fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
@@ -1329,7 +1329,7 @@ mod tests {
     #[test]
     fn a_shape_is_lakekeepers_own() {
         // These tests run as the macro crate, so a shape is refused here as in any crate but
-        // Lakekeeper's. Lakekeeper's fixture tests run the generated `emit()`.
+        // Lakekeeper's. Lakekeeper's fixture tests run the generated `into_fields()`.
         assert!(
             rejection(
                 r#"shape = "operation""#,

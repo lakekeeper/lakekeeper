@@ -87,8 +87,8 @@ impl WireName {
 /// names and a key vocabulary cannot be read as if its names were a field's values.
 #[derive(Clone, Copy, Debug)]
 pub enum Kind {
-    /// A top-level record structure with an `emit()`, carrying the `record_type` value that
-    /// names it.
+    /// A top-level record structure with an `into_fields()`, carrying the `record_type` value
+    /// that names it.
     Shape { record_type: &'static str },
     /// A nested object of a record, or a data enum such as a subject reference.
     Part,

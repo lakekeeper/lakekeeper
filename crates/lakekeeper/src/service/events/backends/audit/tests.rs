@@ -2394,8 +2394,8 @@ fn audit_part_is_only_implemented_through_the_attribute() {
 fn only_the_shapes_emit_audit_records() {
     let offenders: Vec<String> = crate_sources()
         .into_iter()
-        // `tests.rs` names the literal in its own assertions. The shapes themselves hold no
-        // such line: the attribute writes their `emit()`.
+        // `tests.rs` names the literal in its own assertions. Nothing else holds such a line:
+        // the log sink stamps `EVENT_SOURCE`.
         .filter(|(path, _)| !path.ends_with("tests.rs"))
         .filter(|(_, text)| code_only(text).contains("event_source = \"audit\""))
         .map(|(path, _)| path.display().to_string())
@@ -2599,8 +2599,8 @@ fn the_generated_schema_is_self_contained_and_documented() {
 
 /// The schema's description of a record's shape is what the emitter actually writes.
 ///
-/// A shape's schema is derived from its struct, but `emit()` writes the record field by
-/// field, and the two could drift. Every committed record is checked against the shape its
+/// A shape's schema is derived from its struct, but the log sink writes the record key by
+/// key, and the two could drift. Every committed record is checked against the shape its
 /// `record_type` names.
 #[test]
 fn the_shapes_and_the_record_type_vocabulary_declare_the_same_names() {
