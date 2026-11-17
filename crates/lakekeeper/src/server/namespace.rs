@@ -1043,23 +1043,11 @@ fn namespace_cleanup_candidates(
     base: &Location,
     mut namespace_locations: Vec<(NamespaceId, Location)>,
 ) -> Vec<(NamespaceId, Location)> {
-    namespace_locations.retain(|(_, location)| is_strictly_below(location, base));
+    namespace_locations.retain(|(_, location)| location.is_below(base));
     namespace_locations.sort_by_key(|(_, location)| {
-        std::cmp::Reverse(location.as_str().trim_end_matches('/').len())
+        std::cmp::Reverse(location.authority_and_path().trim_end_matches('/').len())
     });
     namespace_locations
-}
-
-/// Whether `location` lies strictly below `base`, comparing both with exactly one trailing slash,
-/// the form storage backends resolve them to.
-fn is_strictly_below(location: &Location, base: &Location) -> bool {
-    let normalize = |location: &Location| {
-        let mut location = location.clone();
-        location.without_trailing_slash().with_trailing_slash();
-        location
-    };
-    let (location, base) = (normalize(location), normalize(base));
-    location != base && location.is_sublocation_of(&base)
 }
 
 pub(crate) fn uppercase_first_letter(s: &str) -> String {
@@ -1339,45 +1327,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_strictly_below_ignores_trailing_slashes() {
-        let loc = |s: &str| s.parse::<Location>().unwrap();
-        for base in [
-            "abfss://fs@acc.dfs.core.windows.net/wh",
-            "abfss://fs@acc.dfs.core.windows.net/wh/",
-        ] {
-            let base = loc(base);
-            for (location, expected) in [
-                ("abfss://fs@acc.dfs.core.windows.net/wh", false),
-                ("abfss://fs@acc.dfs.core.windows.net/wh/", false),
-                ("abfss://fs@acc.dfs.core.windows.net/wh//", false),
-                ("abfss://fs@acc.dfs.core.windows.net/wh/ns", true),
-                ("abfss://fs@acc.dfs.core.windows.net/wh/ns//", true),
-                ("abfss://fs@acc.dfs.core.windows.net/wh-other/ns", false),
-                ("abfss://fs@acc.dfs.core.windows.net/other", false),
-                ("abfss://other@acc.dfs.core.windows.net/wh/ns", false),
-                ("wasbs://fs@acc.blob.core.windows.net/wh/ns", false),
-            ] {
-                assert_eq!(
-                    is_strictly_below(&loc(location), &base),
-                    expected,
-                    "{location} below {base}"
-                );
-            }
-        }
-
-        let root = loc("abfss://fs@acc.dfs.core.windows.net/");
-        assert!(!is_strictly_below(&root, &root));
-        assert!(!is_strictly_below(
-            &loc("abfss://fs@acc.dfs.core.windows.net//"),
-            &root
-        ));
-        assert!(is_strictly_below(
-            &loc("abfss://fs@acc.dfs.core.windows.net/ns"),
-            &root
-        ));
-    }
-
-    #[test]
     fn test_namespace_cleanup_candidates_skip_base_and_go_deepest_first() {
         let loc = |s: &str| s.parse::<Location>().unwrap();
         let base = loc("abfss://fs@acc.dfs.core.windows.net/wh/");
@@ -1409,6 +1358,19 @@ mod tests {
             &base,
             vec![
                 (parent, loc("abfss://fs@acc.dfs.core.windows.net/wh/p///")),
+                (child, loc("abfss://fs@acc.dfs.core.windows.net/wh/p/c")),
+            ],
+        );
+        assert_eq!(
+            candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![child, parent]
+        );
+
+        // A location spelled with an alias of the scheme lies below `base` as well.
+        let candidates = namespace_cleanup_candidates(
+            &base,
+            vec![
+                (parent, loc("wasbs://fs@acc.dfs.core.windows.net/wh/p")),
                 (child, loc("abfss://fs@acc.dfs.core.windows.net/wh/p/c")),
             ],
         );

@@ -3,10 +3,7 @@ use std::str::FromStr as _;
 use percent_encoding::percent_decode_str;
 use url::Host;
 
-use crate::{
-    InvalidLocationError, Location,
-    adls::{ADLS_CUSTOM_SCHEMES, DEFAULT_HOST},
-};
+use crate::{InvalidLocationError, Location, adls::DEFAULT_HOST, location::ADLS_CUSTOM_SCHEMES};
 
 #[derive(Debug, thiserror::Error)]
 #[error("Invalid ADLS filesystem / container name `{filesystem}`: {reason}")]
