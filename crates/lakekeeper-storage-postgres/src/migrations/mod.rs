@@ -747,6 +747,7 @@ async fn tracker_status(
     let missing: Vec<i64> = migrator
         .migrations
         .iter()
+        .filter(|mig| !mig.migration_type.is_down_migration())
         .filter(|mig| {
             applied.get(&mig.version).is_none_or(|checksum| {
                 !sha_patches.contains(&mig.version) && *checksum != &*mig.checksum
@@ -1443,6 +1444,26 @@ mod tests {
             ),
             "{before:?}, {after:?}, {unpatched:?}, {patched:?}, {patched_unapplied:?}, {ahead:?}"
         );
+    }
+
+    /// A down migration is never applied, so it is never missing.
+    #[sqlx::test(migrations = false)]
+    async fn test_check_extension_migration_status_skips_down_migrations(pool: PgPool) {
+        let ext = || {
+            ExtensionMigrations::builder()
+                .name("reversible")
+                .migrator(sqlx::migrate!(
+                    "./tests/extension_migrations_fixture_reversible"
+                ))
+                .build()
+        };
+        migrate_core_only(&pool).await.unwrap();
+        migrate(&pool, vec![ext()]).await.unwrap();
+
+        let status = check_extension_migration_status(&pool, &ext())
+            .await
+            .unwrap();
+        assert!(matches!(status, MigrationState::Complete), "{status:?}");
     }
 
     /// An operator runs upstream OSS by itself for a while (their
