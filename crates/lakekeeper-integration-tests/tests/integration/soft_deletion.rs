@@ -11,7 +11,7 @@ use lakekeeper::{
             v1::{
                 DropParams, ListTablesQuery, LoadTableResultOrNotModified, NamespaceParameters,
                 TableParameters,
-                namespace::NamespaceService,
+                namespace::{NamespaceDropFlags, NamespaceService},
                 tables::{LoadTableRequest, TablesService},
             },
         },
@@ -42,7 +42,9 @@ use lakekeeper::{
         },
     },
 };
-use lakekeeper_integration_tests::{create_ns, create_table, random_request_metadata};
+use lakekeeper_integration_tests::{
+    create_generic_table, create_ns, create_table, drop_namespace, random_request_metadata,
+};
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -423,6 +425,119 @@ async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
             .iter()
             .any(|i| i.name == gt_name && i.id == Some(gt_id)),
         "undropped generic table should reappear in list with the same id",
+    );
+}
+
+async fn namespace_with_soft_deleted_generic_table(
+    pool: PgPool,
+    purge_requested: bool,
+) -> (HidingCtx, WarehouseId, NamespaceParameters) {
+    use lakekeeper::api::data::v1::generic_tables::{
+        GenericTableParameters, GenericTableService as _,
+    };
+
+    let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool,
+        lakekeeper_integration_tests::memory_io_profile(),
+        None,
+        HidingAuthorizer::new(),
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(300),
+        },
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let prefix = warehouse_id.to_string();
+    let ns_name = "ns".to_string();
+    let namespace = NamespaceIdent::new(ns_name.clone());
+    create_ns(ctx.clone(), prefix.clone(), ns_name.clone()).await;
+    create_generic_table(ctx.clone(), prefix.clone(), ns_name, "tbl")
+        .await
+        .unwrap();
+
+    CatalogServer::drop_generic_table(
+        GenericTableParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: namespace.clone(),
+            table_name: "tbl".to_string(),
+        },
+        DropParams {
+            purge_requested,
+            force: false,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    (
+        ctx,
+        warehouse_id,
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix)),
+            namespace,
+        },
+    )
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_preserves_pending_generic_table_purge(pool: PgPool) {
+    let (ctx, warehouse_id, namespace) =
+        namespace_with_soft_deleted_generic_table(pool, true).await;
+    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
+    assert_eq!(tasks.len(), 1);
+
+    for purge in [false, true] {
+        let err = drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge,
+                recursive: true,
+            },
+            namespace.clone(),
+        )
+        .await
+        .expect_err("the pending purge must keep the namespace from being dropped");
+        assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+        assert_eq!(err.error.r#type, "NamespaceNotEmptyException");
+        assert_eq!(
+            scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await,
+            tasks,
+        );
+        assert_eq!(soft_deleted_names(&ctx, warehouse_id).await, ["tbl"]);
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_allows_expiration_without_purge(pool: PgPool) {
+    let (ctx, warehouse_id, namespace) =
+        namespace_with_soft_deleted_generic_table(pool, false).await;
+    assert_eq!(
+        scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME)
+            .await
+            .len(),
+        1
+    );
+
+    drop_namespace(
+        ctx.clone(),
+        NamespaceDropFlags {
+            force: true,
+            purge: false,
+            recursive: true,
+        },
+        namespace,
+    )
+    .await
+    .unwrap();
+    assert!(soft_deleted_names(&ctx, warehouse_id).await.is_empty());
+    assert!(
+        scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME)
+            .await
+            .is_empty()
     );
 }
 
