@@ -3,9 +3,9 @@ use std::str::{FromStr, RMatchIndices};
 use unicode_general_category::{GeneralCategory, get_general_category};
 
 /// Schemes that address the same storage as `s3`.
-pub(crate) const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
+pub const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
 /// Schemes that address the same storage as `abfss`.
-pub(crate) const ADLS_CUSTOM_SCHEMES: [&str; 1] = ["wasbs"];
+pub const ADLS_CUSTOM_SCHEMES: [&str; 1] = ["wasbs"];
 
 /// The scheme that `scheme` is an alias of, or `scheme` itself.
 fn canonical_scheme(scheme: &str) -> &str {
