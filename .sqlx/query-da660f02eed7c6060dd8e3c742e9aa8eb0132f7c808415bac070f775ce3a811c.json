@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT count(*) AS \"locked!\"\n        FROM (\n            SELECT tabular_id\n            FROM tabular\n            WHERE warehouse_id = $1 AND namespace_id = ANY($2)\n            ORDER BY tabular_id\n            FOR UPDATE\n        ) locked_tabulars\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "locked!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "da660f02eed7c6060dd8e3c742e9aa8eb0132f7c808415bac070f775ce3a811c"
+}
