@@ -1051,18 +1051,32 @@ pub(crate) async fn move_namespace(
     })
 }
 
-#[allow(clippy::too_many_lines)]
-pub(crate) async fn drop_namespace(
+struct NamespaceDropSnapshot {
+    is_protected: bool,
+    namespace_name: Vec<String>,
+    has_protected_namespaces: bool,
+    has_protected_tabulars: bool,
+    has_running_expiration: bool,
+    has_pending_purge: bool,
+    child_tabulars: Vec<Uuid>,
+    child_tabulars_namespace_names: Vec<serde_json::Value>,
+    child_tabulars_table_names: Vec<String>,
+    child_tabular_fs_protocol: Vec<String>,
+    child_tabular_fs_location: Vec<String>,
+    child_tabular_typ: Vec<TabularType>,
+    child_tabulars_deleted: Vec<Uuid>,
+    child_namespaces: Vec<Uuid>,
+    child_tabular_task_id: Vec<Uuid>,
+    dropped_ns_ids: Vec<Uuid>,
+    dropped_ns_locations: Vec<String>,
+}
+
+async fn load_namespace_drop_snapshot(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
-    NamespaceDropFlags {
-        force,
-        purge: _purge,
-        recursive,
-    }: NamespaceDropFlags,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
-    let info = sqlx::query!(r#"
+) -> std::result::Result<NamespaceDropSnapshot, CatalogNamespaceDropError> {
+    sqlx::query_as!(NamespaceDropSnapshot, r#"
         WITH namespace_info AS (
             SELECT namespace_name, namespace_id, protected, namespace_properties->>'location' AS location
             FROM namespace
@@ -1087,8 +1101,11 @@ pub(crate) async fn drop_namespace(
             WHERE warehouse_id = $1 AND (metadata_location IS NOT NULL OR ta.typ = 'generic-table') AND (ta.namespace_id = $2 OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
-            SELECT t.task_id, t.queue_name, t.status as task_status from task t
-            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type in ('table', 'view', 'generic-table')
+            SELECT t.task_id, t.queue_name, t.status AS task_status,
+                ta.deleted_at IS NOT NULL AND t.task_data->>'deletion_kind' = 'purge' AS wants_purge
+            FROM task t
+            JOIN tabulars ta ON ta.tabular_id = t.entity_id
+            WHERE t.warehouse_id = $1 AND t.entity_type IN ('table', 'view', 'generic-table')
         )
         SELECT
             ni.protected AS "is_protected!",
@@ -1096,6 +1113,11 @@ pub(crate) async fn drop_namespace(
             EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
             EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running' AND queue_name IN ('soft_deletion', 'tabular_expiration')) AS "has_running_expiration!",
+            EXISTS (
+                SELECT 1 FROM tasks
+                WHERE task_status = 'scheduled' AND queue_name IN ('soft_deletion', 'tabular_expiration')
+                AND wants_purge
+            ) AS "has_pending_purge!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
             ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<serde_json::Value>",
             ARRAY(SELECT table_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_table_names!",
@@ -1117,7 +1139,20 @@ pub(crate) async fn drop_namespace(
          } else {
             e.into_catalog_backend_error().into()
         }
-    )?;
+    )
+}
+
+pub(crate) async fn drop_namespace(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    NamespaceDropFlags {
+        force,
+        purge: _purge,
+        recursive,
+    }: NamespaceDropFlags,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
+    let info = load_namespace_drop_snapshot(warehouse_id, namespace_id, transaction).await?;
     let namespace_ident = parse_namespace_identifier_from_vec(
         &info.namespace_name,
         warehouse_id,
@@ -1160,59 +1195,20 @@ pub(crate) async fn drop_namespace(
         .into());
     }
 
-    // Foreign-key triggers fire after the whole statement, when the tabulars and view defaults
-    // removed here are gone, so no non-cascading key on `namespace` still finds rows, whatever
-    // order Postgres fires the triggers in. The order of the CTEs and the main DELETE is not
-    // guaranteed and only affects lock order: Postgres currently runs unreferenced CTEs after
-    // the main DELETE, locking namespace rows before tabulars, as with the cascade alone.
-    // Deleting the tabulars in an earlier statement, or referencing a CTE from the main
-    // DELETE, reverses that order against `move_namespace`.
-    // A view elsewhere then loads with an empty default namespace, as when its default
-    // namespace does not exist. Not filtered by warehouse: older view versions may point at a
-    // namespace of another warehouse.
-    let record = sqlx::query!(
-        r#"
-        WITH dropped_tabulars AS (
-            DELETE FROM tabular
-            WHERE warehouse_id = $1 AND (namespace_id = any($2) or namespace_id = $3)
-        ),
-        cleared_view_defaults AS (
-            UPDATE view_version SET default_namespace_id = NULL
-            WHERE default_namespace_id = any($2) or default_namespace_id = $3
-        )
-        DELETE FROM namespace
-            WHERE warehouse_id = $1
-            -- If recursive is true, delete all child namespaces...
-            AND (namespace_id = any($2) or namespace_id = $3)
-            AND warehouse_id IN (
-                SELECT warehouse_id FROM warehouse WHERE status = 'active'
-                AND warehouse_id = $1
-            )
-        "#,
-        *warehouse_id,
-        &info.child_namespaces,
-        *namespace_id,
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|e| match &e {
-        sqlx::Error::Database(db_error) if db_error.is_foreign_key_violation() => {
-            CatalogNamespaceDropError::from(NamespaceNotEmpty::new(
-                warehouse_id,
-                namespace_ident.clone(),
-            ))
-        }
-        _ => e.into_catalog_backend_error().into(),
-    })?;
-
-    tracing::debug!(
-        "Deleted {deleted_count} namespaces while dropping namespace {namespace_ident} with id {namespace_id} in warehouse {warehouse_id}",
-        deleted_count = record.rows_affected()
-    );
-
-    if record.rows_affected() == 0 {
-        return Err(NamespaceNotFound::new(warehouse_id, namespace_ident.clone()).into());
+    if info.has_pending_purge {
+        return Err(NamespaceNotEmpty::new(warehouse_id, namespace_ident)
+            .append_detail("A soft-deleted table or view has a scheduled purge. Retry after its expiration task finishes.")
+            .into());
     }
+
+    delete_namespace_tree(
+        warehouse_id,
+        namespace_id,
+        &namespace_ident,
+        &info.child_namespaces,
+        transaction,
+    )
+    .await?;
 
     Ok(NamespaceDropInfo {
         child_namespaces: info.child_namespaces.into_iter().map(Into::into).collect(),
@@ -1261,6 +1257,70 @@ pub(crate) async fn drop_namespace(
             })
             .collect(),
     })
+}
+
+async fn delete_namespace_tree(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    namespace_ident: &NamespaceIdent,
+    child_namespaces: &[Uuid],
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<(), CatalogNamespaceDropError> {
+    // Foreign-key triggers fire after the whole statement, when the tabulars and view defaults
+    // removed here are gone, so no non-cascading key on `namespace` still finds rows, whatever
+    // order Postgres fires the triggers in. The order of the CTEs and the main DELETE is not
+    // guaranteed and only affects lock order: Postgres currently runs unreferenced CTEs after
+    // the main DELETE, locking namespace rows before tabulars, as with the cascade alone.
+    // Deleting the tabulars in an earlier statement, or referencing a CTE from the main
+    // DELETE, reverses that order against `move_namespace`.
+    // A view elsewhere then loads with an empty default namespace, as when its default
+    // namespace does not exist. Not filtered by warehouse: older view versions may point at a
+    // namespace of another warehouse.
+    let record = sqlx::query!(
+        r#"
+        WITH dropped_tabulars AS (
+            DELETE FROM tabular
+            WHERE warehouse_id = $1 AND (namespace_id = any($2) or namespace_id = $3)
+        ),
+        cleared_view_defaults AS (
+            UPDATE view_version SET default_namespace_id = NULL
+            WHERE default_namespace_id = any($2) or default_namespace_id = $3
+        )
+        DELETE FROM namespace
+            WHERE warehouse_id = $1
+            -- If recursive is true, delete all child namespaces...
+            AND (namespace_id = any($2) or namespace_id = $3)
+            AND warehouse_id IN (
+                SELECT warehouse_id FROM warehouse WHERE status = 'active'
+                AND warehouse_id = $1
+            )
+        "#,
+        *warehouse_id,
+        child_namespaces,
+        *namespace_id,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db_error) if db_error.is_foreign_key_violation() => {
+            CatalogNamespaceDropError::from(NamespaceNotEmpty::new(
+                warehouse_id,
+                namespace_ident.clone(),
+            ))
+        }
+        _ => e.into_catalog_backend_error().into(),
+    })?;
+
+    tracing::debug!(
+        "Deleted {deleted_count} namespaces while dropping namespace {namespace_ident} with id {namespace_id} in warehouse {warehouse_id}",
+        deleted_count = record.rows_affected()
+    );
+
+    if record.rows_affected() == 0 {
+        return Err(NamespaceNotFound::new(warehouse_id, namespace_ident.clone()).into());
+    }
+
+    Ok(())
 }
 
 pub(super) fn parse_namespace_identifier_from_vec(
