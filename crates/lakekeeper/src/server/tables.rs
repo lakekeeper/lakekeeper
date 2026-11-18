@@ -2413,16 +2413,10 @@ pub(crate) fn require_active_warehouse(status: WarehouseStatus) -> Result<()> {
 // Full validation is performed when changes are applied.
 fn validate_table_updates(updates: &[TableUpdate]) -> Result<()> {
     for update in updates {
-        match update {
-            TableUpdate::SetProperties { updates } => {
-                validate_table_properties(updates.keys())?;
-            }
-            TableUpdate::RemoveProperties { removals } => {
-                // Removing a data path moves writes back into the table location, so
-                // a table that already carries one can always shed it.
-                validate_table_properties(removals.iter().filter(|p| !is_data_path_property(p)))?;
-            }
-            _ => {}
+        // Removals are not checked: removing a property returns it to its default, so a
+        // table that already carries an unsupported one can always shed it.
+        if let TableUpdate::SetProperties { updates } = update {
+            validate_table_properties(updates.keys())?;
         }
     }
     Ok(())
@@ -2719,19 +2713,23 @@ mod unit_tests {
     }
 
     #[test]
-    fn test_allow_removing_data_path_properties() {
-        let removals = DATA_PATH_PROPERTIES.map(ToString::to_string).to_vec();
+    fn test_allow_removing_unsupported_properties() {
+        let removals = DATA_PATH_PROPERTIES
+            .into_iter()
+            .chain(["write.metadata.path"])
+            .map(ToString::to_string)
+            .collect();
         validate_table_updates(&[TableUpdate::RemoveProperties { removals }])
-            .expect("removing a data path must be allowed");
+            .expect("removing an unsupported property must be allowed");
 
-        // Other unsupported properties stay refused on removal.
-        let err = validate_table_updates(&[TableUpdate::RemoveProperties {
-            removals: vec![
-                "write.data.path".to_string(),
+        // Setting it stays refused.
+        let err = validate_table_updates(&[TableUpdate::SetProperties {
+            updates: HashMap::from([(
                 "write.metadata.path".to_string(),
-            ],
+                "s3://elsewhere".to_string(),
+            )]),
         }])
-        .expect_err("removing write.metadata.path was accepted");
+        .expect_err("setting write.metadata.path was accepted");
         assert_eq!(err.error.r#type, "FailedToSetProperties", "{err:?}");
     }
 
