@@ -21,7 +21,7 @@ use iceberg_ext::{
     },
 };
 use itertools::Itertools;
-use lakekeeper_io::{Location, s3::S3Location};
+use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -2079,8 +2079,6 @@ fn expired_metadata_files_to_delete(
     expired_metadata_logs: Vec<MetadataLog>,
     table_location: &Location,
 ) -> Vec<Location> {
-    let mut table_location = with_canonical_s3_scheme(table_location);
-    table_location.without_trailing_slash();
     expired_metadata_logs
         .into_iter()
         .filter_map(|expired_metadata_log| {
@@ -2093,9 +2091,7 @@ fn expired_metadata_files_to_delete(
                     );
                 })
                 .ok()?;
-            let mut canonical = with_canonical_s3_scheme(&location);
-            canonical.without_trailing_slash();
-            if canonical != table_location && canonical.is_sublocation_of(&table_location) {
+            if location.is_below(table_location) {
                 Some(location)
             } else {
                 tracing::warn!(
@@ -2105,14 +2101,6 @@ fn expired_metadata_files_to_delete(
             }
         })
         .collect()
-}
-
-/// `location` with an `s3a`/`s3n` scheme spelled `s3`, so the aliases compare equal.
-fn with_canonical_s3_scheme(location: &Location) -> Location {
-    S3Location::try_from_location(location, true).map_or_else(
-        |_| location.clone(),
-        |s3_location| s3_location.set_s3_scheme().into_location(),
-    )
 }
 
 pub fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
@@ -2896,6 +2884,18 @@ mod unit_tests {
                 &["s3a://bucket/wh/tbl/metadata/00000-a.metadata.json"],
             ),
             vec!["s3a://bucket/wh/tbl/metadata/00000-a.metadata.json"]
+        );
+    }
+
+    /// `wasbs` on the `dfs` host names the same objects as `abfss`.
+    #[test]
+    fn test_expired_metadata_files_compare_adls_scheme_aliases() {
+        assert_eq!(
+            files_to_delete(
+                "abfss://fs@account.dfs.core.windows.net/wh/tbl",
+                &["wasbs://fs@account.dfs.core.windows.net/wh/tbl/metadata/00000-a.metadata.json"],
+            ),
+            vec!["wasbs://fs@account.dfs.core.windows.net/wh/tbl/metadata/00000-a.metadata.json"]
         );
     }
 

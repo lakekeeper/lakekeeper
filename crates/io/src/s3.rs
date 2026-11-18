@@ -103,8 +103,6 @@ static TOKIO_SLEEP: LazyLock<Arc<dyn sleep::AsyncSleep>> =
 static SLEEP_IMPL: LazyLock<SharedAsyncSleep> =
     LazyLock::new(|| SharedAsyncSleep::from(TOKIO_SLEEP.clone()));
 
-const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
-
 /// Shared identity cache for system identity (IMDS/ECS task role).
 /// Safe as a global static because there is only one system identity,
 /// so only one cache partition is ever created.

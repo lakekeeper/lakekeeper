@@ -115,8 +115,6 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
     LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
 
-pub(crate) const ADLS_CUSTOM_SCHEMES: [&str; 1] = ["wasbs"];
-
 static SYSTEM_IDENTITY_CACHE: LazyLock<moka::future::Cache<String, Arc<DefaultAzureCredential>>> =
     LazyLock::new(|| {
         moka::future::Cache::builder()

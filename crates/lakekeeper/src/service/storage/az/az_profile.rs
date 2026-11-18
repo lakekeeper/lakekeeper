@@ -3,7 +3,7 @@ use std::str::FromStr;
 use azure_storage::CloudLocation;
 use iceberg_ext::configs::table::TableProperties;
 use lakekeeper_io::{
-    InvalidLocationError, Location,
+    ADLS_CUSTOM_SCHEMES, InvalidLocationError, Location,
     adls::{
         AdlsStorage, AzureSettings, normalize_host, validate_filesystem_name,
         validate_storage_account_name,
@@ -35,8 +35,6 @@ use crate::{
         },
     },
 };
-
-pub(crate) const ALTERNATIVE_PROTOCOLS: [&str; 1] = ["wasbs"];
 
 /// Storage profile for a generic Azure Data Lake Storage Gen2 account.
 ///
@@ -87,7 +85,7 @@ impl GenericAdlsProfile {
     #[must_use]
     pub fn is_allowed_schema(&self, schema: &str) -> bool {
         schema == "abfss"
-            || (self.allow_alternative_protocols && ALTERNATIVE_PROTOCOLS.contains(&schema))
+            || (self.allow_alternative_protocols && ADLS_CUSTOM_SCHEMES.contains(&schema))
     }
 
     /// Validate the Azure storage profile.

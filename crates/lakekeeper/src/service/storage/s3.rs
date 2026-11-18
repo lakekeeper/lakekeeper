@@ -18,7 +18,7 @@ use iceberg_ext::{
     },
 };
 use lakekeeper_io::{
-    InvalidLocationError, Location,
+    InvalidLocationError, Location, S3_CUSTOM_SCHEMES,
     s3::{
         S3AccessKeyAuth, S3Auth, S3AwsSystemIdentityAuth, S3Location, S3Settings, S3Storage,
         validate_bucket_name,
@@ -300,7 +300,7 @@ impl S3Profile {
     /// If `allow_variant_schemes` is set, `s3a` and `s3n` are also allowed.
     #[must_use]
     pub fn is_allowed_schema(&self, schema: &str) -> bool {
-        schema == "s3" || (self.allow_alternate_schemes() && (schema == "s3a" || schema == "s3n"))
+        schema == "s3" || (self.allow_alternate_schemes() && S3_CUSTOM_SCHEMES.contains(&schema))
     }
 
     #[must_use]
