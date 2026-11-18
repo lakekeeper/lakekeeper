@@ -515,13 +515,16 @@ async fn test_recursive_namespace_drop_preserves_pending_generic_table_purge(poo
 #[lakekeeper_storage_postgres::db_test]
 async fn test_recursive_namespace_drop_allows_expiration_without_purge(pool: PgPool) {
     let (ctx, warehouse_id, namespace) =
-        namespace_with_soft_deleted_generic_table(pool, false).await;
-    assert_eq!(
-        scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME)
-            .await
-            .len(),
-        1
-    );
+        namespace_with_soft_deleted_generic_table(pool.clone(), false).await;
+    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
+    assert_eq!(tasks.len(), 1);
+    let tabular_id: Uuid = sqlx::query_scalar(
+        "SELECT tabular_id FROM tabular WHERE warehouse_id = $1 AND name = 'tbl'",
+    )
+    .bind(*warehouse_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     drop_namespace(
         ctx.clone(),
@@ -530,16 +533,36 @@ async fn test_recursive_namespace_drop_allows_expiration_without_purge(pool: PgP
             purge: false,
             recursive: true,
         },
-        namespace,
+        namespace.clone(),
     )
     .await
     .unwrap();
-    assert!(soft_deleted_names(&ctx, warehouse_id).await.is_empty());
-    assert!(
-        scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME)
+    let namespace_missing =
+        CatalogServer::namespace_exists(namespace, ctx.clone(), random_request_metadata())
             .await
-            .is_empty()
-    );
+            .unwrap_err();
+    assert_eq!(namespace_missing.error.code, http::StatusCode::NOT_FOUND);
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tabular WHERE tabular_id = $1)")
+            .bind(tabular_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!exists, "the generic-table row must be removed");
+    let results = ApiServer::list_tasks(
+        warehouse_id,
+        ListTasksRequest {
+            status: Some(vec![TaskStatus::Cancelled]),
+            queue_name: Some(vec![EXPIRATION_QUEUE_NAME.clone()]),
+            ..Default::default()
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.tasks.len(), 1);
+    assert_eq!(results.tasks[0].task_id, tasks[0]);
 }
 
 type HidingCtx =
@@ -665,12 +688,28 @@ async fn test_recursive_namespace_drop_keeps_table_after_failed_expiration(pool:
             RetryDecision::give_up("fixture terminal outcome"),
         )
         .await;
-    let status: String = sqlx::query_scalar("SELECT status::text FROM task_log WHERE task_id = $1")
-        .bind(*table.task_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(status, "failed");
+    let failed_tasks = ApiServer::list_tasks(
+        table.warehouse_id,
+        ListTasksRequest {
+            status: Some(vec![TaskStatus::Failed]),
+            queue_name: Some(vec![EXPIRATION_QUEUE_NAME.clone()]),
+            ..Default::default()
+        },
+        table.ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(failed_tasks.tasks.len(), 1);
+    let failed = &failed_tasks.tasks[0];
+    assert_eq!(failed.task_id, table.task_id);
+    assert_eq!(
+        failed.entity_name.as_deref(),
+        Some(&["ns".to_owned(), "tbl".to_owned()][..])
+    );
+    let Some(WarehouseTaskEntityId::Table { table_id }) = failed.entity else {
+        panic!("failed expiration must identify its table");
+    };
     let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM task WHERE task_id = $1)")
         .bind(*table.task_id)
         .fetch_one(&pool)
@@ -691,22 +730,48 @@ async fn test_recursive_namespace_drop_keeps_table_after_failed_expiration(pool:
             .await
             .unwrap();
     assert!(deleted);
-    undrop_tbl(&table.ctx, table.warehouse_id, table.table_id)
+    undrop_tbl(&table.ctx, table.warehouse_id, table_id)
         .await
         .unwrap();
 }
 
-#[lakekeeper_storage_postgres::db_test]
-async fn test_recursive_namespace_drop_sees_concurrent_soft_delete_purge(pool: PgPool) {
-    use lakekeeper::{api::management::v1::DeleteKind, service::CatalogTabularOps as _};
-    use lakekeeper_integration_tests::wait_for_a_lock_wait;
+async fn assert_recursive_drop_lock_conflict(table: &SoftDeletedTable) {
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        force_drop_ns(&table.ctx, table.warehouse_id),
+    )
+    .await
+    .expect("the recursive drop must return while the other transaction holds its lock")
+    .unwrap_err();
+    assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(err.error.r#type, "CatalogBackendError");
+}
 
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_retries_a_contended_namespace_lock(pool: PgPool) {
     let table = soft_deleted_table_with_task(pool.clone()).await;
+    let mut t = pool.begin().await.unwrap();
+    sqlx::query(
+        "SELECT namespace_id FROM namespace WHERE warehouse_id = $1 AND namespace_name = ARRAY['ns'] FOR UPDATE",
+    )
+    .bind(*table.warehouse_id)
+    .fetch_one(&mut *t)
+    .await
+    .unwrap();
+    assert_recursive_drop_lock_conflict(&table).await;
+    t.commit().await.unwrap();
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_retries_a_concurrent_soft_delete_purge(pool: PgPool) {
+    use lakekeeper::{api::management::v1::DeleteKind, service::CatalogTabularOps as _};
+
+    let table = soft_deleted_table_with_task(pool).await;
     undrop_tbl(&table.ctx, table.warehouse_id, table.table_id)
         .await
         .unwrap();
 
-    // Hold the writes of a soft-delete request until the namespace drop waits on its row lock.
+    // Hold the soft delete open while the namespace drop attempts to lock the row.
     let mut t = <PostgresBackend as CatalogStore>::Transaction::begin_write(
         table.ctx.v1_state.catalog.clone(),
     )
@@ -742,17 +807,14 @@ async fn test_recursive_namespace_drop_sees_concurrent_soft_delete_purge(pool: P
     .await
     .unwrap();
 
-    let ctx = table.ctx.clone();
-    let warehouse_id = table.warehouse_id;
-    let mut drop_task = tokio::spawn(async move { force_drop_ns(&ctx, warehouse_id).await });
-    tokio::select! {
-        result = &mut drop_task => panic!("namespace drop should wait for the writer: {result:?}"),
-        () = wait_for_a_lock_wait(&pool) => {}
-    }
+    assert_recursive_drop_lock_conflict(&table).await;
     t.commit().await.unwrap();
 
-    let err = drop_task.await.unwrap().unwrap_err();
+    let err = force_drop_ns(&table.ctx, table.warehouse_id)
+        .await
+        .unwrap_err();
     assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceNotEmptyException");
     assert_eq!(
         soft_deleted_names(&table.ctx, table.warehouse_id).await,
         ["tbl"]
