@@ -414,7 +414,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
         let storage_secret_ref = storage_secret.as_deref();
         let file_io = storage_profile.file_io(storage_secret_ref).await?;
-        let table_metadata = read_metadata_file(&file_io, &metadata_location).await?;
+        let table_metadata: TableMetadata =
+            read_metadata_file(&file_io, &metadata_location).await?;
 
         // Checked before the file's contents are validated, so a caller who may not create
         // here learns only that the file exists and parses.

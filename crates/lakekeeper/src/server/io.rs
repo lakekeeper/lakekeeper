@@ -1,11 +1,10 @@
 use std::sync::{Arc, LazyLock};
 
-use iceberg::spec::TableMetadata;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use lakekeeper_io::{
     DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
 };
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::Semaphore;
 
 use super::compression_codec::{CompressionCodec, decompress_metadata};
@@ -187,10 +186,11 @@ pub(crate) async fn read_file(
     }
 }
 
-pub(crate) async fn read_metadata_file(
+/// Reads a table or view metadata file, gzip-compressed or not; see [`decompress_metadata`].
+pub(crate) async fn read_metadata_file<M: DeserializeOwned + Send + 'static>(
     io: &impl LakekeeperStorage,
     file: &Location,
-) -> Result<TableMetadata, IOErrorExt> {
+) -> Result<M, IOErrorExt> {
     let content = read_file(io, file, CompressionCodec::None).await?;
     match tokio::task::spawn_blocking(move || {
         let content = decompress_metadata(&content)
@@ -215,7 +215,7 @@ pub(crate) async fn remove_all(
 pub enum IOErrorExt {
     #[error("Failed to serialize data: {0}")]
     Serialization(#[source] serde_json::Error),
-    #[error("Failed to deserialize table metadata: {0}")]
+    #[error("Failed to deserialize metadata: {0}")]
     Deserialization(#[source] serde_json::Error),
     #[error("Failed to finish compressing file: {0}")]
     FileCompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
@@ -294,6 +294,7 @@ impl From<IOErrorExt> for IcebergErrorResponse {
 #[cfg(test)]
 mod tests {
     use std::{
+        str::FromStr,
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -396,6 +397,92 @@ mod tests {
         .await;
 
         assert!(done.load(Ordering::SeqCst));
+    }
+
+    fn view_metadata_json(format_version: u8) -> serde_json::Value {
+        serde_json::json!({
+            "view-uuid": "fa6506c3-7681-40c8-86dc-e36561f83385",
+            "format-version": format_version,
+            "location": "memory://bucket/views/v1",
+            "current-version-id": 1,
+            "versions": [{
+                "version-id": 1,
+                "timestamp-ms": 1_573_518_431_292_i64,
+                "schema-id": 0,
+                "summary": {"engine-name": "spark"},
+                "default-namespace": ["ns"],
+                "representations": [{"type": "sql", "sql": "SELECT 1", "dialect": "spark"}]
+            }],
+            "version-log": [{"timestamp-ms": 1_573_518_431_292_i64, "version-id": 1}],
+            "schemas": [{"schema-id": 0, "type": "struct", "fields": [
+                {"id": 1, "name": "x", "required": true, "type": "int"}
+            ]}],
+            "properties": {"comment": "registered"}
+        })
+    }
+
+    async fn write_and_read_view_metadata(
+        file: &str,
+        json: &serde_json::Value,
+        codec: CompressionCodec,
+    ) -> Result<iceberg::spec::ViewMetadata, IOErrorExt> {
+        let io = lakekeeper_io::memory::MemoryStorage::new_isolated();
+        let location = Location::from_str(file).unwrap();
+        write_file(&io, &location, json, codec).await.unwrap();
+        read_metadata_file(&io, &location).await
+    }
+
+    #[tokio::test]
+    async fn a_view_metadata_file_reads_into_view_metadata() {
+        let metadata = write_and_read_view_metadata(
+            "memory://bucket/views/v1/metadata/00000-a.metadata.json",
+            &view_metadata_json(1),
+            CompressionCodec::None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            metadata.uuid().to_string(),
+            "fa6506c3-7681-40c8-86dc-e36561f83385"
+        );
+        assert_eq!(metadata.location(), "memory://bucket/views/v1");
+        assert_eq!(metadata.properties().get("comment").unwrap(), "registered");
+    }
+
+    #[tokio::test]
+    async fn a_gzip_view_metadata_file_reads_into_view_metadata() {
+        let metadata = write_and_read_view_metadata(
+            "memory://bucket/views/v1/metadata/00000-a.gz.metadata.json",
+            &view_metadata_json(1),
+            CompressionCodec::Gzip,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            metadata.uuid().to_string(),
+            "fa6506c3-7681-40c8-86dc-e36561f83385"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_view_metadata_file_with_format_version_2_is_a_deserialization_error() {
+        let err = write_and_read_view_metadata(
+            "memory://bucket/views/v1/metadata/00000-a.metadata.json",
+            &view_metadata_json(2),
+            CompressionCodec::None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, IOErrorExt::Deserialization(_)),
+            "expected a deserialization error, got {err:?}"
+        );
+        let error_model = ErrorModel::from(err);
+        assert_eq!(error_model.code, 400);
+        assert_eq!(error_model.r#type, "Deserialization");
     }
 
     async fn test_list_and_remove_all(cred: StorageCredential, profile: StorageProfile) {
