@@ -58,8 +58,11 @@ macro_rules! dispatch_event {
         // Ensure the histogram metric description is registered.
         let _ = &*$crate::service::events::dispatch::LISTENER_DURATION_HISTOGRAM;
 
-        // Snapshot under the lock, then drop the guard before any await.
-        let listeners: Vec<Arc<dyn EventListener>> = $self.0.read().await.clone();
+        // Snapshot under the lock, then drop the guard before any await. Unconstrained, so a
+        // task that used up its coop budget still takes the snapshot on the first poll and the
+        // event reaches the listeners registered when it was dispatched.
+        let listeners: Vec<Arc<dyn EventListener>> =
+            tokio::task::unconstrained($self.0.read()).await.clone();
         let event_type = stringify!($method);
         futures::future::join_all(listeners.iter().map(|listener| {
             let start = Instant::now();
@@ -876,5 +879,53 @@ pub trait EventListener: Send + Sync + Debug + Display {
         _event: types::UserRoleAssignmentsSyncedEvent,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::request_metadata::RequestMetadata;
+
+    #[derive(Debug, Default)]
+    struct CountingListener(AtomicUsize);
+
+    impl Display for CountingListener {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "CountingListener")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventListener for CountingListener {
+        async fn grants_changed(&self, _event: types::GrantsChangedEvent) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// A task that used up its coop budget dispatches to the listeners registered at that
+    /// moment, so a listener appended afterwards does not receive the event.
+    #[tokio::test]
+    async fn an_event_reaches_only_the_listeners_registered_when_it_is_dispatched() {
+        let dispatcher = EventDispatcher::new(Vec::new());
+        let late = Arc::new(CountingListener::default());
+
+        while tokio::task::coop::has_budget_remaining() {
+            tokio::task::coop::consume_budget().await;
+        }
+        let event = types::GrantsChangedEvent::new(
+            Vec::new(),
+            Vec::new(),
+            Arc::new(RequestMetadata::new_unauthenticated()),
+        );
+        let events = dispatcher.clone();
+        dispatch_inline_or_spawn(async move { events.grants_changed(event).await });
+        tokio::task::unconstrained(dispatcher.append(late.clone())).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert_eq!(late.0.load(Ordering::SeqCst), 0);
     }
 }
