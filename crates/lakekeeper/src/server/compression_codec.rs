@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use flate2::{Compression, read::MultiGzDecoder, write::GzEncoder};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use super::{MetadataProperties, io::IOErrorExt};
@@ -55,7 +55,7 @@ pub fn decompress_metadata(content: &[u8]) -> std::io::Result<Cow<'_, [u8]>> {
 
 fn gunzip(payload: &[u8], limit: u64) -> std::io::Result<Vec<u8>> {
     let mut decompressed = Vec::new();
-    GzDecoder::new(payload)
+    MultiGzDecoder::new(payload)
         .take(limit + 1)
         .read_to_end(&mut decompressed)?;
     if decompressed.len() as u64 > limit {
@@ -193,6 +193,25 @@ mod tests {
         assert_eq!(
             gunzip(&payload, 9).unwrap_err().kind(),
             std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn test_gunzip_counts_every_member_toward_the_limit() {
+        let two_members = [gzip(&[0; 6]), gzip(&[0; 6])].concat();
+        assert_eq!(gunzip(&two_members, 12).unwrap(), vec![0; 12]);
+        assert_eq!(
+            gunzip(&two_members, 11).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn test_gunzip_refuses_bytes_after_the_last_member() {
+        let trailing = [gzip(&[0; 6]), b"not another gzip member".to_vec()].concat();
+        assert_eq!(
+            gunzip(&trailing, 12).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
         );
     }
 }
