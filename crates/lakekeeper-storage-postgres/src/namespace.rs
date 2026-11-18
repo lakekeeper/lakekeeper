@@ -1283,7 +1283,12 @@ pub(crate) async fn drop_namespace(
     // is removable only when its active expiration explicitly requests catalog-only deletion.
     if info.has_unresolved_soft_deletions {
         return Err(NamespaceNotEmpty::new(warehouse_id, namespace_ident)
-            .append_detail("A soft-deleted table or view may still need a purge. Wait for its expiration to succeed. If it failed, find the table or view ID in the warehouse's failed expiration tasks and undrop it before dropping it again.")
+            .append_detail(concat!(
+                "A soft-deleted table or view may still need a purge. Wait for its expiration to succeed. ",
+                "After a failure, look for the entity ID in the warehouse's failed expiration tasks. ",
+                "If the task history is unavailable, ask a catalog administrator to look up the ID in the catalog database. ",
+                "Undrop the table or view before dropping it again."
+            ))
             .into());
     }
 
