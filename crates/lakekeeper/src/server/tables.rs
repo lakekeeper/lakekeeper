@@ -21,7 +21,7 @@ use iceberg_ext::{
     },
 };
 use itertools::Itertools;
-use lakekeeper_io::{Location, s3::S3Location};
+use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -2079,8 +2079,6 @@ fn expired_metadata_files_to_delete(
     expired_metadata_logs: Vec<MetadataLog>,
     table_location: &Location,
 ) -> Vec<Location> {
-    let mut table_location = with_canonical_s3_scheme(table_location);
-    table_location.without_trailing_slash();
     expired_metadata_logs
         .into_iter()
         .filter_map(|expired_metadata_log| {
@@ -2093,9 +2091,7 @@ fn expired_metadata_files_to_delete(
                     );
                 })
                 .ok()?;
-            let mut canonical = with_canonical_s3_scheme(&location);
-            canonical.without_trailing_slash();
-            if canonical != table_location && canonical.is_sublocation_of(&table_location) {
+            if location.is_below(table_location) {
                 Some(location)
             } else {
                 tracing::warn!(
@@ -2105,14 +2101,6 @@ fn expired_metadata_files_to_delete(
             }
         })
         .collect()
-}
-
-/// `location` with an `s3a`/`s3n` scheme spelled `s3`, so the aliases compare equal.
-fn with_canonical_s3_scheme(location: &Location) -> Location {
-    S3Location::try_from_location(location, true).map_or_else(
-        |_| location.clone(),
-        |s3_location| s3_location.set_s3_scheme().into_location(),
-    )
 }
 
 pub fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
@@ -2425,16 +2413,10 @@ pub(crate) fn require_active_warehouse(status: WarehouseStatus) -> Result<()> {
 // Full validation is performed when changes are applied.
 fn validate_table_updates(updates: &[TableUpdate]) -> Result<()> {
     for update in updates {
-        match update {
-            TableUpdate::SetProperties { updates } => {
-                validate_table_properties(updates.keys())?;
-            }
-            TableUpdate::RemoveProperties { removals } => {
-                // Removing a data path moves writes back into the table location, so
-                // a table that already carries one can always shed it.
-                validate_table_properties(removals.iter().filter(|p| !is_data_path_property(p)))?;
-            }
-            _ => {}
+        // Removals are not checked: removing a property returns it to its default, so a
+        // table that already carries an unsupported one can always shed it.
+        if let TableUpdate::SetProperties { updates } = update {
+            validate_table_properties(updates.keys())?;
         }
     }
     Ok(())
@@ -2731,19 +2713,23 @@ mod unit_tests {
     }
 
     #[test]
-    fn test_allow_removing_data_path_properties() {
-        let removals = DATA_PATH_PROPERTIES.map(ToString::to_string).to_vec();
+    fn test_allow_removing_unsupported_properties() {
+        let removals = DATA_PATH_PROPERTIES
+            .into_iter()
+            .chain(["write.metadata.path"])
+            .map(ToString::to_string)
+            .collect();
         validate_table_updates(&[TableUpdate::RemoveProperties { removals }])
-            .expect("removing a data path must be allowed");
+            .expect("removing an unsupported property must be allowed");
 
-        // Other unsupported properties stay refused on removal.
-        let err = validate_table_updates(&[TableUpdate::RemoveProperties {
-            removals: vec![
-                "write.data.path".to_string(),
+        // Setting it stays refused.
+        let err = validate_table_updates(&[TableUpdate::SetProperties {
+            updates: HashMap::from([(
                 "write.metadata.path".to_string(),
-            ],
+                "s3://elsewhere".to_string(),
+            )]),
         }])
-        .expect_err("removing write.metadata.path was accepted");
+        .expect_err("setting write.metadata.path was accepted");
         assert_eq!(err.error.r#type, "FailedToSetProperties", "{err:?}");
     }
 
@@ -2896,6 +2882,18 @@ mod unit_tests {
                 &["s3a://bucket/wh/tbl/metadata/00000-a.metadata.json"],
             ),
             vec!["s3a://bucket/wh/tbl/metadata/00000-a.metadata.json"]
+        );
+    }
+
+    /// `wasbs` on the `dfs` host names the same objects as `abfss`.
+    #[test]
+    fn test_expired_metadata_files_compare_adls_scheme_aliases() {
+        assert_eq!(
+            files_to_delete(
+                "abfss://fs@account.dfs.core.windows.net/wh/tbl",
+                &["wasbs://fs@account.dfs.core.windows.net/wh/tbl/metadata/00000-a.metadata.json"],
+            ),
+            vec!["wasbs://fs@account.dfs.core.windows.net/wh/tbl/metadata/00000-a.metadata.json"]
         );
     }
 

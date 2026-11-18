@@ -558,21 +558,14 @@ async fn check_view_location(
     Ok(moved)
 }
 
-/// Whether `new` is another directory than `previous`. Compared as the catalog stores
-/// locations, without scheme and trailing slash: `s3a://b/v` is the directory of `s3://b/v`.
+/// Whether `new` is another directory than `previous`. An alias of the scheme and a trailing
+/// slash don't matter: `s3a://b/v` is the directory of `s3://b/v`.
 /// Fails if one is inside the other: removing the old location would remove the new metadata.
 fn is_move(previous: &Location, new: &Location) -> Result<bool> {
-    let previous = previous.authority_and_path().trim_end_matches('/');
-    let new = new.authority_and_path().trim_end_matches('/');
-    let inside = |inner: &str, outer: &str| {
-        inner
-            .strip_prefix(outer)
-            .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if previous == new {
+    if new.is_at_or_below(previous) && previous.is_at_or_below(new) {
         return Ok(false);
     }
-    if inside(new, previous) || inside(previous, new) {
+    if new.is_below(previous) || previous.is_below(new) {
         return Err(ErrorModel::bad_request(
             "Cannot move a view into its own location or into a parent of it",
             "SetLocationNotAllowed",
@@ -807,6 +800,7 @@ mod tests {
         assert!(is_move(&previous, &location("s3://bucket/ns/elsewhere")).unwrap());
         assert!(is_move(&previous, &location("s3://bucket/ns/view2")).unwrap());
         assert!(is_move(&previous, &location("s3://other-bucket/ns/view")).unwrap());
+        assert!(is_move(&previous, &location("gs://bucket/ns/view")).unwrap());
     }
 
     /// Removing the old location after the move would remove the new metadata inside it.

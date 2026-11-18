@@ -2,6 +2,22 @@ use std::str::{FromStr, RMatchIndices};
 
 use unicode_general_category::{GeneralCategory, get_general_category};
 
+/// Schemes that address the same storage as `s3`.
+pub const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
+/// Schemes that address the same storage as `abfss`.
+pub const ADLS_CUSTOM_SCHEMES: [&str; 1] = ["wasbs"];
+
+/// The scheme that `scheme` is an alias of, or `scheme` itself.
+fn canonical_scheme(scheme: &str) -> &str {
+    if S3_CUSTOM_SCHEMES.contains(&scheme) {
+        "s3"
+    } else if ADLS_CUSTOM_SCHEMES.contains(&scheme) {
+        "abfss"
+    } else {
+        scheme
+    }
+}
+
 /// Hard cap on accepted Location length. S3 keys are spec'd at 1024 chars,
 /// ADLS path components total under 1KB; multiplying by ~4 for UTF-8 worst
 /// case plus scheme/authority overhead lands at 4 `KiB`. Cap up-front so
@@ -201,6 +217,37 @@ impl Location {
     #[must_use]
     pub fn is_prefix_within(&self, other: &Location) -> bool {
         starts_with_folder(self.as_str(), other.as_str())
+    }
+
+    /// Whether this location lies below the folder `other`. An alias of the scheme and a trailing
+    /// slash don't matter: `s3a://bucket/t/f` is below `s3://bucket/t`, and a `wasbs` location
+    /// is below the `abfss` location with the same host. `other` itself is not below it.
+    #[must_use]
+    pub fn is_below(&self, other: &Location) -> bool {
+        self.path_below(other).is_some_and(|rest| !rest.is_empty())
+    }
+
+    /// [`Self::is_below`], or the same folder as `other`.
+    #[must_use]
+    pub fn is_at_or_below(&self, other: &Location) -> bool {
+        self.path_below(other).is_some()
+    }
+
+    /// The path of this location below the folder `other`, empty for `other` itself. Compared
+    /// with [`canonical_scheme`] and without a trailing slash.
+    fn path_below(&self, other: &Location) -> Option<&str> {
+        if canonical_scheme(&self.scheme) != canonical_scheme(&other.scheme) {
+            return None;
+        }
+        let folder = other.authority_and_path.trim_end_matches('/');
+        match self
+            .authority_and_path
+            .trim_end_matches('/')
+            .strip_prefix(folder)?
+        {
+            "" => Some(""),
+            rest => rest.strip_prefix('/'),
+        }
     }
 
     #[must_use]
@@ -707,6 +754,50 @@ mod tests {
         let mut location = Location::from_str("s3://user:pass@bucket/foo").unwrap();
         location.pop();
         assert_eq!(location.as_str(), "s3://user:pass@bucket/");
+    }
+
+    #[test]
+    fn test_is_below() {
+        let cases = [
+            ("s3://bucket/foo", "s3://bucket/foo", (false, true)),
+            ("s3://bucket/foo/", "s3://bucket/foo", (false, true)),
+            ("s3://bucket/foo", "s3://bucket/foo//", (false, true)),
+            ("s3://bucket/foo", "s3://bucket/foo/bar//", (true, true)),
+            ("s3://bucket/foo", "s3://bucket/foo-bar", (false, false)),
+            ("s3://bucket/foo", "s3://bucket", (false, false)),
+            ("s3://bucket/foo", "s3://other/foo/bar", (false, false)),
+            ("s3://bucket/", "s3://bucket//", (false, true)),
+            ("s3://bucket/", "s3://bucket/foo", (true, true)),
+            ("gs://bucket/foo", "gs://bucket/foo/bar", (true, true)),
+            // Aliases of a scheme name the same storage, other schemes do not.
+            ("s3://bucket/foo", "s3a://bucket/foo/bar", (true, true)),
+            ("s3a://bucket/foo/", "s3://bucket/foo/bar/", (true, true)),
+            ("s3n://bucket/foo", "s3a://bucket/foo", (false, true)),
+            (
+                "abfss://fs@acc.dfs.core.windows.net/wh",
+                "wasbs://fs@acc.dfs.core.windows.net/wh/ns",
+                (true, true),
+            ),
+            ("s3://bucket/foo", "gs://bucket/foo/bar", (false, false)),
+            ("gs://bucket/foo", "s3://bucket/foo", (false, false)),
+            ("s3://bucket/foo", "file://bucket/foo/bar", (false, false)),
+            // `wasbs` with the blob endpoint is another host.
+            (
+                "abfss://fs@acc.dfs.core.windows.net/wh",
+                "wasbs://fs@acc.blob.core.windows.net/wh/ns",
+                (false, false),
+            ),
+        ];
+
+        for (folder, location, expected) in cases {
+            let folder = Location::from_str(folder).unwrap();
+            let location = Location::from_str(location).unwrap();
+            assert_eq!(
+                (location.is_below(&folder), location.is_at_or_below(&folder)),
+                expected,
+                "{location} against {folder}",
+            );
+        }
     }
 
     #[test]

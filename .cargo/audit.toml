@@ -1,10 +1,7 @@
 # See https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
 [advisories]
 ignore = [
-    "RUSTSEC-2023-0071", # https://github.com/RustCrypto/RSA/issues/19#issuecomment-1822995643
-    "RUSTSEC-2024-0384", # instant unmaintained but no direct harm, resolved eventually by azure library updates to the new official SDK once SAS is supported.
     "RUSTSEC-2024-0436", # paste is unmaintained but has no direct harm. We already removed direct dependencies.
-    "RUSTSEC-2026-0001", # Review once https://github.com/paupino/rust-decimal/issues/766 is merged
     "RUSTSEC-2025-0134", # https://github.com/nats-io/nats.rs/issues/1502, will be fixed in v0.47
     "RUSTSEC-2026-0194", # quick-xml <0.41 O(N²) attribute-parse DoS. Client-facing path (S3 remote-signer DeleteObjects body) is on the patched 0.41; only remaining instance is 0.40.1 via the azure_core 0.21 fork (ADLS), which parses Azure responses not attacker input. Remove when the azure fork bumps quick-xml to ≥0.41.
     "RUSTSEC-2026-0195", # quick-xml <0.41 NsReader namespace-declaration memory-exhaustion DoS. Same exposure/justification as RUSTSEC-2026-0194 — only remaining <0.41 instance is 0.40.1 via the azure_core 0.21 fork. Remove when the azure fork bumps quick-xml to ≥0.41.
@@ -15,5 +12,7 @@ ignore = [
     "RUSTSEC-2026-0398", # zstd-safe <8.2.0 `Seekable::decompress` sets a `Vec` length past its capacity. Only with the `seekable` feature, which no dependency enables. The remaining 7.2.4 comes with zstd 0.13.3. Remove with RUSTSEC-2026-0391.
     "RUSTSEC-2026-0403", # zstd-safe <8.2.0 `DCtx::decompress_stream` exposes uninitialized memory when a legacy frame fails. Reached through `zstd::stream::write::Decoder`; the zstd 0.13.3 users decode with the read `Decoder` (apache-avro), `decode_all` (iceberg) and the bulk API (parquet), which the advisory lists as not affected. Remove with RUSTSEC-2026-0391.
     "RUSTSEC-2026-0429", # zip <9.0.0 `extract` aborts the process on a symlink entry with a large declared size. Only a build-dependency of utoipa-swagger-ui, whose build script never calls `extract`. Remove when utoipa-swagger-ui moves to zip ≥9.0.0.
+    "RUSTSEC-2026-0545", # zip <9.0.0 accepts truncated or empty AES entries without checking their authentication code. Only a build-dependency of utoipa-swagger-ui, which builds zip without the `aes-crypto` feature. Remove when utoipa-swagger-ui moves to zip ≥9.0.0.
+    "RUSTSEC-2026-0548", # zip <9.0.5 `ZipStreamReader` extracts entries under local-header names. Only a build-dependency of utoipa-swagger-ui, whose build script reads entries through `ZipArchive::by_index` and never uses `ZipStreamReader`. Remove when utoipa-swagger-ui moves to zip ≥9.0.5.
     "RUSTSEC-2026-0459", # libsqlite3-sys <0.39 bundles a vulnerable C SQLite. It is in Cargo.lock through sqlx-sqlite only; no workspace feature enables sqlx's SQLite driver, so no build compiles it (`cargo tree -i libsqlite3-sys --all-features --target all` prints nothing). Remove when sqlx moves to libsqlite3-sys ≥0.39.
 ]
