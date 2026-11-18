@@ -14,6 +14,7 @@ pub mod views;
 
 use std::{collections::HashMap, fmt::Debug, marker::PhantomData, sync::Arc};
 
+pub use compression_codec::decompress_metadata;
 use futures::future::BoxFuture;
 use iceberg::spec::{TableMetadata, ViewMetadata};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
