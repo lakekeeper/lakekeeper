@@ -8,7 +8,10 @@ use lakekeeper::{
         iceberg::v1::PaginationQuery,
         management::v1::{
             DeleteWarehouseQuery,
-            warehouse::{TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse},
+            warehouse::{
+                MAX_TABULAR_EXPIRATION, TabularDeleteProfile, WarehouseStatistics,
+                WarehouseStatisticsResponse,
+            },
         },
     },
     service::{
@@ -988,8 +991,11 @@ fn db_to_api_tabular_delete_profile(
             let seconds = expiration_seconds.ok_or(DatabaseIntegrityError::new(
                 "Did not find `expiration_seconds` for warehouse with soft deletion enabled.",
             ))?;
+            // Values stored before the API bounded them are read within the bound, so that
+            // scheduling a deletion cannot overflow.
+            let max = MAX_TABULAR_EXPIRATION.num_seconds();
             Ok(TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(seconds),
+                expiration_seconds: chrono::Duration::seconds(seconds.clamp(-max, max)),
             })
         }
         DbTabularDeleteProfile::Hard => Ok(TabularDeleteProfile::Hard {}),
@@ -1135,6 +1141,25 @@ pub mod test {
         PostgresBackend, PostgresTransaction,
         test_utils::{change, change_log_head, committed_changes},
     };
+
+    #[test]
+    fn a_stored_expiration_beyond_the_bound_is_read_at_the_bound() {
+        let read = |seconds: i64| {
+            db_to_api_tabular_delete_profile(DbTabularDeleteProfile::Soft, Some(seconds))
+                .unwrap()
+                .expiration_seconds()
+        };
+
+        assert_eq!(
+            [read(60), read(-60), read(i64::MAX), read(i64::MIN)],
+            [
+                Some(chrono::Duration::seconds(60)),
+                Some(chrono::Duration::seconds(-60)),
+                Some(MAX_TABULAR_EXPIRATION),
+                Some(-MAX_TABULAR_EXPIRATION),
+            ]
+        );
+    }
 
     /// Simulate the post-migration steady state (Release N+1): unfreeze schema writes and make the
     /// legacy `table_schema.schema` column nullable, so the normalized-schema write path is

@@ -1314,6 +1314,12 @@ impl StorageProfile {
             (StorageProfile::Stackit(profile), StorageProfile::Stackit(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
+            // An S3 profile can name a STACKIT bucket. An un-normalized STACKIT profile cannot be
+            // proven disjoint, as between two STACKIT profiles.
+            (StorageProfile::S3(s3), StorageProfile::Stackit(stackit))
+            | (StorageProfile::Stackit(stackit), StorageProfile::S3(s3)) => stackit
+                .to_s3()
+                .map_or(true, |stackit| s3.is_overlapping_location(&stackit)),
             (StorageProfile::Adls(profile), StorageProfile::Adls(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
@@ -2095,6 +2101,44 @@ mod tests {
             },
         },
     };
+
+    #[test]
+    fn an_s3_and_a_stackit_profile_of_one_bucket_overlap() {
+        let stackit: StorageProfile = StackitProfile::builder()
+            .bucket("b".to_string())
+            .region("eu01".to_string())
+            .key_prefix("wh".to_string())
+            .build()
+            .into();
+        let s3 = |bucket: &str, prefix: &str| -> StorageProfile {
+            S3Profile::builder()
+                .bucket(bucket.to_string())
+                .key_prefix(prefix.to_string())
+                .region("eu01".to_string())
+                .endpoint(
+                    "https://object.storage.eu01.onstackit.cloud"
+                        .parse()
+                        .unwrap(),
+                )
+                .sts_enabled(false)
+                .flavor(S3Flavor::S3Compat)
+                .build()
+                .into()
+        };
+
+        assert!(s3("b", "wh/inner").is_overlapping_location(&stackit));
+        assert!(stackit.is_overlapping_location(&s3("b", "wh/inner")));
+        assert!(!s3("b", "other").is_overlapping_location(&stackit));
+        assert!(!s3("c", "wh").is_overlapping_location(&stackit));
+        let StorageProfile::Stackit(mut other_region) = stackit.clone() else {
+            unreachable!("a STACKIT profile");
+        };
+        other_region.region = "eu02".to_string();
+        assert!(!s3("b", "wh").is_overlapping_location(&other_region.clone().into()));
+        // A profile whose endpoint cannot be derived cannot be proven disjoint.
+        other_region.region = "EU01".to_string();
+        assert!(s3("c", "wh").is_overlapping_location(&other_region.into()));
+    }
 
     #[test]
     fn test_split_location() {
