@@ -11,9 +11,9 @@ use lakekeeper::{
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogGetNamespaceError,
-        CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogMoveNamespaceError,
-        CatalogNamespaceDropError, CatalogSetNamespaceProtectedError,
+        CatalogBackendError, CatalogBackendErrorType, CatalogCreateNamespaceError,
+        CatalogGetNamespaceError, CatalogListNamespaceError, CatalogListNamespacesResponse,
+        CatalogMoveNamespaceError, CatalogNamespaceDropError, CatalogSetNamespaceProtectedError,
         CatalogUpdateNamespacePropertiesError, ChildNamespaceProtected, ChildTabularProtected,
         CreateNamespaceRequest, InternalParseLocationError, InvalidNamespaceIdentifier,
         ListNamespacesQuery, MovedNamespace, Namespace, NamespaceAlreadyExists,
@@ -1110,6 +1110,12 @@ async fn load_namespace_drop_snapshot(
             FROM task t
             JOIN tabulars ta ON ta.tabular_id = t.entity_id
             WHERE t.warehouse_id = $1 AND t.entity_type IN ('table', 'view', 'generic-table')
+        ),
+        expiration_intent AS (
+            SELECT entity_id, bool_and(deletion_kind IS NOT DISTINCT FROM 'default') AS catalog_only
+            FROM tasks
+            WHERE queue_name IN ('soft_deletion', 'tabular_expiration')
+            GROUP BY entity_id
         )
         SELECT
             ni.protected AS "is_protected!",
@@ -1119,13 +1125,9 @@ async fn load_namespace_drop_snapshot(
             EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running' AND queue_name IN ('soft_deletion', 'tabular_expiration')) AS "has_running_expiration!",
             EXISTS (
                 SELECT 1 FROM tabulars ta
+                LEFT JOIN expiration_intent ei ON ei.entity_id = ta.tabular_id
                 WHERE ta.deleted_at IS NOT NULL
-                    AND NOT COALESCE((
-                        SELECT bool_and(t.deletion_kind IS NOT DISTINCT FROM 'default')
-                        FROM tasks t
-                        WHERE t.entity_id = ta.tabular_id
-                            AND t.queue_name IN ('soft_deletion', 'tabular_expiration')
-                    ), false)
+                    AND ei.catalog_only IS DISTINCT FROM true
             ) AS "has_unresolved_soft_deletions!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
             ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<serde_json::Value>",
@@ -1151,6 +1153,15 @@ async fn load_namespace_drop_snapshot(
     )
 }
 
+fn namespace_drop_lock_error(error: sqlx::Error) -> CatalogBackendError {
+    if matches!(&error, sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")) {
+        CatalogBackendError::new(error, CatalogBackendErrorType::ConcurrentModification)
+            .append_detail("A namespace or table is busy. Retry the recursive drop.")
+    } else {
+        error.into_catalog_backend_error()
+    }
+}
+
 async fn load_locked_namespace_drop_snapshot(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
@@ -1158,6 +1169,7 @@ async fn load_locked_namespace_drop_snapshot(
 ) -> std::result::Result<NamespaceDropSnapshot, CatalogNamespaceDropError> {
     // Namespace rows come first, as in the deletion path. FOR UPDATE conflicts with
     // the parent key share lock and with insertion of a tabular referencing the namespace.
+    // NOWAIT lets the drop retry if a rename already holds a lock in the subtree.
     let namespace_ids = sqlx::query_scalar!(
         r#"
         SELECT child.namespace_id
@@ -1166,14 +1178,14 @@ async fn load_locked_namespace_drop_snapshot(
             AND child.namespace_name[1:array_length(root.namespace_name, 1)] = root.namespace_name
         WHERE root.warehouse_id = $1 AND root.namespace_id = $2
         ORDER BY child.namespace_id
-        FOR UPDATE OF child
+        FOR UPDATE OF child NOWAIT
         "#,
         *warehouse_id,
         *namespace_id,
     )
     .fetch_all(&mut **transaction)
     .await
-    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    .map_err(namespace_drop_lock_error)?;
 
     // Soft deletion holds this same tabular row lock until its expiration is committed.
     sqlx::query_scalar!(
@@ -1184,7 +1196,7 @@ async fn load_locked_namespace_drop_snapshot(
             FROM tabular
             WHERE warehouse_id = $1 AND namespace_id = ANY($2)
             ORDER BY tabular_id
-            FOR UPDATE
+            FOR UPDATE NOWAIT
         ) locked_tabulars
         "#,
         *warehouse_id,
@@ -1192,9 +1204,9 @@ async fn load_locked_namespace_drop_snapshot(
     )
     .fetch_one(&mut **transaction)
     .await
-    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    .map_err(namespace_drop_lock_error)?;
 
-    // The fresh snapshot sees writes that committed while the lock queries waited.
+    // A fresh read sees any soft deletion that committed before we acquired its row lock.
     let snapshot = load_namespace_drop_snapshot(warehouse_id, namespace_id, transaction).await?;
     let locked: HashSet<_> = namespace_ids.into_iter().collect();
     if !locked.contains(&*namespace_id)
@@ -1271,7 +1283,7 @@ pub(crate) async fn drop_namespace(
     // is removable only when its active expiration explicitly requests catalog-only deletion.
     if info.has_unresolved_soft_deletions {
         return Err(NamespaceNotEmpty::new(warehouse_id, namespace_ident)
-            .append_detail("A soft-deleted table or view may still need a purge. Wait for successful expiration, or undrop it and drop it again if its expiration failed.")
+            .append_detail("A soft-deleted table or view may still need a purge. Wait for its expiration to succeed. If it failed, find the table or view ID in the warehouse's failed expiration tasks and undrop it before dropping it again.")
             .into());
     }
 
