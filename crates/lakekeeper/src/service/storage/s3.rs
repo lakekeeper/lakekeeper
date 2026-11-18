@@ -18,10 +18,10 @@ use iceberg_ext::{
     },
 };
 use lakekeeper_io::{
-    InvalidLocationError, Location,
+    InvalidLocationError, Location, S3_CUSTOM_SCHEMES,
     s3::{
-        S3_CUSTOM_SCHEMES, S3AccessKeyAuth, S3Auth, S3AwsSystemIdentityAuth, S3Location,
-        S3Settings, S3Storage, validate_bucket_name,
+        S3AccessKeyAuth, S3Auth, S3AwsSystemIdentityAuth, S3Location, S3Settings, S3Storage,
+        validate_bucket_name,
     },
 };
 use serde::{Deserialize, Serialize};

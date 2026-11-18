@@ -18,7 +18,7 @@ pub use error::{
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
 use futures::{TryStreamExt as _, stream::BoxStream};
-pub use location::{Location, LocationParseError};
+pub use location::{ADLS_CUSTOM_SCHEMES, Location, LocationParseError, S3_CUSTOM_SCHEMES};
 // Re-exported so consumers can drive `object_store_bridge::ObjectStoreBridge`
 // through the `ObjectStore` trait without pinning their own `object_store` version.
 #[cfg(feature = "object-store")]

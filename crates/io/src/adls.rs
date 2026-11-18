@@ -29,7 +29,6 @@ pub use adls_location::{
 pub use adls_storage::AdlsStorage;
 
 use crate::InitializeClientError;
-pub use crate::location::ADLS_CUSTOM_SCHEMES;
 
 /// Wraps a [`TokenCredential`] to retry transient failures when acquiring a
 /// bearer token. The Azure storage data-plane retry policy ([`RetryOptions`])

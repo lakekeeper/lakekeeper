@@ -3,9 +3,9 @@ use std::str::FromStr;
 use azure_storage::CloudLocation;
 use iceberg_ext::configs::table::TableProperties;
 use lakekeeper_io::{
-    InvalidLocationError, Location,
+    ADLS_CUSTOM_SCHEMES, InvalidLocationError, Location,
     adls::{
-        ADLS_CUSTOM_SCHEMES, AdlsStorage, AzureSettings, normalize_host, validate_filesystem_name,
+        AdlsStorage, AzureSettings, normalize_host, validate_filesystem_name,
         validate_storage_account_name,
     },
 };

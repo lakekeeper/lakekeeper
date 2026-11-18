@@ -33,8 +33,6 @@ mod s3_storage;
 pub use s3_location::{InvalidBucketName, S3Location, validate_bucket_name};
 pub use s3_storage::S3Storage;
 
-pub use crate::location::S3_CUSTOM_SCHEMES;
-
 // Seed the smithy trust store with webpki roots on top of the OS-native roots.
 // `rustls-native-certs` returns an empty list on minimal images that lack a CA
 // bundle (e.g. UBI-micro), so without this fallback every public TLS handshake
