@@ -8,7 +8,7 @@ use lakekeeper_io::{
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
-use super::compression_codec::CompressionCodec;
+use super::compression_codec::{CompressionCodec, decompress_metadata};
 use crate::{
     CONFIG,
     api::{ErrorModel, Result},
@@ -191,14 +191,10 @@ pub(crate) async fn read_metadata_file(
     io: &impl LakekeeperStorage,
     file: &Location,
 ) -> Result<TableMetadata, IOErrorExt> {
-    let compression_codec = if file.as_str().ends_with(".gz.metadata.json") {
-        CompressionCodec::Gzip
-    } else {
-        CompressionCodec::None
-    };
-
-    let content = read_file(io, file, compression_codec).await?;
+    let content = read_file(io, file, CompressionCodec::None).await?;
     match tokio::task::spawn_blocking(move || {
+        let content = decompress_metadata(&content)
+            .map_err(|e| IOErrorExt::FileDecompression(Box::new(e)))?;
         serde_json::from_slice(&content).map_err(IOErrorExt::Deserialization)
     })
     .await
