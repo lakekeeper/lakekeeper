@@ -4,6 +4,7 @@
 //! and its manifests). It never lists storage and never estimates: a table that can't be measured
 //! gets a [`NotMeasurableReason`] and no sizes.
 
+mod findings;
 mod measure;
 
 pub use measure::{MeasureError, measure};

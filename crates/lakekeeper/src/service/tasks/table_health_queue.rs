@@ -328,7 +328,7 @@ async fn run<C: CatalogStore, S: SecretStore>(
     }
 }
 
-/// Log a measured table. Returns the message for the task log.
+/// Log a measured table and its findings. Returns the message for the task log.
 fn log_measurement(
     warehouse_id: &str,
     table_id: &str,
@@ -346,13 +346,39 @@ fn log_measurement(
         live_metadata_bytes = sizes.live_metadata_bytes,
         snapshot_id = ?measurement.snapshot_id,
         manifests_read = measurement.manifests_read,
+        findings = measurement.findings.len(),
         scan_duration_ms = scan_duration.as_millis(),
         measurement_version = MEASUREMENT_VERSION,
         "Measured table health"
     );
+    for finding in &measurement.findings {
+        tracing::info!(
+            %warehouse_id,
+            %table_id,
+            table_name,
+            kind = %finding.kind,
+            severity = ?finding.severity,
+            evidence = %finding.evidence,
+            thresholds = %finding.thresholds,
+            "Table health finding"
+        );
+    }
+    let kinds = measurement
+        .findings
+        .iter()
+        .map(|finding| finding.kind.to_string())
+        .collect::<Vec<_>>();
     format!(
-        "Measured: live data {} bytes, live delete {} bytes, live metadata {} bytes.",
-        sizes.live_data_bytes, sizes.live_delete_bytes, sizes.live_metadata_bytes
+        "Measured: live data {} bytes, live delete {} bytes, live metadata {} bytes. \
+         Findings: {}.",
+        sizes.live_data_bytes,
+        sizes.live_delete_bytes,
+        sizes.live_metadata_bytes,
+        if kinds.is_empty() {
+            "none".to_string()
+        } else {
+            kinds.join(", ")
+        }
     )
 }
 

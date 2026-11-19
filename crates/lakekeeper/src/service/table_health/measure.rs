@@ -4,7 +4,10 @@ use futures::{StreamExt, TryStreamExt};
 use iceberg::spec::{DataContentType, TableMetadata, TableProperties};
 use lakekeeper_io::{ErrorKind, LakekeeperStorage, Location};
 
-use super::{MeasureOutcome, Measurement, NotMeasurableReason, Sizes};
+use super::{
+    MeasureOutcome, Measurement, NotMeasurableReason, Sizes,
+    findings::{LengthMismatch, manifest_length_mismatch},
+};
 use crate::operations::{
     error::{CancelledError, InternalError, ReadError, RetryableErrorKind},
     manifest_decode::{ManifestEntryStats, visit_manifest_stats},
@@ -130,6 +133,7 @@ async fn scan<P: LakekeeperIoProvider + Clone + 'static>(
 
     let mut totals = ManifestTotals::default();
     let mut manifest_bytes = 0_u64;
+    let mut length_mismatches = Vec::new();
     let mut reads =
         std::pin::pin!(
             reader.visit_manifests(manifests, tracker.clone(), |bytes, manifest| {
@@ -142,8 +146,13 @@ async fn scan<P: LakekeeperIoProvider + Clone + 'static>(
             },)
         );
     while let Some(read) = reads.next().await {
-        let (_, read) = read?;
+        let (manifest, read) = read?;
         manifest_bytes = manifest_bytes.saturating_add(read.actual_length);
+        length_mismatches.extend(LengthMismatch::of(
+            &manifest.path,
+            manifest.length,
+            read.actual_length,
+        ));
         totals.merge(read.value);
     }
 
@@ -172,7 +181,9 @@ async fn scan<P: LakekeeperIoProvider + Clone + 'static>(
             live_delete_bytes: totals.delete_bytes(),
             live_metadata_bytes,
         },
-        findings: Vec::new(),
+        findings: manifest_length_mismatch(length_mismatches)
+            .into_iter()
+            .collect(),
         snapshot_id: Some(snapshot_id),
         manifests_read,
     }))
@@ -279,6 +290,7 @@ mod tests {
     use lakekeeper_io::memory::MemoryStorage;
 
     use super::*;
+    use crate::service::table_health::{Finding, FindingKind, Severity};
 
     const METADATA_PATH: &str = "memory://t/metadata/v1.metadata.json";
     const LIST_PATH: &str = "memory://t/metadata/snap-1.avro";
@@ -652,6 +664,53 @@ mod tests {
                 }),
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_wrong_manifest_length_is_a_finding_and_the_table_is_still_measured() {
+        let file_io = FileIO::new_with_memory();
+        let storage = storage().await;
+        let mut manifest = data_manifest(&file_io).await;
+        manifest.manifest_length = 10;
+        manifest_list(&file_io, vec![manifest]).await;
+        let manifest_bytes = copy(&file_io, &storage, DATA_MANIFEST_PATH).await.len();
+        let list_bytes = copy(&file_io, &storage, LIST_PATH).await.len();
+
+        let outcome = measured(
+            &metadata(HashMap::new(), true),
+            storage,
+            &ProgressTracker::new(),
+        )
+        .await
+        .unwrap();
+
+        let expected_metadata_bytes =
+            i64::try_from(METADATA_FILE_BYTES + list_bytes + manifest_bytes).unwrap() + 77 + 33;
+        assert_eq!(
+            outcome,
+            MeasureOutcome::Measured(Measurement {
+                sizes: Sizes {
+                    live_data_bytes: 3000,
+                    live_delete_bytes: 0,
+                    live_metadata_bytes: expected_metadata_bytes,
+                },
+                findings: vec![Finding {
+                    kind: FindingKind::ManifestLengthMismatch,
+                    severity: Severity::Warning,
+                    evidence: serde_json::json!({
+                        "count": 1,
+                        "examples": [{
+                            "path": DATA_MANIFEST_PATH,
+                            "recorded": 10,
+                            "actual": manifest_bytes,
+                        }],
+                    }),
+                    thresholds: serde_json::json!({}),
+                }],
+                snapshot_id: Some(SNAPSHOT_ID),
+                manifests_read: 1,
+            })
+        );
     }
 
     #[tokio::test]
