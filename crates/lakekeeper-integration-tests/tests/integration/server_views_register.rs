@@ -345,3 +345,108 @@ async fn test_register_view_with_owner_property_refused_from_untrusted_client(po
         .unwrap_err();
     assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
 }
+
+/// Registering adopts an existing file, so it needs the register right on the warehouse besides
+/// `create_view` on the namespace. It is checked before the metadata file is read. A refusal is
+/// recorded on the warehouse and, by the requested name, as a refused `create_view` on the
+/// namespace.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_requires_the_register_right(pool: PgPool) {
+    use lakekeeper::{
+        api::management::v1::warehouse::TabularDeleteProfile,
+        service::{
+            UserId,
+            authz::{CatalogWarehouseAction, tests::HidingAuthorizer},
+            events::{AuthorizationFailureReason, EventListener, context::ActionContextKey},
+        },
+    };
+    use lakekeeper_integration_tests::{
+        CapturingAuthzListener, RecordedAction, create_ns, create_view, setup_simple,
+    };
+
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        TabularDeleteProfile::Hard {},
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let prefix = warehouse_id.to_string();
+    let namespace = create_ns(ctx.clone(), prefix.clone(), "reg_ns".to_string())
+        .await
+        .namespace;
+    let template = create_view(ctx.clone(), &prefix, "reg_ns", "template", None)
+        .await
+        .unwrap();
+    let (parent, _) = template.metadata.location().rsplit_once('/').unwrap();
+    let location = format!("{parent}/registered-{}", Uuid::now_v7());
+    let metadata_location = ViewFile::from_template(&template.metadata, &location)
+        .write()
+        .await;
+    let missing_location = format!("{location}/metadata/does-not-exist.metadata.json");
+
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterView
+    ));
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    // Reading a missing file would fail with a storage error, not with a refusal.
+    for location in [&missing_location, &metadata_location] {
+        let err = register_view(
+            ctx.clone(),
+            warehouse_id,
+            namespace.clone(),
+            "registered",
+            location,
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+        assert_eq!(err.error.r#type, "WarehouseActionForbidden");
+    }
+
+    // Each refusal writes two records, from separate tasks, so they may arrive in any order.
+    assert_eq!(listener.settled_counts(0, 4).await, (0, 4));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::ActionForbidden; 4]
+    );
+    let (succeeded, mut failed) = listener.recorded_actions();
+    failed.sort_by(|a, b| a[0].action_name.cmp(&b[0].action_name));
+    assert_eq!(succeeded, Vec::<Vec<RecordedAction>>::new());
+    let create_view = vec![RecordedAction {
+        action_name: "create_view".to_string(),
+        context: vec![
+            ActionContextKey::Name("registered".to_string()),
+            ActionContextKey::Properties(std::collections::BTreeMap::new()),
+        ],
+    }];
+    let register_view_action = vec![RecordedAction {
+        action_name: "register_view".to_string(),
+        context: vec![],
+    }];
+    assert_eq!(
+        failed,
+        vec![
+            create_view.clone(),
+            create_view,
+            register_view_action.clone(),
+            register_view_action,
+        ]
+    );
+
+    let err = load_view(ctx, warehouse_id, namespace, "registered")
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+}

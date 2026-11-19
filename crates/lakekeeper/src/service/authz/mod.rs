@@ -1135,6 +1135,11 @@ pub enum CatalogWarehouseAction {
     /// Asked together with the create action on the namespace. The files may be anywhere in
     /// the warehouse's storage, so it is a right on the warehouse.
     RegisterTable,
+    /// Register a view from a view metadata file that is already in the warehouse's storage.
+    /// Asked together with `CreateView` on the namespace. The file may be anywhere in the
+    /// warehouse's storage, so it is a right on the warehouse. Separate from `RegisterTable`, so
+    /// that an authorizer can allow one without the other.
+    RegisterView,
     /// Attach/detach governance tags on this warehouse.
     ManageTags,
     /// Accept a namespace being moved in from elsewhere as a child of this entity.
@@ -1184,7 +1189,7 @@ pub enum CatalogWarehouseAction {
 /// The warehouse actions enumerated for permission introspection (`GET
 /// /warehouse/{id}/actions`). The subtree grant actions are enumerated with the
 /// absent scope (the base-capability form).
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 28]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 29]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -1212,6 +1217,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 28]> = LazyL
         CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
         CatalogWarehouseAction::RegisterTable,
+        CatalogWarehouseAction::RegisterView,
         CatalogWarehouseAction::ManageTags,
         CatalogWarehouseAction::AcceptMovedNamespace {
             source: Arc::new(Vec::new()),
@@ -1224,7 +1230,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 28]> = LazyL
 impl CatalogWarehouseAction {
     /// Introspectable warehouse actions — see [`WAREHOUSE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 28] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 29] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -1264,8 +1270,9 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::GetAllTasks
             | CatalogWarehouseAction::ControlAllTasks
             | CatalogWarehouseAction::GetEndpointStatistics
-            // Adds a table, does not change the warehouse.
+            // Adds a table or a view, does not change the warehouse.
             | CatalogWarehouseAction::RegisterTable
+            | CatalogWarehouseAction::RegisterView
             // Governance tag attachment is metadata, not part of the reconciled spec.
             | CatalogWarehouseAction::ManageTags
             // Grant administration is not part of the reconciled spec.
@@ -1322,6 +1329,7 @@ impl EventAction for CatalogWarehouseAction {
             | Self::SetFormatVersionPolicy { .. }
             | Self::GetEndpointStatistics { .. }
             | Self::RegisterTable { .. }
+            | Self::RegisterView { .. }
             | Self::ManageTags { .. }
             | Self::ReadGrants { .. } => {}
         }
@@ -2419,6 +2427,7 @@ pub enum CatalogWarehouseActionKind {
     SetFormatVersionPolicy,
     GetEndpointStatistics,
     RegisterTable,
+    RegisterView,
     ManageTags,
     AcceptMovedNamespace,
     ReadGrants,
@@ -2452,6 +2461,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
             CatalogWarehouseAction::RegisterTable => Self::RegisterTable,
+            CatalogWarehouseAction::RegisterView => Self::RegisterView,
             CatalogWarehouseAction::ManageTags => Self::ManageTags,
             CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
             CatalogWarehouseAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
@@ -3435,6 +3445,7 @@ pub mod tests {
             A::ControlAllTasks,
             A::GetEndpointStatistics,
             A::RegisterTable,
+            A::RegisterView,
             A::ManageTags,
         ] {
             assert!(!a.is_spec_mutation(), "{a:?} should not be a spec mutation");

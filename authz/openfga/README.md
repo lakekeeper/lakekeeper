@@ -4,6 +4,21 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
+## `v4.16`
+
+```text
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+Adds a warehouse right for registering views. No tuple is written, rewritten or backfilled.
+
+`warehouse`:
+
+- Add `can_register_view` (from `modify_effective`). Registering a view adopts a view metadata file that already exists, anywhere in the warehouse's storage. Lakekeeper asks it together with `can_create_view` on the namespace, so `create` alone does not allow registering a view. It is separate from `can_register_table`, so an authorizer can allow one without the other. With this model, both follow from `modify`.
+
+During a rolling upgrade from `v4.15`, pods of the previous release do not serve `registerView`, so they never ask `can_register_view`.
+
 ## `v4.15`
 
 ```text

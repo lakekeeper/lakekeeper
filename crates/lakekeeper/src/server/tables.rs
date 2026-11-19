@@ -73,8 +73,8 @@ use crate::{
         self, authorize_soft_deletion_skip,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
         tabular::{
-            authorize_entities, claim_idempotency_key, claim_no_content_idempotency_key,
-            fetch_entities,
+            authorize_entities, authorize_register_on_warehouse, claim_idempotency_key,
+            claim_no_content_idempotency_key, fetch_entities,
         },
     },
     service::{
@@ -391,8 +391,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
         // Before any storage read. `CreateTable` is checked after the read: its properties
         // and table id are only known from the metadata file.
-        register_table::authorize_register_on_warehouse(&authorizer, &event_ctx, &warehouse)
-            .await?;
+        authorize_register_on_warehouse(
+            &authorizer,
+            &event_ctx,
+            &warehouse,
+            CatalogWarehouseAction::RegisterTable,
+        )
+        .await?;
         let namespace = authorizer
             .require_namespace_action(
                 event_ctx.request_metadata(),
