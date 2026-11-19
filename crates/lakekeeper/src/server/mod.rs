@@ -135,7 +135,8 @@ pub(crate) async fn authorize_soft_deletion_skip<A: Authorizer>(
     Ok(())
 }
 
-pub(crate) async fn maybe_get_secret<S: SecretStore>(
+/// The storage credential stored under `secret`, if there is one.
+pub async fn maybe_get_secret<S: SecretStore>(
     secret: Option<crate::SecretId>,
     state: &S,
 ) -> Result<Option<Arc<StorageCredential>>, IcebergErrorResponse> {
