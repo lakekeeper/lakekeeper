@@ -1586,8 +1586,9 @@ fn an_operation_record_as_json_matches_its_log_line() {
     assert_json_matches_log_line(&json, line);
 }
 
-/// A listener starts with the log sink only while it is active, so with the log sink off a
-/// listener built with `new()` writes no audit line.
+/// `dispatch_for`, which gives `new()` and `with_catalog()` their dispatch, holds the log sink
+/// only while it is active, so with the log sink off it writes no audit line. `new()` itself
+/// reads the global `CONFIG`, which one test process cannot set to both values.
 #[test]
 fn a_listener_starts_with_the_log_sink_only_while_it_is_active() {
     let lines_written_with = |log: bool| {
