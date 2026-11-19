@@ -10,7 +10,12 @@ We recommend enabling [Remove Orphan Files](./table-maintenance.md#remove-orphan
 
 ## With the Helm Chart { #helm-chart }
 
-The [Lakekeeper Helm chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper) 0.14.0 or later runs optimize workers as Kubernetes Jobs that [KEDA](https://keda.sh/) starts only while optimize tasks wait. Older chart versions ignore `optimizeWorkers`. [Install KEDA](https://keda.sh/docs/latest/deploy/) in the cluster first, then turn on `optimizeWorkers`:
+The [Lakekeeper Helm chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper) runs optimize workers in one of two modes, set with `optimizeWorkers.mode`:
+
+- **`keda`** (the default, chart 0.14.0 or later): [KEDA](https://keda.sh/) starts workers as Kubernetes Jobs only while optimize tasks wait or run. No worker runs while there is nothing to do. [Install KEDA](https://keda.sh/docs/latest/deploy/) in the cluster first.
+- **`standing`** (chart 0.15.0 or later): a Deployment per size class runs a fixed number of workers all the time, so tasks start at once. No KEDA is needed.
+
+Older chart versions ignore `optimizeWorkers`. Turn it on:
 
 ```yaml
 lakekeeper:
@@ -18,6 +23,7 @@ lakekeeper:
 
 optimizeWorkers:
   enabled: true
+  mode: keda # or standing
   sizeClasses:
     - name: small
       resources:
@@ -25,18 +31,32 @@ optimizeWorkers:
         memory: 8Gi
       keda:
         maxJobs: 4
+      standing:
+        replicas: 2
 ```
 
-The chart creates one KEDA ScaledJob per size class. KEDA starts one Job for each optimize task of the class that waits or runs, up to `keda.maxJobs` of the class. Each Job runs one optimize worker without the HTTP API, with the `resources` of its class as CPU and memory request and limit. A Job ends after it ran no task for `optimizeWorkers.keda.idleExitAfter` (180 seconds by default), and takes no new task after `optimizeWorkers.keda.maxLifetime` (1 hour by default). Each Job opens up to 2 read and 2 write database connections (`databasePoolConnections`).
+With `keda`, the chart creates one KEDA ScaledJob per size class. KEDA starts one Job for each optimize task of the class that waits or runs, up to `keda.maxJobs` of the class. A Job ends after it ran no task for `optimizeWorkers.keda.idleExitAfter` (180 seconds by default), and takes no new task after `optimizeWorkers.keda.maxLifetime` (1 hour by default).
+
+With `standing`, the chart creates one Deployment per size class with `standing.replicas` workers. The workers restart with each new chart version and each change of the catalog configuration or the worker pods, but not when only `standing.replicas` changes. A task that runs during a restart stops and continues on a new worker.
+
+In both modes, each worker runs one optimize task at a time, without the HTTP API, with the `resources` of its class as CPU and memory request and limit. Each worker opens up to 2 read and 2 write database connections (`databasePoolConnections`). A size class can keep both `keda` and `standing`, so switching the mode needs no other change.
+
+### Which Mode to Choose
+
+We recommend `keda`: it runs as many workers as the optimize tasks need, and none while there is nothing to do. Use `standing` if you cannot add KEDA to your cluster. Start with a few workers per class. Raise `standing.replicas` if tasks wait too long for a worker (see the [task queue metrics](./monitoring.md#task-queue-metrics) of the queue `optimize`), and lower it if the workers are idle most of the time.
+
+KEDA does not replace Karpenter or the cluster autoscaler. They add and remove nodes, and KEDA starts the worker pods that run on them. A HorizontalPodAutoscaler cannot take the place of KEDA, because Lakekeeper reports the number of workers each size class needs on its [demand endpoint](./monitoring.md#task-queue-demand), not as a Prometheus metric.
+
+### Values
 
 Choose these values:
 
-- **`sizeClasses`**: one class `small` with 2 CPUs, 8 GiB and `keda.maxJobs: 2` by default. `cpu` must be a whole number. See [Size Classes](#size-classes).
-- **`spill`**: the disk at `/tmp` where compaction writes spill files. Each Job gets `spill.sizePerCpu` (4 GiB by default) for each CPU of its class. The chart sets the spill limit of Lakekeeper a little below this size. With `spill.type: local` (the default), the disk is an `emptyDir` on the node, and the Job requests its size as `ephemeral-storage`, so it starts only on a node with enough free disk. With `spill.type: pvc`, each Job gets its own PersistentVolumeClaim, which Kubernetes deletes when KEDA deletes the finished Job. We recommend `pvc` if your nodes have small disks, for example the 20 GiB default of EKS node groups and Karpenter, or GKE Autopilot. Set `spill.pvc.storageClassName` if your cluster has no default storage class. A size class can set its own `spill.type` and `spill.pvc`, and a fixed `spill.size` in place of the size per CPU.
+- **`sizeClasses`**: one class `small` with 2 CPUs and 8 GiB by default, with `keda.maxJobs: 2` and `standing.replicas: 1`. `cpu` must be a whole number. See [Size Classes](#size-classes).
+- **`spill`**: the disk at `/tmp` where compaction writes spill files. Each worker gets `spill.sizePerCpu` (4 GiB by default) for each CPU of its class. The chart sets the spill limit of Lakekeeper a little below this size. With `spill.type: local` (the default), the disk is an `emptyDir` on the node, and the worker requests its size as `ephemeral-storage`, so it starts only on a node with enough free disk. With `spill.type: pvc`, each worker gets its own PersistentVolumeClaim. Kubernetes deletes it with the pod, and with `keda` when KEDA deletes the finished Job. We recommend `pvc` if your nodes have small disks, for example the 20 GiB default of EKS node groups and Karpenter, or GKE Autopilot. Set `spill.pvc.storageClassName` if your cluster has no default storage class. A size class can set its own `spill.type` and `spill.pvc`, and a fixed `spill.size` in place of the size per CPU.
 - **`drainTimeout`**: `0s` by default, see [Stopping a Worker](#stopping-a-worker). The chart refuses a `terminationGracePeriodSeconds` (60 by default) below the drain timeout plus 30 seconds.
-- **`nodeSelector`, `tolerations` and `affinity`**: place the Jobs, for all classes or per class. The chart also sets the annotations that keep Karpenter and the cluster autoscaler from removing the node of a running Job.
+- **`nodeSelector`, `tolerations` and `affinity`**: place the workers, for all classes or per class. With `keda`, the chart also sets the annotations that keep Karpenter and the cluster autoscaler from removing the node of a running Job.
 
-The Jobs use `catalog.config`, `catalog.extraEnv`, `catalog.extraEnvFrom`, `catalog.extraVolumes` and `catalog.extraVolumeMounts` of the API pods, except the variables that the chart sets for workers, such as the task worker counts and the drain timeout. The worker container does not get a mount at `/tmp` from `catalog.extraVolumeMounts`, because its `/tmp` is the spill disk. Variables in `optimizeWorkers.extraEnv` apply only to the workers and override `catalog.extraEnv`.
+The workers use `catalog.config`, `catalog.extraEnv`, `catalog.extraEnvFrom`, `catalog.extraVolumes` and `catalog.extraVolumeMounts` of the API pods, except the variables that the chart sets for workers, such as the task worker counts and the drain timeout. The worker container does not get a mount at `/tmp` from `catalog.extraVolumeMounts`, because its `/tmp` is the spill disk. Variables in `optimizeWorkers.extraEnv` apply only to the workers and override `catalog.extraEnv`.
 
 The workers have their own pod settings:
 
@@ -87,5 +107,7 @@ Set a drain timeout if your nodes give pods time to stop, for example for node u
 - Keep the drain timeout below the time your nodes give a pod before they kill it. 300 seconds is enough for most tables. If your tables have data files larger than 1 GiB, set 600 seconds if your nodes allow it.
 - Set the pod's `terminationGracePeriodSeconds` to the drain timeout plus about 30 seconds, plus the time of a `preStop` hook if the pod has one.
 - Keep the drain timeout at 0 on spot or preemptible nodes. These nodes can go away before the drain ends, and a worker that is killed while it drains counts as a failed attempt.
+
+With `keda`, if a node fails and does not come back, its worker pod stays in `Terminating`, and KEDA keeps counting its Job as running. Until the pod is gone, KEDA starts one worker fewer for that size class, so tasks of the class can wait. Delete the Node object (`kubectl delete node <name>`), or let the node auto-repair of your cloud replace the node.
 
 See [Stopping Task Workers](./configuration.md#stopping-task-workers) for how the drain works for all queues.
