@@ -26,6 +26,7 @@ compile_error!(
 extern crate self as lakekeeper;
 
 mod config;
+pub mod operations;
 pub mod server;
 pub mod service;
 pub use config::{
