@@ -41,7 +41,7 @@ jobs:
     name: build rust onelake tests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -49,7 +49,7 @@ jobs:
       # would replace `build.rustflags` from `.cargo/config.toml`, including the
       # `--cfg tracing_unstable` that `tracing::field::valuable` requires.
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           rustflags: ""
@@ -99,7 +99,7 @@ jobs:
       LAKEKEEPER_TEST__ONELAKE_CLIENT_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_CLIENT_ID }}
       LAKEKEEPER_TEST__ONELAKE_TENANT_ID: ${{ vars.LAKEKEEPER_TEST__ONELAKE_TENANT_ID }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -196,7 +196,7 @@ jobs:
     env:
       CAP: ${{ vars.ONELAKE_CAPACITY_RESOURCE_ID }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           sparse-checkout: .github/scripts

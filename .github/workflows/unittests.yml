@@ -52,7 +52,7 @@ jobs:
     env:
       RUSTFLAGS: --cfg tracing_unstable --cfg tokio_unstable # drop -D warnings; MSRV builds may emit new warnings
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Read MSRV from Cargo.toml
@@ -69,7 +69,7 @@ jobs:
           print(f'version={v}')
           " >> "$GITHUB_OUTPUT"
       - name: Setup Rust ${{ steps.msrv.outputs.version }}
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
           # Pull requests restore main's cache and write none of their own. A
@@ -88,11 +88,11 @@ jobs:
     name: Unused dependencies
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-machete
@@ -121,11 +121,11 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install sqlx-cli and migrate database
@@ -145,12 +145,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           components: rustfmt
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -171,12 +171,12 @@ jobs:
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           components: clippy
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -192,11 +192,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           components: clippy
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -208,9 +208,9 @@ jobs:
         run: just update-generic-table-openapi
       - name: Fail on diff
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24
+          node-version: 26
       - name: Build TS Client
         # Pin both the generator and typescript: typescript 7.x (native rewrite)
         # dropped ts.SyntaxKind, which openapi-ts relies on, and the tool's dep
@@ -249,7 +249,7 @@ jobs:
         # old SKIP_SETCAP escape hatch is now ignored. Granting the capability
         # via `options: --cap-add IPC_LOCK` is the supported workaround. Pin
         # to a specific patch so an image refresh can't break CI again.
-        image: hashicorp/vault:1.21.4
+        image: hashicorp/vault:2.2.2
         ports:
           - 8200:8200
         env:
@@ -279,7 +279,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           # A pull request checks out its merge commit; the first parent is the base branch.
@@ -336,7 +336,7 @@ jobs:
         shell: bash
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
@@ -498,7 +498,7 @@ jobs:
     # FRAGMENT under audit-format/unreleased/ — a file in the tree, which the checker can
     # read and the release recipe can assemble. A description gate could do neither.
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         with:
           persist-credentials: false
