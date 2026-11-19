@@ -18,8 +18,9 @@ use lakekeeper::{
         LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
         SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
-        TabularId, TabularIdentBorrowed, TabularNotFound, ViewDeletionInfo, ViewInfo,
-        ViewOrTableDeletionInfo, ViewOrTableInfo, storage::join_location, tasks::TaskId,
+        TabularHasRunningExpiration, TabularId, TabularIdentBorrowed, TabularNotFound,
+        ViewDeletionInfo, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        storage::join_location, tasks::TaskId,
     },
 };
 use lakekeeper_io::Location;
@@ -1897,14 +1898,44 @@ async fn clear_deleted_at(
         }
     })?;
 
-    undrop_tabular_informations
+    let undropped = undrop_tabular_informations
         .into_iter()
         .map(|undrop_tabular_information| {
-            undrop_tabular_information
-                .try_into_table_or_view(warehouse_id)
-                .map_err(Into::into)
+            undrop_tabular_information.try_into_table_or_view(warehouse_id)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure_no_running_expiration(&undropped, warehouse_id, transaction).await?;
+    Ok(undropped)
+}
+
+/// A running expiration task would still drop the tabular after the undrop.
+/// The task rows must already be locked by `transaction`.
+async fn ensure_no_running_expiration(
+    undropped: &[ViewOrTableDeletionInfo],
+    warehouse_id: WarehouseId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), ClearTabularDeletedAtError> {
+    let undropped_ids: Vec<Uuid> = undropped.iter().map(|t| *t.tabular_id()).collect();
+    let running_expiration = sqlx::query_scalar!(
+        r#"SELECT entity_id AS "entity_id!" FROM task
+        WHERE warehouse_id = $1
+            AND entity_id = ANY($2::uuid[])
+            AND entity_type IN ('table', 'view', 'generic-table')
+            AND queue_name IN ('soft_deletion', 'tabular_expiration')
+            AND status IN ('running', 'should-stop')
+        LIMIT 1"#,
+        *warehouse_id,
+        &undropped_ids,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| e.into_catalog_backend_error())?;
+    if let Some(tabular) =
+        running_expiration.and_then(|id| undropped.iter().find(|t| *t.tabular_id() == id))
+    {
+        return Err(TabularHasRunningExpiration::new(warehouse_id, tabular.tabular_id()).into());
+    }
+    Ok(())
 }
 
 impl From<FromTabularRowError> for MarkTabularAsDeletedError {
