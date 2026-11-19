@@ -244,8 +244,8 @@ fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
     }
     require_field_docs(input)?;
     reject_audit_attrs(input)?;
-    let emit = match shape {
-        Some(record_type) => shape_emit(input, record_type)?,
+    let into_fields = match shape {
+        Some(record_type) => shape_into_fields(input, record_type)?,
         None => quote!(),
     };
     let ident = &input.ident;
@@ -283,7 +283,7 @@ fn expand_part(input: &DeriveInput, args: &Args) -> Result<TokenStream2> {
 
         #part_impl
 
-        #emit
+        #into_fields
 
         #[cfg(debug_assertions)]
         ::lakekeeper::__private::inventory::submit! {
@@ -628,7 +628,7 @@ fn strip_our_attrs(input: &DeriveInput) -> DeriveInput {
 /// Each field goes on the record under its own name, in struct order, so record and schema
 /// list the same fields. Fields that serialize to `null` are left off. `record_type` comes from
 /// the attribute; the struct has no such field.
-fn shape_emit(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
+fn shape_into_fields(input: &DeriveInput, record_type: &str) -> Result<TokenStream2> {
     if std::env::var("CARGO_PKG_NAME").as_deref() != Ok("lakekeeper") {
         return Err(Error::new_spanned(
             &input.ident,
