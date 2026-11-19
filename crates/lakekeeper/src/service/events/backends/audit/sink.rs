@@ -130,10 +130,7 @@ pub(crate) fn activate_sinks(log: bool, others: Vec<ArcAuditSink>) -> AuditDispa
         log,
         others: !others.is_empty(),
     };
-    let mut sinks: Vec<ArcAuditSink> = Vec::new();
-    if log {
-        sinks.push(Arc::new(LogSink));
-    }
+    let mut sinks = dispatch_for(chosen).sinks;
     sinks.extend(others);
 
     if let Err(rejected) = ACTIVE.set(chosen)
