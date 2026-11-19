@@ -4104,6 +4104,7 @@ dependencies = [
  "aws-sdk-s3",
  "bytes",
  "chrono",
+ "flate2",
  "futures",
  "hostname",
  "http 1.5.0",

@@ -4,7 +4,7 @@
   "$ref": "#/$defs/AuditRecord",
   "x-audit-emitter": {
     "name": "lakekeeper",
-    "format": "1.1"
+    "format": "1.2"
   },
   "$defs": {
     "ActionRecord": {
@@ -345,6 +345,10 @@
                   "type": "string"
                 },
                 "description": "The properties the client supplied, verbatim. The keys are the client's data."
+              },
+              "view_id": {
+                "type": "string",
+                "description": "The view id from the metadata file a view is registered from."
               }
             }
           }

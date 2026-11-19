@@ -1235,6 +1235,7 @@ fn fixture_view() -> UserProvidedView {
 fn fixture_authz_failed_create_view_owner_property() {
     let action = CatalogNamespaceAction::CreateView {
         name: Some("orders_by_day".to_string()),
+        view_id: None,
         properties: Arc::new(std::collections::BTreeMap::from([(
             "trino.run-as-owner".to_string(),
             "bob".to_string(),

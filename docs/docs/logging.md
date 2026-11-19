@@ -136,7 +136,7 @@ Every record carries two kinds of version, and they answer different questions.
 ```json
 {
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "2.1"
@@ -376,6 +376,7 @@ When a field appears:
 | `removed_properties`    | Array  | The property keys being removed                         |
 | `table_id`              | String | The table id the client asked for                       |
 | `generic_table_id`      | String | The generic-table id the client asked for               |
+| `view_id`               | String | Register only. The view id from the metadata file the view is registered from |
 | `format`                | String | The requested table format                              |
 | `base_location`         | String | The requested storage location                          |
 | `project_id`            | String | The project id the client asked for                     |
@@ -508,7 +509,7 @@ A field with no value is left out, never written as `null`. This holds everywher
   "message": "Authorization succeeded event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "authorization",
   "emitters": {
     "lakekeeper": "1.1"
@@ -564,7 +565,7 @@ A field with no value is left out, never written as `null`. This holds everywher
   "message": "Authorization failed event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "authorization",
   "emitters": {
     "lakekeeper": "1.1"
@@ -632,7 +633,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "message": "Authorization succeeded event",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "authorization",
   "emitters": {
     "lakekeeper": "1.1"
@@ -858,7 +859,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP role resolution complete",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -891,7 +892,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP user not found; returning empty role list",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -924,7 +925,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "LDAP search matched multiple entries; cannot resolve principal unambiguously",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -958,7 +959,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "branching DN regex did not match; explicit no-roles outcome",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -1006,7 +1007,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "No role provider handled user; user will have no provider-assigned roles",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -1039,7 +1040,7 @@ Other context fields: `provider_id`, `role_count` (number of roles resolved), `c
   "message": "Resolved role assignments for user",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"
@@ -1092,7 +1093,7 @@ Many records for one `provider_id` usually mean that the subject claim does not 
   "message": "the directory has no entry for the user; they get none of its groups",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.1"
@@ -1131,7 +1132,7 @@ A `WARN` line without PII is also written to the general log. This outcome point
   "message": "stale provider(s) failed to refresh; serving cached roles",
   "target": "lakekeeper::audit",
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "operation",
   "emitters": {
     "lakekeeper_plus": "1.0"

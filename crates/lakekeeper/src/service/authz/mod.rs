@@ -1362,6 +1362,10 @@ pub enum CatalogNamespaceAction {
         /// Name of the view to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// View ID, if externally provided (e.g. via register).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "open-api", schema(value_type = Option<Uuid>))]
+        view_id: Option<ViewId>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
@@ -1510,6 +1514,7 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 21]> = LazyL
         },
         CatalogNamespaceAction::CreateView {
             name: None,
+            view_id: None,
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::CreateNamespace {
@@ -1606,7 +1611,20 @@ impl EventAction for CatalogNamespaceAction {
                 }
                 b = b.context(ActionContextKey::Properties(properties.as_ref().clone()));
             }
-            Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
+            Self::CreateView {
+                name,
+                view_id,
+                properties,
+            } => {
+                if let Some(n) = name {
+                    b = b.context(ActionContextKey::Name(n.clone()));
+                }
+                if let Some(vid) = view_id {
+                    b = b.context(ActionContextKey::ViewId(vid.to_string()));
+                }
+                b = b.context(ActionContextKey::Properties(properties.as_ref().clone()));
+            }
+            Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
                     b = b.context(ActionContextKey::Name(n.clone()));
                 }
@@ -3552,6 +3570,7 @@ pub mod tests {
             (
                 CatalogNamespaceAction::CreateView {
                     name: None,
+                    view_id: None,
                     properties: Arc::new(BTreeMap::new()),
                 },
                 serde_json::json!({"action": "create_view"}),
@@ -4531,10 +4550,24 @@ pub mod tests {
         // CreateView with name
         let action = CatalogNamespaceAction::CreateView {
             name: Some("my-view".to_string()),
+            view_id: None,
             properties: Arc::new(BTreeMap::new()),
         };
         let log = log_string(&action);
         assert!(log.contains("name=my-view"), "got: {log}");
+        assert!(!log.contains("view_id"), "got: {log}");
+
+        // CreateView with name and view_id, as register asks it
+        let action = CatalogNamespaceAction::CreateView {
+            name: Some("my-view".to_string()),
+            view_id: Some(ViewId::from(Uuid::nil())),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = log_string(&action);
+        assert!(
+            log.contains("view_id=00000000-0000-0000-0000-000000000000"),
+            "got: {log}"
+        );
 
         // CreateNamespace in namespace with name
         let action = CatalogNamespaceAction::CreateNamespace {
