@@ -45,7 +45,7 @@ jobs:
     env:
       RUSTFLAGS: --cfg tracing_unstable -D warnings -C debuginfo=0
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -88,7 +88,7 @@ jobs:
           exit 1
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           # Pull requests restore main's cache and write none of their own. A
           # cache saved on a PR ref is readable by that one PR, and the Rust

@@ -20,7 +20,7 @@ jobs:
       # on every run and hits the per-IP rate limit). Sideloaded below.
       CURL_IMAGE: curlimages/curl:8.16.0
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
@@ -65,7 +65,7 @@ jobs:
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         id: install
         with:
-          version: v3.22.1
+          version: v4.3.2
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
       # kind's containerd can't see the host docker credentials, so anonymous
