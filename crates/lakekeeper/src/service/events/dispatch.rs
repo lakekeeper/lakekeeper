@@ -58,9 +58,9 @@ macro_rules! dispatch_event {
         // Ensure the histogram metric description is registered.
         let _ = &*$crate::service::events::dispatch::LISTENER_DURATION_HISTOGRAM;
 
-        // Snapshot under the lock, then drop the guard before any await. Unconstrained, so a
-        // task that used up its coop budget still takes the snapshot on the first poll and the
-        // event reaches the listeners registered when it was dispatched.
+        // Snapshot under the lock, then drop the guard before any await. Unconstrained, so the
+        // coop budget never defers the snapshot: with the lock free, it is taken on the first
+        // poll and the event reaches the listeners registered when it was dispatched.
         let listeners: Vec<Arc<dyn EventListener>> =
             tokio::task::unconstrained($self.0.read()).await.clone();
         let event_type = stringify!($method);
@@ -374,6 +374,8 @@ impl EventDispatcher {
         let dispatcher = self.clone();
         tokio::spawn(async move {
             for event in events {
+                // A yield point per event, so a large role sync shares the worker thread.
+                tokio::task::consume_budget().await;
                 match event {
                     types::UserWrittenEvent::Created(event) => {
                         dispatcher.user_created(event).await;
@@ -910,7 +912,8 @@ mod tests {
     /// moment, so a listener appended afterwards does not receive the event.
     #[tokio::test]
     async fn an_event_reaches_only_the_listeners_registered_when_it_is_dispatched() {
-        let dispatcher = EventDispatcher::new(Vec::new());
+        let registered = Arc::new(CountingListener::default());
+        let dispatcher = EventDispatcher::new(vec![registered.clone()]);
         let late = Arc::new(CountingListener::default());
 
         while tokio::task::coop::has_budget_remaining() {
@@ -924,8 +927,15 @@ mod tests {
         let events = dispatcher.clone();
         dispatch_inline_or_spawn(async move { events.grants_changed(event).await });
         tokio::task::unconstrained(dispatcher.append(late.clone())).await;
+        // Lets a dispatch that was moved to a spawned task run before the counts are read.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        assert_eq!(late.0.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            (
+                registered.0.load(Ordering::SeqCst),
+                late.0.load(Ordering::SeqCst)
+            ),
+            (1, 0)
+        );
     }
 }
