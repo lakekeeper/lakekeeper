@@ -13,7 +13,7 @@ We recommend enabling [Remove Orphan Files](./table-maintenance.md#remove-orphan
 The [Lakekeeper Helm chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper) runs optimize workers in one of two modes, set with `optimizeWorkers.mode`:
 
 - **`keda`** (the default, chart 0.14.0 or later): [KEDA](https://keda.sh/) starts workers as Kubernetes Jobs only while optimize tasks wait or run. No worker runs while there is nothing to do. [Install KEDA](https://keda.sh/docs/latest/deploy/) in the cluster first.
-- **`standing`** (chart 0.15.0 or later): a Deployment per size class runs a fixed number of workers all the time, so tasks start at once. No KEDA is needed.
+- **`standing`** (chart 0.15.0 or later): a Deployment per size class runs a fixed number of workers all the time, so a task starts at once if a worker is free. No KEDA is needed.
 
 Older chart versions ignore `optimizeWorkers`. Turn it on:
 
@@ -39,13 +39,13 @@ With `keda`, the chart creates one KEDA ScaledJob per size class. KEDA starts on
 
 With `standing`, the chart creates one Deployment per size class with `standing.replicas` workers. The workers restart with each new chart version and each change of the catalog configuration or the worker pods, but not when only `standing.replicas` changes. A task that runs during a restart stops and continues on a new worker.
 
-In both modes, each worker runs one optimize task at a time, without the HTTP API, with the `resources` of its class as CPU and memory request and limit. Each worker opens up to 2 read and 2 write database connections (`databasePoolConnections`). A size class can keep both `keda` and `standing`, so switching the mode needs no other change.
+In both modes, each worker runs one optimize task at a time, without the HTTP API, with the `resources` of its class as CPU and memory request and limit. Each worker opens up to 2 read and 2 write database connections by default (`optimizeWorkers.databasePoolConnections`). A size class can keep both `keda` and `standing`, so switching the mode needs no other change.
 
 ### Which Mode to Choose
 
 We recommend `keda`: it runs as many workers as the optimize tasks need, and none while there is nothing to do. Use `standing` if you cannot add KEDA to your cluster. Start with a few workers per class. Raise `standing.replicas` if tasks wait too long for a worker (see the [task queue metrics](./monitoring.md#task-queue-metrics) of the queue `optimize`), and lower it if the workers are idle most of the time.
 
-KEDA does not replace Karpenter or the cluster autoscaler. They add and remove nodes, and KEDA starts the worker pods that run on them. A HorizontalPodAutoscaler cannot take the place of KEDA, because Lakekeeper reports the number of workers each size class needs on its [demand endpoint](./monitoring.md#task-queue-demand), not as a Prometheus metric.
+KEDA does not replace Karpenter or the cluster autoscaler. They add and remove nodes, and KEDA starts the worker pods that run on them. A HorizontalPodAutoscaler cannot read the [demand endpoint](./monitoring.md#task-queue-demand), where Lakekeeper reports how many workers each size class needs.
 
 ### Values
 
