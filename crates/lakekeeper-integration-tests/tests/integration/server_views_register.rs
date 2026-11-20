@@ -691,3 +691,62 @@ async fn test_register_view_inside_table_location_conflicts(pool: PgPool) {
     )
     .await;
 }
+
+/// A retry with the same `Idempotency-Key` returns the registered view, as `loadView` does,
+/// instead of a 409, and registers nothing new. The retry names a different file, so a second
+/// registration could not hide behind the first one's name or UUID conflict.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_replays_with_the_same_idempotency_key(pool: PgPool) {
+    use lakekeeper::service::idempotency::IdempotencyKey;
+
+    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    let key = IdempotencyKey::parse(&Uuid::now_v7().to_string()).unwrap();
+    let with_key = || {
+        let mut request_metadata = RequestMetadata::new_unauthenticated();
+        request_metadata.with_idempotency_key(key);
+        request_metadata
+    };
+    let metadata_location = ViewFile::from_template(&template, &location).write().await;
+    let registered = register_view(
+        ctx.clone(),
+        warehouse_id,
+        namespace.clone(),
+        "registered",
+        &metadata_location,
+        with_key(),
+    )
+    .await
+    .unwrap();
+
+    let other_location = format!("{location}-retry");
+    let other_metadata_location = ViewFile::from_template(&template, &other_location)
+        .write()
+        .await;
+    let replayed = register_view(
+        ctx.clone(),
+        warehouse_id,
+        namespace.clone(),
+        "registered",
+        &other_metadata_location,
+        with_key(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(replayed, registered);
+    let loaded = load_view(ctx.clone(), warehouse_id, namespace.clone(), "registered")
+        .await
+        .unwrap();
+    assert_eq!(loaded, registered);
+    // The retry's file is not registered: its UUID is still free.
+    register_view(
+        ctx,
+        warehouse_id,
+        namespace,
+        "registered_retry_file",
+        &other_metadata_location,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the replay must not register the retry's file");
+}
