@@ -158,7 +158,7 @@ Every record carries two kinds of version, and they answer different questions.
 ```
 
 - `audit_format` governs **the shape of the whole record**: which top-level fields exist, how they nest, and the objects and value sets Lakekeeper defines. Every record carries it, whoever produced the record.
-- `emitters` names **every product that contributed to the record**, with a version for what each one contributed. It is an object with one key per product. The key is the product name in `lower_snake_case`: `lakekeeper`, `lakekeeper_plus`. The value is that product's own format version, a `MAJOR.MINOR` string such as `{"lakekeeper": "1.1"}`. It governs that product's names, its `context` keys, and any record shape it defines, and it follows that product's release cycle.
+- `emitters` names **every product that contributed to the record**, with a version for what each one contributed. It is an object with one key per product. The key is the product name in `lower_snake_case`: `lakekeeper`, `lakekeeper_plus`. The value is that product's own format version, a `MAJOR.MINOR` string such as `{"lakekeeper": "1.2"}`. It governs that product's names, its `context` keys, and any record shape it defines, and it follows that product's release cycle.
 
 In the example above, the record's shape (`record_type`, `actor`, `outcome`, `context`) is governed by `audit_format`. The values of `operation` and `outcome` and the keys in `context` come from Lakekeeper+, so `emitters.lakekeeper_plus` governs them.
 
@@ -235,7 +235,7 @@ Written for every authorization check. Every one carries `actions`, `entities`, 
 | `event_source`         | String          | Always `"audit"`                  |
 | `audit_format`         | String          | Version of the record's shape, `MAJOR.MINOR`. See [Format version and stability](#audit-format). |
 | `record_type`          | String          | Always `"authorization"` for this shape. Route on this field. |
-| `emitters`             | Object          | Every product that contributed to the record, with the version of its contribution: `{"lakekeeper": "1.1"}`. See [Two version numbers](#audit-emitter). |
+| `emitters`             | Object          | Every product that contributed to the record, with the version of its contribution: `{"lakekeeper": "1.2"}`. See [Two version numbers](#audit-emitter). |
 | `event_id`             | String          | This record's id, unique to it. Every copy of the line carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time. |
 | `request_id`           | String          | The request this record belongs to: the `x-request-id` the caller sent, in whatever form, or the id Lakekeeper generated and returned in that response header. The same value is on the request's other log lines and on the CloudEvents it publishes. |
 | `time`                 | String          | When the request was decided, in UTC, RFC 3339 with microseconds: `2026-02-15T14:20:50.758690Z`. It can be earlier than the subscriber's `timestamp`, which is when the line was written. |
@@ -512,7 +512,7 @@ A field with no value is left out, never written as `null`. This holds everywher
   "audit_format": "1.2",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.1"
+    "lakekeeper": "1.2"
   },
   "event_id": "019c61ac-f4c6-76a7-b37a-334c101c2825",
   "request_id": "019684ff-0000-7000-8000-000000000005",
@@ -568,7 +568,7 @@ A field with no value is left out, never written as `null`. This holds everywher
   "audit_format": "1.2",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.1"
+    "lakekeeper": "1.2"
   },
   "event_id": "019c61ad-406b-7bbc-8c47-af4ede86fefd",
   "request_id": "019684ff-0000-7000-8000-000000000005",
@@ -636,7 +636,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "audit_format": "1.2",
   "record_type": "authorization",
   "emitters": {
-    "lakekeeper": "1.1"
+    "lakekeeper": "1.2"
   },
   "event_id": "019d6918-9e76-7ed5-9de7-410622de6b76",
   "request_id": "019684ff-0000-7000-8000-000000000005",
@@ -748,7 +748,7 @@ Written for things the system does for a user that involve no authorization deci
 | `event_source` | String | Always `"audit"`                                   |
 | `audit_format` | String | Version of the record's shape, `MAJOR.MINOR`       |
 | `record_type`  | String | Always `"operation"` for this shape                |
-| `emitters`     | Object | The product that wrote the record, with the version of its contribution. `{"lakekeeper": "1.1"}` for grant and `admission_decided` records; `{"lakekeeper_plus": "1.0"}` for records written by Lakekeeper+, such as role resolution |
+| `emitters`     | Object | The product that wrote the record, with the version of its contribution. `{"lakekeeper": "1.2"}` for grant and `admission_decided` records; `{"lakekeeper_plus": "1.0"}` for records written by Lakekeeper+, such as role resolution |
 | `event_id`     | String | This record's id, unique to it. Every copy of the line carries the same `event_id`, so you can use it to remove duplicates. It is a UUIDv7, so ids sort roughly by time. |
 | `request_id`   | String | The request the operation belongs to, as on authorization records. Absent when no request caused the operation, such as a background role sync |
 | `time`         | String | When the operation happened, in UTC, as on authorization records |

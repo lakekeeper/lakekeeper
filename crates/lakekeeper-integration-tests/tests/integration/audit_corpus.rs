@@ -521,16 +521,18 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         .location()
         .rsplit_once('/')
         .expect("a view location has a parent");
+    let mut registered_view_ids = std::collections::BTreeMap::new();
     for (name, keep_owner_property, request_metadata) in [
         ("registered_view", false, random_request_metadata()),
         ("registered_definer_view", true, user_request()),
     ] {
-        let metadata_location = write_view_metadata_copy(
+        let (metadata_location, view_uuid) = write_view_metadata_copy(
             &definer_view_metadata,
             &format!("{view_parent}/{name}"),
             keep_owner_property,
         )
         .await;
+        registered_view_ids.insert(name, view_uuid.to_string());
         let _ = CatalogServer::register_view(
             namespace_params.clone(),
             iceberg_ext::catalog::rest::RegisterViewRequest::builder()
@@ -739,24 +741,31 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     );
     let mut registered_view_decisions = actions_named("create_view")
         .into_iter()
-        .filter(|(_, action)| {
-            action
-                .get("view_id")
-                .is_some_and(serde_json::Value::is_string)
+        .filter(|(_, action)| action.get("view_id").is_some())
+        .map(|(decision, action)| {
+            (
+                action["name"].as_str().unwrap_or("-").to_string(),
+                decision,
+                action["view_id"].as_str().unwrap_or("-").to_string(),
+            )
         })
-        .map(|(decision, action)| (action["name"].as_str().unwrap_or("-").to_string(), decision))
         .collect::<Vec<_>>();
     // Separate dispatch tasks write the records, so they may arrive in any order.
     registered_view_decisions.sort();
+    let expected = |name: &str, decision: &str| {
+        (
+            name.to_string(),
+            decision.to_string(),
+            registered_view_ids[name].clone(),
+        )
+    };
     assert_eq!(
         registered_view_decisions,
-        [
-            ("registered_definer_view", "allowed"),
-            ("registered_definer_view", "denied"),
-            ("registered_view", "allowed"),
-        ]
-        .map(|(name, decision)| (name.to_string(), decision.to_string()))
-        .to_vec(),
+        vec![
+            expected("registered_definer_view", "allowed"),
+            expected("registered_definer_view", "denied"),
+            expected("registered_view", "allowed"),
+        ],
         "create_view records with view_id:\n{}",
         describe(&records)
     );
@@ -815,14 +824,16 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
 }
 
 /// Writes a copy of `template` as another view at `view_location`: a new view UUID, and without
-/// the owner property unless `keep_owner_property`. Returns the metadata file's location.
+/// the owner property unless `keep_owner_property`. Returns the metadata file's location and
+/// the view UUID.
 async fn write_view_metadata_copy(
     template: &iceberg::spec::ViewMetadata,
     view_location: &str,
     keep_owner_property: bool,
-) -> String {
+) -> (String, uuid::Uuid) {
+    let view_uuid = uuid::Uuid::now_v7();
     let mut metadata = serde_json::to_value(template).expect("view metadata serializes");
-    metadata["view-uuid"] = serde_json::json!(uuid::Uuid::now_v7());
+    metadata["view-uuid"] = serde_json::json!(view_uuid);
     metadata["location"] = serde_json::json!(view_location);
     if !keep_owner_property {
         metadata["properties"]
@@ -842,7 +853,7 @@ async fn write_view_metadata_copy(
     )
     .await
     .expect("write the metadata file");
-    metadata_location
+    (metadata_location, view_uuid)
 }
 
 /// A view register refused on the warehouse, under an authorizer that refuses only
@@ -906,7 +917,7 @@ async fn audit_records_of_a_view_register_refused_on_the_warehouse_satisfy_the_c
         .location()
         .rsplit_once('/')
         .expect("a view location has a parent");
-    let metadata_location = write_view_metadata_copy(
+    let (metadata_location, _) = write_view_metadata_copy(
         &template.metadata,
         &format!("{view_parent}/registered_view"),
         false,
