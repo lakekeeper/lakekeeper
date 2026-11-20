@@ -4,6 +4,29 @@ description: "Release notes for Lakekeeper+, the commercial distribution, coveri
 
 # Lakekeeper+ Release Notes
 
+## v0.15.1 (2026-11-15)
+
+_Based on Lakekeeper OSS v0.15.1._
+
+### Features
+
+- **Optimize** commits large runs in several snapshots, so a conflicting write costs only part of the run. It also encodes output files on several cores, which speeds up wide and sorted tables.
+- **Console v0.28.0** with the new Lakekeeper console features, and maintenance task details in a side panel.
+
+### Bug Fixes
+
+- **Deletes work while PostgreSQL logical replication publishes all tables**, for example during an AWS RDS blue/green deployment. This covers warehouse and project deletes, and Cedar policy and toggle changes.
+- **Cedar policy errors name the cause**, such as ``missing field `conditions` ``.
+- **Security:** `openssl` and `quinn-udp` updated (RUSTSEC-2026-0477, RUSTSEC-2026-0538).
+
+### Upgrade Notes
+
+- **Upgrade before you create an RDS blue/green deployment, not while one exists.** This release adds a primary key to two Cedar tables, and a schema change breaks the deployment's replication.
+
+### Upstream Lakekeeper changes (bump to v0.15.1)
+
+All changes are in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/). Worth knowing: listings return full pages when some entries are hidden from the user ([lakekeeper#2304](https://github.com/lakekeeper/lakekeeper/pull/2304)), and a dropped table's location stays reserved until its purge has finished ([lakekeeper#2270](https://github.com/lakekeeper/lakekeeper/pull/2270)).
+
 ## v0.15.0 (2026-11-07)
 
 _Based on Lakekeeper OSS v0.15.0._

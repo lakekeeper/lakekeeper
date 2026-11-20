@@ -52,7 +52,7 @@ jobs:
     env:
       RUSTFLAGS: --cfg tracing_unstable --cfg tokio_unstable # drop -D warnings; MSRV builds may emit new warnings
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Read MSRV from Cargo.toml
@@ -69,7 +69,7 @@ jobs:
           print(f'version={v}')
           " >> "$GITHUB_OUTPUT"
       - name: Setup Rust ${{ steps.msrv.outputs.version }}
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
           # Pull requests restore main's cache and write none of their own. A
@@ -88,15 +88,15 @@ jobs:
     name: Unused dependencies
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-machete
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         with:
           tool: cargo-machete
       - name: Check unused dependencies
@@ -121,11 +121,11 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install sqlx-cli and migrate database
@@ -145,12 +145,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           components: rustfmt
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -171,12 +171,12 @@ jobs:
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           components: clippy
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -192,11 +192,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           components: clippy
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -208,9 +208,9 @@ jobs:
         run: just update-generic-table-openapi
       - name: Fail on diff
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24
+          node-version: 26
       - name: Build TS Client
         # Pin both the generator and typescript: typescript 7.x (native rewrite)
         # dropped ts.SyntaxKind, which openapi-ts relies on, and the tool's dep
@@ -240,14 +240,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres-version: ["15", "18"]
+        # Pull requests test the oldest supported Postgres, which catches SQL that only newer
+        # versions accept. Pushes also test the newest.
+        postgres-version: ${{ github.event_name == 'pull_request' && fromJSON('["15"]') || fromJSON('["15", "18"]') }}
     services:
       vault:
         # Recent vault images run as non-root and hard-require IPC_LOCK; the
         # old SKIP_SETCAP escape hatch is now ignored. Granting the capability
         # via `options: --cap-add IPC_LOCK` is the supported workaround. Pin
         # to a specific patch so an image refresh can't break CI again.
-        image: hashicorp/vault:1.21.4
+        image: hashicorp/vault:2.2.2
         ports:
           - 8200:8200
         env:
@@ -277,9 +279,21 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # A pull request checks out its merge commit; the first parent is the base branch.
+          fetch-depth: 2
+
+      # The tests throw their databases away, so Postgres need not wait for its writes to
+      # reach the disk.
+      - name: Turn off Postgres durability
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
 
       - name: Start Minio Docker Container
         run: |
@@ -310,7 +324,7 @@ jobs:
           docker exec minio /usr/bin/mc mb local/tests-versioned
           docker exec minio /usr/bin/mc version enable local/tests-versioned
 
-      - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         if: ${{ env.AZURE_CLIENT_ID != '' }}
         with:
           creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
@@ -322,27 +336,35 @@ jobs:
         shell: bash
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ hashFiles('rust-toolchain.toml') }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         with:
           tool: cargo-nextest
 
       - name: Determine nextest profile
         run: |
-          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
-            # PR is made off this repo, so workflows have access to secrets and the entire suite
-            # can be run.
-            echo "NEXTEST_PROFILE=ci" >> $GITHUB_ENV
+          # The live cloud storage tests read repository secrets, which pull requests from forks
+          # don't get. Pushes run them in one job; pull requests run them when they change storage
+          # code, its tests or the test setup.
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            cloud=${{ matrix.postgres-version == '15' }}
+          elif [[ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]]; then
+            cloud=false
+          elif git diff --quiet HEAD^1 HEAD -- \
+              Cargo.lock .config/nextest.toml .github/workflows/unittests.yml \
+              crates/io crates/lakekeeper/src/service/storage crates/lakekeeper/src/server/io.rs \
+              crates/lakekeeper-integration-tests/tests/integration/namespace_storage_cleanup.rs; then
+            cloud=false
           else
-            # PR is made off a fork, so secrets are not available in ci workflows.
-            echo "NEXTEST_PROFILE=ci_no_secrets" >> $GITHUB_ENV
+            cloud=true
           fi
+          echo "NEXTEST_PROFILE=$([[ $cloud == true ]] && echo ci || echo ci_no_secrets)" >> "$GITHUB_ENV"
 
       - name: Migrate database
         run: |
@@ -451,7 +473,7 @@ jobs:
           LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
           LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
       - name: Upload junit
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: junit-pg${{ matrix.postgres-version }}
           path: target/nextest/${{ env.NEXTEST_PROFILE }}/junit.xml
@@ -476,7 +498,7 @@ jobs:
     # FRAGMENT under audit-format/unreleased/ — a file in the tree, which the checker can
     # read and the release recipe can assemble. A description gate could do neither.
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         with:
           persist-credentials: false

@@ -554,7 +554,7 @@ mod tests {
             .collect()
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_empty_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -575,7 +575,7 @@ mod tests {
         assert!(result.next_page_token.is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_single_active_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -632,7 +632,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_multiple_tasks_different_queues(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -692,7 +692,7 @@ mod tests {
         assert!(result.tasks[0].created_at >= result.tasks[1].created_at);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_filter_by_queue_name(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -748,7 +748,7 @@ mod tests {
         assert_eq!(result.tasks[0].queue_name.as_str(), tq_name1.as_str());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_filter_by_status(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -827,7 +827,7 @@ mod tests {
         assert!(matches!(result.tasks[0].status, TaskStatus::Scheduled));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_filter_by_entity(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -892,7 +892,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_with_repeated_entity_filters_lists_each_task_once(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -963,7 +963,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_filter_by_generic_table_entity(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1023,7 +1023,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_filter_by_created_date_range(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1120,7 +1120,7 @@ mod tests {
         assert!(result.tasks.is_empty());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_pagination(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1275,7 +1275,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_pagination_mixed_active_completed(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1413,7 +1413,7 @@ mod tests {
         assert!(has_scheduled);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_pagination_only_completed_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1510,7 +1510,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_pagination_mixed_scenarios_with_retries(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1662,7 +1662,7 @@ mod tests {
         assert_eq!(*status_counts.get("Scheduled").unwrap_or(&0), 3);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_pagination_across_multiple_queues(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1782,7 +1782,7 @@ mod tests {
         assert!(queue_names.contains(&tq_name2));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_completed_tasks_from_log(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1834,7 +1834,7 @@ mod tests {
         assert!(task.picked_up_at.is_some());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_mixed_active_and_completed(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1934,7 +1934,7 @@ mod tests {
         ));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_with_retries(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1993,7 +1993,7 @@ mod tests {
         assert_eq!(task.id.attempt, 2); // Should show the successful attempt
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_wrong_warehouse(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2033,7 +2033,7 @@ mod tests {
         assert!(result.next_page_token.is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_complex_filters(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2111,7 +2111,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_with_warehouse_filter_only_shows_warehouse_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
 
@@ -2178,7 +2178,7 @@ mod tests {
         assert_eq!(result.tasks.len(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_with_project_filter_only_shows_project_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
 
@@ -2265,7 +2265,7 @@ mod tests {
         assert_eq!(result.tasks.len(), 1);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_with_project_filter_and_include_sub_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
 
@@ -2358,7 +2358,7 @@ mod tests {
         }
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_with_table_and_warehouse_filter_lists_active_and_finished(
         pool: PgPool,
     ) {
@@ -2445,7 +2445,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_scheduled_warehouse_task_matches_warehouse_filter_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2507,7 +2507,7 @@ mod tests {
         assert_eq!(listed_attempts(&result), vec![]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_pagination_with_table_filter_over_finished_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2570,7 +2570,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_pagination_keeps_order_across_active_and_finished(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2626,7 +2626,7 @@ mod tests {
         assert_eq!(listed_attempts(&page_2), expected[3..]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_with_table_filter_lists_newest_finished_attempt(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -2667,7 +2667,7 @@ mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tasks_with_table_filter_lists_failed_attempt_and_active_retry(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use azure_storage::CloudLocation;
 use iceberg_ext::configs::table::TableProperties;
 use lakekeeper_io::{
-    InvalidLocationError, Location,
+    ADLS_CUSTOM_SCHEMES, InvalidLocationError, Location,
     adls::{
         AdlsStorage, AzureSettings, normalize_host, validate_filesystem_name,
         validate_storage_account_name,
@@ -35,8 +35,6 @@ use crate::{
         },
     },
 };
-
-pub(crate) const ALTERNATIVE_PROTOCOLS: [&str; 1] = ["wasbs"];
 
 /// Storage profile for a generic Azure Data Lake Storage Gen2 account.
 ///
@@ -87,7 +85,7 @@ impl GenericAdlsProfile {
     #[must_use]
     pub fn is_allowed_schema(&self, schema: &str) -> bool {
         schema == "abfss"
-            || (self.allow_alternative_protocols && ALTERNATIVE_PROTOCOLS.contains(&schema))
+            || (self.allow_alternative_protocols && ADLS_CUSTOM_SCHEMES.contains(&schema))
     }
 
     /// Validate the Azure storage profile.
@@ -112,16 +110,20 @@ impl GenericAdlsProfile {
     }
 
     /// Update the storage profile with another profile.
-    /// `filesystem`, `key_prefix`, `authority_host` and `host` must be the same.
-    /// We enforce this to avoid issues by accidentally changing the bucket or region
-    /// of a warehouse, after which all tables would not be accessible anymore.
-    /// Changing an endpoint might still result in an invalid profile, but we allow it.
+    /// `filesystem`, `account_name`, `key_prefix`, `authority_host` and `host` must be the same.
+    /// We enforce this to avoid issues by accidentally changing the storage account or
+    /// filesystem of a warehouse, after which all tables would not be accessible anymore.
     ///
     /// # Errors
-    /// Fails if the `bucket`, `region` or `key_prefix` is different.
+    /// Fails if any of these fields is different.
     pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.filesystem != other.filesystem {
             return Err(UpdateError::ImmutableField("filesystem".to_string()));
+        }
+
+        // Storage accounts cannot be renamed, so another name is another location.
+        if self.account_name != other.account_name {
+            return Err(UpdateError::ImmutableField("account_name".to_string()));
         }
 
         if self.key_prefix != other.key_prefix {
@@ -323,5 +325,39 @@ impl GenericAdlsProfile {
             return false;
         }
         key_prefix_overlaps(self.key_prefix.as_deref(), other.key_prefix.as_deref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(account_name: &str) -> GenericAdlsProfile {
+        GenericAdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: Some("prefix".to_string()),
+            account_name: account_name.to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        }
+    }
+
+    #[test]
+    fn test_update_with_refuses_another_account() {
+        profile("account1")
+            .update_with(profile("account1"))
+            .unwrap();
+
+        let err = profile("account1")
+            .update_with(profile("account2"))
+            .unwrap_err();
+        assert!(
+            matches!(&err, UpdateError::ImmutableField(field) if field == "account_name"),
+            "{err:?}"
+        );
     }
 }

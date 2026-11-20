@@ -526,16 +526,24 @@ paths:
                 summary: Write one policy and delete another, leaving the rest alone
                 value:
                   writes:
-                    - name: allow-all
-                      description: everything, for illustration
+                    - name: analysts-read-tables
+                      description: Analysts may read every table in this scope
                       policy:
                         effect: permit
                         principal:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Role
+                            id: my-project/oidc~analysts
                         action:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Action
+                            id: TableSelectActions
                         resource:
-                          op: All
+                          op: is
+                          entity_type: Lakekeeper::Table
+                        conditions: []
                   deletes:
                     - retired-policy
                   if-scope-version: 7
@@ -543,16 +551,24 @@ paths:
                 summary: State the scope's whole policy set; anything else stored is deleted
                 value:
                   writes:
-                    - name: allow-all
-                      description: everything, for illustration
+                    - name: analysts-read-tables
+                      description: Analysts may read every table in this scope
                       policy:
                         effect: permit
                         principal:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Role
+                            id: my-project/oidc~analysts
                         action:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Action
+                            id: TableSelectActions
                         resource:
-                          op: All
+                          op: is
+                          entity_type: Lakekeeper::Table
+                        conditions: []
                   replace: true
                   if-scope-version: 7
         required: true
@@ -1024,16 +1040,24 @@ paths:
                 summary: Write one policy and delete another, leaving the rest alone
                 value:
                   writes:
-                    - name: allow-all
-                      description: everything, for illustration
+                    - name: analysts-read-tables
+                      description: Analysts may read every table in this scope
                       policy:
                         effect: permit
                         principal:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Role
+                            id: my-project/oidc~analysts
                         action:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Action
+                            id: TableSelectActions
                         resource:
-                          op: All
+                          op: is
+                          entity_type: Lakekeeper::Table
+                        conditions: []
                   deletes:
                     - retired-policy
                   if-scope-version: 7
@@ -1041,16 +1065,24 @@ paths:
                 summary: State the scope's whole policy set; anything else stored is deleted
                 value:
                   writes:
-                    - name: allow-all
-                      description: everything, for illustration
+                    - name: analysts-read-tables
+                      description: Analysts may read every table in this scope
                       policy:
                         effect: permit
                         principal:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Role
+                            id: my-project/oidc~analysts
                         action:
-                          op: All
+                          op: in
+                          entity:
+                            type: Lakekeeper::Action
+                            id: TableSelectActions
                         resource:
-                          op: All
+                          op: is
+                          entity_type: Lakekeeper::Table
+                        conditions: []
                   replace: true
                   if-scope-version: 7
         required: true
@@ -3034,6 +3066,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTaskLogCleanupConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -8518,6 +8556,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetExpireSnapshotsQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -8639,6 +8683,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOptimizeQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -8760,6 +8810,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetRemoveOrphanFilesQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -8881,6 +8937,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetSoftDeletionQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -8941,6 +9003,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetPurgeQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -16039,11 +16107,11 @@ components:
 
         `self-managed` (the default) leaves the spec mutable by the warehouse's own
         owners through the usual grants. When set to `instance-admin`, spec changes —
-        storage profile, credentials, delete profile, rename, status, protection,
-        format-version policy, and deletion — are accepted only from instance
-        administrators; other callers are rejected even when their grants would
-        otherwise allow it. Child resources (namespaces, tables, grants), task-queue
-        configuration, and data access are unaffected.
+        storage profile, credentials, rename, status, protection, and deletion — are
+        accepted only from instance administrators; other callers are rejected even
+        when their grants would otherwise allow it. The delete profile, the
+        format-version policy, task-queue configuration, child resources (namespaces,
+        tables, grants), and data access stay with the usual grants.
       enum:
         - self-managed
         - instance-admin
@@ -17065,6 +17133,15 @@ components:
           type: integer
           description: Total number of entities resolved.
           minimum: 0
+        principal-has-privilege-below:
+          type:
+            - boolean
+            - 'null'
+          description: |-
+            For a project, warehouse or namespace: whether the principal or one of its roles holds
+            `describe`, `select`, `write`, `create`, `manage` or `manage_tags` on a warehouse,
+            namespace, table, view or generic table below it. Policies read it as
+            `context.principal_has_privilege_below`.
     ResourceGrantablePrivilegesResponse:
       type: object
       description: |-
@@ -18076,10 +18153,8 @@ components:
       properties:
         search:
           type: string
-          description: |-
-            Search string for fuzzy search.
-            Length is truncated to 64 characters.
-          maxLength: 64
+          description: Name, UUID, or storage path of a table or view. A name is cut to 64 characters.
+          maxLength: 4096
     SearchTabularResponse:
       type: object
       description: Search result for tabulars

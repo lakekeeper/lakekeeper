@@ -110,4 +110,4 @@ Grant the managed identity access to the storage account and container, for exam
 
 ## Updating the Storage Profile
 
-`filesystem`, `key-prefix`, `host` and `authority-host` cannot change on `update-storage-profile`. An update that omits `storage-layout` keeps the current layout.
+`filesystem`, `account-name`, `key-prefix`, `host` and `authority-host` cannot change on `update-storage-profile`. An update that omits `storage-layout` keeps the current layout.

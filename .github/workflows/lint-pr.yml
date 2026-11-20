@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository == 'lakekeeper/lakekeeper'
     steps:
-      - uses: thehanimo/pr-title-checker@7fbfe05602bdd86f926d3fb3bccb6f3aed43bc70 # v1.4.3
+      - uses: thehanimo/pr-title-checker@b69bc3a841cf4e3cfef2d822625d8c90a588e9da # v2.0.0
         id: check
         continue-on-error: true
         with:
@@ -32,7 +32,7 @@ jobs:
           configuration_path: ".github/pr-title-checker-config.json"
           pass_on_octokit_error: false
 
-      - uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v3.0.4
+      - uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         if: ${{ steps.check.outputs.success == 'false'}}
         with:
           header: 'pr-title-checker'
@@ -49,7 +49,7 @@ jobs:
 
               We only use types: `feat`, `fix`, `docs` and `chore`.
 
-      - uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v3.0.4
+      - uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         if: ${{ steps.check.outputs.success == 'true'}}
         with:
           header: 'pr-title-checker'

@@ -204,7 +204,7 @@ impl ValidationCheck {
 /// the stack. A check error is serialized directly instead, so it has to do the
 /// same here — otherwise internal detail ships to the caller and nothing is
 /// logged for support to correlate against.
-fn sanitize_embedded_error(name: ValidationCheckName, mut error: ErrorModel) -> ErrorModel {
+pub fn sanitize_embedded_error(name: impl std::fmt::Display, mut error: ErrorModel) -> ErrorModel {
     if error.code < 500 {
         // Kept like a 4xx response: the stack stays, and the id ties the check
         // to the logged detail, including the error's source.
@@ -386,7 +386,9 @@ impl ReportBuilder {
     }
 }
 
-pub(crate) fn elapsed_ms(started: Instant) -> u64 {
+/// Milliseconds since `started`, saturating.
+#[must_use]
+pub fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
@@ -405,11 +407,11 @@ pub(crate) const STORAGE_CHECKS: [ValidationCheckName; 8] = [
 ];
 
 /// Reason recorded when the server has storage validation switched off.
-pub(crate) const SKIPPED_BY_CONFIG: &str =
+pub const SKIPPED_BY_CONFIG: &str =
     "Storage validation is disabled on this server (LAKEKEEPER__SKIP_STORAGE_VALIDATION).";
 
 /// Reason recorded when a check could not run because an earlier one failed.
-pub(crate) const SKIPPED_PREREQUISITE: &str = "Not attempted: a prerequisite check failed.";
+pub const SKIPPED_PREREQUISITE: &str = "Not attempted: a prerequisite check failed.";
 
 /// Time limits for the storage probes of one validation, counted from the
 /// request's arrival.
@@ -418,12 +420,12 @@ pub(crate) const SKIPPED_PREREQUISITE: &str = "Not attempted: a prerequisite che
 /// following sixth, so storage that never answers yields a report naming the
 /// stalled probe while the request-timeout layer still has time to spare.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ProbeDeadlines {
+pub struct ProbeDeadlines {
     /// Every probe except cleanup must finish by then.
-    pub(crate) probes: tokio::time::Instant,
+    pub probes: tokio::time::Instant,
     /// Cleanup must finish by then. It starts after the probes, so a probe that
     /// ran out does not also leave its files behind.
-    pub(crate) cleanup: tokio::time::Instant,
+    pub cleanup: tokio::time::Instant,
     probe_budget: Duration,
     cleanup_budget: Duration,
 }
@@ -431,10 +433,8 @@ pub(crate) struct ProbeDeadlines {
 impl ProbeDeadlines {
     /// Deadlines for a request that arrived at `received_at` and may take at
     /// most `request_limit`.
-    pub(crate) fn from_request_limit(
-        received_at: tokio::time::Instant,
-        request_limit: Duration,
-    ) -> Self {
+    #[must_use]
+    pub fn from_request_limit(received_at: tokio::time::Instant, request_limit: Duration) -> Self {
         // Divided first so that an effectively unbounded limit cannot overflow.
         let probe_budget = request_limit / 3 * 2;
         let cleanup_budget = request_limit / 6;
@@ -453,7 +453,7 @@ impl ProbeDeadlines {
     }
 
     /// `probe`, failed if it has not finished by [`Self::probes`].
-    pub(crate) fn probe<T, E: Into<ErrorModel>>(
+    pub fn probe<T, E: Into<ErrorModel>>(
         &self,
         probe: impl Future<Output = Result<T, E>>,
     ) -> impl Future<Output = Result<T, ErrorModel>> {
@@ -472,7 +472,7 @@ impl ProbeDeadlines {
 
     /// The `cleanup` check from `cleanup`, failed if it has not finished by
     /// [`Self::cleanup`].
-    pub(crate) fn cleanup(
+    pub fn cleanup(
         &self,
         cleanup: impl Future<Output = ValidationCheck>,
     ) -> impl Future<Output = ValidationCheck> {

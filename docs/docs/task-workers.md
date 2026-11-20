@@ -78,7 +78,7 @@ On workers that run more than one task at a time, as in this example, we recomme
 
 The demand endpoint also accepts `?class=<name>`. It then counts only the tasks of one size class of the queue, so that each class can have its own ScaledJob with pods of a matching size. For a class that the queue does not have, the endpoint answers `404`.
 
-In Lakekeeper Plus, the `optimize` queue has [size classes](./optimize-workers.md#size-classes). The Lakekeeper Helm chart creates one ScaledJob per class for you, see [Optimize Workers with the Helm Chart](./optimize-workers.md#helm-chart).
+In Lakekeeper Plus, the `optimize` queue has [size classes](./optimize-workers.md#size-classes). The Lakekeeper Helm chart creates one ScaledJob per class for you, or with `optimizeWorkers.mode: standing` a Deployment per class without KEDA, see [Optimize Workers with the Helm Chart](./optimize-workers.md#helm-chart).
 
 ## Database Connections
 

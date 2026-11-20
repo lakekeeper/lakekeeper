@@ -962,7 +962,7 @@ mod tests {
             (ctx, warehouse, namespace)
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn test_check_assume_role(pool: sqlx::PgPool) {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, _warehouse, _namespace) =
@@ -1006,7 +1006,7 @@ mod tests {
             assert!(!allowed);
         }
 
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn test_check(pool: sqlx::PgPool) {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, warehouse, namespace) =
@@ -1167,7 +1167,7 @@ mod tests {
 
         /// A name addresses the live table. A dropped table that can be restored is addressed
         /// by id.
-        #[sqlx::test]
+        #[lakekeeper_storage_postgres::db_test]
         async fn test_check_table_by_name_ignores_dropped_table(pool: sqlx::PgPool) {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, warehouse, namespace) = setup(

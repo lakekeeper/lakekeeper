@@ -187,13 +187,26 @@ pub enum TabularDeleteProfile {
     },
 }
 
+/// The longest a soft-deleting warehouse keeps a dropped tabular, 100 years, and the furthest a
+/// negative expiration schedules its deletion into the past. Far longer ones would overflow the
+/// time its deletion is scheduled for.
+pub const MAX_TABULAR_EXPIRATION: chrono::Duration = chrono::Duration::days(36_500);
+
 fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let buf = i64::deserialize(deserializer)?;
-
-    Ok(chrono::Duration::seconds(buf))
+    let seconds = i64::deserialize(deserializer)?;
+    chrono::Duration::try_seconds(seconds)
+        .filter(|expiration| {
+            (-MAX_TABULAR_EXPIRATION..=MAX_TABULAR_EXPIRATION).contains(expiration)
+        })
+        .ok_or_else(|| {
+            let max = MAX_TABULAR_EXPIRATION.num_seconds();
+            serde::de::Error::custom(format!(
+                "expiration-seconds must be between -{max} and {max}, got {seconds}"
+            ))
+        })
 }
 
 fn duration_to_seconds<S>(duration: &chrono::Duration, serializer: S) -> Result<S::Ok, S::Error>
@@ -2740,6 +2753,38 @@ mod test {
         secrets::{Secret, SecretId, SecretInStorage, SecretStore},
         storage::{S3CredentialType, StorageCredential, s3::S3AccessKeyCredential},
     };
+
+    #[test]
+    fn a_soft_delete_profile_expires_tabulars_within_100_years_either_way() {
+        use super::{MAX_TABULAR_EXPIRATION, TabularDeleteProfile};
+
+        let parse = |seconds: i64| {
+            serde_json::from_value::<TabularDeleteProfile>(
+                serde_json::json!({"type": "soft", "expiration-seconds": seconds}),
+            )
+            .map_err(|e| e.to_string())
+        };
+        let soft = |expiration_seconds| Ok(TabularDeleteProfile::Soft { expiration_seconds });
+        let max = MAX_TABULAR_EXPIRATION.num_seconds();
+
+        assert_eq!(
+            [parse(0), parse(-1), parse(max), parse(-max)],
+            [
+                soft(chrono::Duration::zero()),
+                soft(chrono::Duration::seconds(-1)),
+                soft(MAX_TABULAR_EXPIRATION),
+                soft(-MAX_TABULAR_EXPIRATION),
+            ]
+        );
+        for seconds in [max + 1, -max - 1, i64::MAX, i64::MIN] {
+            assert_eq!(
+                parse(seconds),
+                Err(format!(
+                    "expiration-seconds must be between -3153600000 and 3153600000, got {seconds}"
+                ))
+            );
+        }
+    }
 
     mod validation_checks {
         use iceberg_ext::catalog::rest::ErrorModel;

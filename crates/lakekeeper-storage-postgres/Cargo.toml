@@ -17,7 +17,12 @@ keywords = ["iceberg", "rest", "lakekeeper", "postgres"]
 # service layer against a real postgres backend. Always-on for in-crate
 # `cfg(test)` builds; downstream crates opt in to use the helpers without
 # pulling them into release artifacts.
-test-utils = ["lakekeeper/test-utils", "lakekeeper/router"]
+test-utils = [
+    "lakekeeper/test-utils",
+    "lakekeeper/router",
+    "dep:dotenvy",
+    "dep:lakekeeper-test-macros",
+]
 # Forwards lakekeeper's `open-api` feature so `utoipa::ToSchema` derives on
 # `TaskConfig` impls compile under workspace `--all-features` runs.
 open-api = ["lakekeeper/open-api"]
@@ -29,6 +34,7 @@ base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 crc = { workspace = true }
 derive_more = { workspace = true }
+dotenvy = { workspace = true, optional = true }
 fastrand = { workspace = true }
 figment = { workspace = true }
 futures = { workspace = true }
@@ -43,6 +49,7 @@ lakekeeper-io = { path = "../io", features = [
     "storage-adls",
     "storage-gcs",
 ] }
+lakekeeper-test-macros = { path = "../test-macros", optional = true }
 metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -67,10 +74,12 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 axum-prometheus = { workspace = true }
+dotenvy = { workspace = true }
 fastrand = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router"] }
 lakekeeper-storage-postgres = { path = ".", features = ["test-utils"] }
+lakekeeper-test-macros = { path = "../test-macros" }
 pretty_assertions = { workspace = true }
 similar = { workspace = true }
 tracing-subscriber = { workspace = true }

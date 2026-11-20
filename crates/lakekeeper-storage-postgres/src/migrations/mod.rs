@@ -260,13 +260,17 @@ where
         .await
 }
 
-async fn tracker_exists_in_schema<'e, E>(executor: E, schema: &PgSchema) -> sqlx::Result<bool>
+async fn tracker_exists_in_schema<'e, E>(
+    executor: E,
+    schema: &PgSchema,
+    tracker: &str,
+) -> sqlx::Result<bool>
 where
     E: Executor<'e, Database = Postgres>,
 {
     sqlx::query_scalar("SELECT to_regclass(format('%I.%I', $1::text, $2::text)) IS NOT NULL")
         .bind(schema.as_str())
-        .bind(CORE_MIGRATIONS_TABLE)
+        .bind(tracker)
         .fetch_one(executor)
         .await
 }
@@ -298,7 +302,7 @@ where
 
 /// Explains a `current_schema()` that does not match the configured schema, and
 /// how to fix it. Shared by [`ensure_schema`], which fails with it, and
-/// [`check_migration_status_in_schema`], which logs it before reporting
+/// [`tracker_status`], which logs it before reporting
 /// [`MigrationState::SchemaMismatch`].
 fn schema_mismatch_reason(schema: &PgSchema, current: Option<&str>) -> String {
     let current = current.map_or_else(|| "unset".to_string(), |c| format!("\"{c}\""));
@@ -611,6 +615,26 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
     check_migration_status_in_schema(pool, CONFIG.pg_schema.as_ref()).await
 }
 
+/// [`check_migration_status`] for an extension's migrations, read from the extension's own
+/// tracker. A database without that tracker is [`MigrationState::NoMigrationsTable`].
+///
+/// # Errors
+/// Returns an error if db connection fails or the tracker cannot be read.
+pub async fn check_extension_migration_status(
+    pool: &sqlx::PgPool,
+    extension: &ExtensionMigrations,
+) -> anyhow::Result<MigrationState> {
+    extension.validate_name()?;
+    tracker_status(
+        pool,
+        CONFIG.pg_schema.as_ref(),
+        &extension.tracker_table(),
+        &extension.migrator,
+        &extension.sha_patches,
+    )
+    .await
+}
+
 /// [`check_migration_status`], with the target schema passed in rather than read
 /// from the process configuration, so tests can drive it without touching the
 /// global [`CONFIG`].
@@ -621,6 +645,25 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
 async fn check_migration_status_in_schema(
     pool: &sqlx::PgPool,
     schema: Option<&PgSchema>,
+) -> anyhow::Result<MigrationState> {
+    tracker_status(
+        pool,
+        schema,
+        CORE_MIGRATIONS_TABLE,
+        &sqlx::migrate!(),
+        &get_changed_migration_ids(),
+    )
+    .await
+}
+
+/// The status of the migrations of `migrator` recorded in `tracker`. A version in
+/// `sha_patches` counts as applied with any checksum once the tracker holds it.
+async fn tracker_status(
+    pool: &sqlx::PgPool,
+    schema: Option<&PgSchema>,
+    tracker: &str,
+    migrator: &Migrator,
+    sha_patches: &HashSet<i64>,
 ) -> anyhow::Result<MigrationState> {
     let mut conn: sqlx::pool::PoolConnection<Postgres> = pool.acquire().await?;
 
@@ -645,19 +688,18 @@ async fn check_migration_status_in_schema(
         }
         // Unqualified, the tracker name falls back to `public` through the
         // search_path when this schema has none.
-        if !tracker_exists_in_schema(&mut *conn, schema).await? {
+        if !tracker_exists_in_schema(&mut *conn, schema, tracker).await? {
             return Ok(MigrationState::NoMigrationsTable);
         }
     }
 
-    let m = sqlx::migrate!();
-    let changed_migrations = get_changed_migration_ids();
     tracing::info!(
+        tracker,
         "SHA patches: {:?}",
-        changed_migrations.iter().collect::<Vec<_>>()
+        sha_patches.iter().collect::<Vec<_>>()
     );
 
-    let applied_migrations = match conn.list_applied_migrations(CORE_MIGRATIONS_TABLE).await {
+    let applied_migrations = match conn.list_applied_migrations(tracker).await {
         Ok(migrations) => migrations,
         Err(e) => {
             if let MigrateError::Execute(Error::Database(db)) = &e
@@ -682,7 +724,7 @@ async fn check_migration_status_in_schema(
     // drift (handled by `migrate()` via VersionMismatch / sha_patch), not a
     // newer DB. Reported before the "missing" check because an older binary's
     // migrations are a subset of applied, so it would otherwise look Complete.
-    let binary_versions: HashSet<i64> = m.migrations.iter().map(|mig| mig.version).collect();
+    let binary_versions: HashSet<i64> = migrator.migrations.iter().map(|mig| mig.version).collect();
     let ahead: Vec<i64> = applied_migrations
         .iter()
         .map(|mig| mig.version)
@@ -691,24 +733,28 @@ async fn check_migration_status_in_schema(
     if !ahead.is_empty() {
         tracing::warn!(
             ?ahead,
+            tracker,
             "Database has applied migrations unknown to this binary — it was migrated by a newer \
              Lakekeeper. This binary is too old to run against it."
         );
         return Ok(MigrationState::Ahead);
     }
 
-    let to_be_applied = m
+    let applied: HashMap<i64, &[u8]> = applied_migrations
+        .iter()
+        .map(|mig| (mig.version, &*mig.checksum))
+        .collect();
+    let missing: Vec<i64> = migrator
         .migrations
         .iter()
-        .map(|mig| (mig.version, &*mig.checksum))
-        .filter(|(v, _)| !changed_migrations.contains(v))
-        .collect::<HashSet<_>>();
-    let applied = applied_migrations
-        .iter()
-        .map(|mig| (mig.version, &*mig.checksum))
-        .filter(|(v, _)| !changed_migrations.contains(v))
-        .collect::<HashSet<_>>();
-    let missing = to_be_applied.difference(&applied).collect::<HashSet<_>>();
+        .filter(|mig| !mig.migration_type.is_down_migration())
+        .filter(|mig| {
+            applied.get(&mig.version).is_none_or(|checksum| {
+                !sha_patches.contains(&mig.version) && *checksum != &*mig.checksum
+            })
+        })
+        .map(|mig| mig.version)
+        .collect();
 
     if missing.is_empty() {
         tracing::debug!("Migrations are up to date.");
@@ -814,8 +860,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ExtensionMigrations, MigrationState, check_migration_status,
-        check_migration_status_in_schema, migrate, migrate_core_only, migrate_in_schema,
+        ExtensionMigrations, MigrationState, check_extension_migration_status,
+        check_migration_status, check_migration_status_in_schema, migrate, migrate_core_only,
+        migrate_in_schema,
     };
     use crate::{config::PgSchema, with_search_path};
 
@@ -1329,6 +1376,94 @@ mod tests {
             ),
             "DB with a migration unknown to this binary must report Ahead"
         );
+    }
+
+    /// An extension's migrations are read from its own tracker: none before its first
+    /// migrate, complete after it, missing for a changed file unless it is patched and applied,
+    /// and ahead once the tracker holds a version the extension lacks.
+    #[sqlx::test(migrations = false)]
+    async fn test_check_extension_migration_status(pool: PgPool) {
+        const VERSION: i64 = 20_260_101_000_000;
+        let ext = || {
+            ExtensionMigrations::builder()
+                .name("demo")
+                .migrator(sqlx::migrate!("./tests/extension_migrations_fixture"))
+                .build()
+        };
+        let changed = |sha_patches: &[i64]| {
+            ExtensionMigrations::builder()
+                .name("demo")
+                .migrator(sqlx::migrate!(
+                    "./tests/extension_migrations_fixture_patched"
+                ))
+                .sha_patches(sha_patches.iter().copied().collect())
+                .build()
+        };
+        let status = async |extension: ExtensionMigrations| {
+            check_extension_migration_status(&pool, &extension)
+                .await
+                .unwrap()
+        };
+        migrate_core_only(&pool).await.unwrap();
+
+        let before = status(ext()).await;
+        migrate(&pool, vec![ext()]).await.unwrap();
+        let after = status(ext()).await;
+        let unpatched = status(changed(&[])).await;
+        let patched = status(changed(&[VERSION])).await;
+        sqlx::query("DELETE FROM ext_demo_sqlx_migrations WHERE version = $1")
+            .bind(VERSION)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let patched_unapplied = status(changed(&[VERSION])).await;
+        sqlx::query(
+            "INSERT INTO ext_demo_sqlx_migrations \
+               (version, description, installed_on, success, checksum, execution_time) \
+             VALUES ($1, $2, now(), true, $3, 0)",
+        )
+        .bind(99_999_999_999_999_i64)
+        .bind("future migration from a newer binary")
+        .bind(vec![0_u8; 32])
+        .execute(&pool)
+        .await
+        .unwrap();
+        let ahead = status(ext()).await;
+
+        assert!(
+            matches!(
+                (before, after, unpatched, patched, patched_unapplied, ahead),
+                (
+                    MigrationState::NoMigrationsTable,
+                    MigrationState::Complete,
+                    MigrationState::Missing,
+                    MigrationState::Complete,
+                    MigrationState::Missing,
+                    MigrationState::Ahead
+                )
+            ),
+            "{before:?}, {after:?}, {unpatched:?}, {patched:?}, {patched_unapplied:?}, {ahead:?}"
+        );
+    }
+
+    /// A down migration is never applied, so it is never missing.
+    #[sqlx::test(migrations = false)]
+    async fn test_check_extension_migration_status_skips_down_migrations(pool: PgPool) {
+        let ext = || {
+            ExtensionMigrations::builder()
+                .name("reversible")
+                .migrator(sqlx::migrate!(
+                    "./tests/extension_migrations_fixture_reversible"
+                ))
+                .build()
+        };
+        migrate_core_only(&pool).await.unwrap();
+        migrate(&pool, vec![ext()]).await.unwrap();
+
+        let status = check_extension_migration_status(&pool, &ext())
+            .await
+            .unwrap();
+        assert!(matches!(status, MigrationState::Complete), "{status:?}");
     }
 
     /// An operator runs upstream OSS by itself for a while (their

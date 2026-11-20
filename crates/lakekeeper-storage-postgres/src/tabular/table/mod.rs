@@ -1087,7 +1087,7 @@ pub mod tests {
         (table_id, table_metadata.current_schema().as_ref().clone())
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_final_create(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1177,7 +1177,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_stage_create(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1292,7 +1292,7 @@ pub mod tests {
         assert_eq!(load_result.metadata_location, metadata_location);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_to_id(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1351,7 +1351,7 @@ pub mod tests {
         assert_eq!(info.tabular_id(), table.table_id.into());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_to_ids(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1451,7 +1451,7 @@ pub mod tests {
         assert!(ids.contains(&table_2.table_id.into()));
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_to_ids_case_insensitivity(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1531,7 +1531,7 @@ pub mod tests {
         assert_eq!(id_lower, created.table_id.into());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_without_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1584,7 +1584,7 @@ pub mod tests {
         assert_eq!(exists[0].tabular_id(), table.table_id.into());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_with_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1650,7 +1650,7 @@ pub mod tests {
     /// matters beyond the lost update: the authorizer re-parents by detaching the *caller's*
     /// source namespace, which is only the tabular's real parent while this holds. Losing
     /// the race must fail, not silently move the tabular a second time.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_from_a_namespace_the_tabular_has_left_fails(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1737,7 +1737,7 @@ pub mod tests {
     /// The in-place branch locates the row by id, so it must also require the name the
     /// caller resolved — otherwise a rename that lost a race renames whatever the winner
     /// left behind.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_in_place_rename_from_a_stale_name_fails(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1801,7 +1801,7 @@ pub mod tests {
     /// two failures below are different code paths: a stale id that happens to equal the
     /// source lands in the in-place branch, where nothing would otherwise notice that the
     /// caller asked for a *move*, and any other stale id lands in the cross-namespace one.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_into_a_namespace_that_no_longer_bears_the_destination_name_fails(
         pool: sqlx::PgPool,
     ) {
@@ -1926,7 +1926,7 @@ pub mod tests {
     /// with the `namespace` row it points at — which `create_tabular` never does, since it
     /// copies the name from that row. Comparing the two ids instead is also what the
     /// caller's authorizer re-parenting compares, so the two cannot drift.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_case_only_namespace_difference_renames_in_place(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1974,7 +1974,7 @@ pub mod tests {
     /// A move must store the destination namespace's own spelling, not the caller's. The
     /// destination is matched under a case-insensitive collation, so the two can differ, and the
     /// denormalised path would then disagree with the namespace row it points at.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_across_namespaces_stores_the_namespace_spelling(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2038,7 +2038,7 @@ pub mod tests {
 
     /// The destination id is random because the namespace was never created: an id no row
     /// carries is what the caller would have to pass for a namespace that does not exist.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_to_non_existent_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2072,7 +2072,7 @@ pub mod tests {
         transaction.rollback().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_onto_occupied_name_conflicts(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2108,7 +2108,7 @@ pub mod tests {
         transaction.rollback().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_across_namespaces_onto_occupied_name_conflicts(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2150,7 +2150,7 @@ pub mod tests {
         transaction.rollback().await.unwrap();
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_onto_soft_deleted_name_succeeds(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2208,7 +2208,7 @@ pub mod tests {
         assert_eq!(infos[0].tabular_id(), source.table_id.into());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_by_ident_lookup_with_dropped_prefers_live_then_latest_dropped(
         pool: sqlx::PgPool,
     ) {
@@ -2283,7 +2283,7 @@ pub mod tests {
         assert_eq!(lookup(live.table_ident).await, vec![live.table_id.into()]);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tables(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2354,7 +2354,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tables_pagination(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2469,7 +2469,7 @@ pub mod tests {
         assert!(tables.next_token().is_none());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     #[cfg_attr(test, tracing_test::traced_test)]
     async fn test_get_id_by_location(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -2572,7 +2572,7 @@ pub mod tests {
         assert_eq!(table_info_by_location, None);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_cannot_get_table_of_inactive_warehouse(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2595,7 +2595,7 @@ pub mod tests {
         assert!(r.is_empty());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_drop_table(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2694,7 +2694,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_rename_to_different_case(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2773,7 +2773,7 @@ pub mod tests {
         assert_eq!(info.tabular_ident().name, "My_Table");
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_list_tables_case_insensitive_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2933,7 +2933,7 @@ pub mod tests {
 
     // ── A. Load assembly ─────────────────────────────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn load_returns_assembled_nested_schema(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -2956,7 +2956,7 @@ pub mod tests {
         assert_eq!(md.current_schema().as_ref(), &persisted);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn load_returns_all_schema_versions(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3010,7 +3010,7 @@ pub mod tests {
         );
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn empty_non_current_schema_reloads_present(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3054,7 +3054,7 @@ pub mod tests {
         assert!(empty_loaded.as_struct().fields().is_empty());
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn empty_current_schema_fails_loud(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3088,7 +3088,7 @@ pub mod tests {
 
     // ── B. tabular_field refcount GC ───────────────────────────────────────
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn gc_reaps_identity_when_last_schema_removed(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3107,7 +3107,7 @@ pub mod tests {
         assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn gc_keeps_identity_referenced_by_another_schema(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3159,7 +3159,7 @@ pub mod tests {
         assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 0);
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn gc_whole_table_drop_cascades(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3361,7 +3361,7 @@ pub mod tests {
     /// Dropping a table removes all of its snapshots, also those without a schema id, and their
     /// statistics. The other table keeps all of its rows, and the same file registers again
     /// under the same table id.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn hard_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
         let (table, other) = SchemalessSnapshotTable::pair(pool).await;
         assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
@@ -3509,7 +3509,7 @@ pub mod tests {
 
     /// A recursive namespace drop deletes its tabulars in bulk. It removes the snapshots without
     /// schema id and their statistics. The table in the other namespace keeps all of its rows.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn recursive_namespace_drop_removes_snapshots_without_schema_id(pool: sqlx::PgPool) {
         let (table, other) = SchemalessSnapshotTable::pair(pool).await;
         assert_eq!(table.snapshot_rows().await, (2, 1, 1, 1));
@@ -3534,7 +3534,7 @@ pub mod tests {
 
     /// Create-side invariant: the schema_field -> tabular_field FK rejects a field row with no
     /// identity anchor.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn schema_field_requires_tabular_field_anchor(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -3568,7 +3568,7 @@ pub mod tests {
     /// table with many overlapping schema versions. Run with:
     ///   cargo test -p lakekeeper-storage-postgres --all-features \
     ///     bench_old_jsonb_vs_new_normalized -- --ignored --nocapture
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     #[ignore = "benchmark: run explicitly with --ignored --nocapture"]
     async fn bench_old_jsonb_vs_new_normalized(pool: sqlx::PgPool) {
         use std::time::Instant;

@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools as _;
+use lakekeeper_io::Location;
 use serde::{Deserialize, Serialize};
 
 use super::ApiServer;
@@ -9,8 +10,8 @@ use crate::{
     WarehouseId,
     api::{ApiContext, RequestMetadata, Result},
     service::{
-        ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, SecretStore, State, TabularId,
+        ArcResolvedWarehouse, CatalogNamespaceOps, CatalogSearchTabularInfo, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, SecretStore, State, TabularId, TabularListFlags,
         authz::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
@@ -66,14 +67,15 @@ where
         ) = event_ctx.emit_authz(authz_result)?;
 
         // -------------------- Business Logic & Tabular level AuthZ filters --------------------
-        let mut search = request.search;
-        if search.chars().count() > 64 {
-            search = search.chars().take(64).collect();
-        }
-        let all_matches: Vec<_> =
-            C::search_tabular(warehouse_id, &search, context.v1_state.catalog.clone())
+        let all_matches = if let Ok(location) = Location::from_str(&request.search)
+            && warehouse.storage_profile.is_allowed_location(&location)
+        {
+            search_tabular_by_location::<C>(warehouse_id, location, &context.v1_state.catalog)
                 .await?
-                .search_results;
+        } else {
+            search_tabular_by_string::<C>(warehouse_id, request.search, &context.v1_state.catalog)
+                .await?
+        };
         let namespace_ids = all_matches
             .iter()
             .map(|t| t.tabular.namespace_id())
@@ -143,6 +145,37 @@ where
     }
 }
 
+async fn search_tabular_by_location<C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    location: Location,
+    state: &C::State,
+) -> Result<Vec<CatalogSearchTabularInfo>> {
+    let info = C::get_tabular_infos_by_s3_location(
+        warehouse_id,
+        &location,
+        TabularListFlags::active(),
+        state.clone(),
+    )
+    .await?
+    .map(|tabular| CatalogSearchTabularInfo {
+        tabular,
+        distance: None,
+    });
+    Ok(info.into_iter().collect())
+}
+
+async fn search_tabular_by_string<C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    mut search: String,
+    state: &C::State,
+) -> Result<Vec<CatalogSearchTabularInfo>> {
+    if search.chars().count() > 64 {
+        search = search.chars().take(64).collect();
+    }
+    let res = C::search_tabular(warehouse_id, &search, state.clone()).await?;
+    Ok(res.search_results)
+}
+
 struct AuthorizeSearchTabularResult {
     warehouse: ArcResolvedWarehouse,
     authz_list_all: bool,
@@ -182,9 +215,9 @@ async fn authorize_search_tabular<C: CatalogStore, A: Authorizer>(
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 pub struct SearchTabularRequest {
-    /// Search string for fuzzy search.
-    /// Length is truncated to 64 characters.
-    #[cfg_attr(feature = "open-api", schema(max_length = 64))]
+    /// Name, UUID, or storage path of a table or view. A name is cut to 64 characters.
+    // `max_length` is `MAX_LOCATION_LEN` from `lakekeeper_io::location`.
+    #[cfg_attr(feature = "open-api", schema(max_length = 4096))]
     pub search: String,
 }
 

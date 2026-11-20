@@ -52,6 +52,16 @@ jobs:
     name: Build Binary
     needs:
       - release_please
+    # A newer push to a branch cancels this job of the older run: only the
+    # newest commit's binaries and `main` image are used. The decision follows
+    # release-please: in a run that created a release, the group is unique, so
+    # nothing cancels the job and it cancels nothing. build-docker and
+    # test-docker use the same rule. The job that joins the group last wins:
+    # when two pushes land within a minute, the older run can cancel the newer
+    # one, and `latest-main` stays on the older commit until the next push.
+    concurrency:
+      group: ${{ github.workflow }}-build-binary-${{ matrix.target }}-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     # not supported by windows nor macos
     # services:
     #   postgres:
@@ -106,20 +116,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2
         with:
           target: ${{ matrix.target }}
           cache: false
 
       - name: Setup node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24
+          node-version: 26
 
       # Cross-compiled on x86. Linux on Power commonly runs with 64 KiB pages, and jemalloc
       # refuses to start on a kernel whose pages are larger than the size it was built for.
@@ -155,7 +165,7 @@ jobs:
           cd -
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: bin-${{ matrix.name }}
           path: ${{ matrix.name }}
@@ -166,6 +176,9 @@ jobs:
     needs:
       - build-binary
       - release_please
+    concurrency:
+      group: ${{ github.workflow }}-build-docker-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     services:
       postgres:
         image: postgres:16
@@ -182,12 +195,12 @@ jobs:
           - 5432:5432
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
 
       - name: List Artifacts
         run: ls -lh
@@ -205,7 +218,7 @@ jobs:
           ls -Rlh
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: Docker info
         run: docker info
@@ -213,7 +226,7 @@ jobs:
       # Builds three full images (amd64 + arm64 + ppc64le); reclaim preinstalled toolchains
       # we don't use to avoid "no space left on device" on hosted runners.
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           docker-images: false # we build and save Docker images in this job
           large-packages: false # apt purge is slow; the toolchain dirs free enough
@@ -248,7 +261,7 @@ jobs:
           docker save -o /tmp/docker-lakekeeper-ppc64le.tar localhost/lakekeeper-local:ppc64le
 
       - name: Save Docker
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: docker-lakekeeper
           path: /tmp/docker-lakekeeper-*.tar
@@ -259,6 +272,9 @@ jobs:
     needs:
       - build-docker
       - release_please
+    concurrency:
+      group: ${{ github.workflow }}-test-docker-${{ matrix.arch }}-${{ needs.release_please.outputs.releases_created == 'true' && github.run_id || github.ref }}
+      cancel-in-progress: true
     strategy:
       # Every architecture's image test gates publishing; run all of them to report each result.
       fail-fast: false
@@ -272,15 +288,15 @@ jobs:
             arch: ppc64le
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: Docker info
         run: docker info
@@ -317,7 +333,7 @@ jobs:
       - release_please
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
 
       - name: List Artifacts
         run: ls -Rlh
@@ -336,7 +352,7 @@ jobs:
         run: echo ${{ needs.release_please.outputs.tag_name }}
 
       - name: Test Login to Quay.io
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: quay.io
           username: lakekeeper+github
@@ -345,7 +361,7 @@ jobs:
       # Docker Hub publishing is paused; set the repository variable PUBLISH_DOCKERHUB=true to resume.
       - name: Test Login to Dockerhub
         if: vars.PUBLISH_DOCKERHUB == 'true'
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -362,10 +378,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
 
       - name: Login to Quay.io
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: quay.io
           username: lakekeeper+github
@@ -373,7 +389,7 @@ jobs:
 
       - name: Login to Dockerhub
         if: vars.PUBLISH_DOCKERHUB == 'true'
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -422,7 +438,7 @@ jobs:
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
 
       - name: Publish Release
         run: gh release edit ${{ needs.release_please.outputs.tag_name }} --draft=false --repo=lakekeeper/lakekeeper
@@ -430,7 +446,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build | Add Artifacts to Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           files: bin-lakekeeper-*/lakekeeper-*
           tag_name: ${{ needs.release_please.outputs.tag_name }}
@@ -446,10 +462,10 @@ jobs:
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
 
       - name: Login to Quay.io
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: quay.io
           username: lakekeeper+github
@@ -457,7 +473,7 @@ jobs:
 
       - name: Login to Dockerhub
         if: vars.PUBLISH_DOCKERHUB == 'true'
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}

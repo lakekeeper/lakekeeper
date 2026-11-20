@@ -1016,7 +1016,10 @@ where
         page_size: Option<i64>,
         page_token: Option<&str>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError>;
+    ) -> std::result::Result<
+        PaginatedMapping<GenericTableId, GenericTableListEntry>,
+        ListGenericTablesError,
+    >;
 
     async fn drop_generic_table_impl<'a>(
         warehouse_id: WarehouseId,

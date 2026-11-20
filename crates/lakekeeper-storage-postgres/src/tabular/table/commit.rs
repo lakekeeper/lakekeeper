@@ -843,7 +843,7 @@ mod tests {
             .build()
     }
 
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_commit_returns_updated_table_info(pool: sqlx::PgPool) {
         let (previous_table_info, previous_metadata) = setup_table(pool.clone()).await;
         let previous_metadata_location = previous_table_info.metadata_location.clone().unwrap();
@@ -920,7 +920,7 @@ mod tests {
     /// Previously, `set_table_properties` early-returned when the new property
     /// map was empty, so the DELETE from `table_properties` never ran and the
     /// stale row resurfaced on the next load.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_remove_last_property_persists_after_reload(pool: sqlx::PgPool) {
         let (previous_table_info, previous_metadata) = setup_table(pool.clone()).await;
         let warehouse_id = previous_table_info.warehouse_id;
@@ -1030,7 +1030,7 @@ mod tests {
 
     /// Removing the last ref (`main`) must persist after reload: the table keeps its
     /// snapshot but has no refs and no current snapshot.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_remove_last_ref_persists_after_reload(pool: sqlx::PgPool) {
         let (previous_table_info, previous_metadata) = setup_table(pool.clone()).await;
         let warehouse_id = previous_table_info.warehouse_id;
@@ -1132,7 +1132,7 @@ mod tests {
     }
 
     /// A commit that moves one ref must not rewrite the rows of refs that did not change.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_commit_rewrites_only_changed_refs(pool: sqlx::PgPool) {
         let (previous_table_info, previous_metadata) = setup_table(pool.clone()).await;
         let warehouse_id = previous_table_info.warehouse_id;
@@ -1279,7 +1279,7 @@ mod tests {
     /// Concurrent commits to one table that change properties each rewrite the table's
     /// full property set. Exactly one wins; the others must fail with the retryable
     /// `ConcurrentUpdateError`, never deadlock on the property rows.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_concurrent_property_commits_do_not_deadlock(pool: sqlx::PgPool) {
         const WRITERS: usize = 8;
         let (table_info, metadata) = setup_table(pool.clone()).await;
@@ -1361,7 +1361,7 @@ mod tests {
     /// A commit built on metadata another commit has replaced fails with the retryable
     /// `ConcurrentUpdateError` before it writes anything, so its writes cannot collide
     /// with the winner's: here both commits add schema 1.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_stale_commit_fails_with_concurrent_update_error(pool: sqlx::PgPool) {
         let (table_info, metadata) = setup_table(pool.clone()).await;
         let warehouse_id = table_info.warehouse_id;
@@ -1393,7 +1393,7 @@ mod tests {
 
     /// A commit to a table dropped after the commit was built fails with `TabularNotFound`,
     /// not with the retryable `ConcurrentUpdateError`.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_commit_to_dropped_table_fails_with_not_found(pool: sqlx::PgPool) {
         let (table_info, metadata) = setup_table(pool.clone()).await;
         let commit = commit_on(
@@ -1427,7 +1427,7 @@ mod tests {
 
     /// A commit to a table soft-dropped after the commit was built fails with
     /// `TabularNotFound`, although a soft drop keeps the metadata location.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_commit_to_soft_dropped_table_fails_with_not_found(pool: sqlx::PgPool) {
         let (table_info, metadata) = setup_table(pool.clone()).await;
         let commit = commit_on(
@@ -1461,7 +1461,7 @@ mod tests {
 
     /// The first commit to a staged table, which has no metadata location yet, succeeds;
     /// a second commit built on the staged table fails with `ConcurrentUpdateError`.
-    #[sqlx::test]
+    #[lakekeeper_storage_postgres::db_test]
     async fn test_staged_table_accepts_one_first_commit(pool: sqlx::PgPool) {
         let (table_info, metadata) = create_test_table(pool.clone(), None).await;
         let warehouse_id = table_info.warehouse_id;

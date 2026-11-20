@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT entity_id AS \"entity_id!\" FROM task\n        WHERE warehouse_id = $1\n            AND entity_id = ANY($2::uuid[])\n            AND entity_type IN ('table', 'view', 'generic-table')\n            AND queue_name IN ('soft_deletion', 'tabular_expiration')\n            AND status IN ('running', 'should-stop')\n        LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entity_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "entity_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "610884462f395f79459cba373a24b584a816e45ad59914a4d0195dccf9aa05e2"
+}
