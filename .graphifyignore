@@ -1,0 +1,36 @@
+# Files graphify (https://github.com/safishamsi/graphify) skips when building
+# the optional local knowledge graph (`just graph`). Same syntax as .gitignore.
+
+# Boilerplate, lockfiles and release-please-managed files: little signal, extra tokens.
+CHANGELOG.md
+CODE_OF_CONDUCT.md
+Cargo.lock
+release-please/
+
+# Generated: sqlx query metadata, OpenAPI specs, OpenFGA model JSON, audit schema and fixtures.
+.sqlx/
+docs/docs/api/*.yaml
+authz/openfga/**/schema.json
+docs/docs/audit/schema*.json
+crates/lakekeeper/src/service/events/backends/audit/fixtures/
+
+# Large test data.
+crates/lakekeeper-storage-postgres/tests/table_metadatas.jsonl
+authz/opa-bridge/inputs/
+
+# Website theme, assets and blog; the product docs live in docs/docs/.
+site/
+assets/
+
+# Example deployments: notebooks, identity-provider exports, certificates and sample data.
+examples/**/*.ipynb
+examples/**/keycloak/
+examples/**/certs/
+examples/**/data/
+# Dockerfile misread as OCaml by its .ml suffix.
+examples/agentic-medallion/Dockerfile.ml
+
+# Agent instructions, not product code.
+AGENTS.md
+CLAUDE.md
+.claude/
