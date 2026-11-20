@@ -11,7 +11,7 @@ use lakekeeper::{
             v1::{
                 DropParams, ListTablesQuery, LoadTableResultOrNotModified, NamespaceParameters,
                 TableParameters,
-                namespace::NamespaceService,
+                namespace::{NamespaceDropFlags, NamespaceService},
                 tables::{LoadTableRequest, TablesService},
             },
         },
@@ -32,9 +32,10 @@ use lakekeeper::{
         authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
         events::{EventListener, tabular::UndropTabularEvent},
         tasks::{
-            ScheduleTaskMetadata, TaskEntity, TaskId, WarehouseTaskEntityId,
+            RetryDecision, ScheduleTaskMetadata, TaskEntity, TaskId, WarehouseTaskEntityId,
             tabular_expiration_queue::{
-                QUEUE_NAME as EXPIRATION_QUEUE_NAME, TabularExpirationTask,
+                QUEUE_NAME as EXPIRATION_QUEUE_NAME, TabularExpirationPayload,
+                TabularExpirationTask,
             },
             tabular_purge_queue::{
                 QUEUE_NAME as PURGE_QUEUE_NAME, TabularPurgePayload, TabularPurgeTask,
@@ -42,7 +43,9 @@ use lakekeeper::{
         },
     },
 };
-use lakekeeper_integration_tests::{create_ns, create_table, random_request_metadata};
+use lakekeeper_integration_tests::{
+    create_generic_table, create_ns, create_table, drop_namespace, random_request_metadata,
+};
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -426,6 +429,142 @@ async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
     );
 }
 
+async fn namespace_with_soft_deleted_generic_table(
+    pool: PgPool,
+    purge_requested: bool,
+) -> (HidingCtx, WarehouseId, NamespaceParameters) {
+    use lakekeeper::api::data::v1::generic_tables::{
+        GenericTableParameters, GenericTableService as _,
+    };
+
+    let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool,
+        lakekeeper_integration_tests::memory_io_profile(),
+        None,
+        HidingAuthorizer::new(),
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(300),
+        },
+        Some(UserId::new_unchecked("oidc", "test-user-id")),
+    )
+    .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let prefix = warehouse_id.to_string();
+    let ns_name = "ns".to_string();
+    let namespace = NamespaceIdent::new(ns_name.clone());
+    create_ns(ctx.clone(), prefix.clone(), ns_name.clone()).await;
+    create_generic_table(ctx.clone(), prefix.clone(), ns_name, "tbl")
+        .await
+        .unwrap();
+
+    CatalogServer::drop_generic_table(
+        GenericTableParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: namespace.clone(),
+            table_name: "tbl".to_string(),
+        },
+        DropParams {
+            purge_requested,
+            force: false,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    (
+        ctx,
+        warehouse_id,
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix)),
+            namespace,
+        },
+    )
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_preserves_pending_generic_table_purge(pool: PgPool) {
+    let (ctx, warehouse_id, namespace) =
+        namespace_with_soft_deleted_generic_table(pool, true).await;
+    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
+    assert_eq!(tasks.len(), 1);
+
+    for purge in [false, true] {
+        let err = drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge,
+                recursive: true,
+            },
+            namespace.clone(),
+        )
+        .await
+        .expect_err("the pending purge must keep the namespace from being dropped");
+        assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+        assert_eq!(err.error.r#type, "NamespaceNotEmptyException");
+        assert_eq!(
+            scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await,
+            tasks,
+        );
+        assert_eq!(soft_deleted_names(&ctx, warehouse_id).await, ["tbl"]);
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_allows_expiration_without_purge(pool: PgPool) {
+    let (ctx, warehouse_id, namespace) =
+        namespace_with_soft_deleted_generic_table(pool.clone(), false).await;
+    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
+    assert_eq!(tasks.len(), 1);
+    let tabular_id: Uuid = sqlx::query_scalar(
+        "SELECT tabular_id FROM tabular WHERE warehouse_id = $1 AND name = 'tbl'",
+    )
+    .bind(*warehouse_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    drop_namespace(
+        ctx.clone(),
+        NamespaceDropFlags {
+            force: true,
+            purge: false,
+            recursive: true,
+        },
+        namespace.clone(),
+    )
+    .await
+    .unwrap();
+    let namespace_missing =
+        CatalogServer::namespace_exists(namespace, ctx.clone(), random_request_metadata())
+            .await
+            .unwrap_err();
+    assert_eq!(namespace_missing.error.code, http::StatusCode::NOT_FOUND);
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tabular WHERE tabular_id = $1)")
+            .bind(tabular_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!exists, "the generic-table row must be removed");
+    let results = ApiServer::list_tasks(
+        warehouse_id,
+        ListTasksRequest {
+            status: Some(vec![TaskStatus::Cancelled]),
+            queue_name: Some(vec![EXPIRATION_QUEUE_NAME.clone()]),
+            ..Default::default()
+        },
+        ctx,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.tasks.len(), 1);
+    assert_eq!(results.tasks[0].task_id, tasks[0]);
+}
+
 type HidingCtx =
     lakekeeper::api::ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>;
 
@@ -473,6 +612,217 @@ async fn soft_deleted_table_with_task(pool: PgPool) -> SoftDeletedTable {
         table_id,
         task_id: tasks[0],
     }
+}
+
+async fn force_drop_ns(ctx: &HidingCtx, warehouse_id: WarehouseId) -> lakekeeper::api::Result<()> {
+    drop_namespace(
+        ctx.clone(),
+        NamespaceDropFlags {
+            force: true,
+            purge: false,
+            recursive: true,
+        },
+        NamespaceParameters {
+            prefix: Some(Prefix(warehouse_id.to_string())),
+            namespace: NamespaceIdent::new("ns".to_string()),
+        },
+    )
+    .await
+}
+
+async fn pick_expiration_for(table: &SoftDeletedTable) -> TabularExpirationTask {
+    control_tasks(
+        &table.ctx,
+        table.warehouse_id,
+        ControlTaskAction::RunNow,
+        vec![table.task_id],
+    )
+    .await
+    .unwrap();
+    let picked =
+        TabularExpirationTask::pick_new_task::<PostgresBackend>(table.ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(picked.task_id(), table.task_id);
+    picked
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_keeps_stopping_purge(pool: PgPool) {
+    let table = soft_deleted_table_with_task(pool.clone()).await;
+    pick_expiration_for(&table).await;
+    control_tasks(
+        &table.ctx,
+        table.warehouse_id,
+        ControlTaskAction::Stop,
+        vec![table.task_id],
+    )
+    .await
+    .unwrap();
+
+    let err = force_drop_ns(&table.ctx, table.warehouse_id)
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(
+        soft_deleted_names(&table.ctx, table.warehouse_id).await,
+        ["tbl"]
+    );
+    let status: String = sqlx::query_scalar("SELECT status::text FROM task WHERE task_id = $1")
+        .bind(*table.task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "should-stop");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_keeps_table_after_failed_expiration(pool: PgPool) {
+    let table = soft_deleted_table_with_task(pool.clone()).await;
+    let picked = pick_expiration_for(&table).await;
+    picked
+        .record_failure_with_decision::<PostgresBackend>(
+            table.ctx.v1_state.catalog.clone(),
+            "fixture expiration failure",
+            RetryDecision::give_up("fixture terminal outcome"),
+        )
+        .await;
+    let failed_tasks = ApiServer::list_tasks(
+        table.warehouse_id,
+        ListTasksRequest {
+            status: Some(vec![TaskStatus::Failed]),
+            queue_name: Some(vec![EXPIRATION_QUEUE_NAME.clone()]),
+            ..Default::default()
+        },
+        table.ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(failed_tasks.tasks.len(), 1);
+    let failed = &failed_tasks.tasks[0];
+    assert_eq!(failed.task_id, table.task_id);
+    assert_eq!(
+        failed.entity_name.as_deref(),
+        Some(&["ns".to_owned(), "tbl".to_owned()][..])
+    );
+    let Some(WarehouseTaskEntityId::Table { table_id }) = failed.entity else {
+        panic!("failed expiration must identify its table");
+    };
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM task WHERE task_id = $1)")
+        .bind(*table.task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!active);
+
+    let err = force_drop_ns(&table.ctx, table.warehouse_id)
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceNotEmptyException");
+    // The soft-deleted listing only shows entries with an active expiration.
+    let deleted: bool =
+        sqlx::query_scalar("SELECT deleted_at IS NOT NULL FROM tabular WHERE tabular_id = $1")
+            .bind(*table.table_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(deleted);
+    undrop_tbl(&table.ctx, table.warehouse_id, table_id)
+        .await
+        .unwrap();
+}
+
+async fn assert_recursive_drop_lock_conflict(table: &SoftDeletedTable) {
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        force_drop_ns(&table.ctx, table.warehouse_id),
+    )
+    .await
+    .expect("the recursive drop must return while the other transaction holds its lock")
+    .unwrap_err();
+    assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(err.error.r#type, "CatalogBackendError");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_retries_a_contended_namespace_lock(pool: PgPool) {
+    let table = soft_deleted_table_with_task(pool.clone()).await;
+    let mut t = pool.begin().await.unwrap();
+    sqlx::query(
+        "SELECT namespace_id FROM namespace WHERE warehouse_id = $1 AND namespace_name = ARRAY['ns'] FOR UPDATE",
+    )
+    .bind(*table.warehouse_id)
+    .fetch_one(&mut *t)
+    .await
+    .unwrap();
+    assert_recursive_drop_lock_conflict(&table).await;
+    t.commit().await.unwrap();
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_retries_a_concurrent_soft_delete_purge(pool: PgPool) {
+    use lakekeeper::{api::management::v1::DeleteKind, service::CatalogTabularOps as _};
+
+    let table = soft_deleted_table_with_task(pool).await;
+    undrop_tbl(&table.ctx, table.warehouse_id, table.table_id)
+        .await
+        .unwrap();
+
+    // Hold the soft delete open while the namespace drop attempts to lock the row.
+    let mut t = <PostgresBackend as CatalogStore>::Transaction::begin_write(
+        table.ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    let task_id = TabularExpirationTask::schedule_task::<PostgresBackend>(
+        ScheduleTaskMetadata {
+            resource_demand: None,
+            project_id: table.project_id.clone(),
+            parent_task_id: None,
+            scheduled_for: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            entity: TaskEntity::EntityInWarehouse {
+                warehouse_id: table.warehouse_id,
+                entity_id: WarehouseTaskEntityId::Table {
+                    table_id: table.table_id,
+                },
+                entity_name: vec!["ns".to_string(), "tbl".to_string()],
+            },
+        },
+        TabularExpirationPayload::new(DeleteKind::Purge),
+        t.transaction(),
+    )
+    .await
+    .unwrap()
+    .inserted()
+    .unwrap();
+    PostgresBackend::mark_tabular_as_deleted(
+        table.warehouse_id,
+        TabularId::Table(table.table_id),
+        false,
+        t.transaction(),
+    )
+    .await
+    .unwrap();
+
+    assert_recursive_drop_lock_conflict(&table).await;
+    t.commit().await.unwrap();
+
+    let err = force_drop_ns(&table.ctx, table.warehouse_id)
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+    assert_eq!(err.error.r#type, "NamespaceNotEmptyException");
+    assert_eq!(
+        soft_deleted_names(&table.ctx, table.warehouse_id).await,
+        ["tbl"]
+    );
+    assert_eq!(
+        scheduled_tasks(&table.ctx, table.warehouse_id, &EXPIRATION_QUEUE_NAME).await,
+        [task_id]
+    );
 }
 
 /// Soft-delete `ns.tbl`, which schedules its soft-deletion task.
