@@ -2,6 +2,8 @@
 
 use utoipa::{OpenApi, openapi::security::SecurityScheme};
 
+use crate::api::openapi::add_iceberg_error_responses;
+
 #[derive(Debug, OpenApi)]
 #[openapi(
     info(
@@ -56,5 +58,7 @@ impl utoipa::Modify for SecurityAddon {
 
 #[must_use]
 pub fn api_doc() -> utoipa::openapi::OpenApi {
-    GenericTableApiDoc::openapi()
+    let mut doc = GenericTableApiDoc::openapi();
+    add_iceberg_error_responses(&mut doc);
+    doc
 }
