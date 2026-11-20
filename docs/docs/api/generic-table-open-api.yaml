@@ -47,6 +47,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables:
     get:
       tags:
@@ -92,6 +94,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - generic-table
@@ -127,6 +131,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}:
     get:
       tags:
@@ -162,6 +168,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - generic-table
@@ -204,6 +212,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}/credentials:
     get:
       tags:
@@ -244,6 +254,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
 components:
   schemas:
     CreateGenericTableRequest:
@@ -432,6 +444,19 @@ components:
             type: string
         prefix:
           type: string
+  responses:
+    IcebergClientError:
+      description: Client error. Request rejections may have a plain text or empty body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
+    IcebergServerError:
+      description: Server error. Failures outside the handler may have a plain text or empty body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
   securitySchemes:
     bearerAuth:
       type: http

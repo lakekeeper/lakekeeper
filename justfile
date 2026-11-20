@@ -83,11 +83,44 @@ update-rest-openapi:
     just add-return-protection-status-to-rest-openapi
     just add-namespace-delete-extension-to-rest-openapi
     just clarify-table-purge-default-rest-openapi
+    just normalize-rest-error-responses
+
+normalize-rest-error-responses:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    spec=docs/docs/api/rest-catalog-open-api.yaml
+    # Lakekeeper sends JSON handler errors in the Iceberg error envelope.
+    yq -i '
+      (
+        ((.paths[].[] | select(tag == "!!map" and has("responses")) | .responses[]), .components.responses[])
+        | select(.content."application/json".schema."$ref" == "#/components/schemas/ErrorModel")
+        | .content."application/json".schema."$ref"
+      ) = "#/components/schemas/IcebergErrorResponse" |
+      .components.responses.ClientErrorResponse = {
+        "description": "Client error. Request rejections may have a plain text or empty body.",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IcebergErrorResponse"}}}
+      } |
+      (.paths[] | select(key != "/v1/oauth/tokens") | .[] |
+        select(key != "head" and tag == "!!map" and has("responses")) | .responses | select(has("4XX") | not)) +=
+        {"4XX": {"$ref": "#/components/responses/ClientErrorResponse"}}
+    ' "$spec"
+    # HEAD has no response body. Keep the status codes and any response headers.
+    yq -i '
+      (.paths[] | select(has("head")).head.responses | select(has("4XX") | not)) +=
+        {"4XX": {"description": "Client error"}} |
+      (.paths[] | select(has("head")).head.responses[] |
+        select(."$ref" == "#/components/responses/BadRequestErrorResponse")) = {"description": "Bad request."} |
+      . as $doc |
+      (.paths[] | select(has("head")).head.responses[] | select(."$ref" | test("^#/components/responses/"))) |= (
+        (."$ref" | split("/") | .[-1]) as $name | $doc.components.responses[$name]
+      ) |
+      del(.paths[] | select(has("head")).head.responses[].content)
+    ' "$spec"
     # Remove multiple empty lines due to https://github.com/mikefarah/yq/issues/2074
-    if [[ "$(uname)" == "Darwin" ]]; then \
-      sed -i '' '/^$/N;/^\n$/D' docs/docs/api/rest-catalog-open-api.yaml; \
-    else \
-      sed -i '/^$/N;/^\n$/D' docs/docs/api/rest-catalog-open-api.yaml; \
+    if [[ "$(uname)" == "Darwin" ]]; then
+      sed -i '' '/^$/N;/^\n$/D' "$spec"
+    else
+      sed -i '/^$/N;/^\n$/D' "$spec"
     fi
 
 update-openfga:

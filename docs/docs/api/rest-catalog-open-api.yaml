@@ -102,6 +102,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/oauth/tokens:
     post:
       tags:
@@ -199,6 +201,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     post:
       tags:
         - Catalog API
@@ -239,6 +243,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -273,6 +279,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
       parameters:
         - name: returnUuid
           in: query
@@ -291,26 +299,23 @@ paths:
         204:
           description: Success, no content
         400:
-          $ref: '#/components/responses/BadRequestErrorResponse'
+          description: Bad request.
         401:
-          $ref: '#/components/responses/UnauthorizedResponse'
+          description: Unauthorized. The REST Catalog SHOULD respond with the 401 UnauthorizedResponse when the access token provided is expired, revoked, malformed, or invalid for other reasons. The client MAY request a new access token and retry the request.
         403:
-          $ref: '#/components/responses/ForbiddenResponse'
+          description: Forbidden. Authenticated user does not have the necessary permissions.
         404:
           description: Not Found - Namespace not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-              examples:
-                NoSuchNamespaceExample:
-                  $ref: '#/components/examples/NoSuchNamespaceError'
         419:
-          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+          description: This is an optional status response type that the REST Catalog can issue when the token has expired. The client MAY request a new access token and retry the request. 401 UnauthorizedResponse SHOULD be preferred over this response type on token expiry.
         503:
-          $ref: '#/components/responses/ServiceUnavailableResponse'
+          description: |-
+            The service is not ready to handle the request, request could have been partially processed.
+            The service may additionally send a Retry-After header to indicate when to retry, a non idempotent request should only be retried by the client when the Retry-After header is present.
         5XX:
-          $ref: '#/components/responses/ServerErrorResponse'
+          description: A server-side problem that might not be addressable from the client side. Used for server 5xx errors without more specific documentation in individual routes.
+        4XX:
+          description: Client error
     delete:
       tags:
         - Catalog API
@@ -379,6 +384,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
       description: Drop a namespace from the catalog. By default, the namespace needs to be empty. Deleting an empty namespace without `recursive=true` needs neither the `force` flag nor permission to change the soft-deletion settings of the warehouse, unless the namespace is protected, which needs `force`. You can however set `recursive=true` which will delete all tables, views, generic tables and namespaces under this namespace. The namespace itself will also be deleted. With `recursive=true`, if the warehouse containing the namespace is configured with a soft-deletion profile, the `force` flag has to be provided, and the caller needs permission to change the soft-deletion settings of the warehouse, also when the namespace is empty. The deletion will not be a soft-deletion. Every table, view, generic table and namespace will be gone as soon as this call returns. Depending on whether the `purge` flag was set to true, the data will be queued for deletion too. Any pending soft-deletion expiration will be cancelled. If there is a running soft-deletion expiration, this call will fail with a `409 Conflict` error.
   /v1/{prefix}/namespaces/{namespace}/properties:
     parameters:
@@ -439,6 +446,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/tables:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -490,6 +499,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     post:
       tags:
         - Catalog API
@@ -543,6 +554,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/functions:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -580,6 +593,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/functions/{function}:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -619,6 +634,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -695,6 +712,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -754,6 +773,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     delete:
       tags:
         - Catalog API
@@ -801,6 +822,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -847,6 +870,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/register:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -899,6 +924,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/tables/{table}:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -963,6 +990,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     post:
       tags:
         - Catalog API
@@ -1040,6 +1069,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
               example: {"error": {"message": "Bad Gateway", "type": "InternalServerError", "code": 502}}
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     delete:
       tags:
         - Catalog API
@@ -1086,6 +1117,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     head:
       tags:
         - Catalog API
@@ -1096,26 +1129,23 @@ paths:
         204:
           description: Success, no content
         400:
-          $ref: '#/components/responses/BadRequestErrorResponse'
+          description: Bad request.
         401:
-          $ref: '#/components/responses/UnauthorizedResponse'
+          description: Unauthorized. The REST Catalog SHOULD respond with the 401 UnauthorizedResponse when the access token provided is expired, revoked, malformed, or invalid for other reasons. The client MAY request a new access token and retry the request.
         403:
-          $ref: '#/components/responses/ForbiddenResponse'
+          description: Forbidden. Authenticated user does not have the necessary permissions.
         404:
           description: Not Found - NoSuchTableException, Table not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-              examples:
-                TableToLoadDoesNotExist:
-                  $ref: '#/components/examples/NoSuchTableError'
         419:
-          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+          description: This is an optional status response type that the REST Catalog can issue when the token has expired. The client MAY request a new access token and retry the request. 401 UnauthorizedResponse SHOULD be preferred over this response type on token expiry.
         503:
-          $ref: '#/components/responses/ServiceUnavailableResponse'
+          description: |-
+            The service is not ready to handle the request, request could have been partially processed.
+            The service may additionally send a Retry-After header to indicate when to retry, a non idempotent request should only be retried by the client when the Retry-After header is present.
         5XX:
-          $ref: '#/components/responses/ServerErrorResponse'
+          description: A server-side problem that might not be addressable from the client side. Used for server 5xx errors without more specific documentation in individual routes.
+        4XX:
+          description: Client error
   /v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1156,6 +1186,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1199,6 +1231,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/tables/{table}/sign:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1231,6 +1265,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/tables/rename:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1288,6 +1324,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1329,6 +1367,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/transactions/commit:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1406,6 +1446,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
               example: {"error": {"message": "Bad Gateway", "type": "InternalServerError", "code": 502}}
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/views:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1447,7 +1489,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               examples:
                 NamespaceNotFound:
                   $ref: '#/components/examples/NoSuchNamespaceError'
@@ -1457,6 +1499,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     post:
       tags:
         - Catalog API
@@ -1483,7 +1527,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               examples:
                 NamespaceNotFound:
                   $ref: '#/components/examples/NoSuchNamespaceError'
@@ -1492,7 +1536,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               examples:
                 ViewAlreadyExists:
                   $ref: '#/components/examples/ViewAlreadyExistsError'
@@ -1502,6 +1546,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/views/{view}:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1536,7 +1582,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               examples:
                 ViewToLoadDoesNotExist:
                   $ref: '#/components/examples/NoSuchViewError'
@@ -1546,6 +1592,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     post:
       tags:
         - Catalog API
@@ -1574,7 +1622,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               examples:
                 ViewToUpdateDoesNotExist:
                   $ref: '#/components/examples/NoSuchViewError'
@@ -1583,7 +1631,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
         419:
           $ref: '#/components/responses/AuthenticationTimeoutResponse'
         500:
@@ -1591,7 +1639,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               example: {"error": {"message": "Internal Server Error", "type": "CommitStateUnknownException", "code": 500}}
         503:
           $ref: '#/components/responses/ServiceUnavailableResponse'
@@ -1600,22 +1648,24 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               example: {"error": {"message": "Invalid response from the upstream server", "type": "CommitStateUnknownException", "code": 502}}
         504:
           description: A server-side gateway timeout occurred; the commit state is unknown.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               example: {"error": {"message": "Gateway timed out during commit", "type": "CommitStateUnknownException", "code": 504}}
         5XX:
           description: A server-side problem that might not be addressable on the client.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               example: {"error": {"message": "Bad Gateway", "type": "InternalServerError", "code": 502}}
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     delete:
       tags:
         - Catalog API
@@ -1645,7 +1695,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               examples:
                 ViewToDeleteDoesNotExist:
                   $ref: '#/components/examples/NoSuchViewError'
@@ -1655,6 +1705,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
     head:
       tags:
         - Catalog API
@@ -1671,11 +1723,15 @@ paths:
         404:
           description: Not Found
         419:
-          $ref: '#/components/responses/AuthenticationTimeoutResponse'
+          description: This is an optional status response type that the REST Catalog can issue when the token has expired. The client MAY request a new access token and retry the request. 401 UnauthorizedResponse SHOULD be preferred over this response type on token expiry.
         503:
-          $ref: '#/components/responses/ServiceUnavailableResponse'
+          description: |-
+            The service is not ready to handle the request, request could have been partially processed.
+            The service may additionally send a Retry-After header to indicate when to retry, a non idempotent request should only be retried by the client when the Retry-After header is present.
         5XX:
-          $ref: '#/components/responses/ServerErrorResponse'
+          description: A server-side problem that might not be addressable from the client side. Used for server 5xx errors without more specific documentation in individual routes.
+        4XX:
+          description: Client error
   /v1/{prefix}/views/rename:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1711,7 +1767,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               examples:
                 ViewToRenameDoesNotExist:
                   $ref: '#/components/examples/NoSuchViewError'
@@ -1724,7 +1780,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorModel'
+                $ref: '#/components/schemas/IcebergErrorResponse'
               example:
                 $ref: '#/components/examples/ViewAlreadyExistsError'
         419:
@@ -1733,6 +1789,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
   /v1/{prefix}/namespaces/{namespace}/register-view:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -1784,6 +1842,8 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+        4XX:
+          $ref: '#/components/responses/ClientErrorResponse'
 components:
   #######################################################
   # Common Parameter Definitions Used In Several Routes #
@@ -5175,7 +5235,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorModel'
+            $ref: '#/components/schemas/IcebergErrorResponse'
           example: {"error": {"message": "The server does not support this operation", "type": "UnsupportedOperationException", "code": 406}}
     IcebergErrorResponse:
       description: JSON wrapper for all error responses (non-2xx)
@@ -5337,6 +5397,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RemoteSignResult'
+    ClientErrorResponse:
+      description: Client error. Request rejections may have a plain text or empty body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
   #######################################
   # Common examples of different values #
   #######################################
