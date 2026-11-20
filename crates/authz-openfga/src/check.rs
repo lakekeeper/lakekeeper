@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use http::StatusCode;
 #[cfg(feature = "open-api")]
-use lakekeeper::api::management::v1::CHECK_PROJECT_ID_HEADER_DESCRIPTION;
+use lakekeeper::api::{IcebergErrorResponse, management::v1::CHECK_PROJECT_ID_HEADER_DESCRIPTION};
 use lakekeeper::{
     ProjectId, WarehouseId,
     api::{
@@ -78,7 +78,9 @@ fn tabular_list_flags(by_name: bool) -> TabularListFlags {
     request_body = CheckRequest,
     params(("x-project-id" = Option<String>, Header, description = CHECK_PROJECT_ID_HEADER_DESCRIPTION)),
     responses(
-            (status = 200, body = CheckResponse),
+        (status = 200, body = CheckResponse),
+        (status = "4XX", description = "Client error returned by the permission check", body = IcebergErrorResponse),
+        (status = "5XX", description = "Server error returned by the permission check", body = IcebergErrorResponse),
     )
 ))]
 pub(super) async fn check<C: CatalogStore, S: SecretStore>(

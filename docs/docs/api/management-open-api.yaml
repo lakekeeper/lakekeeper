@@ -341,6 +341,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CheckResponse'
+        4XX:
+          description: Client error returned by the permission check
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          description: Server error returned by the permission check
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
