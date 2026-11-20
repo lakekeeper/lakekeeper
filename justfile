@@ -195,7 +195,7 @@ GRAPHIFY_VERSION := "0.9.112"
 
 # Rebuild the graphify knowledge graph in graphify-out/ (optional, requires uv).
 graph:
-    PYTHONHASHSEED=0 uvx --from 'graphifyy[sql]=={{GRAPHIFY_VERSION}}' graphify update .
+    PYTHONHASHSEED=0 uvx --from 'graphifyy[sql]=={{GRAPHIFY_VERSION}}' graphify update . --force
 
 # Register the graphify merge driver for graphify-out/graph.json in this clone (requires uv).
 graph-setup:
