@@ -1,5 +1,3 @@
-use std::io::Write as _;
-
 use http::StatusCode;
 use iceberg::{NamespaceIdent, TableIdent, spec::ViewMetadata};
 use iceberg_ext::catalog::rest::{LoadViewResult, RegisterViewRequest};
@@ -78,7 +76,6 @@ async fn load_view<A: Authorizer + Clone>(
 /// A view metadata file to write to the in-memory storage of the test's thread.
 struct ViewFile {
     metadata: serde_json::Value,
-    gzip: bool,
 }
 
 impl ViewFile {
@@ -87,10 +84,7 @@ impl ViewFile {
         let mut metadata = serde_json::to_value(template).unwrap();
         metadata["view-uuid"] = serde_json::json!(Uuid::now_v7());
         metadata["location"] = serde_json::json!(location);
-        Self {
-            metadata,
-            gzip: false,
-        }
+        Self { metadata }
     }
 
     fn uuid(&self) -> Uuid {
@@ -112,23 +106,10 @@ impl ViewFile {
 
     /// Writes the file below `location` and returns its location.
     async fn write_under(&self, location: &str) -> String {
-        let suffix = if self.gzip {
-            "gz.metadata.json"
-        } else {
-            "metadata.json"
-        };
-        let file = format!("{location}/metadata/00000-{}.{suffix}", Uuid::now_v7());
+        let file = format!("{location}/metadata/00000-{}.metadata.json", Uuid::now_v7());
         let json = serde_json::to_vec(&self.metadata).unwrap();
-        let bytes = if self.gzip {
-            let mut encoder =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-            encoder.write_all(&json).unwrap();
-            encoder.finish().unwrap()
-        } else {
-            json
-        };
         let io = memory_io_profile().file_io(None).await.unwrap();
-        io.write(&file, bytes.into()).await.unwrap();
+        io.write(&file, json.into()).await.unwrap();
         file
     }
 }
@@ -193,12 +174,50 @@ async fn test_register_view(pool: PgPool) {
     assert_eq!(memory_files_under(&location).await, vec![metadata_location]);
 }
 
+/// A view dropped without purge leaves its gzip-compressed metadata file in storage. In a
+/// warehouse without soft deletion, registering that file restores the view at it.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_register_view_from_gzip_file(pool: PgPool) {
-    let (ctx, namespace, warehouse_id, template, location) = register_setup(pool).await;
-    let mut file = ViewFile::from_template(&template, &location);
-    file.gzip = true;
-    let metadata_location = file.write().await;
+    use lakekeeper::api::{
+        iceberg::types::DropParams, management::v1::warehouse::TabularDeleteProfile,
+    };
+
+    let (ctx, warehouse_id, namespace, _, _) =
+        setup_with_template(pool, TabularDeleteProfile::Hard {}).await;
+    let mut request = create_view_request(Some("dropped"), None);
+    request.properties.insert(
+        "write.metadata.compression-codec".to_string(),
+        "gzip".to_string(),
+    );
+    let dropped = create_view_helper(
+        ctx.clone(),
+        namespace.clone(),
+        request,
+        Some(warehouse_id.to_string()),
+    )
+    .await
+    .unwrap();
+    let metadata_location = dropped.metadata_location.clone();
+    let io = memory_io_profile().file_io(None).await.unwrap();
+    let content = io.read(&metadata_location).await.unwrap().bytes;
+    assert!(
+        content.starts_with(&[0x1F, 0x8B]),
+        "{metadata_location} is not gzip-compressed"
+    );
+    <CatalogServer<PostgresBackend, _, SecretsState> as ViewService<_>>::drop_view(
+        ViewParameters {
+            prefix: Some(Prefix(warehouse_id.to_string())),
+            view: TableIdent::new(namespace.clone(), "dropped".to_string()),
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
 
     let registered = register_view(
         ctx.clone(),
@@ -212,7 +231,7 @@ async fn test_register_view_from_gzip_file(pool: PgPool) {
     .unwrap();
 
     assert_eq!(registered.metadata_location, metadata_location);
-    assert_eq!(registered.metadata.uuid(), file.uuid());
+    assert_eq!(registered.metadata.as_ref(), dropped.metadata.as_ref());
     let loaded = load_view(ctx, warehouse_id, namespace, "registered")
         .await
         .unwrap();
@@ -451,10 +470,18 @@ async fn test_register_view_requires_the_register_right(pool: PgPool) {
     assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
 }
 
-/// A warehouse with soft deletion, namespace `reg_ns` holding view `template`, and a free view
-/// location next to the template's.
-async fn conflict_setup(
+/// Soft deletion with an expiration far beyond any test.
+fn soft_deletion() -> lakekeeper::api::management::v1::warehouse::TabularDeleteProfile {
+    lakekeeper::api::management::v1::warehouse::TabularDeleteProfile::Soft {
+        expiration_seconds: chrono::Duration::seconds(3600),
+    }
+}
+
+/// A warehouse with `delete_profile`, namespace `reg_ns` holding view `template`, and a free
+/// view location next to the template's.
+async fn setup_with_template(
     pool: PgPool,
+    delete_profile: lakekeeper::api::management::v1::warehouse::TabularDeleteProfile,
 ) -> (
     Ctx<lakekeeper::service::authz::AllowAllAuthorizer>,
     WarehouseId,
@@ -462,9 +489,7 @@ async fn conflict_setup(
     ViewMetadata,
     String,
 ) {
-    use lakekeeper::{
-        api::management::v1::warehouse::TabularDeleteProfile, service::authz::AllowAllAuthorizer,
-    };
+    use lakekeeper::service::authz::AllowAllAuthorizer;
     use lakekeeper_integration_tests::{create_ns, create_view, setup_simple};
 
     let (ctx, warehouse) = setup_simple(
@@ -472,9 +497,7 @@ async fn conflict_setup(
         memory_io_profile(),
         None,
         AllowAllAuthorizer::default(),
-        TabularDeleteProfile::Soft {
-            expiration_seconds: chrono::Duration::seconds(3600),
-        },
+        delete_profile,
         None,
     )
     .await;
@@ -528,7 +551,8 @@ async fn assert_register_conflicts(
 /// name or the view UUID is taken.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_register_view_twice_conflicts(pool: PgPool) {
-    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    let (ctx, warehouse_id, namespace, template, location) =
+        setup_with_template(pool, soft_deletion()).await;
     let metadata_location = ViewFile::from_template(&template, &location).write().await;
     let registered = register_view(
         ctx.clone(),
@@ -572,7 +596,8 @@ async fn test_register_view_twice_conflicts(pool: PgPool) {
 async fn test_register_view_with_uuid_of_dropped_view_conflicts(pool: PgPool) {
     use lakekeeper::api::iceberg::types::DropParams;
 
-    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    let (ctx, warehouse_id, namespace, template, location) =
+        setup_with_template(pool, soft_deletion()).await;
     <CatalogServer<PostgresBackend, _, SecretsState> as ViewService<_>>::drop_view(
         ViewParameters {
             prefix: Some(Prefix(warehouse_id.to_string())),
@@ -604,7 +629,8 @@ async fn test_register_view_with_uuid_of_dropped_view_conflicts(pool: PgPool) {
 /// Tables, views and generic tables share one ID space.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_register_view_with_uuid_of_table_conflicts(pool: PgPool) {
-    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    let (ctx, warehouse_id, namespace, template, location) =
+        setup_with_template(pool, soft_deletion()).await;
     let table = lakekeeper_integration_tests::create_table(
         ctx.clone(),
         warehouse_id.to_string(),
@@ -631,7 +657,8 @@ async fn test_register_view_with_uuid_of_table_conflicts(pool: PgPool) {
 /// Tables, views and generic tables share one name space in a namespace.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_register_view_with_name_of_table_or_generic_table_conflicts(pool: PgPool) {
-    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    let (ctx, warehouse_id, namespace, template, location) =
+        setup_with_template(pool, soft_deletion()).await;
     lakekeeper_integration_tests::create_table(
         ctx.clone(),
         warehouse_id.to_string(),
@@ -667,7 +694,8 @@ async fn test_register_view_with_name_of_table_or_generic_table_conflicts(pool: 
 /// either would remove the other's files.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_register_view_inside_table_location_conflicts(pool: PgPool) {
-    let (ctx, warehouse_id, namespace, template, _) = conflict_setup(pool).await;
+    let (ctx, warehouse_id, namespace, template, _) =
+        setup_with_template(pool, soft_deletion()).await;
     let table = lakekeeper_integration_tests::create_table(
         ctx.clone(),
         warehouse_id.to_string(),
@@ -699,7 +727,8 @@ async fn test_register_view_inside_table_location_conflicts(pool: PgPool) {
 async fn test_register_view_replays_with_the_same_idempotency_key(pool: PgPool) {
     use lakekeeper::service::idempotency::IdempotencyKey;
 
-    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    let (ctx, warehouse_id, namespace, template, location) =
+        setup_with_template(pool, soft_deletion()).await;
     let key = IdempotencyKey::parse(&Uuid::now_v7().to_string()).unwrap();
     let with_key = || {
         let mut request_metadata = RequestMetadata::new_unauthenticated();
