@@ -209,7 +209,7 @@ pub mod v1 {
         responses(
             (status = 200, description = "Server info", body = ServerInfo),
             (status = "4XX", body = IcebergErrorResponse),
-            (status = 500, description = "Unauthorized", body = IcebergErrorResponse)
+            (status = 401, description = "Authentication required", body = IcebergErrorResponse)
         )
     ))]
     async fn get_server_info<C: CatalogStore, A: Authorizer, S: SecretStore>(

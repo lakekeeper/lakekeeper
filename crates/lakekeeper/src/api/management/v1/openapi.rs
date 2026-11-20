@@ -13,6 +13,7 @@ use crate::{
         management::v1::task_queue::{
             GetTaskQueueConfigResponse, ScheduleTaskRequest, SetTaskQueueConfigRequest,
         },
+        openapi::add_iceberg_error_responses,
     },
     service::{
         authz::Authorizer,
@@ -269,6 +270,7 @@ pub fn api_doc<A: Authorizer>(
     name_anonymous_one_of_variants(&mut doc);
     hoist_and_discriminate_one_of_variants(&mut doc);
 
+    add_iceberg_error_responses(&mut doc);
     doc
 }
 
