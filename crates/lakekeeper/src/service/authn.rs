@@ -244,17 +244,6 @@ impl ClaimRuleConfig {
                 self.exists.is_none(),
                 "`separator` has no effect on `exists`; remove one of them"
             );
-            // For a deny, splitting on any whitespace finds everything a whitespace literal
-            // finds and the values it misses, so the literal form is dominated — and its one
-            // distinguishing behaviour is to admit a token it was written to reject.
-            anyhow::ensure!(
-                !(self.none_of.is_some()
-                    && !separator.is_empty()
-                    && separator.chars().all(char::is_whitespace)),
-                "a whitespace `separator` on `none_of` reads only that exact character, so a \
-                 value delimited by any other whitespace is admitted. Write \
-                 `SEPARATOR=whitespace`."
-            );
             // A literal separator is byte-exact, so a deny written for space-delimited scopes
             // is blind to a tab. `whitespace` reaches the separator that splits on any of them.
             let separator = if separator.eq_ignore_ascii_case(WHITESPACE_SEPARATOR) {
@@ -265,6 +254,11 @@ impl ClaimRuleConfig {
             rule = rule.with_separator(separator).map_err(|e| match e {
                 limes::ClaimRuleError::EmptySeparator => anyhow::anyhow!(
                     "{e}; environment values are trimmed, quote a space as SEPARATOR='\" \"'"
+                ),
+                limes::ClaimRuleError::WhitespaceLiteralOnDeny => anyhow::anyhow!(
+                    "a whitespace `separator` on `none_of` reads only that exact character, so \
+                     a value delimited by any other whitespace is admitted. Write \
+                     `SEPARATOR=whitespace`."
                 ),
                 e => anyhow::anyhow!("{e}"),
             })?;
@@ -683,15 +677,29 @@ async fn build_oidc_authenticator(
     Ok(authenticator)
 }
 
-/// The 401 for a token the authenticator did not accept. The cause is attached for
-/// server-side logging only; the body never names a rule, claim or expected value.
+/// The response for a token the authenticator did not accept (401), or could not check: 503
+/// if the identity provider or the Kubernetes API could not be reached, 500 if this server
+/// is misconfigured. The cause is attached for server-side logging only; the body never
+/// names a rule, claim or expected value.
 #[cfg(feature = "router")]
 fn authentication_failed_response(cause: limes::error::Error) -> Response {
-    ErrorModel::unauthorized(
-        "Authentication failed",
-        "AuthenticationFailed",
-        Some(Box::new(cause)),
-    )
+    let kind = cause.kind();
+    let source: Option<Box<dyn std::error::Error + Send + Sync>> = Some(Box::new(cause));
+    match kind {
+        limes::error::ErrorKind::Unauthenticated => {
+            ErrorModel::unauthorized("Authentication failed", "AuthenticationFailed", source)
+        }
+        limes::error::ErrorKind::Unavailable => ErrorModel::service_unavailable(
+            "Authentication service unavailable",
+            "AuthenticationUnavailable",
+            source,
+        ),
+        limes::error::ErrorKind::Internal => ErrorModel::internal(
+            "Authentication failed with internal error",
+            "AuthenticationInternalError",
+            source,
+        ),
+    }
     .into_response()
 }
 
@@ -1901,6 +1909,43 @@ mod tests {
         let text = body.to_string();
         assert!(!text.contains("org"), "{text}");
         assert!(!text.contains("rule"), "{text}");
+    }
+
+    /// A token that could not be checked is not the client's fault: 503 while the identity
+    /// provider cannot be reached, 500 for a server fault. The body names neither.
+    #[tokio::test]
+    async fn unchecked_token_response_follows_the_error_kind() {
+        use http_body_util::BodyExt as _;
+        let unavailable = limes::error::Error::FetchJwksError {
+            url: "https://idp.example/jwks".to_string(),
+            source: std::sync::Arc::new(std::io::Error::other("connection refused")),
+        };
+        let internal = limes::error::Error::internal("Failed to build the client", "no TLS");
+        for (cause, code, error_type, message) in [
+            (
+                unavailable,
+                503,
+                "AuthenticationUnavailable",
+                "Authentication service unavailable",
+            ),
+            (
+                internal,
+                500,
+                "AuthenticationInternalError",
+                "Authentication failed with internal error",
+            ),
+        ] {
+            let response = authentication_failed_response(cause);
+            assert_eq!(response.status().as_u16(), code);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"]["type"], error_type);
+            assert_eq!(body["error"]["message"], message);
+            assert_eq!(body["error"]["code"], code);
+            let stack = body["error"]["stack"].as_array().unwrap();
+            assert_eq!(stack.len(), 1);
+            assert!(stack[0].as_str().unwrap().starts_with("Error ID: "));
+        }
     }
 
     #[tokio::test]
