@@ -107,7 +107,7 @@ use super::{
         create_roles, delete_roles, list_roles, list_roles_by_idents_in_projects,
         lock_role_and_count_grants, update_role,
     },
-    tabular::table::load_tables,
+    tabular::table::{load_tables, lock_table_metadata_location},
     tag::{
         apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
         get_tag_definition, get_tag_definition_by_name, list_column_tags_for_tabular,
@@ -410,6 +410,14 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<Vec<TableInfo>, CommitTableTransactionError> {
         commit_table_transaction(warehouse_id, commits, transaction).await
+    }
+
+    async fn lock_table_metadata_location_impl<'a>(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> std::result::Result<Option<Location>, LoadTableError> {
+        lock_table_metadata_location(warehouse_id, table_id, transaction).await
     }
 
     // ---------------- Role Management API ----------------

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT metadata_location\n        FROM tabular\n        WHERE warehouse_id = $1 AND tabular_id = $2 AND typ = 'table'\n        FOR SHARE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "metadata_location",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "metadata_location"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "cdd3f20926bcd7bf94cec450c3b8e072617e4e48263b582c59e0c98c59a3a6c2"
+}

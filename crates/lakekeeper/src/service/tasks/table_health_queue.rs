@@ -18,8 +18,9 @@ use utoipa::{PartialSchema, ToSchema};
 
 use super::{
     FailedAttempt, OnWarehouseDelete, QueueRegistration, QueueScope, RetryDecision,
-    SpecializedTask, TaskCheckState, TaskConfig, TaskData, TaskExecutionDetails, TaskQueueName,
-    TaskQueueRegistry, UserConfiguration, UserScheduling, WarehouseTaskEntityId,
+    ScheduleTaskMetadata, SpecializedTask, TaskCheckState, TaskConfig, TaskData, TaskEntity,
+    TaskExecutionDetails, TaskQueueName, TaskQueueRegistry, UserConfiguration, UserScheduling,
+    WarehouseTaskEntityId,
     heartbeat::with_heartbeat, retry_backoff,
 };
 use crate::{
@@ -31,8 +32,8 @@ use crate::{
     },
     server::maybe_get_secret,
     service::{
-        CatalogStore, CatalogTableOps, CatalogWarehouseOps, SecretStore, Transaction,
-        WarehouseStatus,
+        ArcProjectId, CatalogStore, CatalogTableOps, CatalogWarehouseOps, NamedEntity, SecretStore,
+        TableInfo, Transaction, WarehouseStatus,
         table_health::{
             MEASUREMENT_VERSION, MeasureError, MeasureOutcome, Measurement, NotMeasurableReason,
             measure,
@@ -56,6 +57,9 @@ pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
         user_configuration: super::UserConfiguration::Enabled,
     });
 
+/// How long after a commit the table's measurement is due. All commits within it lead to one
+/// measurement.
+const COMMIT_DELAY: chrono::TimeDelta = chrono::TimeDelta::hours(1);
 /// Run time limit of a measurement if the queue config sets none.
 const DEFAULT_MAX_RUN_SECONDS: u64 = 900;
 /// How often a running measurement renews its heartbeat, well within
@@ -160,6 +164,39 @@ impl HealthQueuePayload {
 }
 
 impl TaskData for HealthQueuePayload {}
+
+/// Schedule a measurement of each committed table, due [`COMMIT_DELAY`] after the commit, in the
+/// commit's transaction. A table that already has an active measurement task keeps it.
+///
+/// # Errors
+/// Returns an error if the tasks cannot be scheduled.
+pub(crate) async fn schedule_after_commit<'t, C: CatalogStore>(
+    project_id: &ArcProjectId,
+    tables: impl Iterator<Item = &'t TableInfo>,
+    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+) -> Result<(), ErrorModel> {
+    let scheduled_for = chrono::Utc::now() + COMMIT_DELAY;
+    let tasks = tables.map(|table| {
+        (
+            ScheduleTaskMetadata {
+                project_id: project_id.clone(),
+                parent_task_id: None,
+                scheduled_for: Some(scheduled_for),
+                entity: TaskEntity::EntityInWarehouse {
+                    warehouse_id: table.warehouse_id,
+                    entity_id: WarehouseTaskEntityId::Table {
+                        table_id: table.tabular_id,
+                    },
+                    entity_name: table.tabular_ident.clone().into_name_parts(),
+                },
+                resource_demand: None,
+            },
+            HealthQueuePayload::new(HealthRunReason::Commit),
+        )
+    });
+    TableHealthTask::schedule_tasks::<C>(tasks, transaction).await?;
+    Ok(())
+}
 
 #[derive(Clone, Serialize, Deserialize, Default, Debug)]
 #[serde(rename_all = "kebab-case")]
@@ -279,6 +316,7 @@ async fn run<C: CatalogStore, S: SecretStore>(
         Ok(RunEnd::Ended {
             outcome: MeasureOutcome::Measured(measurement),
             scan_duration,
+            metadata_location,
         }) => {
             let details = log_measurement(
                 &warehouse_id,
@@ -287,12 +325,12 @@ async fn run<C: CatalogStore, S: SecretStore>(
                 &measurement,
                 scan_duration,
             );
-            task.record_success::<C>(catalog_state, Some(&details))
-                .await;
+            finish::<C>(catalog_state, task, &metadata_location, &details).await;
         }
         Ok(RunEnd::Ended {
             outcome: MeasureOutcome::NotMeasurable(reason),
             scan_duration,
+            metadata_location,
         }) => {
             tracing::info!(
                 %warehouse_id,
@@ -304,8 +342,7 @@ async fn run<C: CatalogStore, S: SecretStore>(
                 "Table can't be measured"
             );
             let details = format!("Not measurable: {reason:?}");
-            task.record_success::<C>(catalog_state, Some(&details))
-                .await;
+            finish::<C>(catalog_state, task, &metadata_location, &details).await;
         }
         Ok(RunEnd::Stopped) => {
             tracing::info!(%warehouse_id, %table_id, table_name, "Table health measurement stopped");
@@ -326,6 +363,68 @@ async fn run<C: CatalogStore, S: SecretStore>(
             task.record_failure::<C>(catalog_state, &detail).await;
         }
     }
+}
+
+/// Record the task's success. If a commit changed the table during the run, schedule the next
+/// measurement in the same transaction.
+///
+/// The share lock on the table row closes the race with a commit: a commit that locked the row
+/// first ends before the read, so the read sees its location; a commit that locks it later waits
+/// until the task is no longer active, so its own schedule succeeds. On an error the task is
+/// recorded as failed and retried.
+async fn finish<C: CatalogStore>(
+    catalog_state: C::State,
+    task: &TableHealthTask,
+    measured_location: &Location,
+    details: &str,
+) {
+    if let Err(err) =
+        finish_in_transaction::<C>(catalog_state.clone(), task, measured_location, details).await
+    {
+        tracing::error!("Failed to finish the table health measurement: {err}");
+        let detail = format!(
+            "Failed to record the table health measurement.\nError: {}",
+            err.error
+        );
+        task.record_failure::<C>(catalog_state, &detail).await;
+    }
+}
+
+async fn finish_in_transaction<C: CatalogStore>(
+    catalog_state: C::State,
+    task: &TableHealthTask,
+    measured_location: &Location,
+    details: &str,
+) -> Result<()> {
+    let Some((warehouse_id, &WarehouseTaskEntityId::Table { table_id }, _)) =
+        task.task_metadata.warehouse_task_sub_entity()
+    else {
+        task.record_success::<C>(catalog_state, Some(details)).await;
+        return Ok(());
+    };
+    let mut transaction = C::Transaction::begin_write(catalog_state).await?;
+    let current_location =
+        C::lock_table_metadata_location(warehouse_id, table_id, transaction.transaction())
+            .await
+            .map_err(ErrorModel::from)?;
+    task.record_success_in_transaction::<C>(transaction.transaction(), Some(details))
+        .await;
+    if current_location.is_some_and(|location| &location != measured_location) {
+        TableHealthTask::schedule_task::<C>(
+            ScheduleTaskMetadata {
+                project_id: task.task_metadata.project_id.clone(),
+                parent_task_id: None,
+                scheduled_for: Some(chrono::Utc::now() + COMMIT_DELAY),
+                entity: task.task_metadata.entity.clone(),
+                resource_demand: None,
+            },
+            HealthQueuePayload::new(HealthRunReason::Commit),
+            transaction.transaction(),
+        )
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(())
 }
 
 /// Log a measured table and its findings. Returns the message for the task log.
@@ -390,6 +489,8 @@ enum RunEnd {
     Ended {
         outcome: MeasureOutcome,
         scan_duration: Duration,
+        /// The metadata location that was measured.
+        metadata_location: Location,
     },
     /// A stop was requested during the scan.
     Stopped,
@@ -512,10 +613,12 @@ async fn scan<C: CatalogStore>(
         Ok(outcome) => Ok(RunEnd::Ended {
             outcome,
             scan_duration,
+            metadata_location: metadata_location.clone(),
         }),
         Err(MeasureError::Cancelled) if deadline_reached => Ok(RunEnd::Ended {
             outcome: MeasureOutcome::NotMeasurable(NotMeasurableReason::TimeLimit),
             scan_duration,
+            metadata_location: metadata_location.clone(),
         }),
         Err(MeasureError::Cancelled) => Ok(RunEnd::Stopped),
         Err(MeasureError::Read(e)) => Err(ErrorModel::internal(
