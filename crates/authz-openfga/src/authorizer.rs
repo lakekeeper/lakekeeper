@@ -44,7 +44,7 @@ use utoipa::OpenApi as _;
 
 use crate::{
     AUTH_CONFIG, FgaType, MAX_TUPLES_PER_WRITE,
-    config::WarehouseVisibility,
+    config::WarehouseChecks,
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
     error::{
         BatchCheckError, InconclusiveWarehouseListing, MissingItemInBatchCheck,
@@ -519,47 +519,14 @@ impl Authorizer for OpenFGAAuthorizer {
         for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-        if uses_streamed_visibility(AUTH_CONFIG.warehouse_visibility, metadata.actor(), for_user) {
-            return self
-                .warehouse_actions_with_streamed_visibility(metadata, warehouses_with_actions)
-                .await;
-        }
-
-        let user = for_user.map_or_else(
-            || metadata.actor().to_openfga(),
-            |u| u.api_user_or_role().to_openfga(),
-        );
-
-        let items: Vec<_> = warehouses_with_actions
-            .iter()
-            .map(|(wh, a)| CheckRequestTupleKey {
-                user: user.clone(),
-                relation: a.to_string(),
-                object: wh.warehouse_id.to_openfga(),
-            })
-            .collect();
-
-        let guard_tuples = if for_user.is_some() {
-            // Collect unique warehouse objects for permission checks
-            let unique_warehouses: HashSet<_> = warehouses_with_actions
-                .iter()
-                .map(|(wh, _)| wh.warehouse_id.to_openfga())
-                .collect();
-
-            unique_warehouses
-                .into_iter()
-                .map(|warehouse_obj| CheckRequestTupleKey {
-                    user: metadata.actor().to_openfga(),
-                    relation: WarehouseRelation::CanReadAssignments.to_string(),
-                    object: warehouse_obj,
-                })
-                .collect()
-        } else {
-            vec![]
-        };
-
-        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
-            .await
+        self.warehouse_actions(
+            metadata,
+            for_user,
+            warehouses_with_actions,
+            AUTH_CONFIG.warehouse_checks,
+            AUTH_CONFIG.streamed_list_deadline(),
+        )
+        .await
     }
 
     async fn are_allowed_namespace_actions_impl(
@@ -1771,28 +1738,35 @@ impl OpenFGAAuthorizer {
             .map(|response| response.into_inner().objects)
     }
 
-    /// Warehouse actions for the caller. `can_use` comes from one
-    /// [`Self::visible_warehouses`] listing, and so does `can_get_config` under the model
-    /// this crate installs, which defines both the same way (an externally managed model
-    /// may not, so there it is checked). Every other action is batch-checked as usual.
-    async fn warehouse_actions_with_streamed_visibility(
+    /// The caller's warehouse actions. With [`WarehouseChecks::StreamedList`], a principal
+    /// asking for itself gets them from [`Self::warehouse_actions_streamed`]. Everyone
+    /// else, and everything with [`WarehouseChecks::Check`], gets one `Check` per action.
+    /// `mode` and `server_deadline` come from [`AUTH_CONFIG`] outside of tests.
+    pub(crate) async fn warehouse_actions(
         &self,
         metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, WarehouseRelation)],
+        mode: WarehouseChecks,
+        server_deadline: Duration,
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-        let actor = metadata.actor();
-        let user = actor.to_openfga();
-        let own_model = is_own_model();
-        let is_visibility = |a: &WarehouseRelation| answered_by_listing(own_model, *a);
+        if uses_streamed_list(mode, metadata.actor(), for_user) {
+            return self
+                .warehouse_actions_streamed(
+                    metadata.actor(),
+                    warehouses_with_actions,
+                    server_deadline,
+                )
+                .await;
+        }
 
-        let targets: HashSet<String> = warehouses_with_actions
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
+
+        let items: Vec<_> = warehouses_with_actions
             .iter()
-            .filter(|(_, a)| is_visibility(a))
-            .map(|(wh, _)| wh.warehouse_id.to_openfga())
-            .collect();
-        let other_items: Vec<CheckRequestTupleKey> = warehouses_with_actions
-            .iter()
-            .filter(|(_, a)| !is_visibility(a))
             .map(|(wh, a)| CheckRequestTupleKey {
                 user: user.clone(),
                 relation: a.to_string(),
@@ -1800,52 +1774,76 @@ impl OpenFGAAuthorizer {
             })
             .collect();
 
-        let (visible, other_results) = futures::future::try_join(
-            async {
-                if targets.is_empty() {
-                    Ok(HashSet::new())
-                } else {
-                    self.visible_warehouses(&user, &targets, AUTH_CONFIG.streamed_list_deadline())
-                        .await
-                        .map_err(IsAllowedActionError::from)
-                }
-            },
-            async {
-                if other_items.is_empty() {
-                    Ok(Vec::new())
-                } else {
-                    self.check_actions_with_permission_guard(actor, other_items, vec![])
-                        .await
-                }
-            },
-        )
-        .await?;
+        let guard_tuples = if for_user.is_some() {
+            // Collect unique warehouse objects for permission checks
+            let unique_warehouses: HashSet<_> = warehouses_with_actions
+                .iter()
+                .map(|(wh, _)| wh.warehouse_id.to_openfga())
+                .collect();
 
-        let other_count = other_results.len();
-        let mut other_results = other_results.into_iter();
-        warehouses_with_actions
-            .iter()
-            .map(|(wh, a)| {
-                if is_visibility(a) {
-                    Ok(AuthorizationDecision::from(
-                        visible.contains(&wh.warehouse_id.to_openfga()),
-                    ))
-                } else {
-                    other_results.next().ok_or_else(|| {
-                        IsAllowedActionError::from(OpenFGABackendUnavailable::from(
-                            MissingItemInBatchCheck {
-                                missing_indexes: vec![other_count],
-                            },
-                        ))
-                    })
-                }
-            })
-            .collect()
+            unique_warehouses
+                .into_iter()
+                .map(|warehouse_obj| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: WarehouseRelation::CanReadAssignments.to_string(),
+                    object: warehouse_obj,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
-    /// Which of `targets` (warehouse objects) `user` can see (`can_use`).
+    /// The caller's warehouse actions, from one [`Self::allowed_warehouses_streamed`] per
+    /// distinct action, all at the same time. Each stream answers only its own action, so
+    /// the model decides every action, as with `Check`.
+    async fn warehouse_actions_streamed(
+        &self,
+        actor: &Actor,
+        warehouses_with_actions: &[(&ResolvedWarehouse, WarehouseRelation)],
+        server_deadline: Duration,
+    ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        let user = actor.to_openfga();
+        let mut targets_by_relation: HashMap<WarehouseRelation, HashSet<String>> = HashMap::new();
+        for (wh, relation) in warehouses_with_actions {
+            targets_by_relation
+                .entry(*relation)
+                .or_default()
+                .insert(wh.warehouse_id.to_openfga());
+        }
+
+        let allowed: HashMap<WarehouseRelation, HashSet<String>> =
+            try_join_all(targets_by_relation.into_iter().map(|(relation, targets)| {
+                let user = &user;
+                async move {
+                    self.allowed_warehouses_streamed(user, relation, &targets, server_deadline)
+                        .await
+                        .map(|allowed| (relation, allowed))
+                }
+            }))
+            .await
+            .map_err(IsAllowedActionError::from)?
+            .into_iter()
+            .collect();
+
+        Ok(warehouses_with_actions
+            .iter()
+            .map(|(wh, relation)| {
+                AuthorizationDecision::from(
+                    allowed
+                        .get(relation)
+                        .is_some_and(|a| a.contains(&wh.warehouse_id.to_openfga())),
+                )
+            })
+            .collect())
+    }
+
+    /// Which of `targets` (warehouse objects) allow `relation` for `user`.
     ///
-    /// Reads `StreamedListObjects(warehouse, can_use, user)` until every target has
+    /// Reads `StreamedListObjects(warehouse, relation, user)` until every target has
     /// arrived, then drops the stream, which cancels the RPC and stops the expansion in
     /// `OpenFGA`. `OpenFGA` expands from the user's own tuples, so a principal whose only
     /// grants sit deep below a warehouse does not make it walk the whole warehouse.
@@ -1855,9 +1853,10 @@ impl OpenFGAAuthorizer {
     /// list-objects deadline or request timeout without an error, and a deny must never
     /// come from an incomplete listing. Otherwise the caller gets a 503. `server_deadline`
     /// is the first `OpenFGA` deadline that can cut the stream.
-    pub(crate) async fn visible_warehouses(
+    pub(crate) async fn allowed_warehouses_streamed(
         &self,
         user: &str,
+        relation: WarehouseRelation,
         targets: &HashSet<String>,
         server_deadline: Duration,
     ) -> Result<HashSet<String>, OpenFGABackendUnavailable> {
@@ -1866,7 +1865,7 @@ impl OpenFGAAuthorizer {
             store_id: self.client.store_id().to_string(),
             authorization_model_id: self.client.authorization_model_id().to_string(),
             r#type: FgaType::Warehouse.to_string(),
-            relation: WarehouseRelation::CanUse.to_string(),
+            relation: relation.to_string(),
             user: user.to_string(),
             contextual_tuples: None,
             context: None,
@@ -1897,33 +1896,26 @@ impl OpenFGAAuthorizer {
         let elapsed = started.elapsed();
         let trailers = stream.trailers().await.map_err(to_backend_error)?;
         let deadline_reported = deadline_reported(&initial_metadata, trailers.as_ref());
-        listing_is_complete(elapsed, server_deadline, deadline_reported)
-            .inspect_err(|e| tracing::warn!("Warehouse listing for {user}: {e}; answering 503"))?;
+        listing_is_complete(elapsed, server_deadline, deadline_reported).inspect_err(|e| {
+            tracing::warn!(
+                "Streamed `{relation}` warehouse listing for {user}: {e}; answering 503"
+            );
+        })?;
         Ok(found)
     }
 }
 
-/// Whether the caller's warehouse visibility comes from
-/// [`OpenFGAAuthorizer::visible_warehouses`]. Otherwise it is checked.
+/// Whether the caller's warehouse actions come from
+/// [`OpenFGAAuthorizer::warehouse_actions_streamed`]. Otherwise they are checked.
 ///
 /// Only for a principal asking for itself. Introspection for another principal
 /// (`for_user`) keeps the checks and their guards. Assumed roles (`role:…#assignee`) and
 /// anonymous callers (`user:*`) keep the checks too: `OpenFGA` has no fast `ListObjects`
 /// path for these subjects, so a listing for them can take longer than a check.
-fn uses_streamed_visibility(
-    setting: WarehouseVisibility,
-    actor: &Actor,
-    for_user: Option<&UserOrRole>,
-) -> bool {
-    setting == WarehouseVisibility::StreamedList
+fn uses_streamed_list(mode: WarehouseChecks, actor: &Actor, for_user: Option<&UserOrRole>) -> bool {
+    mode == WarehouseChecks::StreamedList
         && for_user.is_none()
         && matches!(actor, Actor::Principal(_))
-}
-
-/// Whether the listing answers `action`: `can_use`, and every action that
-/// [`warehouse_relation_to_check`] answers with `can_use`.
-fn answered_by_listing(own_model: bool, action: WarehouseRelation) -> bool {
-    warehouse_relation_to_check(own_model, action) == WarehouseRelation::CanUse
 }
 
 /// Warning that an `OpenFGA` server with openfga/openfga#3399 sends, as a trailer, when it
@@ -1954,6 +1946,9 @@ fn reports_deadline_exceeded(trailers: &tonic::metadata::MetadataMap) -> bool {
         })
 }
 
+/// A stream that ends after this share of the server deadline may have been cut off.
+const TRUSTED_DEADLINE_SHARE: f64 = 0.8;
+
 /// Whether a stream that ended without every warehouse asked about can be trusted as a
 /// deny. `OpenFGA` ends a stream cut at its deadline like a complete one, so the listing is
 /// trusted only when `OpenFGA` did not report the deadline and the stream ended clearly
@@ -1968,7 +1963,7 @@ fn listing_is_complete(
             elapsed_ms: elapsed.as_millis(),
         });
     }
-    if elapsed >= server_deadline.mul_f64(0.8) {
+    if elapsed >= server_deadline.mul_f64(TRUSTED_DEADLINE_SHARE) {
         return Err(InconclusiveWarehouseListing::NearDeadline {
             elapsed_ms: elapsed.as_millis(),
             deadline_ms: server_deadline.as_millis(),
@@ -1999,24 +1994,6 @@ fn is_refused_for_role(item: &CheckRequestTupleKey) -> bool {
         ])
     });
     item.user.starts_with("role:") && REFUSED.contains(&item.relation)
-}
-
-/// Whether the server uses the model this crate installs (prefix
-/// [`OWN_MODEL_PREFIX`](crate::migration::OWN_MODEL_PREFIX)).
-fn is_own_model() -> bool {
-    AUTH_CONFIG.authorization_model_prefix == crate::migration::OWN_MODEL_PREFIX
-}
-
-/// The relation that answers a warehouse action. Under the model this crate installs,
-/// `can_get_config` is defined exactly like `can_use` (see
-/// `can_get_config_is_defined_like_can_use`), so `can_use` answers both. An externally
-/// managed model may define them differently, so there each action has its own relation.
-fn warehouse_relation_to_check(own_model: bool, action: WarehouseRelation) -> WarehouseRelation {
-    if own_model && action == WarehouseRelation::CanGetConfig {
-        WarehouseRelation::CanUse
-    } else {
-        action
-    }
 }
 
 fn parse_role_subject(subject: &str) -> Result<UserOrRoleId, MalformedRoleAssignment> {
@@ -2056,31 +2033,10 @@ pub(crate) mod tests {
         use openfga_client::tonic::metadata::{MetadataMap, MetadataValue};
 
         use super::super::{
-            OPENFGA_WARNING_TRAILER, UserOrRole, answered_by_listing, deadline_reported,
-            listing_is_complete, reports_deadline_exceeded, uses_streamed_visibility,
+            OPENFGA_WARNING_TRAILER, UserOrRole, deadline_reported, listing_is_complete,
+            reports_deadline_exceeded, uses_streamed_list,
         };
-        use crate::{
-            config::WarehouseVisibility, error::InconclusiveWarehouseListing,
-            relations::WarehouseRelation,
-        };
-
-        #[test]
-        fn the_listing_answers_get_config_only_under_the_own_model() {
-            assert!(answered_by_listing(true, WarehouseRelation::CanUse));
-            assert!(answered_by_listing(true, WarehouseRelation::CanGetConfig));
-            assert!(answered_by_listing(false, WarehouseRelation::CanUse));
-            assert!(!answered_by_listing(false, WarehouseRelation::CanGetConfig));
-            for own_model in [true, false] {
-                assert!(!answered_by_listing(
-                    own_model,
-                    WarehouseRelation::CanListEverything
-                ));
-                assert!(!answered_by_listing(
-                    own_model,
-                    WarehouseRelation::CanGetMetadata
-                ));
-            }
-        }
+        use crate::{config::WarehouseChecks, error::InconclusiveWarehouseListing};
 
         #[test]
         fn only_a_principal_asking_for_itself_uses_the_listing() {
@@ -2091,18 +2047,14 @@ pub(crate) mod tests {
                 assumed_role: Role::new_random_with_id(RoleId::new_random()).into(),
             };
             let other = UserOrRole::User(user);
-            let streamed = WarehouseVisibility::StreamedList;
+            let streamed = WarehouseChecks::StreamedList;
 
-            assert!(uses_streamed_visibility(streamed, &principal, None));
-            assert!(!uses_streamed_visibility(streamed, &role, None));
-            assert!(!uses_streamed_visibility(streamed, &Actor::Anonymous, None));
-            assert!(!uses_streamed_visibility(
-                streamed,
-                &principal,
-                Some(&other)
-            ));
-            assert!(!uses_streamed_visibility(
-                WarehouseVisibility::Check,
+            assert!(uses_streamed_list(streamed, &principal, None));
+            assert!(!uses_streamed_list(streamed, &role, None));
+            assert!(!uses_streamed_list(streamed, &Actor::Anonymous, None));
+            assert!(!uses_streamed_list(streamed, &principal, Some(&other)));
+            assert!(!uses_streamed_list(
+                WarehouseChecks::Check,
                 &principal,
                 None
             ));
@@ -2222,15 +2174,43 @@ pub(crate) mod tests {
             }
         }
 
-        type Tuples = Vec<(String, &'static str, String)>;
+        async fn new_namespace(
+            authorizer: &OpenFGAAuthorizer,
+            creator: &RequestMetadata,
+            parent: NamespaceParent,
+        ) -> NamespaceId {
+            let id = NamespaceId::new_random();
+            authorizer
+                .create_namespace(creator, id, parent)
+                .await
+                .unwrap();
+            id
+        }
 
-        /// Two warehouses of one project. W1 has 30 namespaces of 3 tables, and the objects
-        /// granted below it sit in the last namespace.
+        async fn new_table(
+            authorizer: &OpenFGAAuthorizer,
+            creator: &RequestMetadata,
+            warehouse: WarehouseId,
+            namespace: NamespaceId,
+        ) -> String {
+            let id = TableId::new_random();
+            authorizer
+                .create_table(creator, warehouse, id, namespace)
+                .await
+                .unwrap();
+            (warehouse, id).to_openfga()
+        }
+
+        /// Two warehouses of one project, built with the tuples the authorizer writes.
+        /// W1 has 30 namespaces of 3 tables, and the objects granted below it sit in the
+        /// last namespace.
         struct VisibilityFixture {
-            tuples: Tuples,
+            /// Created everything, so it owns everything.
+            creator: RequestMetadata,
+            project_id: ProjectId,
             project: String,
-            w1: String,
-            w2: String,
+            w1: WarehouseId,
+            w2: WarehouseId,
             last: String,
             table: String,
             view: String,
@@ -2242,79 +2222,88 @@ pub(crate) mod tests {
         }
 
         impl VisibilityFixture {
-            fn new() -> Self {
-                let id = || uuid::Uuid::now_v7().to_string();
-                let project = format!("project:{}", id());
-                let (w1_id, w2_id) = (id(), id());
-                let (w1, w2) = (format!("warehouse:{w1_id}"), format!("warehouse:{w2_id}"));
-                let mut t: Tuples = vec![];
-                for w in [&w1, &w2] {
-                    t.push((project.clone(), "project", w.clone()));
-                    t.push((w.clone(), "warehouse", project.clone()));
+            async fn create(authorizer: &OpenFGAAuthorizer) -> Self {
+                let creator = RequestMetadata::test_user(UserId::new_unchecked(
+                    "oidc",
+                    &uuid::Uuid::now_v7().to_string(),
+                ));
+                let project = ProjectId::new_random();
+                authorizer.create_project(&creator, &project).await.unwrap();
+                let (w1, w2) = (WarehouseId::new_random(), WarehouseId::new_random());
+                for w in [w1, w2] {
+                    authorizer
+                        .create_warehouse(&creator, w, &project)
+                        .await
+                        .unwrap();
                 }
-                let top_ns = |t: &mut Tuples, w: &str| {
-                    let ns = format!("namespace:{}", id());
-                    t.push((w.to_string(), "parent", ns.clone()));
-                    t.push((ns.clone(), "namespace", w.to_string()));
-                    ns
-                };
-                let child = |t: &mut Tuples, wid: &str, parent: &str, ty: &str| {
-                    let obj = if ty == "namespace" {
-                        format!("namespace:{}", id())
-                    } else {
-                        format!("{ty}:{wid}/{}", id())
-                    };
-                    t.push((parent.to_string(), "parent", obj.clone()));
-                    t.push((obj.clone(), "child", parent.to_string()));
-                    obj
-                };
-                let mut last = String::new();
+
+                let mut last = None;
                 for _ in 0..30 {
-                    last = top_ns(&mut t, &w1);
+                    let ns =
+                        new_namespace(authorizer, &creator, NamespaceParent::Warehouse(w1)).await;
                     for _ in 0..3 {
-                        child(&mut t, &w1_id, &last, "lakekeeper_table");
+                        new_table(authorizer, &creator, w1, ns).await;
                     }
+                    last = Some(ns);
                 }
-                let nested = child(&mut t, &w1_id, &last, "namespace");
-                let table = child(&mut t, &w1_id, &nested, "lakekeeper_table");
-                let view = child(&mut t, &w1_id, &nested, "lakekeeper_view");
-                let generic = child(&mut t, &w1_id, &last, "lakekeeper_generic_table");
-                let w2_ns = top_ns(&mut t, &w2);
-                let w2_table = child(&mut t, &w2_id, &w2_ns, "lakekeeper_table");
-                let orphan = format!("namespace:{}", id());
-                t.push((w1.clone(), "parent", orphan.clone()));
+                let last = last.unwrap();
+                let nested =
+                    new_namespace(authorizer, &creator, NamespaceParent::Namespace(last)).await;
+                let table = new_table(authorizer, &creator, w1, nested).await;
+                let view = ViewId::new_random();
+                authorizer
+                    .create_view(&creator, w1, view, nested)
+                    .await
+                    .unwrap();
+                let generic = GenericTableId::new_random();
+                authorizer
+                    .create_generic_table(&creator, w1, generic, last)
+                    .await
+                    .unwrap();
+                let w2_ns =
+                    new_namespace(authorizer, &creator, NamespaceParent::Warehouse(w2)).await;
+                let w2_table = new_table(authorizer, &creator, w2, w2_ns).await;
+
+                // Created normally, then its link up to W1 removed.
+                let orphan =
+                    new_namespace(authorizer, &creator, NamespaceParent::Warehouse(w1)).await;
+                authorizer
+                    .write(
+                        None,
+                        Some(vec![TupleKeyWithoutCondition {
+                            user: orphan.to_openfga(),
+                            relation: "namespace".to_string(),
+                            object: w1.to_openfga(),
+                        }]),
+                    )
+                    .await
+                    .unwrap();
+
                 Self {
-                    tuples: t,
-                    project,
+                    creator,
+                    project: project.to_openfga(),
+                    project_id: project,
                     w1,
                     w2,
-                    last,
+                    last: last.to_openfga(),
                     table,
-                    view,
-                    generic,
-                    w2_ns,
+                    view: (w1, view).to_openfga(),
+                    generic: (w1, generic).to_openfga(),
+                    w2_ns: w2_ns.to_openfga(),
                     w2_table,
-                    orphan,
+                    orphan: orphan.to_openfga(),
                 }
             }
 
-            /// Adds the principals with their grants. Returns `(name, subject, visible)` for
-            /// each, where `visible` is whether it can use (W1, W2). The `revoked`
-            /// principal's grant is in `tuples` and must be deleted after the write; the
-            /// second value is that principal's subject.
-            fn add_principals(&mut self) -> (Vec<Principal>, String) {
-                let role = || format!("role:{}", uuid::Uuid::now_v7());
-                let (r1, r2, r3) = (role(), role(), role());
-                self.tuples
-                    .push((format!("{r2}#assignee"), "assignee", r1.clone()));
-                self.tuples
-                    .push((format!("{r1}#assignee"), "modify", self.last.clone()));
-                self.tuples
-                    .push((format!("{r3}#assignee"), "select", self.w2_table.clone()));
-
+            /// The grants of each user principal, and whether it can use (W1, W2).
+            fn user_grants(
+                &self,
+                r2: RoleId,
+                r3: RoleId,
+            ) -> Vec<(&'static str, Grants, (bool, bool))> {
                 let (w1_only, w2_only, both, none) =
                     ((true, false), (false, true), (true, true), (false, false));
-                let grants: Vec<(&'static str, Grants, (bool, bool))> = vec![
+                vec![
                     (
                         "create+modify on the last namespace",
                         vec![("create", self.last.clone()), ("modify", self.last.clone())],
@@ -2342,10 +2331,14 @@ pub(crate) mod tests {
                     ),
                     (
                         "describe on W1",
-                        vec![("describe", self.w1.clone())],
+                        vec![("describe", self.w1.to_openfga())],
                         w1_only,
                     ),
-                    ("create on W1", vec![("create", self.w1.clone())], w1_only),
+                    (
+                        "create on W1",
+                        vec![("create", self.w1.to_openfga())],
+                        w1_only,
+                    ),
                     (
                         "describe on the project",
                         vec![("describe", self.project.clone())],
@@ -2384,85 +2377,193 @@ pub(crate) mod tests {
                     ("no grant", vec![], none),
                     (
                         "member of R2, nested in R1",
-                        vec![("assignee", r2.clone())],
+                        vec![("assignee", r2.to_openfga())],
                         w1_only,
                     ),
-                    ("owner of role R3", vec![("ownership", r3)], w2_only),
+                    (
+                        "owner of role R3",
+                        vec![("ownership", r3.to_openfga())],
+                        w2_only,
+                    ),
                     ("revoked", vec![("modify", self.last.clone())], none),
+                ]
+            }
+
+            /// Creates the principals and writes their grants. The `revoked` principal's
+            /// grant is written, then deleted.
+            async fn add_principals(&self, authorizer: &OpenFGAAuthorizer) -> Vec<Principal> {
+                let project_id = Arc::new(self.project_id.clone());
+                let (r1, r2, r3) = (
+                    RoleId::new_random(),
+                    RoleId::new_random(),
+                    RoleId::new_random(),
+                );
+                for role in [r1, r2, r3] {
+                    authorizer
+                        .create_role(&self.creator, role, project_id.clone())
+                        .await
+                        .unwrap();
+                }
+                let assignee = |r: RoleId| format!("{}#assignee", r.to_openfga());
+                let mut tuples: Vec<(String, &'static str, String)> = vec![
+                    (assignee(r2), "assignee", r1.to_openfga()),
+                    (assignee(r1), "modify", self.last.clone()),
+                    (assignee(r3), "select", self.w2_table.clone()),
                 ];
+
+                let grants = self.user_grants(r2, r3);
                 let mut principals = vec![];
                 for (name, grants, visible) in grants {
-                    let user = format!("user:oidc~{}", uuid::Uuid::now_v7());
+                    let user = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
                     for (relation, object) in grants {
-                        self.tuples.push((user.clone(), relation, object));
+                        tuples.push((user.to_openfga(), relation, object));
                     }
-                    principals.push((name, user, visible));
+                    principals.push((name, Actor::Principal(user), visible));
                 }
-                let revoked = principals.last().unwrap().1.clone();
-                principals.push(("assumed role R1", format!("{r1}#assignee"), w1_only));
-                principals.push(("assumed role R2", format!("{r2}#assignee"), w1_only));
-                (principals, revoked)
+                write_all(authorizer, &tuples).await;
+
+                let revoked = principals
+                    .iter()
+                    .find(|(name, ..)| *name == "revoked")
+                    .unwrap()
+                    .1
+                    .clone();
+                authorizer
+                    .write(
+                        None,
+                        Some(vec![TupleKeyWithoutCondition {
+                            user: revoked.to_openfga(),
+                            relation: "modify".to_string(),
+                            object: self.last.clone(),
+                        }]),
+                    )
+                    .await
+                    .unwrap();
+
+                let assumed = |role: RoleId| Actor::Role {
+                    principal: UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string()),
+                    assumed_role: Arc::new(Role::new_random_with_id(role)),
+                };
+                principals.push(("assumed role R1", assumed(r1), (true, false)));
+                principals.push(("assumed role R2", assumed(r2), (true, false)));
+                principals
             }
         }
 
-        /// `(name, subject, whether it can use (W1, W2))`.
-        type Principal = (&'static str, String, (bool, bool));
+        /// `(name, actor, whether it can use (W1, W2))`.
+        type Principal = (&'static str, Actor, (bool, bool));
         /// `(relation, object)` grants of one principal.
         type Grants = Vec<(&'static str, String)>;
 
-        /// The streamed warehouse listing gives the expected answer, which is also the
-        /// answer of `Check(can_use)`, for these principal shapes: grants at every level,
-        /// nested namespaces, views and generic tables, nested roles, role owners, assumed
-        /// roles, grants that do not make anything visible, a namespace without its
-        /// warehouse link, a revoked grant, and no grant at all.
-        #[tokio::test]
-        async fn test_visible_warehouses_matches_check() {
-            let authorizer = new_authorizer_in_empty_store().await;
-            let mut fixture = VisibilityFixture::new();
-            let (principals, revoked) = fixture.add_principals();
-            write_all(&authorizer, &fixture.tuples).await;
-            authorizer
-                .write(
-                    None,
-                    Some(vec![TupleKeyWithoutCondition {
-                        user: revoked,
-                        relation: "modify".to_string(),
-                        object: fixture.last.clone(),
-                    }]),
-                )
-                .await
-                .unwrap();
+        /// Warehouse actions the equivalence test compares: visibility, the actions of
+        /// `GET /config`, `GET /namespaces` and the management warehouse endpoints, and a
+        /// few that need more than a grant below the warehouse.
+        const COMPARED_ACTIONS: [WarehouseRelation; 8] = [
+            WarehouseRelation::CanUse,
+            WarehouseRelation::CanGetConfig,
+            WarehouseRelation::CanListNamespaces,
+            WarehouseRelation::CanListEverything,
+            WarehouseRelation::CanGetMetadata,
+            WarehouseRelation::CanCreateNamespace,
+            WarehouseRelation::CanDelete,
+            WarehouseRelation::CanReadAssignments,
+        ];
 
-            let (w1, w2) = (&fixture.w1, &fixture.w2);
+        /// For each principal shape and each compared action, the streamed listing (of
+        /// both warehouses, and of each alone) gives the answer of `Check`. For `can_use`,
+        /// that answer is also the expected one. The shapes: grants at every level, nested
+        /// namespaces, views and generic tables, nested roles, role owners, assumed roles,
+        /// grants that do not make anything visible, a namespace without its warehouse
+        /// link, a revoked grant, and no grant at all.
+        #[tokio::test]
+        async fn test_streamed_warehouses_match_check() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let fixture = VisibilityFixture::create(&authorizer).await;
+            let principals = fixture.add_principals(&authorizer).await;
+
+            let (w1, w2) = (fixture.w1.to_openfga(), fixture.w2.to_openfga());
             let both: HashSet<String> = [w1.clone(), w2.clone()].into();
-            let deadline = AUTH_CONFIG.streamed_list_deadline();
-            for (name, user, (on_w1, on_w2)) in &principals {
-                let listed = authorizer
-                    .visible_warehouses(user, &both, deadline)
-                    .await
-                    .unwrap();
-                for (w, expected) in [(w1, *on_w1), (w2, *on_w2)] {
-                    let checked = authorizer
-                        .check(CheckRequestTupleKey {
-                            user: user.clone(),
-                            relation: WarehouseRelation::CanUse.to_string(),
-                            object: w.clone(),
-                        })
+            let deadline = Duration::from_secs(3);
+            for (name, actor, (on_w1, on_w2)) in &principals {
+                let user = actor.to_openfga();
+                for relation in COMPARED_ACTIONS {
+                    let listed = authorizer
+                        .allowed_warehouses_streamed(&user, relation, &both, deadline)
                         .await
                         .unwrap();
-                    let single = authorizer
-                        .visible_warehouses(user, &[w.clone()].into(), deadline)
-                        .await
-                        .unwrap()
-                        .contains(w);
-                    assert_eq!(checked, expected, "{name} on {w}: check");
-                    assert_eq!(
-                        listed.contains(w),
-                        expected,
-                        "{name} on {w}: listing of both"
-                    );
-                    assert_eq!(single, expected, "{name} on {w}: listing of one");
+                    for (w, expected) in [(&w1, *on_w1), (&w2, *on_w2)] {
+                        let checked = authorizer
+                            .check(CheckRequestTupleKey {
+                                user: user.clone(),
+                                relation: relation.to_string(),
+                                object: w.clone(),
+                            })
+                            .await
+                            .unwrap();
+                        let single = authorizer
+                            .allowed_warehouses_streamed(
+                                &user,
+                                relation,
+                                &[w.clone()].into(),
+                                deadline,
+                            )
+                            .await
+                            .unwrap()
+                            .contains(w);
+                        if relation == WarehouseRelation::CanUse {
+                            assert_eq!(checked, expected, "{name} {relation} on {w}: check");
+                        }
+                        assert_eq!(
+                            listed.contains(w),
+                            checked,
+                            "{name} {relation} on {w}: listing of both"
+                        );
+                        assert_eq!(single, checked, "{name} {relation} on {w}: listing of one");
+                    }
                 }
+            }
+        }
+
+        /// Through the trait entry point, both modes give the same answers, in the order
+        /// asked, for every principal of the fixture.
+        #[tokio::test]
+        async fn test_warehouse_checks_modes_agree() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let fixture = VisibilityFixture::create(&authorizer).await;
+            let principals = fixture.add_principals(&authorizer).await;
+            let (rw1, rw2) = (
+                ResolvedWarehouse::new_with_id(fixture.w1),
+                ResolvedWarehouse::new_with_id(fixture.w2),
+            );
+            let actions: Vec<_> = COMPARED_ACTIONS
+                .iter()
+                .flat_map(|a| [(&rw2, *a), (&rw1, *a)])
+                .chain([(&rw1, WarehouseRelation::CanUse)])
+                .collect();
+            let deadline = Duration::from_secs(3);
+            for (name, actor, _) in &principals {
+                let Actor::Principal(user_id) = actor else {
+                    continue;
+                };
+                let metadata = RequestMetadata::test_user(user_id.clone());
+                let streamed = authorizer
+                    .warehouse_actions(
+                        &metadata,
+                        None,
+                        &actions,
+                        WarehouseChecks::StreamedList,
+                        deadline,
+                    )
+                    .await
+                    .unwrap();
+                let checked = authorizer
+                    .warehouse_actions(&metadata, None, &actions, WarehouseChecks::Check, deadline)
+                    .await
+                    .unwrap();
+                let allowed = |d: Vec<AuthorizationDecision>| -> Vec<bool> {
+                    d.into_iter().map(|d| d.allowed).collect()
+                };
+                assert_eq!(allowed(streamed), allowed(checked), "{name}");
             }
         }
 
@@ -2471,30 +2572,31 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_listing_past_the_deadline_is_inconclusive() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let (w1, ns) = (
-                format!("warehouse:{}", uuid::Uuid::now_v7()),
-                format!("namespace:{}", uuid::Uuid::now_v7()),
-            );
+            let creator = RequestMetadata::test_user(UserId::new_unchecked("oidc", "creator"));
+            let w1 = WarehouseId::new_random();
+            let ns = new_namespace(&authorizer, &creator, NamespaceParent::Warehouse(w1)).await;
             let user = format!("user:oidc~{}", uuid::Uuid::now_v7());
-            write_all(
-                &authorizer,
-                &[
-                    (w1.clone(), "parent", ns.clone()),
-                    (ns.clone(), "namespace", w1.clone()),
-                    (user.clone(), "select", ns.clone()),
-                ],
-            )
-            .await;
-            let other = format!("warehouse:{}", uuid::Uuid::now_v7());
+            write_all(&authorizer, &[(user.clone(), "select", ns.to_openfga())]).await;
+            let other = WarehouseId::new_random().to_openfga();
 
             let found = authorizer
-                .visible_warehouses(&user, &[w1.clone()].into(), Duration::ZERO)
+                .allowed_warehouses_streamed(
+                    &user,
+                    WarehouseRelation::CanUse,
+                    &[w1.to_openfga()].into(),
+                    Duration::ZERO,
+                )
                 .await
                 .unwrap();
-            assert_eq!(found, [w1].into());
+            assert_eq!(found, [w1.to_openfga()].into());
 
             let err = authorizer
-                .visible_warehouses(&user, &[other].into(), Duration::ZERO)
+                .allowed_warehouses_streamed(
+                    &user,
+                    WarehouseRelation::CanUse,
+                    &[other].into(),
+                    Duration::ZERO,
+                )
                 .await
                 .unwrap_err();
             assert!(
@@ -2508,24 +2610,121 @@ pub(crate) mod tests {
             );
         }
 
-        /// `can_use` and `can_get_config` come from the listing, the other actions from
-        /// checks, and the answers keep the order they were asked in.
+        /// Asks whether `metadata` can use `warehouse`, with a zero server deadline.
+        async fn can_use_at_zero_deadline(
+            authorizer: &OpenFGAAuthorizer,
+            metadata: &RequestMetadata,
+            for_user: Option<&UserOrRole>,
+            warehouse: &ResolvedWarehouse,
+            mode: WarehouseChecks,
+        ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
+            Ok(authorizer
+                .warehouse_actions(
+                    metadata,
+                    for_user,
+                    &[(warehouse, WarehouseRelation::CanUse)],
+                    mode,
+                    Duration::ZERO,
+                )
+                .await?
+                .into_iter()
+                .map(|d| d.allowed)
+                .collect())
+        }
+
+        /// The mode decides the path through the trait entry point. With a zero deadline,
+        /// every stream that misses a warehouse counts as cut off: a 503 shows that the
+        /// stream ran, a `false` that `Check` ran.
         #[tokio::test]
-        async fn test_streamed_visibility_keeps_order_and_other_actions() {
+        async fn test_warehouse_checks_mode_picks_the_path() {
             let authorizer = new_authorizer_in_empty_store().await;
+            let creator = RequestMetadata::test_user(UserId::new_unchecked(
+                "oidc",
+                &uuid::Uuid::now_v7().to_string(),
+            ));
+            let project = ProjectId::new_random();
+            authorizer.create_project(&creator, &project).await.unwrap();
+            let (w1, w2) = (WarehouseId::new_random(), WarehouseId::new_random());
+            for w in [w1, w2] {
+                authorizer
+                    .create_warehouse(&creator, w, &project)
+                    .await
+                    .unwrap();
+            }
+            let ns = new_namespace(&authorizer, &creator, NamespaceParent::Warehouse(w1)).await;
             let user_id = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
-            let (w1, w2) = (
-                WarehouseId::from(uuid::Uuid::now_v7()),
-                WarehouseId::from(uuid::Uuid::now_v7()),
-            );
-            let ns = format!("namespace:{}", uuid::Uuid::now_v7());
             write_all(
                 &authorizer,
-                &[
-                    (w1.to_openfga(), "parent", ns.clone()),
-                    (ns.clone(), "namespace", w1.to_openfga()),
-                    (user_id.to_openfga(), "select", ns.clone()),
-                ],
+                &[(user_id.to_openfga(), "select", ns.to_openfga())],
+            )
+            .await;
+            let (visible, hidden) = (
+                ResolvedWarehouse::new_with_id(w1),
+                ResolvedWarehouse::new_with_id(w2),
+            );
+            let principal = RequestMetadata::test_user(user_id.clone());
+            let streamed = WarehouseChecks::StreamedList;
+            let ask = |metadata, for_user, warehouse, mode| {
+                can_use_at_zero_deadline(&authorizer, metadata, for_user, warehouse, mode)
+            };
+
+            // A principal asking for itself: the stream ran, and it missed W2.
+            let err = ask(&principal, None, &hidden, streamed).await.unwrap_err();
+            assert_eq!(
+                err.into_error_model().code,
+                StatusCode::SERVICE_UNAVAILABLE.as_u16()
+            );
+            // A warehouse that arrives is an allow, even past the deadline.
+            assert_eq!(
+                ask(&principal, None, &visible, streamed).await.unwrap(),
+                vec![true]
+            );
+            // With `check`, the same question is a deny.
+            assert_eq!(
+                ask(&principal, None, &hidden, WarehouseChecks::Check)
+                    .await
+                    .unwrap(),
+                vec![false]
+            );
+
+            // An assumed role, an anonymous caller and `for_user`: `Check` ran.
+            let role = RoleId::new_random();
+            authorizer
+                .create_role(&creator, role, Arc::new(project.clone()))
+                .await
+                .unwrap();
+            let assumed = RequestMetadata::test_user_assumed_role(user_id.clone(), role);
+            assert_eq!(
+                ask(&assumed, None, &hidden, streamed).await.unwrap(),
+                vec![false]
+            );
+            let anonymous = RequestMetadata::new_unauthenticated();
+            assert_eq!(
+                ask(&anonymous, None, &hidden, streamed).await.unwrap(),
+                vec![false]
+            );
+            // The creator owns W2, so it may read the principal's permissions there.
+            let for_user = UserOrRole::User(user_id);
+            assert_eq!(
+                ask(&creator, Some(&for_user), &hidden, streamed)
+                    .await
+                    .unwrap(),
+                vec![false]
+            );
+        }
+
+        /// The answers keep the order they were asked in, with several actions and
+        /// warehouses mixed, each action from its own stream.
+        #[tokio::test]
+        async fn test_streamed_warehouse_actions_keep_order() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let creator = RequestMetadata::test_user(UserId::new_unchecked("oidc", "creator"));
+            let user_id = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
+            let (w1, w2) = (WarehouseId::new_random(), WarehouseId::new_random());
+            let ns = new_namespace(&authorizer, &creator, NamespaceParent::Warehouse(w1)).await;
+            write_all(
+                &authorizer,
+                &[(user_id.to_openfga(), "select", ns.to_openfga())],
             )
             .await;
             let metadata = RequestMetadata::test_user(user_id);
@@ -2542,7 +2741,13 @@ pub(crate) mod tests {
                 (&rw2, WarehouseRelation::CanUse),
             ];
             let results = authorizer
-                .warehouse_actions_with_streamed_visibility(&metadata, &actions)
+                .warehouse_actions(
+                    &metadata,
+                    None,
+                    &actions,
+                    WarehouseChecks::StreamedList,
+                    Duration::from_secs(3),
+                )
                 .await
                 .unwrap();
             // select on a namespace makes W1 visible, but not listable as a whole.
