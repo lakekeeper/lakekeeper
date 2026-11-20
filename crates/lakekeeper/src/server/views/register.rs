@@ -130,15 +130,22 @@ pub async fn register_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     )
     .await?;
 
-    emit_bootstrap_grants_async(
-        event_ctx.dispatcher(),
-        event_ctx.request_metadata_arc(),
-        bootstrap_grants,
+    // Held across the register event below, which consumes the context.
+    let grant_dispatcher = event_ctx.dispatcher().clone();
+    let grant_request_metadata = event_ctx.request_metadata_arc();
+
+    let metadata = Arc::new(metadata);
+    let metadata_location_str = metadata_location.to_string();
+    event_ctx.emit_view_registered_async(
+        Arc::new(request),
+        metadata.clone(),
+        Arc::new(metadata_location),
     );
+    emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
     Ok(LoadViewResult {
-        metadata_location: metadata_location.to_string(),
-        metadata: Arc::new(metadata),
+        metadata_location: metadata_location_str,
+        metadata,
         // Views carry no storage access: engines load the tables behind a view with loadTable.
         config: None,
         labels: None,

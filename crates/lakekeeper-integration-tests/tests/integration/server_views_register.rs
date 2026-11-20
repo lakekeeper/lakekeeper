@@ -750,3 +750,110 @@ async fn test_register_view_replays_with_the_same_idempotency_key(pool: PgPool) 
     .await
     .expect("the replay must not register the retry's file");
 }
+
+/// Captures the view events of the calls under test.
+#[derive(Debug, Default)]
+struct ViewEventListener {
+    registered: std::sync::Mutex<Vec<lakekeeper::service::events::RegisterViewEvent>>,
+    /// Names of the created views.
+    created: std::sync::Mutex<Vec<String>>,
+}
+
+impl std::fmt::Display for ViewEventListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ViewEventListener")
+    }
+}
+
+#[lakekeeper::async_trait::async_trait]
+impl lakekeeper::service::events::EventListener for ViewEventListener {
+    async fn view_registered(
+        &self,
+        event: lakekeeper::service::events::RegisterViewEvent,
+    ) -> anyhow::Result<()> {
+        self.registered.lock().unwrap().push(event);
+        Ok(())
+    }
+
+    async fn view_created(
+        &self,
+        event: lakekeeper::service::events::CreateViewEvent,
+    ) -> anyhow::Result<()> {
+        self.created.lock().unwrap().push(event.view_name);
+        Ok(())
+    }
+}
+
+/// A successful register emits one `view_registered` event, and no `view_created`, so a
+/// consumer can tell a view adopted from storage from a created one. A refused or conflicting
+/// register emits none.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_emits_view_registered_only_on_success(pool: PgPool) {
+    use lakekeeper::service::events::EventListener;
+
+    let (ctx, namespace, warehouse_id, template, location) = register_setup(pool).await;
+    let listener = std::sync::Arc::new(ViewEventListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+    let metadata_location = ViewFile::from_template(&template, &location).write().await;
+    let registered = register_view(
+        ctx.clone(),
+        warehouse_id,
+        namespace.clone(),
+        "registered",
+        &metadata_location,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    lakekeeper_integration_tests::eventually("the view_registered event", || {
+        let listener = listener.clone();
+        async move { listener.registered.lock().unwrap().len() == 1 }
+    })
+    .await;
+
+    // A conflict: the same file again.
+    register_view(
+        ctx.clone(),
+        warehouse_id,
+        namespace.clone(),
+        "registered_again",
+        &metadata_location,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    // A refusal: a file with the owner property, from a client that is not a trusted engine.
+    let mut definer = ViewFile::from_template(&template, &format!("{location}-definer"));
+    definer.metadata["properties"][OWNER_PROPERTY] = serde_json::json!("admin");
+    register_view(
+        ctx.clone(),
+        warehouse_id,
+        namespace.clone(),
+        "definer",
+        &definer.write().await,
+        user_request(),
+    )
+    .await
+    .unwrap_err();
+    // Events are dispatched from spawned tasks: give a stray one time to arrive.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let events = listener.registered.lock().unwrap().clone();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let event = &events[0];
+    assert_eq!(event.request.name, "registered");
+    assert_eq!(event.request.metadata_location, metadata_location);
+    assert_eq!(event.metadata_location.to_string(), metadata_location);
+    assert_eq!(event.metadata.as_ref(), registered.metadata.as_ref());
+    assert_eq!(event.namespace.namespace.namespace_ident(), &namespace);
+    assert_eq!(event.namespace.warehouse.warehouse_id, warehouse_id);
+    // The setup's `template` view may still arrive here; the registered ones must not.
+    let created = listener.created.lock().unwrap().clone();
+    assert!(
+        created.iter().all(|name| name == "template"),
+        "a register emitted view_created: {created:?}"
+    );
+}
