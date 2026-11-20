@@ -189,3 +189,15 @@ add-namespace-delete-extension-to-rest-openapi:
 # Keep the Iceberg-standard default (false) on purgeRequested, but document Lakekeeper's actual behaviour: an omitted flag is treated as purge=true for managed tables (see crates/lakekeeper/src/api/iceberg/types.rs). Clarifies the doc mismatch reported in #1832 without diverging the schema from the standard.
 clarify-table-purge-default-rest-openapi:
     yq eval '(.paths."/v1/{prefix}/namespaces/{namespace}/tables/{table}".delete.parameters[] | select(.name == "purgeRequested")).description = "Whether the user requested to purge the underlying table data and metadata. Note: when omitted, Lakekeeper treats the drop as a purge for tables it manages, so the data is removed. This differs from the Iceberg REST default of false. See the Dropping Tables section of the Lakekeeper documentation."' -i docs/docs/api/rest-catalog-open-api.yaml
+
+# renovate: datasource=pypi depName=graphifyy
+GRAPHIFY_VERSION := "0.9.112"
+
+# Rebuild the graphify knowledge graph in graphify-out/ (optional, requires uv).
+graph:
+    PYTHONHASHSEED=0 uvx --from 'graphifyy[sql]=={{GRAPHIFY_VERSION}}' graphify update .
+
+# Register the graphify merge driver for graphify-out/graph.json in this clone (requires uv).
+graph-setup:
+    git config merge.graphify.name "graphify graph.json union merge"
+    git config merge.graphify.driver "uvx --from 'graphifyy[sql]=={{GRAPHIFY_VERSION}}' graphify merge-driver %O %A %B"

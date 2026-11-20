@@ -241,3 +241,7 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python
 site/docs/docs/
+
+# graphify knowledge graph: only graph.json is shared, the rest is rebuilt locally
+graphify-out/*
+!graphify-out/graph.json
