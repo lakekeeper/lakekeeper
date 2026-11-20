@@ -79,6 +79,7 @@ If you use a coding agent, the [graphify](https://github.com/safishamsi/graphify
 
 - `just graph` rebuilds the graph (needs [`uv`](https://docs.astral.sh/uv/)). It runs locally, costs no API tokens, and takes a few seconds. Rerun it after code changes and commit the updated `graph.json` with them.
 - `just graph-setup` registers graphify's union merge driver in your clone, once. `.gitattributes` routes `graph.json` through it, so two branches that both changed the graph merge without a conflict.
+- To let your coding agent query the graph, install graphify and its skill or hooks for your agent; see the [graphify quickstart](https://docs.graphify.com/open-source/quickstart). Some integrations, such as `graphify claude install`, write to tracked files like `CLAUDE.md` and `.claude/settings.json`; keep those changes out of your commits.
 
 ## Building docs locally
 
