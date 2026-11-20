@@ -65,7 +65,7 @@ itertools = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 # Selects the Kubernetes API version for the k8s-openapi that `limes` pulls in
 # transitively (limes leaves the choice to the consumer). Not used directly.
-k8s-openapi = { workspace = true, features = ["v1_32"] }
+k8s-openapi = { workspace = true, features = ["v1_33"] }
 lakekeeper-audit-macros = { path = "../audit-macros" }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
