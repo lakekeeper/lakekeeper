@@ -450,3 +450,244 @@ async fn test_register_view_requires_the_register_right(pool: PgPool) {
         .unwrap_err();
     assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
 }
+
+/// A warehouse with soft deletion, namespace `reg_ns` holding view `template`, and a free view
+/// location next to the template's.
+async fn conflict_setup(
+    pool: PgPool,
+) -> (
+    Ctx<lakekeeper::service::authz::AllowAllAuthorizer>,
+    WarehouseId,
+    NamespaceIdent,
+    ViewMetadata,
+    String,
+) {
+    use lakekeeper::{
+        api::management::v1::warehouse::TabularDeleteProfile, service::authz::AllowAllAuthorizer,
+    };
+    use lakekeeper_integration_tests::{create_ns, create_view, setup_simple};
+
+    let (ctx, warehouse) = setup_simple(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(3600),
+        },
+        None,
+    )
+    .await;
+    let warehouse_id = warehouse.warehouse_id;
+    let namespace = create_ns(ctx.clone(), warehouse_id.to_string(), "reg_ns".to_string())
+        .await
+        .namespace;
+    let template = create_view(
+        ctx.clone(),
+        &warehouse_id.to_string(),
+        "reg_ns",
+        "template",
+        None,
+    )
+    .await
+    .unwrap();
+    let (parent, _) = template.metadata.location().rsplit_once('/').unwrap();
+    let free_location = format!("{parent}/registered-{}", Uuid::now_v7());
+    (
+        ctx,
+        warehouse_id,
+        namespace,
+        template.metadata.as_ref().clone(),
+        free_location,
+    )
+}
+
+/// Registers `metadata_location` as `name` and expects a 409 of `error_type`.
+async fn assert_register_conflicts(
+    ctx: &Ctx<lakekeeper::service::authz::AllowAllAuthorizer>,
+    warehouse_id: WarehouseId,
+    namespace: &NamespaceIdent,
+    (name, metadata_location): (&str, &str),
+    error_type: &str,
+) {
+    let err = register_view(
+        ctx.clone(),
+        warehouse_id,
+        namespace.clone(),
+        name,
+        metadata_location,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::CONFLICT, "{name}: {err:?}");
+    assert_eq!(err.error.r#type, error_type, "{name}: {err:?}");
+}
+
+/// Registering the same file again fails, under the same name and under another one: the
+/// name or the view UUID is taken.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_twice_conflicts(pool: PgPool) {
+    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    let metadata_location = ViewFile::from_template(&template, &location).write().await;
+    let registered = register_view(
+        ctx.clone(),
+        warehouse_id,
+        namespace.clone(),
+        "registered",
+        &metadata_location,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    for name in ["registered", "registered_again"] {
+        assert_register_conflicts(
+            &ctx,
+            warehouse_id,
+            &namespace,
+            (name, &metadata_location),
+            "AlreadyExistsException",
+        )
+        .await;
+    }
+    let err = load_view(
+        ctx.clone(),
+        warehouse_id,
+        namespace.clone(),
+        "registered_again",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    let loaded = load_view(ctx, warehouse_id, namespace, "registered")
+        .await
+        .unwrap();
+    assert_eq!(loaded, registered);
+}
+
+/// A dropped view keeps its UUID while it is soft-deleted: registering a file with that UUID
+/// fails, so the dropped view can still be restored.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_with_uuid_of_dropped_view_conflicts(pool: PgPool) {
+    use lakekeeper::api::iceberg::types::DropParams;
+
+    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    <CatalogServer<PostgresBackend, _, SecretsState> as ViewService<_>>::drop_view(
+        ViewParameters {
+            prefix: Some(Prefix(warehouse_id.to_string())),
+            view: TableIdent::new(namespace.clone(), "template".to_string()),
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    let mut file = ViewFile::from_template(&template, &location);
+    file.metadata["view-uuid"] = serde_json::json!(template.uuid());
+    let metadata_location = file.write().await;
+
+    assert_register_conflicts(
+        &ctx,
+        warehouse_id,
+        &namespace,
+        ("registered", &metadata_location),
+        "AlreadyExistsException",
+    )
+    .await;
+}
+
+/// Tables, views and generic tables share one ID space.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_with_uuid_of_table_conflicts(pool: PgPool) {
+    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    let table = lakekeeper_integration_tests::create_table(
+        ctx.clone(),
+        warehouse_id.to_string(),
+        "reg_ns",
+        "table",
+        false,
+    )
+    .await
+    .unwrap();
+    let mut file = ViewFile::from_template(&template, &location);
+    file.metadata["view-uuid"] = serde_json::json!(table.metadata.uuid());
+    let metadata_location = file.write().await;
+
+    assert_register_conflicts(
+        &ctx,
+        warehouse_id,
+        &namespace,
+        ("registered", &metadata_location),
+        "AlreadyExistsException",
+    )
+    .await;
+}
+
+/// Tables, views and generic tables share one name space in a namespace.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_with_name_of_table_or_generic_table_conflicts(pool: PgPool) {
+    let (ctx, warehouse_id, namespace, template, location) = conflict_setup(pool).await;
+    lakekeeper_integration_tests::create_table(
+        ctx.clone(),
+        warehouse_id.to_string(),
+        "reg_ns",
+        "taken_by_table",
+        false,
+    )
+    .await
+    .unwrap();
+    lakekeeper_integration_tests::create_generic_table(
+        ctx.clone(),
+        warehouse_id.to_string(),
+        "reg_ns",
+        "taken_by_generic_table",
+    )
+    .await
+    .unwrap();
+    let metadata_location = ViewFile::from_template(&template, &location).write().await;
+
+    for name in ["taken_by_table", "taken_by_generic_table"] {
+        assert_register_conflicts(
+            &ctx,
+            warehouse_id,
+            &namespace,
+            (name, &metadata_location),
+            "AlreadyExistsException",
+        )
+        .await;
+    }
+}
+
+/// A view location inside a table's location is refused, as for a created view: dropping
+/// either would remove the other's files.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_inside_table_location_conflicts(pool: PgPool) {
+    let (ctx, warehouse_id, namespace, template, _) = conflict_setup(pool).await;
+    let table = lakekeeper_integration_tests::create_table(
+        ctx.clone(),
+        warehouse_id.to_string(),
+        "reg_ns",
+        "table",
+        false,
+    )
+    .await
+    .unwrap();
+    let inside_table = format!("{}/view", table.metadata.location());
+    let metadata_location = ViewFile::from_template(&template, &inside_table)
+        .write()
+        .await;
+
+    assert_register_conflicts(
+        &ctx,
+        warehouse_id,
+        &namespace,
+        ("registered", &metadata_location),
+        "LocationAlreadyTaken",
+    )
+    .await;
+}
