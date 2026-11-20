@@ -693,7 +693,7 @@ async fn test_register_view_inside_table_location_conflicts(pool: PgPool) {
 }
 
 /// A retry with the same `Idempotency-Key` returns the registered view, as `loadView` does,
-/// instead of a 409, and registers nothing new. The retry names a different file, so a second
+/// and registers nothing new. The retry names a different file, so a second
 /// registration could not hide behind the first one's name or UUID conflict.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_register_view_replays_with_the_same_idempotency_key(pool: PgPool) {
@@ -791,69 +791,97 @@ impl lakekeeper::service::events::EventListener for ViewEventListener {
 async fn test_register_view_emits_view_registered_only_on_success(pool: PgPool) {
     use lakekeeper::service::events::EventListener;
 
-    let (ctx, namespace, warehouse_id, template, location) = register_setup(pool).await;
+    let (ctx, namespace, warehouse_id, _) = views_test_setup(pool, None).await;
     let listener = std::sync::Arc::new(ViewEventListener::default());
     ctx.v1_state
         .events
         .append(listener.clone() as std::sync::Arc<dyn EventListener>)
         .await;
-    let metadata_location = ViewFile::from_template(&template, &location).write().await;
-    let registered = register_view(
+    let template = create_view_helper(
         ctx.clone(),
-        warehouse_id,
         namespace.clone(),
+        create_view_request(Some("template"), None),
+        Some(warehouse_id.to_string()),
+    )
+    .await
+    .unwrap();
+    let (parent, _) = template.metadata.location().rsplit_once('/').unwrap();
+    let location = format!("{parent}/registered-{}", Uuid::now_v7());
+    let register = |name: &'static str, metadata_location: String, request_metadata| {
+        let (ctx, namespace) = (ctx.clone(), namespace.clone());
+        async move {
+            register_view(
+                ctx,
+                warehouse_id,
+                namespace,
+                name,
+                &metadata_location,
+                request_metadata,
+            )
+            .await
+        }
+    };
+    let registered_events = |count: usize| {
+        let listener = listener.clone();
+        lakekeeper_integration_tests::eventually("the view_registered events", move || {
+            let listener = listener.clone();
+            async move { listener.registered.lock().unwrap().len() == count }
+        })
+    };
+
+    let metadata_location = ViewFile::from_template(&template.metadata, &location)
+        .write()
+        .await;
+    let registered = register(
         "registered",
-        &metadata_location,
+        metadata_location.clone(),
         RequestMetadata::new_unauthenticated(),
     )
     .await
     .unwrap();
-    lakekeeper_integration_tests::eventually("the view_registered event", || {
-        let listener = listener.clone();
-        async move { listener.registered.lock().unwrap().len() == 1 }
-    })
-    .await;
+    registered_events(1).await;
 
     // A conflict: the same file again.
-    register_view(
-        ctx.clone(),
-        warehouse_id,
-        namespace.clone(),
+    register(
         "registered_again",
-        &metadata_location,
+        metadata_location.clone(),
         RequestMetadata::new_unauthenticated(),
     )
     .await
     .unwrap_err();
     // A refusal: a file with the owner property, from a client that is not a trusted engine.
-    let mut definer = ViewFile::from_template(&template, &format!("{location}-definer"));
+    let mut definer = ViewFile::from_template(&template.metadata, &format!("{location}-definer"));
     definer.metadata["properties"][OWNER_PROPERTY] = serde_json::json!("admin");
-    register_view(
-        ctx.clone(),
-        warehouse_id,
-        namespace.clone(),
-        "definer",
-        &definer.write().await,
-        user_request(),
+    register("definer", definer.write().await, user_request())
+        .await
+        .unwrap_err();
+    // A last successful register. The test runtime runs the dispatch tasks in the order they
+    // are spawned, so once its event is here, an event of the calls above would be too.
+    let marker = ViewFile::from_template(&template.metadata, &format!("{location}-marker"));
+    register(
+        "marker",
+        marker.write().await,
+        RequestMetadata::new_unauthenticated(),
     )
     .await
-    .unwrap_err();
-    // Events are dispatched from spawned tasks: give a stray one time to arrive.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    .unwrap();
+    registered_events(2).await;
 
     let events = listener.registered.lock().unwrap().clone();
-    assert_eq!(events.len(), 1, "{events:?}");
+    let names = events
+        .iter()
+        .map(|event| event.request.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["registered", "marker"]);
     let event = &events[0];
-    assert_eq!(event.request.name, "registered");
     assert_eq!(event.request.metadata_location, metadata_location);
     assert_eq!(event.metadata_location.to_string(), metadata_location);
     assert_eq!(event.metadata.as_ref(), registered.metadata.as_ref());
     assert_eq!(event.namespace.namespace.namespace_ident(), &namespace);
     assert_eq!(event.namespace.warehouse.warehouse_id, warehouse_id);
-    // The setup's `template` view may still arrive here; the registered ones must not.
-    let created = listener.created.lock().unwrap().clone();
-    assert!(
-        created.iter().all(|name| name == "template"),
-        "a register emitted view_created: {created:?}"
+    assert_eq!(
+        *listener.created.lock().unwrap(),
+        ["template"],
+        "only the created view emits view_created"
     );
 }

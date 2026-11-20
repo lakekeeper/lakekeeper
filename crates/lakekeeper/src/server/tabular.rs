@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use iceberg::NamespaceIdent;
+use serde::de::DeserializeOwned;
 
 use crate::{
     WarehouseId,
     api::{Result, endpoints::EndpointFlat},
     request_metadata::RequestMetadata,
-    server::tables::parse_location,
+    server::{io::read_metadata_file, maybe_get_secret, tables::parse_location},
     service::{
         ArcResolvedWarehouse, COMMIT_STATE_UNKNOWN_ERROR_TYPE, CatalogIdempotencyOps, CatalogStore,
         NamespaceHierarchy, NamespaceId, ResolvedWarehouse, TabularId, Transaction,
@@ -20,6 +21,7 @@ use crate::{
         },
         idempotency::{IdempotencyInfo, IdempotencyKey},
         is_same_namespace_path_ignoring_ascii_case,
+        secrets::SecretStore,
         storage::{
             StorageCredential, StorageProfile, ValidationError, is_empty,
             storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
@@ -67,6 +69,26 @@ where
         });
     let (_register_ctx, _) = register_ctx.emit_authz(authz_result)?;
     Ok(())
+}
+
+/// Reads the table or view metadata file a register names, at `metadata_location`. It must be
+/// inside the warehouse's storage, anywhere there, also outside the namespace's location.
+/// Returns the metadata and the warehouse's storage secret it was read with.
+pub(crate) async fn read_registered_metadata<M, S>(
+    warehouse: &ResolvedWarehouse,
+    metadata_location: &Location,
+    secrets: &S,
+) -> Result<(M, Option<Arc<StorageCredential>>)>
+where
+    M: DeserializeOwned + Send + 'static,
+    S: SecretStore,
+{
+    let storage_profile = &warehouse.storage_profile;
+    storage_profile.require_allowed_location(metadata_location)?;
+    let storage_secret = maybe_get_secret(warehouse.storage_secret_id, secrets).await?;
+    let file_io = storage_profile.file_io(storage_secret.as_deref()).await?;
+    let metadata = read_metadata_file(&file_io, metadata_location).await?;
+    Ok((metadata, storage_secret))
 }
 
 /// A failure already recorded on one context, to record it on another.

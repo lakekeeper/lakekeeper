@@ -20,7 +20,9 @@
 //! `entity` but no `decision`, so it is the one record here that a consumer keying on
 //! `entity` would misread; and the operational family, through the `grant_created` records
 //! of a grant change. Views are reached through the owner property rules, refused before
-//! and after authorization, and through a register, which records its warehouse right. A storage profile change records two actions on one warehouse.
+//! and after authorization, and through a register, which records its warehouse right. A
+//! second test refuses that right with a blocking test authorizer, for the denied form. A
+//! storage profile change records two actions on one warehouse.
 //! Not yet reached, cheapest to add first: table commits; several entities in one record;
 //! per-decision `id`/`for_principal`/`determined_by`, which need a batch-style check;
 //! and a real authorizer with an authenticated actor (`AllowAllAuthorizer` and
@@ -519,33 +521,16 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         .location()
         .rsplit_once('/')
         .expect("a view location has a parent");
-    let storage = memory_io_profile()
-        .file_io(None)
-        .await
-        .expect("in-memory storage");
     for (name, keep_owner_property, request_metadata) in [
         ("registered_view", false, random_request_metadata()),
         ("registered_definer_view", true, user_request()),
     ] {
-        let mut metadata =
-            serde_json::to_value(definer_view_metadata.as_ref()).expect("view metadata serializes");
-        let view_location = format!("{view_parent}/{name}");
-        metadata["view-uuid"] = serde_json::json!(uuid::Uuid::now_v7());
-        metadata["location"] = serde_json::json!(view_location);
-        if !keep_owner_property {
-            metadata["properties"]
-                .as_object_mut()
-                .expect("view properties")
-                .remove("trino.run-as-owner");
-        }
-        let metadata_location = format!("{view_location}/metadata/00000-registered.metadata.json");
-        lakekeeper_io::LakekeeperStorage::write(
-            &storage,
-            &metadata_location,
-            serde_json::to_vec(&metadata).expect("JSON").into(),
+        let metadata_location = write_view_metadata_copy(
+            &definer_view_metadata,
+            &format!("{view_parent}/{name}"),
+            keep_owner_property,
         )
-        .await
-        .expect("write the metadata file");
+        .await;
         let _ = CatalogServer::register_view(
             namespace_params.clone(),
             iceberg_ext::catalog::rest::RegisterViewRequest::builder()
@@ -722,7 +707,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     // Each register records `register_view` on the warehouse, without context, and
     // `create_view` with the `view_id` from the file: allowed on both, and refused after
     // authorization on the file with the owner property.
-    let register_actions = |action_name: &str| {
+    let actions_named = |action_name: &str| {
         records
             .iter()
             .flat_map(|record| {
@@ -738,7 +723,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        register_actions("register_view"),
+        actions_named("register_view"),
         vec![
             (
                 "allowed".to_string(),
@@ -752,7 +737,7 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
         "register_view records:\n{}",
         describe(&records)
     );
-    let mut registered_view_decisions = register_actions("create_view")
+    let mut registered_view_decisions = actions_named("create_view")
         .into_iter()
         .filter(|(_, action)| {
             action
@@ -827,6 +812,187 @@ async fn audit_records_from_a_real_request_sequence_satisfy_the_contract(pool: P
     );
 
     eprintln!("audit corpus: {} record(s) checked", records.len());
+}
+
+/// Writes a copy of `template` as another view at `view_location`: a new view UUID, and without
+/// the owner property unless `keep_owner_property`. Returns the metadata file's location.
+async fn write_view_metadata_copy(
+    template: &iceberg::spec::ViewMetadata,
+    view_location: &str,
+    keep_owner_property: bool,
+) -> String {
+    let mut metadata = serde_json::to_value(template).expect("view metadata serializes");
+    metadata["view-uuid"] = serde_json::json!(uuid::Uuid::now_v7());
+    metadata["location"] = serde_json::json!(view_location);
+    if !keep_owner_property {
+        metadata["properties"]
+            .as_object_mut()
+            .expect("view properties")
+            .remove("trino.run-as-owner");
+    }
+    let metadata_location = format!("{view_location}/metadata/00000-registered.metadata.json");
+    let storage = memory_io_profile()
+        .file_io(None)
+        .await
+        .expect("in-memory storage");
+    lakekeeper_io::LakekeeperStorage::write(
+        &storage,
+        &metadata_location,
+        serde_json::to_vec(&metadata).expect("JSON").into(),
+    )
+    .await
+    .expect("write the metadata file");
+    metadata_location
+}
+
+/// A view register refused on the warehouse, under an authorizer that refuses only
+/// `register_view`. The allow-all corpus above cannot produce it. Its two records, a refused
+/// `register_view` on the warehouse and a refused `create_view` on the namespace, must match the
+/// committed schema, and the `create_view` names the view by the requested name only.
+#[lakekeeper_storage_postgres::db_test]
+async fn audit_records_of_a_view_register_refused_on_the_warehouse_satisfy_the_contract(
+    pool: PgPool,
+) {
+    use lakekeeper::service::authz::{CatalogWarehouseAction, tests::HidingAuthorizer};
+
+    let logs = CapturedLogs::default();
+    // Thread-local, as in the corpus above.
+    let _guard = tracing::subscriber::set_default(
+        lakekeeper::audit::log_format(false)
+            .with_writer(logs.clone())
+            .finish(),
+    );
+    let authz = HidingAuthorizer::new();
+    let (ctx, warehouse_response) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(authz.clone())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    ctx.v1_state
+        .events
+        .append(Arc::new(AuditEventListener::default()))
+        .await;
+    let warehouse = warehouse_response.warehouse_id.to_string();
+    let namespace = NamespaceIdent::from_vec(vec!["audit_corpus".to_string()]).unwrap();
+    CatalogServer::create_namespace(
+        Some(warehouse.clone().into()),
+        iceberg_ext::catalog::rest::CreateNamespaceRequest {
+            namespace: namespace.clone(),
+            properties: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("create the namespace");
+    let namespace_params = NamespaceParameters {
+        prefix: Some(warehouse.clone().into()),
+        namespace,
+    };
+    let template = CatalogServer::create_view(
+        namespace_params.clone(),
+        create_view_request(Some("template"), None),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("create the template view");
+    let (view_parent, _) = template
+        .metadata
+        .location()
+        .rsplit_once('/')
+        .expect("a view location has a parent");
+    let metadata_location = write_view_metadata_copy(
+        &template.metadata,
+        &format!("{view_parent}/registered_view"),
+        false,
+    )
+    .await;
+
+    authz.block_action(&format!(
+        "warehouse:{:?}",
+        CatalogWarehouseAction::RegisterView
+    ));
+    CatalogServer::register_view(
+        namespace_params,
+        iceberg_ext::catalog::rest::RegisterViewRequest::builder()
+            .name("registered_view".to_string())
+            .metadata_location(metadata_location)
+            .build(),
+        ctx.clone(),
+        DataAccess::not_specified(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("register_view is refused");
+
+    // The namespace and the template view write one record each, the refusal two.
+    let expected_records = 4;
+    let deadline = std::time::Instant::now() + CAPTURE_DEADLINE;
+    let mut records = audit_records(&logs);
+    while records.len() < expected_records && std::time::Instant::now() < deadline {
+        tokio::time::sleep(POLL_INTERVAL).await;
+        records = audit_records(&logs);
+    }
+    tokio::time::sleep(SETTLE_WINDOW).await;
+    let records = audit_records(&logs);
+    assert_eq!(
+        records.len(),
+        expected_records,
+        "records:\n{}",
+        describe(&records)
+    );
+
+    let committed_schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/docs/audit/schema.json"),
+        )
+        .expect("the committed audit schema; generate it with `just update-audit-schema`"),
+    )
+    .expect("the committed schema is JSON");
+    for (index, record) in records.iter().enumerate() {
+        lakekeeper::audit::validate::assert_valid_record(
+            &committed_schema,
+            record,
+            &format!("record {index}"),
+        );
+    }
+
+    let mut refusals = records
+        .iter()
+        .filter(|record| record["decision"] == "denied")
+        .map(|record| {
+            (
+                record["actions"].clone(),
+                record["error"]["type"].as_str().unwrap_or("-").to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    refusals.sort_by_key(|(actions, _)| actions.to_string());
+    assert_eq!(
+        refusals,
+        vec![
+            (
+                serde_json::json!([{
+                    "action_name": "create_view",
+                    "name": "registered_view",
+                    "properties": {}
+                }]),
+                "WarehouseActionForbidden".to_string(),
+            ),
+            (
+                serde_json::json!([{"action_name": "register_view"}]),
+                "WarehouseActionForbidden".to_string(),
+            ),
+        ],
+        "refused records:\n{}",
+        describe(&records)
+    );
 }
 
 /// One line per record, enough to tell which call produced it. For failure messages: a raw

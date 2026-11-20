@@ -1370,7 +1370,7 @@ pub enum CatalogNamespaceAction {
         /// Name of the view to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        /// View ID, if externally provided (e.g. via register).
+        /// View ID from the metadata file of a register. Absent on a create or a rename.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "open-api", schema(value_type = Option<Uuid>))]
         view_id: Option<ViewId>,

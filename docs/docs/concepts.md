@@ -169,7 +169,7 @@ Lakekeeper allows warehouses to enable soft deletion as a data protection mechan
 * The data remains recoverable until the configured expiration period elapses
 * Recovery is only possible for warehouses with soft deletion enabled
 * The expiration delay is fixed at the time of dropping - changing warehouse settings only affects newly dropped tables
-* A dropped table keeps its table UUID until it expires. Until then, its metadata file cannot be registered again; restore the table instead.
+* A dropped table or view keeps its UUID until it expires. Until then, its metadata file cannot be registered again; restore the table or view instead.
 
 Soft deletion works correctly only when clients follow these behaviors:
 

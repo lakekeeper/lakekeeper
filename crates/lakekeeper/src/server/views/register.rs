@@ -16,16 +16,17 @@ use crate::{
     },
     request_metadata::{ArcRequestMetadata, RequestMetadata},
     server::{
-        io::read_metadata_file,
-        maybe_get_secret, require_warehouse_id,
+        require_warehouse_id,
         tables::{parse_location, require_active_warehouse, validate_table_or_view_ident_creation},
-        tabular::{authorize_register_on_warehouse, claim_idempotency_key},
+        tabular::{
+            authorize_register_on_warehouse, claim_idempotency_key, read_registered_metadata,
+        },
         views::{create::commit_created_view, owner_property, validate_view_properties},
     },
     service::{
         ArcResolvedWarehouse, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
-        CatalogViewOps, CatalogWarehouseOps, NamespaceHierarchy, NamespaceId, ResolvedWarehouse,
-        Result, SecretStore, State, Transaction, ViewId,
+        CatalogViewOps, CatalogWarehouseOps, NamespaceHierarchy, NamespaceId, Result, SecretStore,
+        State, Transaction, ViewId,
         authz::{
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
             CatalogWarehouseAction, GrantSpec, emit_bootstrap_grants_async,
@@ -85,20 +86,20 @@ pub async fn register_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     }
 
     // ------------------- AUTHZ -------------------
-    let AuthorizedFile {
+    let AuthorizedRegistration {
         event_ctx,
         warehouse,
         namespace,
         metadata,
     } = authorize_registration(
         &state,
-        RegistrationTarget {
-            request_metadata: Arc::new(request_metadata),
-            warehouse_id,
-            namespace: provided_ns,
-            name: &request.name,
-            metadata_location: &metadata_location,
-        },
+        RegistrationTarget::builder()
+            .request_metadata(Arc::new(request_metadata))
+            .warehouse_id(warehouse_id)
+            .namespace(provided_ns)
+            .name(&request.name)
+            .metadata_location(&metadata_location)
+            .build(),
     )
     .await?;
 
@@ -119,14 +120,14 @@ pub async fn register_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         state.v1_state.catalog,
         &state.v1_state.authz,
         event_ctx.request_metadata(),
-        RegisteredView {
-            warehouse_id,
-            namespace_id: namespace.namespace_id(),
-            view: &view,
-            metadata: &metadata,
-            metadata_location: &metadata_location,
-            idempotency_key,
-        },
+        RegisteredView::builder()
+            .warehouse_id(warehouse_id)
+            .namespace_id(namespace.namespace_id())
+            .view(&view)
+            .metadata(&metadata)
+            .metadata_location(&metadata_location)
+            .idempotency_key(idempotency_key)
+            .build(),
     )
     .await?;
 
@@ -153,6 +154,7 @@ pub async fn register_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
 }
 
 /// A registered view to insert, at the metadata file it was registered from.
+#[derive(typed_builder::TypedBuilder)]
 struct RegisteredView<'a> {
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
@@ -206,6 +208,7 @@ async fn insert_registered_view<C: CatalogStore, A: Authorizer>(
 }
 
 /// The view a register call names, and the file it registers it from.
+#[derive(typed_builder::TypedBuilder)]
 struct RegistrationTarget<'a> {
     request_metadata: ArcRequestMetadata,
     warehouse_id: WarehouseId,
@@ -214,9 +217,9 @@ struct RegistrationTarget<'a> {
     metadata_location: &'a Location,
 }
 
-/// A metadata file the caller may register, with the context that recorded the allowed
-/// `CreateView`.
-struct AuthorizedFile {
+/// A register the caller is allowed to make: the metadata it read from the file, and the
+/// context that recorded the allowed `CreateView`.
+struct AuthorizedRegistration {
     event_ctx:
         APIEventContext<UserProvidedNamespace, Unresolved, CatalogNamespaceAction, AuthzChecked>,
     warehouse: ArcResolvedWarehouse,
@@ -231,7 +234,7 @@ struct AuthorizedFile {
 async fn authorize_registration<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     state: &ApiContext<State<A, C, S>>,
     target: RegistrationTarget<'_>,
-) -> Result<AuthorizedFile> {
+) -> Result<AuthorizedRegistration> {
     let authorizer = &state.v1_state.authz;
     let mut event_ctx = APIEventContext::for_namespace(
         target.request_metadata,
@@ -282,7 +285,7 @@ async fn authorize_registration<C: CatalogStore, A: Authorizer + Clone, S: Secre
     .await?;
 
     require_active_warehouse(warehouse.status)?;
-    let metadata = read_registered_metadata(
+    let (metadata, _storage_secret): (ViewMetadata, _) = read_registered_metadata(
         &warehouse,
         target.metadata_location,
         &state.v1_state.secrets,
@@ -322,24 +325,10 @@ async fn authorize_registration<C: CatalogStore, A: Authorizer + Clone, S: Secre
     )
     .map_err(|e| event_ctx.emit_late_authz_failure(e))?;
 
-    Ok(AuthorizedFile {
+    Ok(AuthorizedRegistration {
         event_ctx,
         warehouse,
         namespace,
         metadata,
     })
-}
-
-/// Reads the view metadata file at `metadata_location`, which must be inside the warehouse's
-/// storage. It may be anywhere there, also outside the namespace's location.
-async fn read_registered_metadata<S: SecretStore>(
-    warehouse: &ResolvedWarehouse,
-    metadata_location: &Location,
-    secrets: &S,
-) -> Result<ViewMetadata> {
-    let storage_profile = &warehouse.storage_profile;
-    storage_profile.require_allowed_location(metadata_location)?;
-    let storage_secret = maybe_get_secret(warehouse.storage_secret_id, secrets).await?;
-    let file_io = storage_profile.file_io(storage_secret.as_deref()).await?;
-    Ok(read_metadata_file(&file_io, metadata_location).await?)
 }

@@ -10,7 +10,7 @@ POST /catalog/v1/{prefix}/namespaces/{namespace}/register-view
   create_view (namespace entity)     context: name, view_id, properties
 ```
 
-A register produces an authorization record for `register_view` on the warehouse, allowed or refused, in addition to the `create_view` record on the namespace. `register_view` is checked before the metadata file is read. If `register_view` is refused, the `create_view` record is also written, as refused. It names the view only by the requested name, because the metadata file is not read, so it has no `view_id`.
+A register produces an authorization record for `register_view` on the warehouse, allowed or refused, in addition to the `create_view` record on the namespace. `register_view` is checked before the metadata file is read. If `register_view` is refused, the `create_view` record is also written, as refused. It names the view only by the requested name and has no `view_id`.
 
 `view_id` is the view UUID from the registered metadata file, and `properties` are the properties in the file. A `create_view` record of a normal create or a rename has no `view_id`.
 

@@ -10932,7 +10932,7 @@ components:
             - string
             - 'null'
           format: uuid
-          description: View ID, if externally provided (e.g. via register).
+          description: View ID from the metadata file of a register. Absent on a create or a rename.
     LakekeeperNamespaceActionDelete:
       type: object
       required:
