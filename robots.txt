@@ -1,0 +1,47 @@
+# robots.txt for https://docs.lakekeeper.io/
+#
+# Deliberately permissive. Deduplication of the per-version docs trees
+# (docs/latest, docs/0.13.x, ... docs/nightly) is handled by the
+# `noindex,follow` meta tag emitted from `overrides/main.html`, NOT here:
+# a crawler that is disallowed never fetches the page, so it never sees the
+# noindex and the duplicate stays in the index. Blocking here would defeat it.
+#
+# Copied verbatim to the site root by MkDocs (same mechanism as CNAME).
+
+User-agent: *
+Allow: /
+
+# AI assistants and answer engines are a primary discovery path for a catalog
+# people choose by asking "which Iceberg REST catalog should I run?".
+# Explicitly opted in — remove an entry to withdraw consent for that crawler.
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: cohere-ai
+Allow: /
+
+Sitemap: https://docs.lakekeeper.io/sitemap.xml

@@ -1,0 +1,375 @@
+---
+title: "Monitoring Lakekeeper"
+description: "Monitor Lakekeeper with Prometheus metrics and per-project endpoint statistics, and wire them into a Kubernetes, Prometheus and Grafana stack."
+source: "https://docs.lakekeeper.io/docs/latest/monitoring/"
+---
+
+# Monitoring Lakekeeper
+
+Lakekeeper exposes Prometheus metrics and per-project endpoint statistics. We recommend integrating these into your Kubernetes/Grafana/Prometheus stack.
+
+## Key Metrics
+
+### HTTP Request Metrics
+
+Three metrics cover all HTTP traffic:
+
+| Metric                                                                   | Labels                               | Description |
+|--------------------------------------------------------------------------|--------------------------------------|-----|
+| <code class="selectable">axum_http_<wbr>requests_total</code>            | `method`, `status`, `endpoint`       | Request count broken down by HTTP method, status code, and endpoint path |
+| <code class="selectable">axum_http_<wbr>requests_pending</code>          | `method`, `endpoint`                 | Requests currently in-flight per endpoint and method |
+| <code class="selectable">axum_http_requests_<wbr>duration_seconds</code> | `method`, `status`, `endpoint`, `le` | Response time histogram; use the `le=1` bucket as a baseline health indicator |
+
+!!! tip "Interpreting HTTP request metrics"
+    Visualize `axum_http_requests_total` by status code for overall API health. Rising 4XX rates indicate client-side issues; rising 5XX rates indicate server or database problems requiring urgent attention. High `axum_http_requests_pending` counts signal backend bottlenecks — consider scaling Lakekeeper horizontally. For latency, monitor the `le=1` bucket of `axum_http_requests_duration_seconds` as a baseline; spikes typically point to Postgres or upstream service issues.
+
+### Tokio Metrics
+
+Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics), including "unstable" metrics. A detailed description of these metrics, including how they are derived, can be found in the [tokio_metrics crate documentation](https://docs.rs/tokio-metrics/latest/tokio_metrics/struct.RuntimeMetrics.html#fields).
+
+### Task Queue Metrics
+
+These metrics show when tasks wait too long, for example because too few workers run a queue, workers stopped, or an autoscaler reached its limit.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_age_seconds</code> | Gauge | `queue_name`, `class` | Seconds the longest waiting task of the queue has waited. `0` if no task waits, `NaN` if the last sample failed |
+| <code class="selectable">lakekeeper_task_queue_<wbr>oldest_due_<wbr>last_success_timestamp_seconds</code> | Gauge | — | Unix time of the last sample in which every queue succeeded |
+| <code class="selectable">lakekeeper_task_queue_<wbr>timed_out_attempts_total</code> | Counter | `queue_name` | Task attempts that failed because their worker stopped sending heartbeats |
+
+A task waits from the time it is scheduled for. A task whose worker stopped responding waits from the time its heartbeat expired. With a heartbeat timeout of 1 hour, for example, such a task starts to wait 1 hour after its last heartbeat.
+
+Every pod that serves the API samples all queues every 15 seconds. `class` is empty for the whole queue. If a queue is split into size classes by the resource demand of its tasks, it also has one series per size class, with the name of the size class in `class`. A pod in read-only [maintenance mode](./configuration.md#maintenance-mode) reports `0`, and a pod that started in it has no series for the built-in queues.
+
+If the tasks of a queue wait too long, run more workers: raise `LAKEKEEPER__TASK_*_WORKERS` of the queue, or with an autoscaler, check that it runs and how many workers it may start.
+
+!!! tip "Alerting on waiting tasks"
+    All pods read the same tasks, so use `max` over the pods. `max` skips the `NaN` of a failed sample. We recommend this rule:
+
+    ```yaml
+    - alert: LakekeeperTasksWaitTooLong
+      expr: max by (queue_name) (lakekeeper_task_queue_oldest_due_age_seconds{class=""}) > 3600
+      for: 10m
+    ```
+
+    A task can be scheduled for a time in the past, for example a run of a schedule that was missed, so the age can start high. `for: 10m` waits until a worker had time to take such a task. Leave out queues that you run with 0 workers on purpose, with `queue_name!="<queue>"` in the selector. If every sample fails, the age is `NaN` and this rule cannot fire. Also alert on `time() - max(lakekeeper_task_queue_oldest_due_last_success_timestamp_seconds) > 120`.
+
+A worker that stops during a task, for example because it ran out of memory, leaves a task log entry that starts with "Attempt timed out.". A worker of the same queue counts that attempt in `lakekeeper_task_queue_timed_out_attempts_total`. The counter rises only after the heartbeat timeout of the queue, when a worker of the queue next looks for a task. With a heartbeat timeout of 1 hour, for example, it rises at least 1 hour after the worker stopped. The worker that counts the attempt also writes the log line "Task attempt timed out" at level WARN, with the queue and the task, so you can also alert on it with a log-based tool.
+
+!!! tip "Alerting on timed-out attempts"
+    Each pod counts only the attempts it failed, so use `sum` over the pods. We recommend this rule:
+
+    ```yaml
+    - alert: LakekeeperTaskAttemptsTimedOut
+      expr: sum by (queue_name) (increase(lakekeeper_task_queue_timed_out_attempts_total[1h])) > 0
+    ```
+
+    The counter is reliable for workers that run for a long time, for example API pods that also run workers. A worker Job usually exits before Prometheus reads its counter. For worker Jobs, see [Alerting](./task-workers.md#alerting) in Task Workers on Kubernetes.
+
+### Cache Metrics
+
+Lakekeeper maintains in-memory caches for Short-Term Credentials, S3 Signing Identities, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Ancestors, and Users. All caches share three metric names, differentiated by the `cache_type` label:
+
+| Metric                                                             | Type    | Labels       | Description |
+|--------------------------------------------------------------------|---------|--------------|-----|
+| <code class="selectable">lakekeeper_cache_<wbr>size</code>         | Gauge   | `cache_type` | Current number of entries in the cache |
+| <code class="selectable">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
+| <code class="selectable">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
+
+`cache_type` values: `stc`, `s3_signing_identity`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_ancestors`, `user`, `shared_role_idents`, `shared_project_ids`. Lakekeeper Plus adds `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased. Two caches are exceptions. For `table_metadata`, a low hit rate is expected. For `admission_enforce`, a short TTL or many distinct subjects is the more common cause. See [Configuration > Caching](./configuration.md#caching) for details.
+
+The user-assignments and user caches also count the entries they leave uncached because a change or a role provider sync overlapped the load or the sync that read them:
+
+| Metric                                                              | Type    | Labels       | Description |
+|---------------------------------------------------------------------|---------|--------------|-----|
+| <code class="selectable">lakekeeper_cache_<wbr>fenced_total</code>  | Counter | `cache_type` | Loaded or synced entries left uncached after an overlapping change |
+
+Its `cache_type` values are `user_assignments` and `user`. Each count costs one database read on the next request for that user. A rate that stays high relative to `lakekeeper_cache_misses_total` of the same `cache_type` points to frequent changes overlapping the same users: role changes and syncs for `user_assignments`, user writes for `user`.
+
+Role-membership changes emit one additional metric:
+
+| Metric                                                                                | Type      | Labels      | Description |
+|---------------------------------------------------------------------------------------|-----------|-------------|-----|
+| <code class="selectable">lakekeeper_role_<wbr>membership_edge_<wbr>fanout_users</code> | Histogram | `operation` | Number of users whose cached role assignments change when one role is added to or removed from another role |
+
+`operation` is `add` or `remove`. The user-assignments cache stores, for each user, all roles the user has, also through nested roles. One change can therefore change the entries of many users at once. A high p99 means that single changes affect many users. Lakekeeper also logs a `warn` when one change affects more than 1000 users.
+
+The same change empties the role-ancestors cache on every instance. It alters the ancestors of the member role and everything nested below it. `lakekeeper_cache_size{cache_type="role_ancestors"}` is an approximate count maintained by background maintenance. It falls some time after the cache is emptied, not at once, so do not alert on it reaching zero quickly. Under the OpenFGA backend the series is not emitted at all. OpenFGA resolves role nesting from its own tuples and never reads this cache. Alert on absence there, not on a zero value.
+
+#### Table Metadata Cache { #table-metadata-cache .lkp }
+
+During [table maintenance](./table-maintenance.md#expire-snapshots), Lakekeeper caches parsed Iceberg manifests and manifest lists under `cache_type="table_metadata"`. This cache is bounded by the memory its entries occupy rather than by their number, and one entry ranges from a few KiB to several MiB, so `lakekeeper_cache_size` says little about the memory held. Two further metrics cover that:
+
+| Metric                                                                    | Type  | Labels       | Description |
+|---------------------------------------------------------------------------|-------|--------------|-----|
+| <code class="selectable">lakekeeper_cache_<wbr>weighted_bytes</code> | Gauge | `cache_type` | Bytes held across all live instances of the cache |
+| <code class="selectable">lakekeeper_cache_<wbr>instances</code>      | Gauge | `cache_type` | Live instances of the cache in this process |
+
+One cache is built per maintenance task rather than once per process, so its budget applies once per running task and `lakekeeper_cache_weighted_bytes` is the sum across the `lakekeeper_cache_instances` that are live. Peak memory therefore scales with how many maintenance tasks run at once: raising `LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS` or `LAKEKEEPER__TASK_REMOVE_ORPHAN_FILES_WORKERS` raises it proportionally. Size a pod's memory limit against the observed value at your own worker counts rather than against a single task.
+
+Both gauges return to zero once the last task finishes, because each cache is dropped with the task that built it.
+
+A low hit rate here does not mean the cache is too small, unlike the other caches. Every task starts with an empty cache and reads most manifests once, so misses dominate by design. Judge the budget by whether `lakekeeper_cache_weighted_bytes` plateaus — at capacity, manifests are evicted and re-read from object storage — and by the headroom the peak leaves against the container memory limit.
+
+### Cache Invalidation Metrics
+
+These metrics show whether [cache invalidation across instances](./configuration.md#cache-invalidation) works. The `lakekeeper_cache_invalidation_*` metrics are emitted only while `LAKEKEEPER__CACHE__INVALIDATION__ENABLED` is `true`.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| <code class="selectable">lakekeeper_cache_<wbr>invalidation_<wbr>last_poll_timestamp_seconds</code> | Gauge | — | Unix time of the last successful read of the change records |
+| <code class="selectable">lakekeeper_cache_<wbr>invalidation_<wbr>poll_errors_total</code> | Counter | — | Failed reads of the change records |
+| <code class="selectable">lakekeeper_cache_<wbr>invalidation_<wbr>changes_total</code> | Counter | `domain` | Change records read, by cache |
+| <code class="selectable">lakekeeper_cache_<wbr>invalidation_<wbr>resets_total</code> | Counter | `reason` | How often the instance emptied all covered caches because it could not know which changes it missed |
+| <code class="selectable">lakekeeper_cache_<wbr>change_log_<wbr>pruned_rows_total</code> | Counter | — | Old change records deleted |
+| <code class="selectable">lakekeeper_cache_<wbr>change_log_<wbr>prune_errors_total</code> | Counter | — | Failed runs that delete old change records |
+
+`domain` values: `warehouse`, `namespace`, `role`, `user_assignments`, `role_ancestors`, `secret`, and `other` for every other domain, such as domains of extensions.
+
+`reason` values: `server_changed` (the database restarted, or a different database server answered), `transaction_ids_went_back` (a restore or a failover to an older state), `overflow` (more than 1000 change records were written between two reads), and `started_late` (the first read after startup failed or did not finish within 10 seconds, so the instance served requests before it could read the changes).
+
+How to read them:
+
+- Alert if `lakekeeper_cache_invalidation_last_poll_timestamp_seconds` is older than 60 seconds plus `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL`, or if it is missing while `LAKEKEEPER__CACHE__INVALIDATION__ENABLED` is `true`. The instance then serves old entries until it can read the change records again, at the latest until their time-to-live ends.
+- A few resets after a database restart or failover are normal.
+- Many `overflow` resets mean that large changes often empty the caches of all instances. A shorter `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL` reads fewer records at a time.
+- A growing `lakekeeper_cache_change_log_prune_errors_total` means that old records are not deleted and the table grows.
+
+### Audit Enrichment Metrics
+
+With [user emails on audit records](./logging.md#audit-user-emails) enabled, Lakekeeper counts the users whose email a record looked up in the catalog. Emails taken from the caller's token are not counted, since they need no lookup.
+
+| Metric                                                                        | Type    | Labels    | Description |
+|-------------------------------------------------------------------------------|---------|-----------|-----|
+| <code class="selectable">lakekeeper_audit_<wbr>email_lookups_total</code>     | Counter | `outcome` | Users looked up, by outcome: `found`, `missing` (no user, or no email), `error`, `timeout` |
+
+The lookups go through the user cache (`cache_type="user"` above), so most are answered without a database read. A rising `error` or `timeout` count means records are written without emails because the database could not answer in time.
+
+Lakekeeper also counts the roles whose provider and source a record looked up, for [role sources on audit records](./logging.md#audit-role-sources). An assumed role is not counted, since the request already holds it.
+
+| Metric                                                                        | Type    | Labels    | Description |
+|-------------------------------------------------------------------------------|---------|-----------|-----|
+| <code class="selectable">lakekeeper_audit_<wbr>role_lookups_total</code>      | Counter | `outcome` | Roles looked up, by outcome: `found`, `missing` (no such role), `error`, `timeout` |
+
+These go through the role cache (`cache_type="role"`).
+
+### Role Provider Metrics { .lkp }
+
+When a Role Provider (e.g. LDAP, Entra ID or Okta) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
+
+| Metric                                                                                             | Type      | Labels                   | Description |
+|----------------------------------------------------------------------------------------------------|-----------|--------------------------|-----|
+| <code class="selectable">lakekeeper_<wbr>role_provider_up</code>                                   | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code> | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>               | Counter   | `provider_id`            | Failures writing fresh roles back to the Postgres catalog cache |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>directory_<wbr>user_not_found_total</code> | Counter   | `provider_id`            | Answers of the directory that it has no entry for the user it was asked about |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>      | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts |
+
+The LDAP, Entra ID and Okta providers emit `up`, the role-lookup histogram and the user-not-found counter. Only the LDAP provider emits the reconnect counter. The periodic health-check loop refreshes `up`. On the reconnect counter, `outcome` is `success` or `error`. The OIDC token provider has no external dependency, so it reports none of those. It emits `sync_errors_total` alone, and only with `persist_token_roles` enabled.
+
+A user that the directory does not know gets none of that provider's groups. A growing `lakekeeper_role_provider_directory_user_not_found_total` for one `provider_id` usually means that the subject claim does not name users the way the directory does. With Okta, service apps also count, because Okta has no user with their client id.
+
+`outcome` values on the role-lookup histogram:
+
+| Value                         | Meaning                                      |
+|-------------------------------|----------------------------------------------|
+| `cache_hit`                   | All applicable providers were fresh; the external provider was not contacted. |
+| `success`                     | The directory was asked. For the caller's own request in a project, Lakekeeper syncs the answer to Postgres. An answer that the directory does not know the user is also `success`. |
+| `stale_fallback` | The external provider was unreachable; cached roles from Postgres were served instead. |
+| `error`                       | Unrecoverable error — the provider failed and no cached roles were available. |
+
+**Health probe behavior.** Role provider health is intentionally *excluded* from the `/health` endpoint. The periodic health-check loop still calls `update_health` on every cycle, which drives reconnection attempts and keeps `lakekeeper_role_provider_up` current. An unreachable provider does **not** fail the pod's liveness or readiness probe. Lakekeeper keeps serving the roles it last synced to Postgres (`stale_fallback`). Authorization therefore keeps working during a provider outage, at the cost of potentially stale group memberships.
+
+The Postgres connection differs. If Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below). `/health` returns `200 OK` only when the aggregate health state is `ok`. It returns `503 Service Unavailable` when that state is `error` or `unknown`.
+
+!!! tip "Alerting on role provider health"
+    Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported. The series exists only for the LDAP, Entra ID and Okta providers, and only after the first health-check cycle. Pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms Lakekeeper is falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` means roles are not reaching Postgres. For an LDAP, Entra ID or Okta provider that is a database connectivity or permissions problem. For the OIDC token provider (`persist_token_roles`) it is a failure persisting token roles for definer-view reuse.
+
+### Cedar Policy Refresh Metrics { .lkp }
+
+With the [Cedar authorizer](./authorization-cedar.md), Lakekeeper reloads policies and entities from files and ConfigMaps, and the policies stored per project or warehouse, every `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS`. It reports each refresh with these metrics:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| <code class="selectable">lakekeeper_<wbr>cedar_<wbr>policy_<wbr>source_up</code> | Gauge | `source`, `kind` | `1` if the file or ConfigMap loaded at the last refresh, `0` otherwise. `kind` is `policies` or `entities` |
+| <code class="selectable">lakekeeper_<wbr>cedar_<wbr>policy_<wbr>refresh_<wbr>errors_total</code> | Counter | `tier` | Failed refreshes. `tier` is `sources` (files and ConfigMaps) or `database` (policies stored per project or warehouse) |
+| <code class="selectable">lakekeeper_<wbr>cedar_<wbr>policy_<wbr>last_<wbr>success_<wbr>timestamp_<wbr>seconds</code> | Gauge | `tier` | Unix time of the last successful refresh of that tier |
+
+`source_up` exists only for configured files and ConfigMaps, and the `database` tier only with a policy store.
+
+**Health probe behavior.** A failed refresh does **not** fail `/health`. Files and ConfigMaps are reloaded as one set: if any of them fails to load or validate, the whole set keeps its last good version, and the pod keeps deciding with it. The policies stored per project or warehouse keep refreshing independently, so policy changes made through the API still reach every replica. Each failed refresh logs an error that names the failing source.
+
+!!! tip "Alerting on policy refreshes"
+    Alert on `lakekeeper_cedar_policy_source_up == 0` to catch a broken policy file or ConfigMap, and on `time() - lakekeeper_cedar_policy_last_success_timestamp_seconds > 300` to catch a tier that has stopped refreshing. Fix a broken source before the next rollout: a pod that starts with an invalid source refuses to start.
+
+### Admission Gate Metrics
+
+[Admission gates](./admission.md) run once per authenticated request, before any handler. The enforce-endpoint gate ships with Lakekeeper Plus.
+
+| Metric                                                                              | Type      | Labels            | Description |
+|-------------------------------------------------------------------------------------|-----------|-------------------|-----|
+| <code class="selectable">lakekeeper_<wbr>admission_gate_<wbr>duration_seconds</code> | Histogram | `gate`, `outcome` | Latency the caller paid for this gate, cache hits included |
+
+`outcome` values:
+
+- `admitted`
+- `skipped` — the gate does not govern this request, for example when it is scoped to another identity provider
+- `forbidden` — `403`
+- `unavailable` — failed closed, `503` with `Retry-After`
+
+!!! tip "Alerting on any admission gate"
+    In `axum_http_requests_total{status="403"}` an admission denial looks identical to an authorization denial. Use this metric's `outcome` instead. Split latency quantiles by `outcome`. Cache hits and `skipped` sit in the lowest bucket, so an un-split p99 stays flat even when every cache miss pays the full timeout. A gate that is not running emits no series at all. Confirm enforcement from the startup log, which names the identity provider each gate governs.
+
+#### External Enforce Gate { #external-enforce-gate .lkp }
+
+| Metric                                                                                      | Type      | Labels                                | Description |
+|---------------------------------------------------------------------------------------------|-----------|---------------------------------------|-----|
+| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>call_duration_seconds</code> | Histogram | `check`, `outcome`                    | Duration of one `POST` to your enforce endpoint |
+| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>decisions_total</code>       | Counter   | `check`, `kind`, `decision`, `source` | One per check per answered request, cache replays included |
+| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>fail_closed_total</code>     | Counter   | `reason` | No verdict obtainable for a check |
+
+Label values:
+
+| Label                                 | Values |
+|---------------------------------------|--------|
+| `kind`                                | `gating`, `role_granting` |
+| `decision`                            | `allow`, `deny` |
+| `source`                              | `cache`, `upstream`, `claims` (the token passed the check on its [claims](./admission.md#satisfied-by-claims)) |
+| `outcome`                             | `allow` (`2xx`), `deny` (exactly `403`), `unavailable` (anything else, including timeouts) |
+| `reason` on `fail_closed_total`       | `upstream` |
+
+Buckets stop at 10s. Cached decisions and checks passed on claims make no call, so `_count` measures load on your endpoint, not the request rate.
+
+A check that fails closed records no decision. `upstream` counts per failed check, so one rejected request can increment it several times.
+
+A `role_granting` `deny` withholds a role but still admits the request, so no error series moves. These metrics name no principal. To find who lost a role, read the audit record `operation="admission_enforce_check"` (see [Logging](./logging.md#operational-audit-events)).
+
+Decisions are cached per `(subject, check)` and report as `cache_type="admission_enforce"` in the [cache metrics](#cache-metrics). `cache_ttl_secs` bounds how long an entitlement change takes to apply, in both directions. A revoked entitlement keeps working, and a new one keeps being refused, until the entry expires. The cache is per replica, with no invalidation and no flush. Size `cache_max_entries` for active subjects × checks.
+
+## Prometheus Integration
+
+Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS__PORT` (defaults: `0.0.0.0:9000`). The bind address `0.0.0.0` means "listen on all interfaces" — it is not a valid scrape target. Configure Prometheus to scrape a reachable address such as `http://localhost:9000/metrics` or `http://<service-or-pod-ip>:9000/metrics`. The metrics port also serves the [task queue demand](#task-queue-demand).
+
+| Variable                                                      | Description  |
+|---------------------------------------------------------------|--------------|
+| <code class="selectable">LAKEKEEPER__<wbr>METRICS__PORT</code> | Port Lakekeeper listens on for the metrics endpoint (default `9000`) |
+| <code class="selectable">LAKEKEEPER__<wbr>BIND_IP</code>      | Listener bind address for metrics, REST API, and Management API (default `0.0.0.0`) |
+
+```yaml title="Example Prometheus scrape configuration"
+scrape_configs:
+  - job_name: "lakekeeper"
+    static_configs:
+      - targets: ["lakekeeper-host:9000"]
+```
+
+## Task Queue Demand
+
+Lakekeeper can tell an autoscaler, such as [KEDA](https://keda.sh/docs/latest/scalers/metrics-api/), how many tasks of a queue wait or run. This lets you run worker pods only while there are tasks. For a complete setup, see [Task Workers on Kubernetes](./task-workers.md).
+
+The metrics port (default `9000`) answers `GET /task-queue/<queue>/demand`:
+
+```json
+{"demand": 7, "due": 4, "heartbeat-expired": 1, "running": 2, "oldest-due-seconds": 95}
+```
+
+We recommend scaling on `demand`. It adds up the tasks that wait to start (`due`), the tasks that run (`running`), and the tasks whose worker stopped responding (`heartbeat-expired`). Each pod reuses an answer for 5 seconds, so frequent requests do not load the database.
+
+`oldest-due-seconds` is how long the longest waiting task has waited, or `null` if no task waits. The same value is available as a metric, see [Task Queue Metrics](#task-queue-metrics).
+
+The queues are `soft_deletion`, `tabular_purge` and `task_log_cleanup`, and in Lakekeeper Plus<span class="lkp"></span> also `expire_snapshots`, `remove_orphan_files` and `optimize`. The `optimize` queue also reports each [size class](./optimize-workers.md#size-classes) on its own: `GET /task-queue/optimize/demand?class=<name>`.
+
+A trigger of a KEDA ScaledJob looks like this:
+
+```yaml
+triggers:
+  - type: metrics-api
+    metadata:
+      url: "http://<service>.<namespace>.svc:9000/task-queue/tabular_purge/demand"
+      valueLocation: "demand"
+      targetValue: "2"
+```
+
+We recommend these settings:
+
+- `url`: the Service of the Lakekeeper pods that serve the API, because workers that are scaled to zero cannot answer. Include the namespace, because KEDA sends the request from its own namespace. With the Lakekeeper Helm chart, the Service includes the metrics port if `catalog.prometheus.setScrapeAnnotations` is `true`.
+- `targetValue`: the number of tasks that one worker pod runs at the same time. This is the queue's worker count on that pod, for example `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS` (default `2`).
+- `scalingStrategy.strategy`: `default`, which KEDA also uses if you set none. With `accurate` or `eager`, KEDA may start more workers than needed.
+- `LAKEKEEPER__TASK_*_WORKERS` of the queue on the API pods: `0`, so that only the autoscaled workers run the queue. Otherwise KEDA also counts the tasks that the API pods run, and starts workers for them.
+- `LAKEKEEPER__TASK_IDLE_EXIT_AFTER` on the headless workers: a short time such as `180s`, so that a worker Job ends when no tasks are left. See [Stopping Task Workers](./configuration.md#stopping-task-workers).
+
+When all API pods are in read-only [maintenance mode](./configuration.md#maintenance-mode), the endpoint reports no tasks (`0`, and `null` for `oldest-due-seconds`), so KEDA starts no new workers. Workers that already run keep taking tasks. Like `/metrics`, the endpoint has no authentication and shows only counts. We recommend keeping the metrics port inside the cluster.
+
+## Database (Postgres) Monitoring
+
+Postgres is Lakekeeper's primary backend. Use [postgres_exporter](https://github.com/prometheus-community/postgres_exporter) for database-internal signals — kube-state-metrics covers Kubernetes API object state (pods, deployments, nodes) but not Postgres internals.
+
+| Signal                                | Recommended tool                     |
+|---------------------------------------|--------------------------------------|
+| Free connection pool slots            | `postgres_exporter`                  |
+| Connection failures / pool exhaustion | `postgres_exporter`                  |
+| Query latency                         | `postgres_exporter`                  |
+| Replication lag                       | `postgres_exporter`                  |
+| Disk usage and IOPS                   | Cloud provider metrics or `node_exporter` |
+| Pod restarts, deployment health       | kube-state-metrics                   |
+
+If you run Postgres via the [CloudNativePG](https://cloudnative-pg.io/) operator, its built-in per-instance exporter (port `9187`, metrics prefixed `cnpg_collector_*`) covers WAL file counts and size, archive status, sync replica state, and basic liveness — complementing `postgres_exporter` for those signals. Connection pool slots, query latency, and replication lag are available as [user-defined custom queries](https://cloudnative-pg.io/documentation/current/monitoring/#user-defined-metrics) in CloudNativePG; disk and IOPS still require `node_exporter` or cloud provider metrics.
+
+### Connection Pool (client-side)
+
+`postgres_exporter` reports the Postgres *server's* connection slots. Lakekeeper additionally exposes its own *client-side* pools — the separate read and write pools each replica holds, sized by `LAKEKEEPER__PG_READ_POOL_CONNECTIONS` and `LAKEKEEPER__PG_WRITE_POOL_CONNECTIONS`. A client pool can saturate even when the server has free slots, so monitor both. The read and write pools are reported separately via the `pool` label.
+
+| Metric                                                                          | Type    | Labels                                            | Description |
+|---------------------------------------------------------------------------------|---------|---------------------------------------------------|-----|
+| <code class="selectable">lakekeeper_catalog_pg_<wbr>pool_connections</code>             | Gauge   | `pool` (`read`/`write`), `state` (`in_use`/`idle`) | Live connections held by the pool |
+| <code class="selectable">lakekeeper_catalog_pg_<wbr>pool_max_connections</code>         | Gauge   | `pool`                                            | Configured pool ceiling |
+| <code class="selectable">lakekeeper_catalog_pg_<wbr>pool_acquire_timeouts_total</code>  | Counter | `pool`                                            | Connection acquisitions that timed out — direct evidence of pool exhaustion |
+
+!!! tip "Alerting on pool saturation"
+    Utilization `lakekeeper_catalog_pg_pool_connections{state="in_use"} / lakekeeper_catalog_pg_pool_max_connections` approaching `1` is the leading edge of exhaustion. Any nonzero rate on `lakekeeper_catalog_pg_pool_acquire_timeouts_total` means requests are already being delayed or failing — alert on it. The gauges are sampled every 15s, so brief spikes may be smoothed; the timeout counter captures every occurrence. The counter covers transaction acquisition (the path catalog reads and writes use), not ad-hoc direct-pool queries.
+
+!!! warning
+    Lakekeeper's `/health` endpoint checks the database connection. If Postgres becomes unreachable or runs out of connections, `/health` returns `503 Service Unavailable`, so standard Kubernetes HTTP probes fail and the pod is marked unhealthy or unready.
+
+Use `/health` for readiness probes when traffic should only be sent to pods with a healthy Postgres connection. It is also suitable as a liveness probe if your deployment wants Kubernetes to restart pods whose database-dependent health remains unhealthy.
+
+```yaml title="Example Kubernetes probes"
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8181
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8181
+```
+
+## Kubernetes and Resource Monitoring
+
+Monitor pod CPU, memory, and restart counts with kube-state-metrics or equivalent tooling.
+
+## Endpoint Statistics
+
+Lakekeeper aggregates per-request statistics in memory and flushes them to the database periodically (default every 30 s). Each record captures the HTTP method, endpoint path, response status code, project, and warehouse (where applicable). This data is stored internally by Lakekeeper and is accessible without a Prometheus setup.
+
+These statistics can be viewed in the UI under the Project View's **Statistics** tab. The Management API also exposes them directly:
+
+- `POST /management/v1/endpoint-statistics` — query endpoint-level usage data, filterable by warehouse, status code, and time window.
+- `GET /management/v1/warehouse/{warehouse_id}/statistics` — query warehouse-level table and view counts.
+
+For real-time traffic visibility, the [HTTP request metrics](#http-request-metrics) expose per-second counters and latency histograms via Prometheus — but only with `method`, `status`, and `endpoint` labels. They carry no project or warehouse dimensions, so they cannot be used for tenant-scoped analysis. Endpoint statistics are the only source of per-project and per-warehouse breakdowns, making them the right tool for chargeback, abuse detection, and per-customer analytics in multi-tenant deployments.
+
+The flush interval is controlled by `LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL` (supports `s` and `ms` units):
+
+```env
+LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL=60s
+```
+
+See [Configuration - Endpoint Statistics](./configuration.md#endpoint-statistics) for details.
+
+## Best Practices
+
+Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, role provider health, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, low cache hit rates, `lakekeeper_role_provider_up == 0` (combined with `absent(...)` to catch a provider that never reported), `lakekeeper_cedar_policy_source_up == 0`, and an old or missing `lakekeeper_cache_invalidation_last_poll_timestamp_seconds` (see [Cache Invalidation Metrics](#cache-invalidation-metrics)).
+
+## Troubleshooting
+
+If Grafana shows stale or missing metrics, verify that Prometheus can reach the metrics endpoint and that the bind IP and port match your scrape configuration. For historical analysis beyond Prometheus retention, query endpoint statistics from the database.
