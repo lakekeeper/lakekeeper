@@ -12,7 +12,7 @@ use iceberg_ext::{
     catalog::TableUpdateKind,
     spec::{TableMetadataBuildResult, TableMetadataBuilder},
 };
-use lakekeeper_io::Location;
+use lakekeeper_io::{Location, LocationParseError};
 
 use crate::{
     server::tables::{create_table::ensure_format_version_allowed, parse_table_property_updates},
@@ -85,6 +85,114 @@ pub(crate) fn ensure_schema_content_stable<'a>(
         }
     }
     Ok(())
+}
+
+/// Validates file paths in an update against the table location.
+///
+/// # Errors
+///
+/// Returns an error for malformed locations, paths outside or equal to the table location,
+/// or ambiguous path segments below it.
+fn check_file_in_table_location(update: &TableUpdate, table_location: &Location) -> Result<()> {
+    let (kind, path) = match update {
+        TableUpdate::AddSnapshot { snapshot } => ("manifest list", snapshot.manifest_list()),
+        TableUpdate::SetStatistics { statistics } => {
+            ("statistics file", statistics.statistics_path.as_str())
+        }
+        TableUpdate::SetPartitionStatistics {
+            partition_statistics,
+        } => (
+            "statistics file",
+            partition_statistics.statistics_path.as_str(),
+        ),
+        _ => return Ok(()),
+    };
+
+    let file_location = Location::from_str(path).map_err(|err| FileLocationError::Parse {
+        kind,
+        path: path.to_string(),
+        source: err,
+    })?;
+
+    let suffix = file_location
+        .path_below(table_location)
+        .filter(|&suffix| !suffix.is_empty())
+        .ok_or_else(|| FileLocationError::NotBelowTableLocation {
+            kind,
+            file: file_location.clone(),
+            table: table_location.clone(),
+        })?;
+
+    for segment in suffix.split('/') {
+        check_unambiguous_path_segment(segment).map_err(|err| {
+            FileLocationError::InvalidPathSegment {
+                kind,
+                file: file_location.clone(),
+                segment: err,
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Checks that a segment is unambiguous after one percent-decoding pass.
+///
+/// # Errors
+///
+/// Returns the original, encoded `segment` if its decoded value is `.` or `..`, or contains
+/// a slash or backslash.
+fn check_unambiguous_path_segment(segment: &str) -> Result<(), String> {
+    let decoded = percent_encoding::percent_decode_str(segment).decode_utf8_lossy();
+
+    if decoded == "." || decoded == ".." {
+        return Err(segment.to_string());
+    }
+
+    if decoded.contains(['/', '\\']) {
+        return Err(segment.to_string());
+    }
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+enum FileLocationError {
+    #[error("Failed to parse {kind} path '{path}' as location")]
+    Parse {
+        kind: &'static str,
+        path: String,
+        #[source]
+        source: LocationParseError,
+    },
+    #[error(
+        "Cannot set {kind} whose file '{file}' \
+        is not below the table location: '{table}'"
+    )]
+    NotBelowTableLocation {
+        kind: &'static str,
+        file: Location,
+        table: Location,
+    },
+    #[error(
+        "Cannot set {kind} whose file '{file}' \
+         contains an ambiguous path segment: '{segment}'"
+    )]
+    InvalidPathSegment {
+        kind: &'static str,
+        file: Location,
+        segment: String,
+    },
+}
+
+impl From<FileLocationError> for IcebergErrorResponse {
+    fn from(error: FileLocationError) -> Self {
+        let error_type = match &error {
+            FileLocationError::Parse { .. } => "FailedToParseFileLocation",
+            FileLocationError::NotBelowTableLocation { .. }
+            | FileLocationError::InvalidPathSegment { .. } => "FileOutsideTableLocation",
+        };
+
+        ErrorModel::bad_request(error.to_string(), error_type, Some(Box::new(error))).into()
+    }
 }
 
 /// Apply the commits to table metadata.
@@ -180,6 +288,12 @@ pub(super) fn apply_commit(
             }
             TableUpdate::RemoveProperties { removals } => {
                 check_immutable_properties_not_removed(&previous_immutable_properties, removals)?;
+                builder = TableUpdate::apply(update, builder).map_err(update_error)?;
+            }
+            TableUpdate::AddSnapshot { .. }
+            | TableUpdate::SetStatistics { .. }
+            | TableUpdate::SetPartitionStatistics { .. } => {
+                check_file_in_table_location(&update, &previous_location)?;
                 builder = TableUpdate::apply(update, builder).map_err(update_error)?;
             }
             _ => {
@@ -531,6 +645,331 @@ mod tests {
             now_ms(),
         );
         assert!(result.is_err(), "a real relocation was accepted");
+    }
+
+    mod path_segment_validation {
+        use super::super::check_unambiguous_path_segment;
+
+        #[test]
+        fn dot_segments_report_the_offending_encoded_segment() {
+            for segment in [
+                ".", "..", "%2e", "%2E", "%2e%2e", "%2E%2E", "%2e%2E", ".%2e", "%2e.",
+            ] {
+                assert_eq!(
+                    check_unambiguous_path_segment(segment),
+                    Err(segment.to_string()),
+                    "{segment}",
+                );
+            }
+        }
+
+        #[test]
+        fn separators_report_the_offending_encoded_segment() {
+            for segment in ["x/y", r"x\y", "x%2Fy", "x%2fy", "x%5Cy", "x%5cy"] {
+                assert_eq!(
+                    check_unambiguous_path_segment(segment),
+                    Err(segment.to_string()),
+                    "{segment}",
+                );
+            }
+        }
+    }
+
+    mod file_location_validation {
+        use iceberg::spec::{PartitionStatisticsFile, StatisticsFile};
+        use lakekeeper_io::Location;
+
+        use super::{
+            super::{FileLocationError, check_file_in_table_location},
+            HashMap, Operation, Snapshot, Summary, TableUpdate, apply_commit,
+            table_with_main_snapshot,
+        };
+        use crate::service::ErrorModel;
+
+        fn file_updates(path: &str, now: i64) -> [TableUpdate; 3] {
+            [
+                TableUpdate::AddSnapshot {
+                    snapshot: Snapshot::builder()
+                        .with_snapshot_id(2)
+                        .with_parent_snapshot_id(Some(1))
+                        .with_timestamp_ms(now)
+                        .with_sequence_number(2)
+                        .with_schema_id(0)
+                        .with_manifest_list(path.to_string())
+                        .with_summary(Summary {
+                            operation: Operation::Append,
+                            additional_properties: HashMap::new(),
+                        })
+                        .build(),
+                },
+                TableUpdate::SetStatistics {
+                    statistics: StatisticsFile {
+                        snapshot_id: 1,
+                        statistics_path: path.to_string(),
+                        file_size_in_bytes: 100,
+                        file_footer_size_in_bytes: 10,
+                        key_metadata: None,
+                        blob_metadata: vec![],
+                    },
+                },
+                TableUpdate::SetPartitionStatistics {
+                    partition_statistics: PartitionStatisticsFile {
+                        snapshot_id: 1,
+                        statistics_path: path.to_string(),
+                        file_size_in_bytes: 100,
+                    },
+                },
+            ]
+        }
+
+        fn file_location_errors(path: &str, expected_type: &str) -> [ErrorModel; 3] {
+            let (metadata, now) = table_with_main_snapshot();
+            file_updates(path, now + 1000).map(|update| {
+                let Err(error) =
+                    apply_commit(metadata.clone(), None, &[], vec![update], now + 1000)
+                else {
+                    panic!("file path {path} must be refused");
+                };
+                let error = error.error;
+                assert_eq!(
+                    (error.code, error.r#type.as_str()),
+                    (400, expected_type),
+                    "file path: {path}",
+                );
+                error
+            })
+        }
+
+        fn file_location_error_source(error: &ErrorModel) -> &FileLocationError {
+            error
+                .source
+                .as_deref()
+                .and_then(|source| source.downcast_ref::<FileLocationError>())
+                .expect("file location errors must retain their typed source")
+        }
+
+        fn assert_unsafe_suffix_refused(suffix: &str) {
+            let (metadata, _) = table_with_main_snapshot();
+            let path = format!("{}/{suffix}", metadata.location());
+            file_location_errors(&path, "FileOutsideTableLocation");
+        }
+
+        fn assert_file_location_accepted(table_location: &str, path: &str) {
+            let (metadata, now) = table_with_main_snapshot();
+            let metadata = metadata
+                .into_builder(None)
+                .set_location(table_location.to_string())
+                .build()
+                .unwrap()
+                .metadata;
+            let result = apply_commit(
+                metadata,
+                None,
+                &[],
+                Vec::from(file_updates(path, now + 1000)),
+                now + 1000,
+            )
+            .unwrap_or_else(|error| panic!("file path {path} was refused: {error:?}"));
+
+            assert_eq!(
+                result.metadata.snapshot_by_id(2).unwrap().manifest_list(),
+                path,
+            );
+            assert_eq!(
+                result
+                    .metadata
+                    .statistics_iter()
+                    .map(|file| file.statistics_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec![path],
+            );
+            assert_eq!(
+                result
+                    .metadata
+                    .partition_statistics_iter()
+                    .map(|file| file.statistics_path.as_str())
+                    .collect::<Vec<_>>(),
+                vec![path],
+            );
+        }
+
+        fn assert_safe_suffix_accepted(table_location: &str, suffix: &str) {
+            let path = format!("{}/{suffix}", table_location.trim_end_matches('/'));
+            assert_file_location_accepted(table_location, &path);
+        }
+
+        #[test]
+        fn malformed_locations_report_the_parse_error_with_file_context() {
+            let path = "not-a-location";
+            let expected_source = path.parse::<Location>().unwrap_err();
+            file_location_errors(path, "FailedToParseFileLocation")
+                .into_iter()
+                .zip(["manifest list", "statistics file", "statistics file"])
+                .for_each(|(error, expected_kind)| {
+                    let source = file_location_error_source(&error);
+                    let FileLocationError::Parse {
+                        kind,
+                        path: error_path,
+                        source: parse_error,
+                    } = source
+                    else {
+                        panic!("expected a parse-error source, got {source:?}");
+                    };
+                    assert_eq!(*kind, expected_kind);
+                    assert_eq!(error_path, path);
+                    assert_eq!(parse_error, &expected_source);
+                });
+        }
+
+        #[test]
+        fn trailing_slash_parents_do_not_hide_the_first_ambiguous_segment() {
+            let path = "s3://bucket/table/%2e%2e/other/metadata/file.avro";
+            ["s3://bucket/table/", "s3://bucket/table///"]
+                .into_iter()
+                .for_each(|table_location| {
+                    let table_location: Location = table_location.parse().unwrap();
+                    file_updates(path, 0)
+                        .into_iter()
+                        .zip(["manifest list", "statistics file", "statistics file"])
+                        .for_each(|(update, expected_kind)| {
+                            let error = check_file_in_table_location(&update, &table_location)
+                                .unwrap_err()
+                                .error;
+                            assert_eq!(
+                                (error.code, error.r#type.as_str()),
+                                (400, "FileOutsideTableLocation"),
+                                "file path: {path}; table location: {table_location}",
+                            );
+                            let source = file_location_error_source(&error);
+                            let FileLocationError::InvalidPathSegment {
+                                kind,
+                                file,
+                                segment,
+                            } = source
+                            else {
+                                panic!("expected an invalid-path-segment source, got {source:?}");
+                            };
+                            assert_eq!(*kind, expected_kind);
+                            assert_eq!(file.as_str(), path);
+                            assert_eq!(segment, "%2e%2e");
+                        });
+                });
+        }
+
+        #[test]
+        fn locations_not_below_the_table_are_refused() {
+            for path in [
+                "s3://bucket/table",
+                "s3://bucket/table/",
+                "s3://bucket/table///",
+                "s3a://bucket/table/",
+                "s3://bucket/file.avro",
+                "s3://bucket/table-other/metadata/file.avro",
+                "s3://other-bucket/table/metadata/file.avro",
+                "gs://bucket/table/metadata/file.avro",
+            ] {
+                file_location_errors(path, "FileOutsideTableLocation");
+            }
+        }
+
+        #[test]
+        fn first_ambiguous_segment_is_reported_with_file_context() {
+            let path = "s3://bucket/table/metadata/%2e%2e/x%2Fy/file.avro";
+            file_location_errors(path, "FileOutsideTableLocation")
+                .into_iter()
+                .zip(["manifest list", "statistics file", "statistics file"])
+                .for_each(|(error, expected_kind)| {
+                    let source = file_location_error_source(&error);
+                    let FileLocationError::InvalidPathSegment {
+                        kind,
+                        file,
+                        segment,
+                    } = source
+                    else {
+                        panic!("expected an invalid-path-segment source, got {source:?}");
+                    };
+                    assert_eq!(*kind, expected_kind);
+                    assert_eq!(file.as_str(), path);
+                    assert_eq!(segment, "%2e%2e");
+                });
+        }
+
+        #[test]
+        fn scheme_aliases_are_accepted() {
+            for (table_location, path) in [
+                ("s3://bucket/table", "s3a://bucket/table/metadata/file.avro"),
+                (
+                    "s3a://bucket/table",
+                    "s3n://bucket/table/metadata/file.avro",
+                ),
+                ("s3n://bucket/table", "s3://bucket/table/metadata/file.avro"),
+                (
+                    "abfss://fs@account.dfs.core.windows.net/table",
+                    "wasbs://fs@account.dfs.core.windows.net/table/metadata/file.avro",
+                ),
+            ] {
+                assert_file_location_accepted(table_location, path);
+            }
+        }
+
+        #[test]
+        fn manifest_list_with_encoded_parent_segment_is_refused() {
+            assert_unsafe_suffix_refused("%2e%2e/other/metadata/file.avro");
+        }
+
+        #[test]
+        fn encoded_dot_segments_are_refused() {
+            for segment in ["%2E%2E", "%2e%2E", ".%2e", "%2e.", "%2e", "%2E"] {
+                assert_unsafe_suffix_refused(&format!("{segment}/other/metadata/file.avro"));
+            }
+        }
+
+        #[test]
+        fn encoded_separators_are_refused() {
+            for segment in ["x%2Fy", "x%2fy", "x%5Cy", "x%5cy"] {
+                assert_unsafe_suffix_refused(&format!("metadata/{segment}/file.avro"));
+            }
+        }
+
+        #[test]
+        fn literal_backslashes_are_refused() {
+            for suffix in [r"..\other\metadata\file.avro", r"metadata/file\name.avro"] {
+                assert_unsafe_suffix_refused(suffix);
+            }
+        }
+
+        #[test]
+        fn encoded_table_locations_are_accepted() {
+            for table_location in [
+                "s3://bucket/namespace%2Fname/table%5Cname",
+                "s3://bucket/namespace%5cname/table%2fname/",
+            ] {
+                assert_safe_suffix_accepted(table_location, "metadata/file.avro");
+            }
+        }
+
+        #[test]
+        fn safe_encoded_suffixes_are_accepted() {
+            for suffix in [
+                "metadata/data%20file.avro",
+                "metadata/a%2Eb.avro",
+                "metadata/version..avro",
+                "metadata/.../file.avro",
+                "metadata/file%25name.avro",
+                "%2e%2e%2e/metadata/file.avro",
+                "%252e/metadata/file.avro",
+                "%252e%252e/metadata/file.avro",
+                "metadata/x%252Fy/file.avro",
+                "metadata/x%255Cy/file.avro",
+            ] {
+                assert_safe_suffix_accepted("s3://bucket/table", suffix);
+            }
+        }
+
+        #[test]
+        fn table_location_with_trailing_slash_is_refused_as_file_location() {
+            assert_unsafe_suffix_refused("");
+        }
     }
 
     #[test]

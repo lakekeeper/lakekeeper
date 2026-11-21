@@ -1,6 +1,6 @@
 use std::str::{FromStr, RMatchIndices};
 
-use unicode_general_category::{GeneralCategory, get_general_category};
+use unicode_general_category::{get_general_category, GeneralCategory};
 
 /// Schemes that address the same storage as `s3`.
 pub const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
@@ -233,9 +233,24 @@ impl Location {
         self.path_below(other).is_some()
     }
 
-    /// The path of this location below the folder `other`, empty for `other` itself. Compared
-    /// with [`canonical_scheme`] and without a trailing slash.
-    fn path_below(&self, other: &Location) -> Option<&str> {
+    /// Returns this location's relative path within `other`.
+    ///
+    /// Treats scheme aliases as equivalent and ignores trailing slashes. Returns `Some("")`
+    /// for the same location and `None` if this location is outside `other`. The returned path
+    /// preserves percent encoding and has no leading or trailing slash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lakekeeper_io::Location;
+    ///
+    /// let parent: Location = "s3://bucket/a".parse()?;
+    /// let child: Location = "s3://bucket/a/b/c".parse()?;
+    /// assert_eq!(child.path_below(&parent), Some("b/c"));
+    /// # Ok::<(), lakekeeper_io::LocationParseError>(())
+    /// ```
+    #[must_use]
+    pub fn path_below(&self, other: &Location) -> Option<&str> {
         if canonical_scheme(&self.scheme) != canonical_scheme(&other.scheme) {
             return None;
         }
@@ -796,6 +811,69 @@ mod tests {
                 (location.is_below(&folder), location.is_at_or_below(&folder)),
                 expected,
                 "{location} against {folder}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_path_below() {
+        for (parent, location, expected) in [
+            ("s3://bucket/table", "s3://bucket/table", Some("")),
+            ("s3://bucket/table/", "s3://bucket/table///", Some("")),
+            (
+                "s3://bucket/table",
+                "s3://bucket/table/file.avro",
+                Some("file.avro"),
+            ),
+            (
+                "s3://bucket/table/",
+                "s3://bucket/table/%2e%2e/metadata/file.avro",
+                Some("%2e%2e/metadata/file.avro"),
+            ),
+            (
+                "s3://bucket/table///",
+                "s3://bucket/table/%2e%2e/metadata/file.avro",
+                Some("%2e%2e/metadata/file.avro"),
+            ),
+            (
+                "s3://bucket/namespace%2Fname/table%5Cname/",
+                "s3://bucket/namespace%2Fname/table%5Cname/metadata/file.avro",
+                Some("metadata/file.avro"),
+            ),
+            (
+                "s3://bucket/table",
+                "s3a://bucket/table/metadata/file.avro/",
+                Some("metadata/file.avro"),
+            ),
+            (
+                "s3a://bucket/table/",
+                "s3n://bucket/table/metadata/file.avro",
+                Some("metadata/file.avro"),
+            ),
+            (
+                "abfss://fs@account.dfs.core.windows.net/table",
+                "wasbs://fs@account.dfs.core.windows.net/table/metadata/file.avro",
+                Some("metadata/file.avro"),
+            ),
+            ("s3://bucket/warehouse/table", "s3://bucket/file.avro", None),
+            (
+                "s3://bucket/table/",
+                "s3://bucket/table-other/file.avro",
+                None,
+            ),
+            (
+                "s3://bucket/table",
+                "s3://other-bucket/table/file.avro",
+                None,
+            ),
+            ("s3://bucket/table", "gs://bucket/table/file.avro", None),
+        ] {
+            let parent: Location = parent.parse().unwrap();
+            let location: Location = location.parse().unwrap();
+            assert_eq!(
+                location.path_below(&parent),
+                expected,
+                "{location} against {parent}"
             );
         }
     }
