@@ -39,7 +39,7 @@ Owners of objects have all rights on the specific object. When principals create
 
 ### Server: Admin
 
-A `server`'s `admin` role is the most powerful role (apart from `operator`) on the server. In order to guarantee auditability, this role can list and administrate all Projects, but does not have access to data in projects. While the `admin` can assign himself the `project_admin` role for a project, this assignment is tracked by `OpenFGA` for audits. `admin`s can also manage all projects (but no entities within it), server settings and users.
+A `server`'s `admin` role is the most powerful role (apart from `operator`) on the server. In order to guarantee auditability, this role can list and administrate all Projects, but does not have access to data in projects. An `admin` can assign themselves the `project_admin` role for a project, or the `operator` role for the server. Such grants are recorded in the [audit log](./logging.md). `admin`s can also manage all projects (but no entities within it), server settings and users.
 
 ### Server: Operator
 
@@ -47,7 +47,7 @@ The `operator` has unrestricted access to all objects in Lakekeeper. It is desig
 
 ### Project: Security Admin
 
-A `security_admin` in a project can manage all security-related aspects, including grants and ownership for the project and all objects within it. The role itself gives no access to the content of objects beyond listing and browsing, but a `security_admin` can grant themselves every privilege in the project except `project_admin`, for example `select` or `data_admin`.
+A `security_admin` in a project can manage all security-related aspects, including grants and ownership for the project and all objects within it. The role itself gives no access to the content of objects beyond listing and browsing, but a `security_admin` can grant themselves every privilege in the project except `project_admin`, for example `select` or `data_admin`. They can also add themselves to any role in the project and so receive what that role holds. Such grants are recorded in the [audit log](./logging.md).
 
 ### Project: Data Admin
 
@@ -170,7 +170,7 @@ The same rule applies when a table, view or generic table is renamed into anothe
 
 ## Best Practices
 
-We recommend separating access to data from the ability to grant privileges. To achieve this, the `security_admin` and `data_admin` roles divide the responsibilities of the initial `project_admin`, who has the authority to perform tasks in both areas.
+We recommend separating access to data from the ability to grant privileges. To achieve this, the `security_admin` and `data_admin` roles divide the responsibilities of the initial `project_admin`, who has the authority to perform tasks in both areas. This divides the work between people, and the [audit log](./logging.md) records every grant change, including those a `security_admin` makes for themselves.
 
 ### Roles with server access
 

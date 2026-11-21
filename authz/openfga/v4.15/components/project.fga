@@ -11,7 +11,8 @@ type project
     # 1. Lock-out protection: Checked to never be empty
     # 2. Granting new privileges, such as billing, which might require separate permissions / admin roles
     define project_admin: [user, role#assignee] or operator from server
-    # Security Admins can manage all security aspects (grants, ownership) but not modify, create or access objects
+    # Security Admins manage grants and ownership. They hold no data privileges themselves,
+    # but can grant every privilege except project_admin, also to themselves.
     define security_admin: [user, role#assignee] or project_admin
     # Data Admins can manage all warehouse aspects but not grant privileges
     define data_admin: [user, role#assignee] or project_admin
