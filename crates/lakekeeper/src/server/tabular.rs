@@ -1,24 +1,111 @@
 use std::sync::Arc;
 
 use iceberg::NamespaceIdent;
+use serde::de::DeserializeOwned;
 
 use crate::{
     WarehouseId,
     api::{Result, endpoints::EndpointFlat},
     request_metadata::RequestMetadata,
-    server::tables::parse_location,
+    server::{io::read_metadata_file, maybe_get_secret, tables::parse_location},
     service::{
-        COMMIT_STATE_UNKNOWN_ERROR_TYPE, CatalogIdempotencyOps, CatalogStore, NamespaceHierarchy,
-        NamespaceId, ResolvedWarehouse, TabularId, Transaction,
-        authz::{AuthZError, Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        ArcResolvedWarehouse, COMMIT_STATE_UNKNOWN_ERROR_TYPE, CatalogIdempotencyOps, CatalogStore,
+        NamespaceHierarchy, NamespaceId, ResolvedWarehouse, TabularId, Transaction,
+        authz::{
+            AuthZError, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogWarehouseAction,
+        },
+        events::{
+            APIEventContext, AuthorizationFailureReason, AuthorizationFailureSource,
+            context::{APIEventActions, ResolutionState, UserProvidedEntity},
+        },
         idempotency::{IdempotencyInfo, IdempotencyKey},
         is_same_namespace_path_ignoring_ascii_case,
+        secrets::SecretStore,
         storage::{
             StorageCredential, StorageProfile, ValidationError, is_empty,
             storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
         },
     },
 };
+
+/// Registering adopts files that are already in storage, so it needs `action` on the warehouse,
+/// `RegisterTable` or `RegisterView`, as well as the create action on the namespace that
+/// `event_ctx` records. Asked before the metadata file is read, and recorded on its own. A
+/// refusal also refuses the call's create action, recorded as well.
+pub(crate) async fn authorize_register_on_warehouse<A, P, R, Act>(
+    authorizer: &A,
+    event_ctx: &APIEventContext<P, R, Act>,
+    warehouse: &ArcResolvedWarehouse,
+    action: CatalogWarehouseAction,
+) -> Result<()>
+where
+    A: Authorizer,
+    P: UserProvidedEntity,
+    R: ResolutionState,
+    Act: APIEventActions,
+{
+    let register_ctx = APIEventContext::for_warehouse(
+        event_ctx.request_metadata_arc(),
+        event_ctx.dispatcher().clone(),
+        warehouse.warehouse_id,
+        action.clone(),
+    );
+    let authz_result = authorizer
+        .require_warehouse_action(
+            register_ctx.request_metadata(),
+            warehouse.warehouse_id,
+            Ok(Some(Arc::clone(warehouse))),
+            action,
+        )
+        .await
+        .map_err(|refusal| {
+            let failure_reason = refusal.to_failure_reason();
+            let error = event_ctx.emit_early_authz_failure(refusal);
+            RecordedFailure {
+                failure_reason,
+                error,
+            }
+        });
+    let (_register_ctx, _) = register_ctx.emit_authz(authz_result)?;
+    Ok(())
+}
+
+/// Reads the table or view metadata file a register names, at `metadata_location`. It must be
+/// inside the warehouse's storage, anywhere there, also outside the namespace's location.
+/// Returns the metadata and the warehouse's storage secret it was read with.
+pub(crate) async fn read_registered_metadata<M, S>(
+    warehouse: &ResolvedWarehouse,
+    metadata_location: &Location,
+    secrets: &S,
+) -> Result<(M, Option<Arc<StorageCredential>>)>
+where
+    M: DeserializeOwned + Send + 'static,
+    S: SecretStore,
+{
+    let storage_profile = &warehouse.storage_profile;
+    storage_profile.require_allowed_location(metadata_location)?;
+    let storage_secret = maybe_get_secret(warehouse.storage_secret_id, secrets).await?;
+    let file_io = storage_profile.file_io(storage_secret.as_deref()).await?;
+    let metadata = read_metadata_file(&file_io, metadata_location).await?;
+    Ok((metadata, storage_secret))
+}
+
+/// A failure already recorded on one context, to record it on another.
+struct RecordedFailure {
+    failure_reason: AuthorizationFailureReason,
+    error: ErrorModel,
+}
+
+impl AuthorizationFailureSource for RecordedFailure {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        self.failure_reason.clone()
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.error
+    }
+}
 
 /// Claim the request's idempotency key in `transaction`.
 ///

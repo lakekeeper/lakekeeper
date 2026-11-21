@@ -44,7 +44,7 @@ pub(crate) use authorize_load::*;
 use super::{
     CatalogServer,
     commit_tables::{apply_commit, commit_action, ensure_format_version_upgrades_allowed},
-    io::{cleanup_in_background, delete_files, delete_on_failure, read_metadata_file, write_file},
+    io::{cleanup_in_background, delete_files, delete_on_failure, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
     require_warehouse_id,
@@ -73,8 +73,8 @@ use crate::{
         self, authorize_soft_deletion_skip,
         compression_codec::{CompressionCodec, PROPERTY_METADATA_COMPRESSION_CODEC},
         tabular::{
-            authorize_entities, claim_idempotency_key, claim_no_content_idempotency_key,
-            fetch_entities,
+            authorize_entities, authorize_register_on_warehouse, claim_idempotency_key,
+            claim_no_content_idempotency_key, fetch_entities, read_registered_metadata,
         },
     },
     service::{
@@ -391,8 +391,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
         // Before any storage read. `CreateTable` is checked after the read: its properties
         // and table id are only known from the metadata file.
-        register_table::authorize_register_on_warehouse(&authorizer, &event_ctx, &warehouse)
-            .await?;
+        authorize_register_on_warehouse(
+            &authorizer,
+            &event_ctx,
+            &warehouse,
+            CatalogWarehouseAction::RegisterTable,
+        )
+        .await?;
         let namespace = authorizer
             .require_namespace_action(
                 event_ctx.request_metadata(),
@@ -408,13 +413,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let storage_profile = &warehouse.storage_profile;
 
         require_active_warehouse(warehouse.status)?;
-        storage_profile.require_allowed_location(&metadata_location)?;
-
-        let storage_secret =
-            maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
+        let (table_metadata, storage_secret): (TableMetadata, _) =
+            read_registered_metadata(&warehouse, &metadata_location, &state.v1_state.secrets)
+                .await?;
         let storage_secret_ref = storage_secret.as_deref();
-        let file_io = storage_profile.file_io(storage_secret_ref).await?;
-        let table_metadata = read_metadata_file(&file_io, &metadata_location).await?;
 
         // Checked before the file's contents are validated, so a caller who may not create
         // here learns only that the file exists and parses.

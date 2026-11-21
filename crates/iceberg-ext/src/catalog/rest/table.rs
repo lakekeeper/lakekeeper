@@ -95,6 +95,14 @@ pub struct RegisterTableRequest {
     pub overwrite: bool,
 }
 
+/// Registers a view from an existing view metadata file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypedBuilder)]
+#[serde(rename_all = "kebab-case")]
+pub struct RegisterViewRequest {
+    pub name: String,
+    pub metadata_location: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct RenameTableRequest {

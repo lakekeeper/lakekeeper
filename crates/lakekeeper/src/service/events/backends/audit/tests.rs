@@ -565,6 +565,8 @@ const FIXTURE_NAMES: &[&str] = &[
     "authz_failed_admission_gate",
     "authz_failed_tabular_move",
     "authz_failed_register_table",
+    "authz_failed_register_view",
+    "authz_failed_register_view_owner_property",
     "authz_failed_cannot_see_registered_table",
     "authz_failed_generic_table_location_with_files",
     "authz_failed_create_view_owner_property",
@@ -1235,6 +1237,7 @@ fn fixture_view() -> UserProvidedView {
 fn fixture_authz_failed_create_view_owner_property() {
     let action = CatalogNamespaceAction::CreateView {
         name: Some("orders_by_day".to_string()),
+        view_id: None,
         properties: Arc::new(std::collections::BTreeMap::from([(
             "trino.run-as-owner".to_string(),
             "bob".to_string(),
@@ -1369,6 +1372,66 @@ fn fixture_authz_failed_register_table() {
     );
 
     assert_matches_fixture("authz_failed_register_table", &contract_fields(record));
+}
+
+/// A view register refused because the caller lacks the register right on the warehouse: the
+/// warehouse is the entity, as the register handler records it.
+#[test]
+fn fixture_authz_failed_register_view() {
+    let warehouse_id = crate::service::WarehouseId::new(
+        FIXTURE_WAREHOUSE_ID
+            .parse::<uuid::Uuid>()
+            .expect("fixed test uuid"),
+    );
+    let action = CatalogWarehouseAction::RegisterView;
+    let record = refusal_record(
+        warehouse_id.event_entities(),
+        action.event_actions(),
+        AuthZWarehouseActionForbidden::new(warehouse_id, &action),
+    );
+
+    assert_matches_fixture("authz_failed_register_view", &contract_fields(record));
+}
+
+/// A view register refused after authorization because the registered file holds an engine
+/// owner property and the client is not a trusted engine. The namespace is the entity, and
+/// `create_view` carries the view id and the properties from the file.
+#[test]
+fn fixture_authz_failed_register_view_owner_property() {
+    let action = CatalogNamespaceAction::CreateView {
+        name: Some("orders_by_day".to_string()),
+        view_id: Some(crate::service::ViewId::from(
+            "019a0ecc-9d3e-7c55-9e8b-2f1f1d7d3a41"
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        )),
+        properties: Arc::new(std::collections::BTreeMap::from([(
+            "trino.run-as-owner".to_string(),
+            "bob".to_string(),
+        )])),
+    };
+    let entities = UserProvidedNamespace::new(
+        crate::service::WarehouseId::new(
+            FIXTURE_WAREHOUSE_ID
+                .parse::<uuid::Uuid>()
+                .expect("fixed test uuid"),
+        ),
+        NamespaceIdent::new("sales".to_string()),
+    )
+    .event_entities();
+    let record = refusal_record(
+        entities,
+        action.event_actions(),
+        ProtectedPropertyModification {
+            key: "trino.run-as-owner".to_string(),
+            protected: "trino.run-as-owner".to_string(),
+        },
+    );
+
+    assert_matches_fixture(
+        "authz_failed_register_view_owner_property",
+        &contract_fields(record),
+    );
 }
 
 /// A register whose caller may not see the table it registered: recorded as `loadTable`

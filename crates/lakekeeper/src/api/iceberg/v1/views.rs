@@ -13,7 +13,7 @@ use super::ListTablesQuery;
 use crate::{
     api::{
         ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
-        RenameTableRequest, Result,
+        RegisterViewRequest, RenameTableRequest, Result,
         iceberg::{
             types::{DropParams, Prefix, ReferencingView},
             v1::{
@@ -85,6 +85,15 @@ where
     async fn create_view(
         parameters: NamespaceParameters,
         request: CreateViewRequest,
+        state: ApiContext<S>,
+        data_access: impl Into<DataAccessMode> + Send,
+        request_metadata: RequestMetadata,
+    ) -> Result<LoadViewResult>;
+
+    /// Register a view in the given namespace from an existing view metadata file
+    async fn register_view(
+        parameters: NamespaceParameters,
+        request: RegisterViewRequest,
         state: ApiContext<S>,
         data_access: impl Into<DataAccessMode> + Send,
         request_metadata: RequestMetadata,
@@ -174,6 +183,29 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
                             metadata,
                         )
                     }
+                },
+            ),
+        )
+        // /{prefix}/namespaces/{namespace}/register-view
+        .route(
+            "/{prefix}/namespaces/{namespace}/register-view",
+            // Register a view in the given namespace from an existing view metadata file
+            post(
+                |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
+                 State(api_context): State<ApiContext<S>>,
+                 headers: HeaderMap,
+                 Extension(metadata): Extension<RequestMetadata>,
+                 Json(request): Json<RegisterViewRequest>| {
+                    I::register_view(
+                        NamespaceParameters {
+                            prefix: Some(prefix),
+                            namespace: namespace.into(),
+                        },
+                        request,
+                        api_context,
+                        crate::api::iceberg::v1::tables::parse_data_access(&headers),
+                        metadata,
+                    )
                 },
             ),
         )

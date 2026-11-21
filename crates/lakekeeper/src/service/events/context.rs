@@ -262,6 +262,8 @@ pub enum ActionContextKey {
     UpdateKinds(Vec<Wire<TableUpdateKind>>),
     /// The properties being set, verbatim. The keys are the client's data.
     UpdatedProperties(BTreeMap<String, String>),
+    /// The view id from the metadata file a view is registered from.
+    ViewId(String),
     /// The number of entries the request asked to grant, before deduplication.
     Writes(i64),
 }
