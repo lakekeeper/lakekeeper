@@ -1,0 +1,48 @@
+services:
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:v0.15.1
+    pull_policy: missing
+    ports: !reset []
+
+  migrate:
+    image: quay.io/lakekeeper/catalog:v0.15.1
+    pull_policy: missing
+
+  silo:
+    ports: !reset []
+
+  jupyter:
+    profiles: [minimal-example]
+
+  trino:
+    profiles: [minimal-example]
+
+  starrocks:
+    profiles: [minimal-example]
+
+  bootstrap:
+    profiles: [minimal-example]
+
+  initialwarehouse:
+    profiles: [minimal-example]
+
+  datafusion:
+    image: python:3.13-slim
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+    volumes:
+      - ../datafusion/query.py:/example/query.py:ro
+      - ../minimal/create-default-warehouse.json:/example/warehouse.json:ro
+    command:
+      - sh
+      - -ec
+      - |
+        python -m pip --disable-pip-version-check install --quiet --no-cache-dir --only-binary=:all: --root-user-action=ignore \
+          'pyiceberg[datafusion,pyarrow,pyiceberg-core]==0.12.0' \
+          'datafusion==53.0.0' \
+          'pyiceberg-core==0.10.1' \
+          'pyarrow==26.0.1'
+        python /example/query.py
