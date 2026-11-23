@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT tabular_id FROM tabular\n        WHERE warehouse_id = $1 AND namespace_id = ANY($2)\n        ORDER BY tabular_id\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d4ea03a4700697a17d3748d1830c289bad099998406557260a9537ffe6ba0be5"
+}

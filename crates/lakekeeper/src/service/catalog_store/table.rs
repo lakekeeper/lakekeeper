@@ -15,10 +15,11 @@ use crate::{
     service::{
         CatalogBackendError, CatalogStore, ConcurrentUpdateError, ConversionError,
         CreateTabularError, InternalBackendErrors, InternalParseLocationError,
-        InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId, SerializationError, TableId,
-        TableInfo, TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse,
-        WarehouseVersion, define_simple_error, define_simple_tabular_err, define_transparent_error,
-        impl_error_stack_methods, impl_from_with_detail,
+        InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId, NamespaceNotFound,
+        SerializationError, TableId, TableInfo, TabularAlreadyExists, TabularNotFound, Transaction,
+        UnexpectedTabularInResponse, WarehouseVersion, define_simple_error,
+        define_simple_tabular_err, define_transparent_error, impl_error_stack_methods,
+        impl_from_with_detail,
     },
 };
 
@@ -128,6 +129,7 @@ define_transparent_error! {
         InternalParseLocationError,
         LocationAlreadyTaken,
         InvalidNamespaceIdentifier,
+        NamespaceNotFound,
         TabularAlreadyExists,
         UnexpectedTabularInResponse,
         SerializationError,
@@ -148,6 +150,7 @@ impl From<CreateTabularError> for CreateTableError {
             CreateTabularError::InvalidNamespaceIdentifier(e) => {
                 CreateTableError::InvalidNamespaceIdentifier(e)
             }
+            CreateTabularError::NamespaceNotFound(e) => CreateTableError::NamespaceNotFound(e),
             CreateTabularError::TabularAlreadyExists(e) => {
                 CreateTableError::TabularAlreadyExists(e)
             }

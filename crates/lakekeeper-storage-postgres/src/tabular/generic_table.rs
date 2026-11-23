@@ -120,6 +120,7 @@ pub(crate) async fn create_generic_table(
             CreateTabularError::InternalParseLocationError(e) => CreateGenericTableError::from(e),
             CreateTabularError::LocationAlreadyTaken(e) => CreateGenericTableError::from(e),
             CreateTabularError::InvalidNamespaceIdentifier(e) => CreateGenericTableError::from(e),
+            CreateTabularError::NamespaceNotFound(e) => CreateGenericTableError::from(e),
         }
     })?;
 

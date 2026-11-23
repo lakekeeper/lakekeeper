@@ -13,8 +13,8 @@ use crate::{
     },
     service::{
         CatalogBackendError, CatalogStore, GenericTableId, InvalidNamespaceIdentifier,
-        InvalidPaginationToken, NamespaceId, NamespaceVersion, Result, TableId, TabularId,
-        TabularIdentBorrowed, TabularIdentOwned, Transaction, ViewId, WarehouseVersion,
+        InvalidPaginationToken, NamespaceId, NamespaceNotFound, NamespaceVersion, Result, TableId,
+        TabularId, TabularIdentBorrowed, TabularIdentOwned, Transaction, ViewId, WarehouseVersion,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnTableOrView, ActionOnView, UserOrRole,
         },
@@ -1603,6 +1603,7 @@ define_transparent_error! {
         InternalParseLocationError,
         LocationAlreadyTaken,
         InvalidNamespaceIdentifier,
+        NamespaceNotFound,
         TabularAlreadyExists
     ]
 }
