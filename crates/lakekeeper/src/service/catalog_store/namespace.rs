@@ -343,6 +343,8 @@ pub struct NamespaceDropInfo {
     pub child_namespaces: Vec<NamespaceId>,
     // table-id, location, table-ident
     pub child_tables: Vec<(TabularId, Location, TableIdent)>,
+    /// Tabulars whose catalog-only expiration was pending when the namespace was dropped.
+    pub soft_deleted_child_tabular_ids: Vec<TabularId>,
     pub open_tasks: Vec<TaskId>,
     /// Locations of the dropped namespace and its dropped children, in no particular order.
     pub namespace_locations: Vec<(NamespaceId, Location)>,

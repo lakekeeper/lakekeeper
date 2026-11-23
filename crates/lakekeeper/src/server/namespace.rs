@@ -902,10 +902,15 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             })
             .ok();
 
-        // Delete child tables from authorizer as well.
+        // Clean up authorizer entries for all dropped tabulars, including soft-deleted ones.
         // We do not fail the entire operation if this fails, as the namespace and tables are
         // already gone from the catalog.
-        for (tabular_id, _tabular_location, tabular_ident) in drop_info.child_tables {
+        let dropped_tabular_ids = drop_info
+            .child_tables
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .chain(drop_info.soft_deleted_child_tabular_ids);
+        for tabular_id in dropped_tabular_ids {
             match tabular_id {
                 TabularId::Table(table_id) => {
                     authorizer
@@ -913,7 +918,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .await
                         .inspect_err(|err| {
                             tracing::error!(
-                                "Failed to delete table '{tabular_ident}' with id '{table_id}' from authorizer after recursive namespace drop: {}",
+                                "Failed to delete table '{table_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })
@@ -925,7 +930,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .await
                         .inspect_err(|err| {
                             tracing::error!(
-                                "Failed to delete view '{tabular_ident}' with id '{view_id}' from authorizer after recursive namespace drop: {}",
+                                "Failed to delete view '{view_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })
@@ -937,7 +942,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .await
                         .inspect_err(|err| {
                             tracing::error!(
-                                "Failed to delete generic table '{tabular_ident}' with id '{generic_table_id}' from authorizer after recursive namespace drop: {}",
+                                "Failed to delete generic table '{generic_table_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })

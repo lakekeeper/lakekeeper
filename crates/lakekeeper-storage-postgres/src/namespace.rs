@@ -20,7 +20,7 @@ use lakekeeper::{
         NamespaceCannotMoveIntoSelf, NamespaceDropInfo, NamespaceHasChildren,
         NamespaceHasRunningTabularExpirations, NamespaceId, NamespaceIdent, NamespaceNotEmpty,
         NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected,
-        NamespaceWithParent, Result, SerializationError, TabularId, UpdatedNamespaceProperties,
+        NamespaceWithParent, Result, SerializationError, UpdatedNamespaceProperties,
         WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
@@ -1073,6 +1073,7 @@ struct NamespaceDropSnapshot {
     child_tabular_task_id: Vec<Uuid>,
     dropped_ns_ids: Vec<Uuid>,
     dropped_ns_locations: Vec<String>,
+    child_tabulars_deleted_typ: Vec<TabularType>,
 }
 
 async fn load_namespace_drop_snapshot(
@@ -1135,11 +1136,12 @@ async fn load_namespace_drop_snapshot(
             ARRAY(SELECT fs_protocol FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_protocol!",
             ARRAY(SELECT fs_location FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_location!",
             ARRAY(SELECT typ FROM tabulars where deleted_at is NULL) AS "child_tabular_typ!: Vec<TabularType>",
-            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
+            ARRAY(SELECT tabular_id FROM tabulars WHERE deleted_at IS NOT NULL ORDER BY tabular_id) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>",
             ARRAY(SELECT namespace_id FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_ids!: Vec<Uuid>",
-            ARRAY(SELECT location FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_locations!: Vec<String>"
+            ARRAY(SELECT location FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_locations!: Vec<String>",
+            ARRAY(SELECT typ FROM tabulars WHERE deleted_at IS NOT NULL ORDER BY tabular_id) AS "child_tabulars_deleted_typ!: Vec<TabularType>"
         FROM namespace_info ni
 "#,
         *warehouse_id,
@@ -1303,6 +1305,12 @@ pub(crate) async fn drop_namespace(
 
     Ok(NamespaceDropInfo {
         child_namespaces: info.child_namespaces.into_iter().map(Into::into).collect(),
+        soft_deleted_child_tabular_ids: info
+            .child_tabulars_deleted
+            .into_iter()
+            .zip(info.child_tabulars_deleted_typ)
+            .map(|(id, typ)| typ.into_tabular_id(id))
+            .collect(),
         child_tables: izip!(
             info.child_tabulars,
             info.child_tabular_fs_protocol,
@@ -1316,11 +1324,7 @@ pub(crate) async fn drop_namespace(
                 let ns_ident = json_value_to_namespace_ident(warehouse_id, &ns_name)?;
                 let table_ident = TableIdent::new(ns_ident, t_name);
                 Ok::<_, CatalogNamespaceDropError>((
-                    match typ {
-                        TabularType::Table => TabularId::Table(tabular_id.into()),
-                        TabularType::View => TabularId::View(tabular_id.into()),
-                        TabularType::GenericTable => TabularId::GenericTable(tabular_id.into()),
-                    },
+                    typ.into_tabular_id(tabular_id),
                     join_location(protocol.as_str(), fs_location.as_str())
                         .map_err(InternalParseLocationError::from)?,
                     table_ident,
@@ -1638,7 +1642,7 @@ pub mod tests {
     use lakekeeper::{
         api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
         service::{
-            CachePolicy, CatalogNamespaceOps, ReadTransaction, Transaction as _, ViewId,
+            CachePolicy, CatalogNamespaceOps, ReadTransaction, TabularId, Transaction as _, ViewId,
             WriteTransaction, is_same_namespace_path_ignoring_ascii_case,
         },
     };

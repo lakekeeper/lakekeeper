@@ -432,16 +432,22 @@ async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
 async fn namespace_with_soft_deleted_generic_table(
     pool: PgPool,
     purge_requested: bool,
-) -> (HidingCtx, WarehouseId, NamespaceParameters) {
+) -> (
+    HidingCtx,
+    WarehouseId,
+    NamespaceParameters,
+    HidingAuthorizer,
+) {
     use lakekeeper::api::data::v1::generic_tables::{
         GenericTableParameters, GenericTableService as _,
     };
 
+    let authorizer = HidingAuthorizer::new();
     let (ctx, warehouse) = lakekeeper_integration_tests::setup_simple(
         pool,
         lakekeeper_integration_tests::memory_io_profile(),
         None,
-        HidingAuthorizer::new(),
+        authorizer.clone(),
         TabularDeleteProfile::Soft {
             expiration_seconds: chrono::Duration::seconds(300),
         },
@@ -480,12 +486,13 @@ async fn namespace_with_soft_deleted_generic_table(
             prefix: Some(Prefix(prefix)),
             namespace,
         },
+        authorizer,
     )
 }
 
 #[lakekeeper_storage_postgres::db_test]
 async fn test_recursive_namespace_drop_preserves_pending_generic_table_purge(pool: PgPool) {
-    let (ctx, warehouse_id, namespace) =
+    let (ctx, warehouse_id, namespace, _) =
         namespace_with_soft_deleted_generic_table(pool, true).await;
     let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
     assert_eq!(tasks.len(), 1);
@@ -514,7 +521,7 @@ async fn test_recursive_namespace_drop_preserves_pending_generic_table_purge(poo
 
 #[lakekeeper_storage_postgres::db_test]
 async fn test_recursive_namespace_drop_allows_expiration_without_purge(pool: PgPool) {
-    let (ctx, warehouse_id, namespace) =
+    let (ctx, warehouse_id, namespace, authorizer) =
         namespace_with_soft_deleted_generic_table(pool.clone(), false).await;
     let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
     assert_eq!(tasks.len(), 1);
@@ -525,12 +532,13 @@ async fn test_recursive_namespace_drop_allows_expiration_without_purge(pool: PgP
     .fetch_one(&pool)
     .await
     .unwrap();
+    assert!(authorizer.deleted_generic_tables().is_empty());
 
     drop_namespace(
         ctx.clone(),
         NamespaceDropFlags {
             force: true,
-            purge: false,
+            purge: true,
             recursive: true,
         },
         namespace.clone(),
@@ -549,6 +557,15 @@ async fn test_recursive_namespace_drop_allows_expiration_without_purge(pool: PgP
             .await
             .unwrap();
     assert!(!exists, "the generic-table row must be removed");
+    assert_eq!(
+        authorizer.deleted_generic_tables(),
+        [(warehouse_id, tabular_id.into())]
+    );
+    assert!(
+        scheduled_tasks(&ctx, warehouse_id, &PURGE_QUEUE_NAME)
+            .await
+            .is_empty()
+    );
     let results = ApiServer::list_tasks(
         warehouse_id,
         ListTasksRequest {
