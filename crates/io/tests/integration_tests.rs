@@ -445,6 +445,15 @@ test_versioned_storages!(
     test_writer_close_returns_the_version_impl
 );
 
+#[cfg(feature = "storage-adls")]
+#[test]
+fn test_read_range_of_a_described_file_adls() -> anyhow::Result<()> {
+    execute_in_common_runtime(async {
+        let (storage, config) = create_adls_storage().await?;
+        test_read_range_of_a_described_file_impl(&storage, &config).await
+    })
+}
+
 // // Performance tests for storage backend initialization
 // #[cfg(feature = "storage-in-memory")]
 // #[test]
@@ -2078,6 +2087,77 @@ async fn test_read_range_large_impl(
     Ok(())
 }
 
+/// A range read of a file described by a listing or by `metadata` returns its bytes while
+/// the file is unchanged, and fails with `412 Precondition Failed` once the file is
+/// replaced, also when the range is read in parallel chunks.
+#[cfg(feature = "storage-adls")]
+async fn test_read_range_of_a_described_file_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let dir = config.test_dir_path("pinned");
+    let path = format!("{dir}object.bin");
+    let old_bytes = generate_test_data(8);
+    storage.write(&path, old_bytes.clone()).await?;
+
+    let listed: Vec<_> = storage
+        .list(&dir, None)
+        .await?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(listed.len(), 1);
+    let described = [
+        ("listed", listed[0].clone()),
+        ("metadata", storage.metadata(&path).await?),
+    ];
+    // Larger than one request (7 MiB), so it is read in chunks.
+    let large = 1..7 * 1024 * 1024 + 2;
+    for (source, info) in &described {
+        assert_eq!(
+            storage.read_range_of(&path, info, 1..4).await?,
+            old_bytes.slice(1..4),
+            "{source}"
+        );
+        let read = storage.read_range_of(&path, info, large.clone()).await?;
+        assert!(
+            read == old_bytes.slice(large.start as usize..large.end as usize),
+            "{source}: chunked pinned range-read content mismatch"
+        );
+    }
+
+    let new_bytes = Bytes::from(
+        old_bytes
+            .iter()
+            .map(|b| b.wrapping_add(1))
+            .collect::<Vec<_>>(),
+    );
+    storage.write(&path, new_bytes).await?;
+    for (source, info) in &described {
+        for range in [1..4, large.clone()] {
+            let stale = storage
+                .read_range_of(&path, info, range.clone())
+                .await
+                .map(|bytes| bytes.len());
+            assert!(
+                matches!(
+                    &stale,
+                    Err(ReadError::IOError(e))
+                        if e.kind() == ErrorKind::ConditionNotMatch && e.http_status() == Some(412)
+                ),
+                "{source}: expected a 412 ConditionNotMatch for {range:?}, got {stale:?}"
+            );
+        }
+    }
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
 /// `metadata` returns size matching the bytes written and a location ending
 /// with the requested suffix.
 async fn test_metadata_basic_impl(
@@ -2591,6 +2671,9 @@ async fn test_write_outcome_identifies_the_object_impl(
     match storage {
         #[cfg(feature = "storage-adls")]
         StorageBackend::Adls(_) => {
+            // ADLS listings carry the ETag and no version.
+            assert_eq!(listed[0].e_tag(), outcome.e_tag.as_deref());
+            assert_eq!(listed[0].version(), None);
             assert_unsupported_read(storage.list_versions(&dir, None).await.map(|_| ()));
             assert_unsupported_read(storage.list_soft_deleted(&dir, None).await.map(|_| ()));
             assert_unsupported_read(storage.read_version(&path, "1").await);
