@@ -1060,7 +1060,7 @@ struct NamespaceDropSnapshot {
     namespace_name: Vec<String>,
     has_protected_namespaces: bool,
     has_protected_tabulars: bool,
-    has_running_expiration: bool,
+    has_in_flight_expiration: bool,
     has_unresolved_soft_deletions: bool,
     child_tabulars: Vec<Uuid>,
     child_tabulars_namespace_names: Vec<serde_json::Value>,
@@ -1074,6 +1074,7 @@ struct NamespaceDropSnapshot {
     dropped_ns_ids: Vec<Uuid>,
     dropped_ns_locations: Vec<String>,
     child_tabulars_deleted_typ: Vec<TabularType>,
+    expiration_task_ids: Vec<Uuid>,
 }
 
 async fn load_namespace_drop_snapshot(
@@ -1113,7 +1114,8 @@ async fn load_namespace_drop_snapshot(
             WHERE t.warehouse_id = $1 AND t.entity_type IN ('table', 'view', 'generic-table')
         ),
         expiration_intent AS (
-            SELECT entity_id, bool_and(deletion_kind IS NOT DISTINCT FROM 'default') AS catalog_only
+            SELECT entity_id,
+                bool_and(task_status = 'scheduled' AND deletion_kind IS NOT DISTINCT FROM 'default') AS can_cancel
             FROM tasks
             WHERE queue_name IN ('soft_deletion', 'tabular_expiration')
             GROUP BY entity_id
@@ -1123,12 +1125,12 @@ async fn load_namespace_drop_snapshot(
             ni.namespace_name AS "namespace_name: Vec<String>",
             EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
-            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running' AND queue_name IN ('soft_deletion', 'tabular_expiration')) AS "has_running_expiration!",
+            EXISTS (SELECT 1 FROM tasks WHERE task_status <> 'scheduled' AND queue_name IN ('soft_deletion', 'tabular_expiration')) AS "has_in_flight_expiration!",
             EXISTS (
                 SELECT 1 FROM tabulars ta
                 LEFT JOIN expiration_intent ei ON ei.entity_id = ta.tabular_id
-                WHERE ta.deleted_at IS NOT NULL
-                    AND ei.catalog_only IS DISTINCT FROM true
+                WHERE (ta.deleted_at IS NOT NULL OR ei.entity_id IS NOT NULL)
+                    AND ei.can_cancel IS DISTINCT FROM true
             ) AS "has_unresolved_soft_deletions!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
             ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<serde_json::Value>",
@@ -1141,7 +1143,8 @@ async fn load_namespace_drop_snapshot(
             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>",
             ARRAY(SELECT namespace_id FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_ids!: Vec<Uuid>",
             ARRAY(SELECT location FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_locations!: Vec<String>",
-            ARRAY(SELECT typ FROM tabulars WHERE deleted_at IS NOT NULL ORDER BY tabular_id) AS "child_tabulars_deleted_typ!: Vec<TabularType>"
+            ARRAY(SELECT typ FROM tabulars WHERE deleted_at IS NOT NULL ORDER BY tabular_id) AS "child_tabulars_deleted_typ!: Vec<TabularType>",
+            ARRAY(SELECT task_id FROM tasks WHERE queue_name IN ('soft_deletion', 'tabular_expiration') ORDER BY task_id) AS "expiration_task_ids!: Vec<Uuid>"
         FROM namespace_info ni
 "#,
         *warehouse_id,
@@ -1158,10 +1161,56 @@ async fn load_namespace_drop_snapshot(
 fn namespace_drop_lock_error(error: sqlx::Error) -> CatalogBackendError {
     if matches!(&error, sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")) {
         CatalogBackendError::new(error, CatalogBackendErrorType::ConcurrentModification)
-            .append_detail("A namespace or table is busy. Retry the recursive drop.")
+            .append_detail(
+                "A namespace, table, or expiration task is busy. Retry the recursive drop.",
+            )
     } else {
         error.into_catalog_backend_error()
     }
+}
+
+async fn lock_namespace_drop_tabulars(
+    warehouse_id: WarehouseId,
+    namespace_ids: &[Uuid],
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<Vec<Uuid>, CatalogBackendError> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT tabular_id
+        FROM tabular
+        WHERE warehouse_id = $1 AND namespace_id = ANY($2)
+        ORDER BY tabular_id
+        FOR UPDATE NOWAIT
+        "#,
+        *warehouse_id,
+        namespace_ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(namespace_drop_lock_error)
+}
+
+async fn lock_namespace_drop_expirations(
+    warehouse_id: WarehouseId,
+    tabular_ids: &[Uuid],
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<Vec<Uuid>, CatalogBackendError> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT task_id
+        FROM task
+        WHERE warehouse_id = $1 AND entity_id = ANY($2)
+            AND entity_type IN ('table', 'view', 'generic-table')
+            AND queue_name IN ('soft_deletion', 'tabular_expiration')
+        ORDER BY task_id
+        FOR UPDATE NOWAIT
+        "#,
+        *warehouse_id,
+        tabular_ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(namespace_drop_lock_error)
 }
 
 async fn load_locked_namespace_drop_snapshot(
@@ -1189,27 +1238,22 @@ async fn load_locked_namespace_drop_snapshot(
     .await
     .map_err(namespace_drop_lock_error)?;
 
-    // Soft deletion holds this same tabular row lock until its expiration is committed.
-    sqlx::query_scalar!(
-        r#"
-        SELECT count(*) AS "locked!"
-        FROM (
-            SELECT tabular_id
-            FROM tabular
-            WHERE warehouse_id = $1 AND namespace_id = ANY($2)
-            ORDER BY tabular_id
-            FOR UPDATE NOWAIT
-        ) locked_tabulars
-        "#,
-        *warehouse_id,
-        &namespace_ids,
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(namespace_drop_lock_error)?;
+    let tabular_ids =
+        lock_namespace_drop_tabulars(warehouse_id, &namespace_ids, transaction).await?;
+    // Soft deletion commits its task under the tabular lock. This statement uses a fresh
+    // READ COMMITTED snapshot after acquiring those locks.
+    let expiration_task_ids =
+        lock_namespace_drop_expirations(warehouse_id, &tabular_ids, transaction).await?;
 
-    // A fresh read sees any soft deletion that committed before we acquired its row lock.
     let snapshot = load_namespace_drop_snapshot(warehouse_id, namespace_id, transaction).await?;
+    // The expiry IDs are part of open_tasks. The row locks keep each scheduled expiry eligible
+    // for cancellation by ID through the end of this transaction.
+    if snapshot.expiration_task_ids != expiration_task_ids {
+        return Err(NamespaceNotEmpty::new(warehouse_id, namespace_id)
+            .append_detail("Expiration tasks changed during the drop. Retry the recursive drop.")
+            .into());
+    }
+
     let locked: HashSet<_> = namespace_ids.into_iter().collect();
     if !locked.contains(&*namespace_id)
         || snapshot
@@ -1273,7 +1317,7 @@ pub(crate) async fn drop_namespace(
         return Err(ChildTabularProtected::new(warehouse_id, namespace_ident.clone()).into());
     }
 
-    if info.has_running_expiration {
+    if info.has_in_flight_expiration {
         return Err(NamespaceHasRunningTabularExpirations::new(
             warehouse_id,
             namespace_ident.clone(),
@@ -1281,12 +1325,11 @@ pub(crate) async fn drop_namespace(
         .into());
     }
 
-    // A failed expiration can leave the soft-deleted row without an active task. The row
-    // is removable only when its active expiration explicitly requests catalog-only deletion.
+    // A soft-deleted tabular needs a scheduled catalog-only expiration that the drop can cancel.
     if info.has_unresolved_soft_deletions {
         return Err(NamespaceNotEmpty::new(warehouse_id, namespace_ident)
             .append_detail(concat!(
-                "A soft-deleted table or view may still need a purge. Wait for its expiration to succeed. ",
+                "An expiration may still need to purge a table or view. Wait for its expiration to succeed. ",
                 "After a failure, look for the entity ID in the warehouse's failed expiration tasks. ",
                 "If the task history is unavailable, ask a catalog administrator to look up the ID in the catalog database. ",
                 "Undrop the table or view before dropping it again."
@@ -2269,6 +2312,85 @@ pub mod tests {
         assert_eq!(*child_id, TabularId::GenericTable(gt_id));
         assert_eq!(child_ident.name, gt_name);
         trx.commit().await.unwrap();
+    }
+
+    #[lakekeeper_storage_postgres::db_test]
+    async fn test_namespace_drop_locks_expiration_committed_between_statements(pool: sqlx::PgPool) {
+        use lakekeeper::{
+            api::management::v1::DeleteKind,
+            service::{
+                NamedEntity as _,
+                tasks::{
+                    ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
+                    tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+                },
+            },
+        };
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+        let namespace_id = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            Into::<NamespaceIdent>::into(table.namespace),
+            CachePolicy::Skip,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .namespace_id();
+
+        let mut drop_tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let tabular_ids =
+            lock_namespace_drop_tabulars(warehouse_id, &[*namespace_id], drop_tx.transaction())
+                .await
+                .unwrap();
+        assert_eq!(tabular_ids, [*table.table_id]);
+
+        let mut task_tx = PostgresTransaction::begin_write(state).await.unwrap();
+        let task_id = TabularExpirationTask::schedule_task::<PostgresBackend>(
+            ScheduleTaskMetadata {
+                resource_demand: None,
+                project_id,
+                parent_task_id: None,
+                scheduled_for: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                entity: TaskEntity::EntityInWarehouse {
+                    warehouse_id,
+                    entity_id: WarehouseTaskEntityId::Table {
+                        table_id: table.table_id,
+                    },
+                    entity_name: table.table_ident.into_name_parts(),
+                },
+            },
+            TabularExpirationPayload::new(DeleteKind::Default),
+            task_tx.transaction(),
+        )
+        .await
+        .unwrap()
+        .inserted()
+        .unwrap();
+        task_tx.commit().await.unwrap();
+
+        let locked =
+            lock_namespace_drop_expirations(warehouse_id, &tabular_ids, drop_tx.transaction())
+                .await
+                .unwrap();
+        assert_eq!(locked, [*task_id]);
+
+        let err = sqlx::query("SELECT task_id FROM task WHERE task_id = $1 FOR UPDATE NOWAIT")
+            .bind(*task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")),
+            "{err:?}"
+        );
+        drop_tx.rollback().await.unwrap();
     }
 
     #[lakekeeper_storage_postgres::db_test]

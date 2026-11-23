@@ -647,28 +647,27 @@ async fn force_drop_ns(ctx: &HidingCtx, warehouse_id: WarehouseId) -> lakekeeper
     .await
 }
 
-async fn pick_expiration_for(table: &SoftDeletedTable) -> TabularExpirationTask {
-    control_tasks(
-        &table.ctx,
-        table.warehouse_id,
-        ControlTaskAction::RunNow,
-        vec![table.task_id],
-    )
-    .await
-    .unwrap();
+async fn pick_expiration_for(
+    ctx: &HidingCtx,
+    warehouse_id: WarehouseId,
+    task_id: TaskId,
+) -> TabularExpirationTask {
+    control_tasks(ctx, warehouse_id, ControlTaskAction::RunNow, vec![task_id])
+        .await
+        .unwrap();
     let picked =
-        TabularExpirationTask::pick_new_task::<PostgresBackend>(table.ctx.v1_state.catalog.clone())
+        TabularExpirationTask::pick_new_task::<PostgresBackend>(ctx.v1_state.catalog.clone())
             .await
             .unwrap()
             .unwrap();
-    assert_eq!(picked.task_id(), table.task_id);
+    assert_eq!(picked.task_id(), task_id);
     picked
 }
 
 #[lakekeeper_storage_postgres::db_test]
 async fn test_recursive_namespace_drop_keeps_stopping_purge(pool: PgPool) {
     let table = soft_deleted_table_with_task(pool.clone()).await;
-    pick_expiration_for(&table).await;
+    pick_expiration_for(&table.ctx, table.warehouse_id, table.task_id).await;
     control_tasks(
         &table.ctx,
         table.warehouse_id,
@@ -695,9 +694,40 @@ async fn test_recursive_namespace_drop_keeps_stopping_purge(pool: PgPool) {
 }
 
 #[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_keeps_in_flight_catalog_only_expiration(pool: PgPool) {
+    let (ctx, warehouse_id, _, authorizer) =
+        namespace_with_soft_deleted_generic_table(pool.clone(), false).await;
+    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
+    assert_eq!(tasks.len(), 1);
+    let task_id = tasks[0];
+    pick_expiration_for(&ctx, warehouse_id, task_id).await;
+
+    for status in ["running", "should-stop"] {
+        if status == "should-stop" {
+            control_tasks(&ctx, warehouse_id, ControlTaskAction::Stop, vec![task_id])
+                .await
+                .unwrap();
+        }
+        let err = force_drop_ns(&ctx, warehouse_id).await.unwrap_err();
+        assert_eq!(err.error.code, http::StatusCode::CONFLICT, "{err:?}");
+        assert_eq!(err.error.r#type, "NamespaceHasRunningTabularExpirations");
+        let task_state: (String, String) = sqlx::query_as(
+            "SELECT status::text, task_data->>'deletion_kind' FROM task WHERE task_id = $1",
+        )
+        .bind(*task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(task_state, (status.to_owned(), "default".to_owned()));
+        assert_eq!(soft_deleted_names(&ctx, warehouse_id).await, ["tbl"]);
+        assert!(authorizer.deleted_generic_tables().is_empty());
+    }
+}
+
+#[lakekeeper_storage_postgres::db_test]
 async fn test_recursive_namespace_drop_keeps_table_after_failed_expiration(pool: PgPool) {
     let table = soft_deleted_table_with_task(pool.clone()).await;
-    let picked = pick_expiration_for(&table).await;
+    let picked = pick_expiration_for(&table.ctx, table.warehouse_id, table.task_id).await;
     picked
         .record_failure_with_decision::<PostgresBackend>(
             table.ctx.v1_state.catalog.clone(),
@@ -752,10 +782,10 @@ async fn test_recursive_namespace_drop_keeps_table_after_failed_expiration(pool:
         .unwrap();
 }
 
-async fn assert_recursive_drop_lock_conflict(table: &SoftDeletedTable) {
+async fn assert_recursive_drop_lock_conflict(ctx: &HidingCtx, warehouse_id: WarehouseId) {
     let err = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        force_drop_ns(&table.ctx, table.warehouse_id),
+        force_drop_ns(ctx, warehouse_id),
     )
     .await
     .expect("the recursive drop must return while the other transaction holds its lock")
@@ -775,8 +805,32 @@ async fn test_recursive_namespace_drop_retries_a_contended_namespace_lock(pool: 
     .fetch_one(&mut *t)
     .await
     .unwrap();
-    assert_recursive_drop_lock_conflict(&table).await;
+    assert_recursive_drop_lock_conflict(&table.ctx, table.warehouse_id).await;
     t.commit().await.unwrap();
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn test_recursive_namespace_drop_retries_a_contended_expiration_lock(pool: PgPool) {
+    let (ctx, warehouse_id, _, authorizer) =
+        namespace_with_soft_deleted_generic_table(pool.clone(), false).await;
+    let tasks = scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await;
+    assert_eq!(tasks.len(), 1);
+    let mut task_lock = pool.begin().await.unwrap();
+    sqlx::query("SELECT task_id FROM task WHERE task_id = $1 FOR UPDATE")
+        .bind(*tasks[0])
+        .fetch_one(&mut *task_lock)
+        .await
+        .unwrap();
+
+    assert_recursive_drop_lock_conflict(&ctx, warehouse_id).await;
+
+    task_lock.commit().await.unwrap();
+    assert_eq!(
+        scheduled_tasks(&ctx, warehouse_id, &EXPIRATION_QUEUE_NAME).await,
+        tasks
+    );
+    assert_eq!(soft_deleted_names(&ctx, warehouse_id).await, ["tbl"]);
+    assert!(authorizer.deleted_generic_tables().is_empty());
 }
 
 #[lakekeeper_storage_postgres::db_test]
@@ -824,7 +878,7 @@ async fn test_recursive_namespace_drop_retries_a_concurrent_soft_delete_purge(po
     .await
     .unwrap();
 
-    assert_recursive_drop_lock_conflict(&table).await;
+    assert_recursive_drop_lock_conflict(&table.ctx, table.warehouse_id).await;
     t.commit().await.unwrap();
 
     let err = force_drop_ns(&table.ctx, table.warehouse_id)
