@@ -111,7 +111,9 @@ normalize-rest-error-responses:
       (.paths[] | select(has("head")).head.responses[] |
         select(."$ref" == "#/components/responses/BadRequestErrorResponse")) = {"description": "Bad request."} |
       . as $doc |
-      (.paths[] | select(has("head")).head.responses[] | select(."$ref" | test("^#/components/responses/"))) |= (
+      (.paths[] | select(has("head")).head.responses[] |
+        select(."$ref" | tag == "!!str") |
+        select(."$ref" | test("^#/components/responses/"))) |= (
         (."$ref" | split("/") | .[-1]) as $name | $doc.components.responses[$name]
       ) |
       del(.paths[] | select(has("head")).head.responses[].content)
