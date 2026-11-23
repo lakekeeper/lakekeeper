@@ -723,12 +723,11 @@ where
     /// metadata from [`LakekeeperStorage::metadata`] or an entry of
     /// [`LakekeeperStorage::list`].
     ///
-    /// On S3 and ADLS the read is pinned to the `ETag` of `info`: it fails with
-    /// [`ErrorKind::ConditionNotMatch`] if the object's `ETag` changed since, which on ADLS a
-    /// write of only the path's metadata or properties also does. On S3 this needs no
-    /// permission to read object versions. Without an `ETag` in `info`, S3 reads the current
-    /// object unpinned; ADLS does too, unless `info` names a version, which fails with
-    /// [`ErrorKind::Unsupported`].
+    /// On S3 and ADLS the read is pinned to the `ETag` of `info` and not to a version: it
+    /// fails with [`ErrorKind::ConditionNotMatch`] if the object's `ETag` changed since, which
+    /// on ADLS a write of only the path's metadata or properties also does. On S3 this needs
+    /// no permission to read object versions. Without an `ETag` in `info`, both read as
+    /// [`LakekeeperStorage::read_range`] does.
     ///
     /// The default reads the version `info` names, or the current object, unpinned, if it
     /// names none. The in-memory backend uses the default, and its listings name no version.

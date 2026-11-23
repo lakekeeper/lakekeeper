@@ -157,7 +157,8 @@ impl AdlsStorage {
     }
 
     /// Read a byte range of the file at `path`. With `e_tag`, every request sends
-    /// `If-Match`, so a file replaced since fails with [`ErrorKind::ConditionNotMatch`].
+    /// `If-Match`, so a file changed since fails with [`ErrorKind::ConditionNotMatch`].
+    /// Without one, the chunks of a large range are pinned to the `ETag` of a `HEAD`.
     async fn read_file_range(
         &self,
         path: &str,
@@ -197,16 +198,16 @@ impl AdlsStorage {
                 .map(|gfr| gfr.data);
         }
 
-        let pin = match e_tag {
-            Some(e_tag) => ChunkPin::ETag(e_tag.to_string()),
-            None => ChunkPin::LastModified(head(&client, &adls_location).await?.last_modified),
+        let e_tag = match e_tag {
+            Some(e_tag) => e_tag.to_string(),
+            None => head(&client, &adls_location).await?.etag,
         };
         parallel_chunked_read_with_integrity(
             &client,
             path,
             range.start,
             range_size,
-            pin,
+            e_tag,
             adls_location,
         )
         .await
@@ -517,7 +518,7 @@ impl LakekeeperStorage for AdlsStorage {
                 path,
                 0,
                 file_size,
-                ChunkPin::LastModified(head_response.last_modified),
+                head_response.etag,
                 adls_location,
             )
             .await?
@@ -534,19 +535,13 @@ impl LakekeeperStorage for AdlsStorage {
         self.read_file_range(path, None, range).await
     }
 
-    /// Pins the read to the `ETag` of `info`. This backend reads no versions: a version is
-    /// not used when an `ETag` pins the read, and fails as in
-    /// [`LakekeeperStorage::read_range_version`] without one.
     async fn read_range_of(
         &self,
         path: &str,
         info: &FileInfo,
         range: std::ops::Range<u64>,
     ) -> Result<Bytes, ReadError> {
-        match (info.e_tag(), info.version()) {
-            (None, Some(version)) => self.read_range_version(path, version, range).await,
-            (e_tag, _) => self.read_file_range(path, e_tag, range).await,
-        }
+        self.read_file_range(path, info.e_tag(), range).await
     }
 
     async fn list(
@@ -794,24 +789,15 @@ async fn fetch_range(
     })
 }
 
-/// What keeps the chunks of one parallel read on the same file.
-#[derive(Debug, Clone)]
-enum ChunkPin {
-    /// Each chunk must report this last-modified time.
-    LastModified(time::OffsetDateTime),
-    /// Each chunk sends `If-Match` with this `ETag`.
-    ETag(String),
-}
-
-/// Run a parallel-chunked download over `[range_start, range_start + range_size)`,
-/// with every chunk pinned by `pin`, so concurrent overwrites cannot silently produce a
-/// corrupt download.
+/// Run a parallel-chunked download over `[range_start, range_start + range_size)`. Every
+/// chunk sends `If-Match` with `e_tag`, so a file that changes during the download fails it
+/// with [`ErrorKind::ConditionNotMatch`].
 async fn parallel_chunked_read_with_integrity(
     client: &FileClient,
     error_context: &str,
     range_start: u64,
     range_size: usize,
-    pin: ChunkPin,
+    e_tag: String,
     adls_location: AdlsLocation,
 ) -> Result<Bytes, ReadError> {
     if range_size == 0 {
@@ -828,37 +814,24 @@ async fn parallel_chunked_read_with_integrity(
             let abs_start = range_start + rel_start as u64;
             let abs_end = range_start + rel_end as u64 + 1;
             let adls_location = adls_location.clone();
-            let pin = pin.clone();
+            let e_tag = e_tag.clone();
             async move {
-                let if_match = match &pin {
-                    ChunkPin::ETag(e_tag) => Some(e_tag.as_str()),
-                    ChunkPin::LastModified(_) => None,
-                };
-                let response = fetch_range(&client, abs_start..abs_end, if_match, adls_location.clone())
+                let chunk = abs_start..abs_end;
+                let response = fetch_range(&client, chunk, Some(&e_tag), adls_location)
                     .await
                     .map_err(|e| match e {
                         ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
                             "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
                         ))),
-                        invalid_location_error @ ReadError::InvalidLocation(_) => invalid_location_error,
+                        invalid_location_error @ ReadError::InvalidLocation(_) => {
+                            invalid_location_error
+                        }
                     })?;
-                if let ChunkPin::LastModified(head_last_modified) = pin
-                    && response.last_modified != head_last_modified
-                {
-                    return Err(ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!(
-                            "File was modified during chunked parallel download: expected last modified time {}, got {}",
-                            head_last_modified, response.last_modified
-                        ),
-                        adls_location.to_string(),
-                    )));
-                }
                 Ok((chunk_index, response.data))
             }
         },
     )
-        .await
+    .await
 }
 
 /// Create the empty target file. ADLS requires an explicit `create` before
@@ -1225,16 +1198,25 @@ mod tests {
     type Requests = Arc<std::sync::Mutex<Vec<(axum::http::Method, Option<String>)>>>;
 
     /// Size of the file [`file_storage`] serves: larger than one request.
-    const FILE_SIZE: u64 = MAX_BYTES_PER_REQUEST as u64 + 1;
+    const FILE_SIZE: u64 = MAX_BYTES_PER_REQUEST as u64 + 2;
+    /// A range of [`FILE`] that one request reads.
+    const SMALL_RANGE: std::ops::Range<u64> = 1..5;
+    /// A range of [`FILE`] that two chunks read.
+    const LARGE_RANGE: std::ops::Range<u64> = 1..FILE_SIZE;
 
     const GET: axum::http::Method = axum::http::Method::GET;
     const HEAD: axum::http::Method = axum::http::Method::HEAD;
 
+    /// Bytes `range` of the file [`file_storage`] serves: byte `i` is `i % 251`.
+    fn file_bytes(range: std::ops::Range<u64>) -> Bytes {
+        range.map(|i| u8::try_from(i % 251).unwrap()).collect()
+    }
+
     /// Storage of account `account` whose endpoint serves one file of [`FILE_SIZE`] bytes,
-    /// every read of it returning `data`. The file has `ETag` `"0x1"` until
-    /// `changed_after` requests have been answered, then `"0x2"` and a later last-modified
-    /// time. A request whose `If-Match` differs from the current `ETag` gets `412`. The
-    /// endpoint records every request.
+    /// with the content of [`file_bytes`]. A GET returns the range its `x-ms-range` header
+    /// names. The file has `ETag` `"0x1"` until `changed_after` requests have been answered,
+    /// then `"0x2"` and a later last-modified time. A request whose `If-Match` differs from
+    /// the current `ETag` gets `412`. The endpoint records every request.
     async fn file_storage(account: &str, changed_after: Option<usize>) -> (AdlsStorage, Requests) {
         use axum::response::IntoResponse as _;
 
@@ -1270,10 +1252,22 @@ mod tests {
                     )
                         .into_response()
                 } else {
+                    // `bytes=<first>-<last>`, both inclusive.
+                    let range = headers["x-ms-range"].to_str().unwrap();
+                    let (first, last) = range
+                        .strip_prefix("bytes=")
+                        .and_then(|range| range.split_once('-'))
+                        .unwrap();
+                    let first: u64 = first.parse().unwrap();
+                    let last = last.parse::<u64>().unwrap().min(FILE_SIZE - 1);
                     (
                         axum::http::StatusCode::PARTIAL_CONTENT,
-                        [("etag", e_tag), ("last-modified", last_modified)],
-                        "data",
+                        [
+                            ("etag", e_tag.to_string()),
+                            ("last-modified", last_modified.to_string()),
+                            ("content-range", format!("bytes {first}-{last}/{FILE_SIZE}")),
+                        ],
+                        file_bytes(first..last + 1),
                     )
                         .into_response()
                 };
@@ -1355,11 +1349,11 @@ mod tests {
         let (storage, requests) = file_storage("account", None).await;
 
         let bytes = storage
-            .read_range_of(FILE, &info_with_e_tag(Some("\"0x1\"")), 0..4)
+            .read_range_of(FILE, &info_with_e_tag(Some("\"0x1\"")), SMALL_RANGE)
             .await
             .unwrap();
 
-        assert_eq!(bytes, Bytes::from_static(b"data"));
+        assert_eq!(bytes, file_bytes(SMALL_RANGE));
         assert_eq!(
             *requests.lock().unwrap(),
             vec![(GET, Some("\"0x1\"".to_string()))]
@@ -1372,11 +1366,11 @@ mod tests {
 
         // Two chunks, and no `HEAD` to pin them.
         let bytes = storage
-            .read_range_of(FILE, &info_with_e_tag(Some("\"0x1\"")), 0..FILE_SIZE)
+            .read_range_of(FILE, &info_with_e_tag(Some("\"0x1\"")), LARGE_RANGE)
             .await
             .unwrap();
 
-        assert_eq!(bytes.len(), MAX_BYTES_PER_REQUEST + 1);
+        assert_eq!(bytes, file_bytes(LARGE_RANGE));
         assert_eq!(
             *requests.lock().unwrap(),
             vec![(GET, Some("\"0x1\"".to_string())); 2]
@@ -1387,7 +1381,7 @@ mod tests {
     async fn a_range_of_a_replaced_file_fails_the_precondition() {
         let (storage, requests) = file_storage("account", Some(0)).await;
 
-        for range in [0..4, 0..FILE_SIZE] {
+        for range in [SMALL_RANGE, LARGE_RANGE] {
             let error = storage
                 .read_range_of(FILE, &info_with_e_tag(Some("\"0x1\"")), range.clone())
                 .await
@@ -1414,7 +1408,7 @@ mod tests {
         let (storage, requests) = file_storage("account", Some(1)).await;
 
         let error = storage
-            .read_range_of(FILE, &info_with_e_tag(Some("\"0x1\"")), 0..FILE_SIZE)
+            .read_range_of(FILE, &info_with_e_tag(Some("\"0x1\"")), LARGE_RANGE)
             .await
             .unwrap_err();
 
@@ -1426,88 +1420,102 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_range_without_an_etag_is_not_pinned() {
+    async fn a_single_request_range_without_an_etag_is_not_pinned() {
         let (storage, requests) = file_storage("account", None).await;
 
-        storage
-            .read_range_of(FILE, &info_with_e_tag(None), 0..4)
+        let range_of = storage
+            .read_range_of(FILE, &info_with_e_tag(None), SMALL_RANGE)
             .await
             .unwrap();
-        storage.read_range(FILE, 0..4).await.unwrap();
+        let range = storage.read_range(FILE, SMALL_RANGE).await.unwrap();
 
+        assert_eq!(range_of, file_bytes(SMALL_RANGE));
+        assert_eq!(range, file_bytes(SMALL_RANGE));
         assert_eq!(*requests.lock().unwrap(), vec![(GET, None); 2]);
     }
 
     #[tokio::test]
-    async fn unpinned_chunks_are_held_to_the_last_modified_time_of_a_head() {
+    async fn chunks_without_an_etag_are_pinned_to_the_etag_of_a_head() {
         let (storage, requests) = file_storage("account", None).await;
 
-        let range = storage.read_range(FILE, 0..FILE_SIZE).await.unwrap();
+        let range = storage.read_range(FILE, LARGE_RANGE).await.unwrap();
         let range_of = storage
-            .read_range_of(FILE, &info_with_e_tag(None), 0..FILE_SIZE)
+            .read_range_of(FILE, &info_with_e_tag(None), LARGE_RANGE)
             .await
             .unwrap();
         let read = storage.read(FILE).await.unwrap();
 
-        for bytes in [range, range_of, read.bytes] {
-            assert_eq!(bytes.len(), MAX_BYTES_PER_REQUEST + 1);
-        }
-        let one_read = vec![(HEAD, None), (GET, None), (GET, None)];
+        assert_eq!(range, file_bytes(LARGE_RANGE));
+        assert_eq!(range_of, file_bytes(LARGE_RANGE));
+        assert_eq!(read.bytes, file_bytes(0..FILE_SIZE));
+        let one_read = vec![
+            (HEAD, None),
+            (GET, Some("\"0x1\"".to_string())),
+            (GET, Some("\"0x1\"".to_string())),
+        ];
         assert_eq!(
             *requests.lock().unwrap(),
             [one_read.clone(), one_read.clone(), one_read].concat()
         );
     }
 
-    /// Asserts that an unpinned chunked read failed because the file changed after its
-    /// `HEAD`: unpinned requests, and the error of a last-modified mismatch.
-    fn assert_changed_after_the_head(error: ReadError, requests: &Requests) {
-        assert_eq!(io_error(error), (ErrorKind::Unexpected, None));
-        // The first chunk fails, so the second may not have been sent.
-        let requests = requests.lock().unwrap();
-        assert_eq!(requests[0], (HEAD, None));
-        assert!(
-            requests[1..].iter().all(|request| *request == (GET, None)),
-            "{requests:?}"
+    /// Asserts that a chunked read without an `ETag` failed because the file changed between
+    /// its chunks: both chunks were pinned to the `ETag` of the `HEAD`, and the second failed.
+    fn assert_changed_between_the_chunks(error: ReadError, requests: &Requests) {
+        assert_eq!(io_error(error), (ErrorKind::ConditionNotMatch, Some(412)));
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                (HEAD, None),
+                (GET, Some("\"0x1\"".to_string())),
+                (GET, Some("\"0x1\"".to_string())),
+            ]
         );
     }
 
     #[tokio::test]
-    async fn a_file_replaced_during_an_unpinned_chunked_read_is_unexpected() {
-        // The file changes after the `HEAD`, so the chunks report a later last-modified time.
-        let (storage, requests) = file_storage("account", Some(1)).await;
-        let error = storage.read_range(FILE, 0..FILE_SIZE).await.unwrap_err();
-        assert_changed_after_the_head(error, &requests);
+    async fn a_file_changed_during_a_chunked_read_without_an_etag_fails_the_precondition() {
+        // The `HEAD` and the first chunk are answered before the file changes, the second
+        // chunk after.
+        let changed_after = Some(2);
 
-        let (storage, requests) = file_storage("account", Some(1)).await;
+        let (storage, requests) = file_storage("account", changed_after).await;
+        let error = storage.read_range(FILE, LARGE_RANGE).await.unwrap_err();
+        assert_changed_between_the_chunks(error, &requests);
+
+        let (storage, requests) = file_storage("account", changed_after).await;
+        let error = storage
+            .read_range_of(FILE, &info_with_e_tag(None), LARGE_RANGE)
+            .await
+            .unwrap_err();
+        assert_changed_between_the_chunks(error, &requests);
+
+        let (storage, requests) = file_storage("account", changed_after).await;
         let error = storage.read(FILE).await.unwrap_err();
-        assert_changed_after_the_head(error, &requests);
+        assert_changed_between_the_chunks(error, &requests);
     }
 
     #[tokio::test]
-    async fn a_version_without_an_etag_is_not_read() {
-        let (storage, requests) = file_storage("account", None).await;
+    async fn a_version_in_the_info_is_not_read() {
         let versioned = |e_tag: Option<&str>| {
             info_with_e_tag(e_tag).with_version(Some("2026-11-05T10:00:00Z".to_string()))
         };
 
-        let error = storage
-            .read_range_of(FILE, &versioned(None), 0..4)
-            .await
-            .unwrap_err();
-        assert_eq!(io_error(error), (ErrorKind::Unsupported, None));
-        assert_eq!(*requests.lock().unwrap(), vec![]);
+        for e_tag in [None, Some("\"0x1\"")] {
+            let (storage, requests) = file_storage("account", None).await;
 
-        // An `ETag` pins the read.
-        let bytes = storage
-            .read_range_of(FILE, &versioned(Some("\"0x1\"")), 0..4)
-            .await
-            .unwrap();
-        assert_eq!(bytes, Bytes::from_static(b"data"));
-        assert_eq!(
-            *requests.lock().unwrap(),
-            vec![(GET, Some("\"0x1\"".to_string()))]
-        );
+            let bytes = storage
+                .read_range_of(FILE, &versioned(e_tag), SMALL_RANGE)
+                .await
+                .unwrap();
+
+            assert_eq!(bytes, file_bytes(SMALL_RANGE), "{e_tag:?}");
+            assert_eq!(
+                *requests.lock().unwrap(),
+                vec![(GET, e_tag.map(ToString::to_string))],
+                "{e_tag:?}"
+            );
+        }
     }
 
     #[cfg(feature = "object-store")]
@@ -1532,8 +1540,8 @@ mod tests {
 
             let (storage, requests) = file_storage(account, None).await;
             let bridge = ObjectStoreBridge::new(Arc::new(storage), &base);
-            let bytes = bridge.get_range(&path, 0..4).await.unwrap();
-            assert_eq!(bytes, Bytes::from_static(b"data"), "{account}");
+            let bytes = bridge.get_range(&path, SMALL_RANGE).await.unwrap();
+            assert_eq!(bytes, file_bytes(SMALL_RANGE), "{account}");
             assert_eq!(
                 *requests.lock().unwrap(),
                 vec![(HEAD, None), (GET, Some("\"0x1\"".to_string()))],
@@ -1543,7 +1551,7 @@ mod tests {
             // The file changes after the `HEAD`.
             let (storage, requests) = file_storage(account, Some(1)).await;
             let bridge = ObjectStoreBridge::new(Arc::new(storage), &base);
-            let error = bridge.get_range(&path, 0..4).await.unwrap_err();
+            let error = bridge.get_range(&path, SMALL_RANGE).await.unwrap_err();
             let object_store::Error::Precondition { path: failed, .. } = &error else {
                 panic!("{account}: expected Precondition, got {error:?}");
             };
