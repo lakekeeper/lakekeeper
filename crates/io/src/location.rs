@@ -1,6 +1,6 @@
 use std::str::{FromStr, RMatchIndices};
 
-use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 /// Schemes that address the same storage as `s3`.
 pub const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];

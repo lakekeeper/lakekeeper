@@ -92,7 +92,7 @@ pub(crate) fn ensure_schema_content_stable<'a>(
 /// # Errors
 ///
 /// Returns an error for malformed locations, paths outside or equal to the table location,
-/// or ambiguous path segments below it.
+/// or ambiguous path segments below it. Ambiguous-path errors include the file and table locations.
 fn check_file_in_table_location(update: &TableUpdate, table_location: &Location) -> Result<()> {
     let (kind, path) = match update {
         TableUpdate::AddSnapshot { snapshot } => ("manifest list", snapshot.manifest_list()),
@@ -128,6 +128,7 @@ fn check_file_in_table_location(update: &TableUpdate, table_location: &Location)
             FileLocationError::InvalidPathSegment {
                 kind,
                 file: file_location.clone(),
+                table: table_location.clone(),
                 segment: err,
             }
         })?;
@@ -174,11 +175,12 @@ enum FileLocationError {
     },
     #[error(
         "Cannot set {kind} whose file '{file}' \
-         contains an ambiguous path segment: '{segment}'"
+         contains an ambiguous path segment: '{segment}' below the table location: '{table}'"
     )]
     InvalidPathSegment {
         kind: &'static str,
         file: Location,
+        table: Location,
         segment: String,
     },
 }
@@ -802,58 +804,59 @@ mod tests {
         fn malformed_locations_report_the_parse_error_with_file_context() {
             let path = "not-a-location";
             let expected_source = path.parse::<Location>().unwrap_err();
-            file_location_errors(path, "FailedToParseFileLocation")
+            for (error, expected_kind) in file_location_errors(path, "FailedToParseFileLocation")
                 .into_iter()
                 .zip(["manifest list", "statistics file", "statistics file"])
-                .for_each(|(error, expected_kind)| {
-                    let source = file_location_error_source(&error);
-                    let FileLocationError::Parse {
-                        kind,
-                        path: error_path,
-                        source: parse_error,
-                    } = source
-                    else {
-                        panic!("expected a parse-error source, got {source:?}");
-                    };
-                    assert_eq!(*kind, expected_kind);
-                    assert_eq!(error_path, path);
-                    assert_eq!(parse_error, &expected_source);
-                });
+            {
+                let source = file_location_error_source(&error);
+                let FileLocationError::Parse {
+                    kind,
+                    path: error_path,
+                    source: parse_error,
+                } = source
+                else {
+                    panic!("expected a parse-error source, got {source:?}");
+                };
+                assert_eq!(*kind, expected_kind);
+                assert_eq!(error_path, path);
+                assert_eq!(parse_error, &expected_source);
+            }
         }
 
         #[test]
         fn trailing_slash_parents_do_not_hide_the_first_ambiguous_segment() {
             let path = "s3://bucket/table/%2e%2e/other/metadata/file.avro";
-            ["s3://bucket/table/", "s3://bucket/table///"]
-                .into_iter()
-                .for_each(|table_location| {
-                    let table_location: Location = table_location.parse().unwrap();
-                    file_updates(path, 0)
-                        .into_iter()
-                        .zip(["manifest list", "statistics file", "statistics file"])
-                        .for_each(|(update, expected_kind)| {
-                            let error = check_file_in_table_location(&update, &table_location)
-                                .unwrap_err()
-                                .error;
-                            assert_eq!(
-                                (error.code, error.r#type.as_str()),
-                                (400, "FileOutsideTableLocation"),
-                                "file path: {path}; table location: {table_location}",
-                            );
-                            let source = file_location_error_source(&error);
-                            let FileLocationError::InvalidPathSegment {
-                                kind,
-                                file,
-                                segment,
-                            } = source
-                            else {
-                                panic!("expected an invalid-path-segment source, got {source:?}");
-                            };
-                            assert_eq!(*kind, expected_kind);
-                            assert_eq!(file.as_str(), path);
-                            assert_eq!(segment, "%2e%2e");
-                        });
-                });
+            for table_location in ["s3://bucket/table/", "s3://bucket/table///"] {
+                let table_location: Location = table_location.parse().unwrap();
+                for (update, expected_kind) in file_updates(path, 0).into_iter().zip([
+                    "manifest list",
+                    "statistics file",
+                    "statistics file",
+                ]) {
+                    let error = check_file_in_table_location(&update, &table_location)
+                        .unwrap_err()
+                        .error;
+                    assert_eq!(
+                        (error.code, error.r#type.as_str()),
+                        (400, "FileOutsideTableLocation"),
+                        "file path: {path}; table location: {table_location}",
+                    );
+                    let source = file_location_error_source(&error);
+                    let FileLocationError::InvalidPathSegment {
+                        kind,
+                        file,
+                        table,
+                        segment,
+                    } = source
+                    else {
+                        panic!("expected an invalid-path-segment source, got {source:?}");
+                    };
+                    assert_eq!(*kind, expected_kind);
+                    assert_eq!(file.as_str(), path);
+                    assert_eq!(table, &table_location);
+                    assert_eq!(segment, "%2e%2e");
+                }
+            }
         }
 
         #[test]
@@ -873,25 +876,34 @@ mod tests {
         }
 
         #[test]
-        fn first_ambiguous_segment_is_reported_with_file_context() {
+        fn first_ambiguous_segment_is_reported_with_file_and_table_context() {
             let path = "s3://bucket/table/metadata/%2e%2e/x%2Fy/file.avro";
-            file_location_errors(path, "FileOutsideTableLocation")
+            for (error, expected_kind) in file_location_errors(path, "FileOutsideTableLocation")
                 .into_iter()
                 .zip(["manifest list", "statistics file", "statistics file"])
-                .for_each(|(error, expected_kind)| {
-                    let source = file_location_error_source(&error);
-                    let FileLocationError::InvalidPathSegment {
-                        kind,
-                        file,
-                        segment,
-                    } = source
-                    else {
-                        panic!("expected an invalid-path-segment source, got {source:?}");
-                    };
-                    assert_eq!(*kind, expected_kind);
-                    assert_eq!(file.as_str(), path);
-                    assert_eq!(segment, "%2e%2e");
-                });
+            {
+                let source = file_location_error_source(&error);
+                let FileLocationError::InvalidPathSegment {
+                    kind,
+                    file,
+                    table,
+                    segment,
+                } = source
+                else {
+                    panic!("expected an invalid-path-segment source, got {source:?}");
+                };
+                assert_eq!(*kind, expected_kind);
+                assert_eq!(file.as_str(), path);
+                assert_eq!(table.as_str(), "s3://bucket/table");
+                assert_eq!(segment, "%2e%2e");
+                assert_eq!(
+                    error.message,
+                    format!(
+                        "Cannot set {expected_kind} whose file '{path}' \
+                         contains an ambiguous path segment: '%2e%2e' below the table location: 's3://bucket/table'"
+                    ),
+                );
+            }
         }
 
         #[test]
