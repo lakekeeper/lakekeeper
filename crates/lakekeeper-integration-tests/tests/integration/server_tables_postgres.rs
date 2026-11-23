@@ -562,7 +562,7 @@ async fn test_set_ref(pool: PgPool) {
         .with_timestamp_ms(last_updated + 1)
         .with_sequence_number(0)
         .with_schema_id(0)
-        .with_manifest_list("/snap-1.avro")
+        .with_manifest_list(format!("{}/metadata/snap-1.avro", table.metadata.location()))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::from_iter(vec![
@@ -981,7 +981,7 @@ async fn test_table_v3(pg_pool: PgPool) {
         1,
         last_updated + 1,
         1,
-        "/snap-1.avro",
+        &format!("{}/metadata/snap-1.avro", table.metadata.location()),
         Some((0, 100)),
         100,
         "key-1",
@@ -1032,7 +1032,7 @@ async fn test_table_v3(pg_pool: PgPool) {
         2,
         last_updated + 2,
         2,
-        "/snap-2-invalid.avro",
+        &format!("{}/metadata/snap-2-invalid.avro", table.metadata.location()),
         Some((50, 100)),
         100,
         "key-1",
@@ -1079,7 +1079,7 @@ async fn test_table_v3(pg_pool: PgPool) {
         3,
         last_updated + 3,
         2,
-        "/snap-3-valid.avro",
+        &format!("{}/metadata/snap-3-valid.avro", table.metadata.location()),
         Some((100, 50)), // first_row_id: 100, added_rows_count: 50
         50,              // added_records: 50
         "key-1",
@@ -1110,7 +1110,7 @@ async fn test_table_v3(pg_pool: PgPool) {
     );
     let snapshot = final_table.metadata.snapshot_by_id(3).unwrap();
     assert_eq!(snapshot.row_range(), Some((100, 50)));
-    assert_eq!(snapshot.manifest_list(), "/snap-3-valid.avro");
+    assert_eq!(snapshot.manifest_list(), format!("{}/metadata/snap-3-valid.avro", final_table.metadata.location()));
 }
 
 #[lakekeeper_storage_postgres::db_test]
@@ -1173,7 +1173,7 @@ async fn test_v2_to_v3_migration(pg_pool: PgPool) {
         .with_timestamp_ms(last_updated + 1)
         .with_sequence_number(1)
         .with_schema_id(0)
-        .with_manifest_list("/snap-1.avro")
+        .with_manifest_list(format!("{}/metadata/snap-1.avro", table.metadata.location()))
         // No row_range for V2 table - this is the realistic scenario
         .with_summary(Summary {
             operation: Operation::Append,
@@ -1283,7 +1283,7 @@ async fn test_v2_to_v3_migration(pg_pool: PgPool) {
         .with_timestamp_ms(last_updated + 2)
         .with_sequence_number(2)
         .with_schema_id(0)
-        .with_manifest_list("/snap-2.avro")
+        .with_manifest_list(format!("{}/metadata/snap-2.avro", table.metadata.location()))
         .with_row_range(0, 50) // first_row_id: 0, added_rows_count: 50
         .with_summary(Summary {
             operation: Operation::Append,
@@ -1350,7 +1350,7 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         .with_timestamp_ms(last_updated + 1)
         .with_sequence_number(0)
         .with_schema_id(0)
-        .with_manifest_list("/snap-1.avro")
+        .with_manifest_list(format!("{}/metadata/snap-1.avro", table.metadata.location()))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::from_iter(vec![
@@ -1433,7 +1433,7 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         .with_timestamp_ms(last_updated + 1)
         .with_sequence_number(1)
         .with_schema_id(0)
-        .with_manifest_list("/snap-2.avro")
+        .with_manifest_list(format!("{}/metadata/snap-2.avro", table.metadata.location()))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::from_iter(vec![
@@ -1498,7 +1498,7 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         .with_parent_snapshot_id(Some(2))
         .with_sequence_number(2)
         .with_schema_id(0)
-        .with_manifest_list("/snap-2.avro")
+        .with_manifest_list(format!("{}/metadata/snap-2.avro", table.metadata.location()))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::from_iter(vec![
@@ -1628,7 +1628,7 @@ async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_poo
             .with_timestamp_ms(metadata.last_updated_ms() + 1)
             .with_sequence_number(snapshot_id)
             .with_schema_id(0)
-            .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+            .with_manifest_list(format!("{}/snap-{snapshot_id}.avro", table.metadata.location()))
             .with_summary(Summary {
                 operation: Operation::Append,
                 additional_properties: HashMap::new(),
@@ -1740,7 +1740,9 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// Build a snapshot with its manifest list below the table location.
 fn snapshot_at(
+    table_location: &str,
     snapshot_id: i64,
     parent: Option<i64>,
     sequence_number: i64,
@@ -1752,7 +1754,7 @@ fn snapshot_at(
         .with_timestamp_ms(timestamp_ms)
         .with_sequence_number(sequence_number)
         .with_schema_id(0)
-        .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+        .with_manifest_list(format!("{table_location}/metadata/snap-{snapshot_id}.avro"))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::new(),
@@ -1826,7 +1828,7 @@ async fn load_as_client(
 /// snapshot-log entries keep the client's time.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_commit_stamps_last_updated_ms_with_the_server_clock(pool: PgPool) {
-    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let (ctx, _ns, ns_params, table) = commit_test_setup(pool).await;
     CatalogServer::create_table(
         ns_params.clone(),
         create_request(Some("tab-2".to_string()), Some(false)),
@@ -1847,7 +1849,7 @@ async fn test_commit_stamps_last_updated_ms_with_the_server_clock(pool: PgPool) 
                 "tab-1",
                 vec![
                     TableUpdate::AddSnapshot {
-                        snapshot: snapshot_at(1, None, 1, client_ms),
+                        snapshot: snapshot_at(table.metadata.location(), 1, None, 1, client_ms),
                     },
                     set_ref(MAIN_BRANCH, 1),
                 ],
@@ -1875,13 +1877,13 @@ async fn test_commit_stamps_last_updated_ms_with_the_server_clock(pool: PgPool) 
 /// metadata file loadable, and a client with a correct clock commits next.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadable(pool: PgPool) {
-    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let (ctx, _ns, ns_params, table) = commit_test_setup(pool).await;
     try_commit_tab_1(
         &ctx,
         &ns_params,
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(1, None, 1, now_ms()),
+                snapshot: snapshot_at(table.metadata.location(), 1, None, 1, now_ms()),
             },
             set_ref(MAIN_BRANCH, 1),
         ],
@@ -1896,7 +1898,7 @@ async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadabl
         &ns_params,
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(2, Some(1), 2, fast),
+                snapshot: snapshot_at(table.metadata.location(), 2, Some(1), 2, fast),
             },
             set_ref("b", 2),
         ],
@@ -1919,13 +1921,13 @@ async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadabl
             },
         ],
         vec![TableUpdate::AddSnapshot {
-            snapshot: snapshot_at(3, Some(1), 3, fast),
+            snapshot: snapshot_at(table.metadata.location(), 3, Some(1), 3, fast),
         }],
         vec![set_property("after-stage")],
         vec![set_ref(MAIN_BRANCH, 3)],
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(4, Some(3), 4, now_ms() + 1000),
+                snapshot: snapshot_at(table.metadata.location(), 4, Some(3), 4, now_ms() + 1000),
             },
             set_ref(MAIN_BRANCH, 4),
         ],
@@ -1945,24 +1947,24 @@ async fn test_fast_client_on_a_branch_or_staged_snapshot_keeps_the_table_loadabl
 /// on a branch, as with Iceberg Java's REST catalog, and every stored file loads.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_slow_writer_commits(pool: PgPool) {
-    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let (ctx, _ns, ns_params, table) = commit_test_setup(pool).await;
     let slow_ms = || now_ms() - 2 * 60 * 1000;
     let commits = vec![
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(1, None, 1, slow_ms()),
+                snapshot: snapshot_at(table.metadata.location(), 1, None, 1, slow_ms()),
             },
             set_ref(MAIN_BRANCH, 1),
         ],
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(2, Some(1), 2, slow_ms() + 1),
+                snapshot: snapshot_at(table.metadata.location(), 2, Some(1), 2, slow_ms() + 1),
             },
             set_ref(MAIN_BRANCH, 2),
         ],
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(3, Some(2), 3, slow_ms() + 2),
+                snapshot: snapshot_at(table.metadata.location(), 3, Some(2), 3, slow_ms() + 2),
             },
             set_ref("b", 3),
         ],
@@ -1982,13 +1984,13 @@ async fn test_slow_writer_commits(pool: PgPool) {
 /// Iceberg Java refuses it, and the table does not change.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_fast_client_on_main_is_refused(pool: PgPool) {
-    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let (ctx, _ns, ns_params, table) = commit_test_setup(pool).await;
     try_commit_tab_1(
         &ctx,
         &ns_params,
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(1, None, 1, now_ms()),
+                snapshot: snapshot_at(table.metadata.location(), 1, None, 1, now_ms()),
             },
             set_ref(MAIN_BRANCH, 1),
         ],
@@ -2002,7 +2004,13 @@ async fn test_fast_client_on_main_is_refused(pool: PgPool) {
         &ns_params,
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(2, Some(1), 2, now_ms() + 2 * HOUR_MS),
+                snapshot: snapshot_at(
+                    table.metadata.location(),
+                    2,
+                    Some(1),
+                    2,
+                    now_ms() + 2 * HOUR_MS,
+                ),
             },
             set_ref(MAIN_BRANCH, 2),
         ],
@@ -2021,13 +2029,13 @@ async fn test_fast_client_on_main_is_refused(pool: PgPool) {
 /// not change. Clients cannot append to a table whose `main` is a tag.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_main_as_tag_is_refused(pool: PgPool) {
-    let (ctx, _ns, ns_params, _) = commit_test_setup(pool).await;
+    let (ctx, _ns, ns_params, table) = commit_test_setup(pool).await;
     try_commit_tab_1(
         &ctx,
         &ns_params,
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(1, None, 1, now_ms()),
+                snapshot: snapshot_at(table.metadata.location(), 1, None, 1, now_ms()),
             },
             set_ref(MAIN_BRANCH, 1),
         ],
@@ -2049,7 +2057,7 @@ async fn test_main_as_tag_is_refused(pool: PgPool) {
         vec![tag(MAIN_BRANCH, 1)],
         vec![
             TableUpdate::AddSnapshot {
-                snapshot: snapshot_at(2, Some(1), 2, now_ms()),
+                snapshot: snapshot_at(table.metadata.location(), 2, Some(1), 2, now_ms()),
             },
             tag(MAIN_BRANCH, 2),
         ],
@@ -2155,7 +2163,7 @@ async fn test_stale_snapshot_after_a_branch_commit_is_a_conflict(pool: PgPool) {
             .with_timestamp_ms(ts + snapshot_id)
             .with_sequence_number(sequence_number)
             .with_schema_id(0)
-            .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+            .with_manifest_list(format!("{}/metadata/snap-{snapshot_id}.avro", table.metadata.location()))
             .with_summary(Summary {
                 operation: Operation::Append,
                 additional_properties: HashMap::new(),
