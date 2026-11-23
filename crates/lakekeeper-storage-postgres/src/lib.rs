@@ -25,6 +25,7 @@ pub(crate) mod pool_metrics;
 pub mod role;
 pub(crate) mod role_assignment;
 pub(crate) mod secrets;
+mod table_health;
 pub mod tabular;
 pub(crate) mod tag;
 pub mod tasks;
