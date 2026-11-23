@@ -720,11 +720,18 @@ where
     }
 
     /// Read a byte range of the object at `path` that `info` describes, for example
-    /// metadata from [`LakekeeperStorage::metadata`]. The read fails if the object was
-    /// replaced since: on S3 with [`ErrorKind::ConditionNotMatch`] through its `ETag`, so
-    /// it needs no permission to read object versions.
+    /// metadata from [`LakekeeperStorage::metadata`] or an entry of
+    /// [`LakekeeperStorage::list`].
     ///
-    /// The default reads the version `info` names, or the current object if it names none.
+    /// On S3 and ADLS the read is pinned to the `ETag` of `info`: it fails with
+    /// [`ErrorKind::ConditionNotMatch`] if the object's `ETag` changed since, which on ADLS a
+    /// write of only the path's metadata or properties also does. On S3 this needs no
+    /// permission to read object versions. Without an `ETag` in `info`, S3 reads the current
+    /// object unpinned; ADLS does too, unless `info` names a version, which fails with
+    /// [`ErrorKind::Unsupported`].
+    ///
+    /// The default reads the version `info` names, or the current object, unpinned, if it
+    /// names none. The in-memory backend uses the default, and its listings name no version.
     async fn read_range_of(
         &self,
         path: &str,
