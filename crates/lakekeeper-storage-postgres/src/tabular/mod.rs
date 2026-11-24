@@ -15,7 +15,7 @@ use lakekeeper::{
         ClearTabularDeletedAtError, ConcurrentUpdateError, CreateTabularError, DropTabularError,
         ExpirationTaskInfo, GenericTableDeletionInfo, GenericTabularInfo, GetTabularInfoError,
         InternalParseLocationError, InvalidNamespaceIdentifier, ListTabularsError,
-        LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
+        LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId, NamespaceNotFound,
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
         SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
         TabularHasRunningExpiration, TabularId, TabularIdentBorrowed, TabularNotFound,
@@ -788,6 +788,14 @@ pub(crate) async fn create_tabular(
                 if [Some("unique_name_per_namespace_id"), Some("tabular_pkey")].contains(&db_err.constraint()) =>
             {
                 CreateTabularError::from(TabularAlreadyExists::new())
+            }
+            // A concurrent drop removed the namespace: before this statement, so nothing was
+            // inserted, or while the foreign-key check waited for the drop.
+            _ if matches!(e, sqlx::Error::RowNotFound)
+                || e.as_database_error().is_some_and(|db| db.is_foreign_key_violation()) =>
+            {
+                let namespace_id = NamespaceId::from(namespace_id);
+                NamespaceNotFound::new(WarehouseId::from(warehouse_id), namespace_id).into()
             }
             _ => e.into_catalog_backend_error().into(),
         }

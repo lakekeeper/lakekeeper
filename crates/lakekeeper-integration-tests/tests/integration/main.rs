@@ -25,6 +25,7 @@ mod management_tasks_schedule_lifecycle;
 mod management_warehouse;
 mod namespace_ops;
 mod namespace_storage_cleanup;
+mod openfga_drop_namespace;
 mod openfga_grant_ops;
 mod openfga_move_namespace;
 mod openfga_register;

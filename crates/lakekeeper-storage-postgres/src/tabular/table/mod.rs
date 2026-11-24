@@ -856,7 +856,7 @@ pub mod tests {
         warehouse::{set_warehouse_status, test::initialize_warehouse},
     };
 
-    fn create_request(
+    pub(crate) fn create_request(
         stage_create: Option<bool>,
         table_name: Option<String>,
     ) -> (CreateTableRequest, Option<Location>) {

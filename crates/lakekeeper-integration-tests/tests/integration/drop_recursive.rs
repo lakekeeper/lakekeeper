@@ -661,21 +661,30 @@ mod recursive_purge {
 
     use bytes::Bytes;
     use futures::StreamExt;
-    use iceberg::NamespaceIdent;
+    use iceberg::{NamespaceIdent, TableIdent};
     use lakekeeper::{
         api::{
-            data::v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
+            data::v1::generic_tables::{
+                CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
+            },
             iceberg::{
-                types::Prefix,
-                v1::{NamespaceParameters, namespace::NamespaceDropFlags},
+                types::{DropParams, Prefix},
+                v1::{
+                    NamespaceParameters, ViewParameters, namespace::NamespaceDropFlags,
+                    views::ViewService as _,
+                },
             },
             management::v1::warehouse::TabularDeleteProfile,
         },
         server::CatalogServer,
-        service::{GenericTableFormat, tasks::tabular_purge_queue},
+        service::{
+            GenericTableFormat,
+            tasks::{tabular_expiration_queue, tabular_purge_queue},
+        },
     };
     use lakekeeper_integration_tests::{
-        create_table, drop_namespace, random_request_metadata, spawn_build_in_queues,
+        create_generic_table, create_table, create_view, drop_namespace, drop_table,
+        random_request_metadata, spawn_build_in_queues,
     };
     use lakekeeper_io::{LakekeeperStorage, Location, StorageBackend, memory::MemoryStorage};
     use sqlx::PgPool;
@@ -823,6 +832,206 @@ mod recursive_purge {
             true,
         )
         .await;
+    }
+
+    fn soft_deletion() -> TabularDeleteProfile {
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(3600),
+        }
+    }
+
+    /// Soft-drops a table, a view and a generic table, each with and without `purgeRequested`,
+    /// then drops their namespace recursively with `purge`. Each soft-deleted child gets a
+    /// purge task if and only if its own drop requested one, whatever the namespace drop's `purge`.
+    async fn recursive_drop_purges_soft_deleted_children(pool: PgPool, purge: bool) {
+        let setup = setup_drop_test(pool.clone(), 0, 0, 1, soft_deletion()).await;
+        let ctx = setup.ctx;
+        let prefix = setup.warehouse.warehouse_id.to_string();
+        let ns_name = setup.namespace_names[0].clone();
+        let ns_ident = NamespaceIdent::new(ns_name.clone());
+
+        let location = |l: &str| l.parse::<Location>().unwrap().to_string();
+        let mut locations = HashMap::new();
+        for name in ["purged_tab", "kept_tab"] {
+            let table = create_table(ctx.clone(), &prefix, &ns_name, name, false)
+                .await
+                .unwrap();
+            locations.insert(name, location(table.metadata.location()));
+        }
+        for name in ["purged_view", "kept_view"] {
+            let view = create_view(ctx.clone(), &prefix, &ns_name, name, None)
+                .await
+                .unwrap();
+            locations.insert(name, location(view.metadata.location()));
+        }
+        for name in ["purged_gt", "kept_gt"] {
+            let generic_table = create_generic_table(ctx.clone(), &prefix, &ns_name, name)
+                .await
+                .unwrap();
+            locations.insert(name, location(&generic_table.table.base_location));
+        }
+        let expected = [
+            ("purged_tab", true),
+            ("kept_tab", false),
+            ("purged_view", true),
+            ("kept_view", false),
+            ("purged_gt", true),
+            ("kept_gt", false),
+        ]
+        .map(|(name, purged)| (name, locations.remove(name).unwrap(), purged));
+
+        for (name, purge_requested) in [("purged_tab", true), ("kept_tab", false)] {
+            drop_table(
+                ctx.clone(),
+                &prefix,
+                &ns_name,
+                name,
+                Some(purge_requested),
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        for (name, purge_requested) in [("purged_view", true), ("kept_view", false)] {
+            CatalogServer::drop_view(
+                ViewParameters {
+                    prefix: Some(Prefix(prefix.clone())),
+                    view: TableIdent::new(ns_ident.clone(), name.to_string()),
+                },
+                DropParams {
+                    purge_requested,
+                    force: false,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+        }
+        for (name, purge_requested) in [("purged_gt", true), ("kept_gt", false)] {
+            CatalogServer::drop_generic_table(
+                GenericTableParameters {
+                    prefix: Some(Prefix(prefix.clone())),
+                    namespace: ns_ident.clone(),
+                    table_name: name.to_string(),
+                },
+                DropParams {
+                    purge_requested,
+                    force: false,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+        }
+        let mut ids = Vec::new();
+        for (name, _, _) in &expected {
+            ids.push(tabular_id(&pool, name).await);
+        }
+
+        drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge,
+                recursive: true,
+            },
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: ns_ident,
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut purges = Vec::new();
+        let mut expected_purges = Vec::new();
+        for ((name, location, purged), id) in expected.into_iter().zip(ids) {
+            purges.push((name, purge_locations(&pool, id).await));
+            expected_purges.push((name, if purged { vec![location] } else { vec![] }));
+        }
+        assert_eq!(purges, expected_purges);
+    }
+
+    #[lakekeeper_storage_postgres::db_test]
+    async fn test_recursive_drop_with_purge_keeps_purge_choices_of_soft_drops(pool: PgPool) {
+        recursive_drop_purges_soft_deleted_children(pool, true).await;
+    }
+
+    #[lakekeeper_storage_postgres::db_test]
+    async fn test_recursive_drop_without_purge_keeps_purge_requests_of_soft_drops(pool: PgPool) {
+        recursive_drop_purges_soft_deleted_children(pool, false).await;
+    }
+
+    /// While the soft deletion of a child runs or is told to stop, the recursive drop is refused
+    /// with a retryable 503 and the child is kept, so the soft deletion queues its own purge.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn test_recursive_drop_refused_while_soft_deletion_runs(pool: PgPool) {
+        let setup = setup_drop_test(pool.clone(), 0, 0, 1, soft_deletion()).await;
+        let ctx = setup.ctx;
+        let prefix = setup.warehouse.warehouse_id.to_string();
+        let ns_name = setup.namespace_names[0].clone();
+        create_table(ctx.clone(), &prefix, &ns_name, "tab", false)
+            .await
+            .unwrap();
+        drop_table(ctx.clone(), &prefix, &ns_name, "tab", Some(true), false)
+            .await
+            .unwrap();
+        let table_id = tabular_id(&pool, "tab").await;
+
+        for status in ["running", "should-stop"] {
+            sqlx::query(
+                "UPDATE task SET status = $3::task_intermediate_status, picked_up_at = now(), \
+                 attempt = 1 WHERE entity_id = $1 AND queue_name = $2",
+            )
+            .bind(table_id)
+            .bind(tabular_expiration_queue::QUEUE_NAME.as_str())
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let e = drop_namespace(
+                ctx.clone(),
+                NamespaceDropFlags {
+                    force: true,
+                    purge: true,
+                    recursive: true,
+                },
+                NamespaceParameters {
+                    prefix: Some(Prefix(prefix.clone())),
+                    namespace: NamespaceIdent::new(ns_name.clone()),
+                },
+            )
+            .await
+            .unwrap_err();
+
+            assert_eq!(
+                (
+                    e.error.code,
+                    e.error.r#type.as_str(),
+                    e.error.message.as_str()
+                ),
+                (
+                    503,
+                    "NamespaceHasRunningTabularExpirations",
+                    format!(
+                        "Namespace with name '{}' contains a dropped table, view or generic \
+                         table whose soft-deletion expiration is running. Retry in a few minutes.",
+                        NamespaceIdent::new(ns_name.clone())
+                    )
+                    .as_str()
+                ),
+                "{status}"
+            );
+            assert_eq!(tabular_id(&pool, "tab").await, table_id, "{status}");
+            assert_eq!(
+                purge_locations(&pool, table_id).await,
+                Vec::<String>::new(),
+                "{status}"
+            );
+        }
     }
 }
 

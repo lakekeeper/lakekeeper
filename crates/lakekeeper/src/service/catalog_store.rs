@@ -761,6 +761,12 @@ where
             >,
         'a: 'b;
 
+    /// Drops the namespace and, if `recursive`, everything below it.
+    ///
+    /// `child_tables` lists every dropped tabular except staged tables. Soft-deleted ones carry
+    /// their pending soft-deletion task payload. A create or move into a dropped namespace that
+    /// races the drop is listed, makes a plain drop fail as not empty, or fails as not found.
+    /// A drop that other changes keep busy fails with `NamespaceBusy`.
     async fn drop_namespace_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,

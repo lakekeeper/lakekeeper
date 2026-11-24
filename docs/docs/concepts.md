@@ -170,6 +170,7 @@ Lakekeeper allows warehouses to enable soft deletion as a data protection mechan
 * Recovery is only possible for warehouses with soft deletion enabled
 * The expiration delay is fixed at the time of dropping - changing warehouse settings only affects newly dropped tables
 * A dropped table keeps its table UUID until it expires. Until then, its metadata file cannot be registered again; restore the table instead.
+* Deleting a namespace with `recursive=true` and `force=true` also deletes the tables, views and generic tables in it that were dropped and wait for expiration. They are deleted at once and can no longer be restored. See [Recursive Deletion on Namespaces](#recursive-deletion-on-namespaces) for which files are removed.
 
 Soft deletion works correctly only when clients follow these behaviors:
 
@@ -253,7 +254,7 @@ Protection can be applied to Warehouses, Namespaces, Tables, Views and Generic T
 
 By default, Lakekeeper enforces that namespaces must be empty before deletion. Recursive deletion provides a way to delete a namespace and all its contained entities in a single operation.
 
-When deleting a namespace, add the recursive=true query parameter to the request. The files of the dropped tables, views and generic tables are removed only if `purge=true` is set.
+When deleting a namespace, add the `recursive=true` query parameter to the request. With `purge=true`, the files of the tables, views and generic tables in the namespace are removed. The files of tables, views and generic tables that were already dropped and wait for soft-deletion expiration are removed only if they were dropped with purge, whether or not `purge=true` is set.
 
 Protected entities within the hierarchy will prevent recursive deletion unless force is also used.
 

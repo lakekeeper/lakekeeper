@@ -6,6 +6,7 @@ use iceberg::NamespaceIdent;
 use iceberg_ext::configs::{ConfigProperty as _, namespace::NamespaceProperties};
 use itertools::Itertools;
 use lakekeeper_io::{LakekeeperStorage as _, Location, RemoveEmptyDirectoryOutcome};
+use serde::Deserialize as _;
 
 mod create;
 mod list;
@@ -21,14 +22,14 @@ use crate::{
             Prefix, Result, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
             namespace::{GetNamespacePropertiesQuery, NamespaceDropFlags},
         },
-        management::v1::warehouse::TabularDeleteProfile,
+        management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
     request_metadata::RequestMetadata,
     server::{self, authorize_soft_deletion_skip, io::cleanup_deadline},
     service::{
         CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTaskOps,
-        NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
-        Transaction, WriteTransaction,
+        DroppedTabular, NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State,
+        TabularId, Transaction, WriteTransaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
             GrantResource, NamespaceParent, emit_bootstrap_grants_async, write_bootstrap_grants,
@@ -44,6 +45,7 @@ use crate::{
         storage::storage_layout::{NamespaceNameContext, NamespacePath},
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
+            tabular_expiration_queue::TabularExpirationPayload,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
     },
@@ -809,7 +811,6 @@ async fn drop_empty_namespace<A: Authorizer, C: CatalogStore>(
     Ok(drop_info.namespace_locations)
 }
 
-#[allow(clippy::too_many_lines)]
 async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     flags: NamespaceDropFlags,
     authorizer: A,
@@ -839,30 +840,8 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             t.transaction(),
         )
         .await?;
-        let project_id = &warehouse.project_id;
+        queue_child_purges(flags, warehouse, &drop_info.child_tables, &mut t).await?;
 
-        if flags.purge {
-            for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
-                TabularPurgeTask::schedule_task::<C>(
-                    ScheduleTaskMetadata {
-                        resource_demand: None,
-                        project_id: project_id.clone(),
-                        parent_task_id: None,
-                        scheduled_for: None,
-                        entity: TaskEntity::EntityInWarehouse {
-                            entity_name: tabular_ident.clone().into_name_parts(),
-                            warehouse_id: warehouse.warehouse_id,
-                            entity_id: WarehouseTaskEntityId::from(*tabular_id),
-                        },
-                    },
-                    TabularPurgePayload {
-                        tabular_location: tabular_location.to_string(),
-                    },
-                    t.transaction(),
-                )
-                .await?;
-            }
-        }
         // The recursive drop reaches this point with a single un-committed
         // transaction, so the key goes in atomically here exactly as it does on the
         // non-recursive path. Without it a retried recursive drop re-executes and
@@ -902,65 +881,14 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             })
             .ok();
 
-        // Delete child tables from authorizer as well.
-        // We do not fail the entire operation if this fails, as the namespace and tables are
-        // already gone from the catalog.
-        for (tabular_id, _tabular_location, tabular_ident) in drop_info.child_tables {
-            match tabular_id {
-                TabularId::Table(table_id) => {
-                    authorizer
-                        .delete_table(warehouse.warehouse_id, table_id)
-                        .await
-                        .inspect_err(|err| {
-                            tracing::error!(
-                                "Failed to delete table '{tabular_ident}' with id '{table_id}' from authorizer after recursive namespace drop: {}",
-                                err.error
-                            );
-                        })
-                        .ok();
-                }
-                TabularId::View(view_id) => {
-                    authorizer
-                        .delete_view(warehouse.warehouse_id, view_id)
-                        .await
-                        .inspect_err(|err| {
-                            tracing::error!(
-                                "Failed to delete view '{tabular_ident}' with id '{view_id}' from authorizer after recursive namespace drop: {}",
-                                err.error
-                            );
-                        })
-                        .ok();
-                }
-                TabularId::GenericTable(generic_table_id) => {
-                    authorizer
-                        .delete_generic_table(warehouse.warehouse_id, generic_table_id)
-                        .await
-                        .inspect_err(|err| {
-                            tracing::error!(
-                                "Failed to delete generic table '{tabular_ident}' with id '{generic_table_id}' from authorizer after recursive namespace drop: {}",
-                                err.error
-                            );
-                        })
-                        .ok();
-                }
-            }
-        }
-
-        // Drop child namespaces from authorizer as well.
-        // We do not fail the entire operation if this fails, as the namespace and tables are
-        // already gone from the catalog.
-        for child_namespace_id in drop_info.child_namespaces {
-            authorizer
-                .delete_namespace(request_metadata, child_namespace_id)
-                .await
-                .inspect_err(|err| {
-                    tracing::error!(
-                        "Failed to delete child namespace with id '{child_namespace_id}' from authorizer after recursive namespace drop: {}",
-                        err.error
-                    );
-                })
-                .ok();
-        }
+        delete_children_from_authorizer(
+            &authorizer,
+            request_metadata,
+            warehouse.warehouse_id,
+            drop_info.child_tables,
+            drop_info.child_namespaces,
+        )
+        .await;
 
         Ok(drop_info.namespace_locations)
     } else {
@@ -970,6 +898,132 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             None,
         )
         .into())
+    }
+}
+
+/// Queues a purge for each dropped child that needs one. An active child follows the drop's
+/// `purge`. A soft-deleted child keeps the choice of its own drop, which its expiration would have
+/// followed; the drop's `purge` applies only if that choice is unknown.
+async fn queue_child_purges<C: CatalogStore>(
+    flags: NamespaceDropFlags,
+    warehouse: &ResolvedWarehouse,
+    child_tables: &[DroppedTabular],
+    t: &mut WriteTransaction<C>,
+) -> Result<()> {
+    for child in child_tables {
+        let purge = match &child.soft_deletion_task_data {
+            Some(task_data) => soft_deletion_requests_purge(child, task_data)?,
+            None => flags.purge,
+        };
+        if !purge {
+            continue;
+        }
+        TabularPurgeTask::schedule_task::<C>(
+            ScheduleTaskMetadata {
+                resource_demand: None,
+                project_id: warehouse.project_id.clone(),
+                parent_task_id: None,
+                scheduled_for: None,
+                entity: TaskEntity::EntityInWarehouse {
+                    entity_name: child.ident.clone().into_name_parts(),
+                    warehouse_id: warehouse.warehouse_id,
+                    entity_id: WarehouseTaskEntityId::from(child.tabular_id),
+                },
+            },
+            TabularPurgePayload {
+                tabular_location: child.location.to_string(),
+            },
+            t.transaction(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn soft_deletion_requests_purge(
+    child: &DroppedTabular,
+    task_data: &serde_json::Value,
+) -> Result<bool> {
+    let payload = TabularExpirationPayload::deserialize(task_data).map_err(|e| {
+        ErrorModel::internal(
+            format!(
+                "Failed to read the soft-deletion task of '{}' with id '{}'.",
+                child.ident, child.tabular_id
+            ),
+            "TaskStateDeserializationError",
+            Some(Box::new(e)),
+        )
+    })?;
+    Ok(payload.deletion_kind == DeleteKind::Purge)
+}
+
+/// Deletes the dropped children from the authorizer, except staged tables, which the drop does not
+/// list. The namespace and its children are already gone from the catalog, so a failure is
+/// logged and does not fail the drop.
+async fn delete_children_from_authorizer<A: Authorizer>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    child_tables: Vec<DroppedTabular>,
+    child_namespaces: Vec<NamespaceId>,
+) {
+    for DroppedTabular {
+        tabular_id,
+        ident: tabular_ident,
+        ..
+    } in child_tables
+    {
+        match tabular_id {
+            TabularId::Table(table_id) => {
+                authorizer
+                    .delete_table(warehouse_id, table_id)
+                    .await
+                    .inspect_err(|err| {
+                        tracing::error!(
+                            "Failed to delete table '{tabular_ident}' with id '{table_id}' from authorizer after recursive namespace drop: {}",
+                            err.error
+                        );
+                    })
+                    .ok();
+            }
+            TabularId::View(view_id) => {
+                authorizer
+                    .delete_view(warehouse_id, view_id)
+                    .await
+                    .inspect_err(|err| {
+                        tracing::error!(
+                            "Failed to delete view '{tabular_ident}' with id '{view_id}' from authorizer after recursive namespace drop: {}",
+                            err.error
+                        );
+                    })
+                    .ok();
+            }
+            TabularId::GenericTable(generic_table_id) => {
+                authorizer
+                    .delete_generic_table(warehouse_id, generic_table_id)
+                    .await
+                    .inspect_err(|err| {
+                        tracing::error!(
+                            "Failed to delete generic table '{tabular_ident}' with id '{generic_table_id}' from authorizer after recursive namespace drop: {}",
+                            err.error
+                        );
+                    })
+                    .ok();
+            }
+        }
+    }
+
+    for child_namespace_id in child_namespaces {
+        authorizer
+            .delete_namespace(request_metadata, child_namespace_id)
+            .await
+            .inspect_err(|err| {
+                tracing::error!(
+                    "Failed to delete child namespace with id '{child_namespace_id}' from authorizer after recursive namespace drop: {}",
+                    err.error
+                );
+            })
+            .ok();
     }
 }
 

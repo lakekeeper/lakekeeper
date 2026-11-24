@@ -341,11 +341,22 @@ pub struct CatalogListNamespacesResponse {
 #[derive(Debug)]
 pub struct NamespaceDropInfo {
     pub child_namespaces: Vec<NamespaceId>,
-    // table-id, location, table-ident
-    pub child_tables: Vec<(TabularId, Location, TableIdent)>,
+    /// Tables, views and generic tables dropped with the namespace, soft-deleted ones included;
+    /// staged tables are dropped but not listed.
+    pub child_tables: Vec<DroppedTabular>,
     pub open_tasks: Vec<TaskId>,
     /// Locations of the dropped namespace and its dropped children, in no particular order.
     pub namespace_locations: Vec<(NamespaceId, Location)>,
+}
+
+/// A table, view or generic table dropped with its namespace.
+#[derive(Debug)]
+pub struct DroppedTabular {
+    pub tabular_id: TabularId,
+    pub location: Location,
+    pub ident: TableIdent,
+    /// Payload of the pending soft-deletion task, if the tabular was soft-deleted before.
+    pub soft_deletion_task_data: Option<serde_json::Value>,
 }
 
 macro_rules! define_simple_namespace_err {
@@ -571,6 +582,7 @@ define_transparent_error! {
         ChildNamespaceProtected,
         ChildTabularProtected,
         NamespaceHasRunningTabularExpirations,
+        NamespaceBusy,
         InternalParseLocationError
     ]
 }
@@ -639,16 +651,35 @@ impl From<NamespaceNotEmpty> for ErrorModel {
     }
 }
 
+// A 503 as for `NamespaceBusy`: the expiration ends by itself, and clients retry a 503.
 define_simple_namespace_err!(
     NamespaceHasRunningTabularExpirations,
-    "Namespace with {namespace} has a running tabular expiration, please retry after the expiration task is done."
+    "Namespace with {namespace} contains a dropped table, view or generic table whose soft-deletion expiration is running. Retry in a few minutes."
 );
 
 impl From<NamespaceHasRunningTabularExpirations> for ErrorModel {
     fn from(err: NamespaceHasRunningTabularExpirations) -> Self {
         ErrorModel::builder()
             .r#type("NamespaceHasRunningTabularExpirations")
-            .code(StatusCode::CONFLICT.as_u16())
+            .code(StatusCode::SERVICE_UNAVAILABLE.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+// A 503: clients read any 409 on a namespace drop as "not empty" and never retry it, but they
+// retry a 503 on a DELETE.
+define_simple_namespace_err!(
+    NamespaceBusy,
+    "Namespace with {namespace} or its content is busy with other changes. Retry the drop in a few seconds."
+);
+
+impl From<NamespaceBusy> for ErrorModel {
+    fn from(err: NamespaceBusy) -> Self {
+        ErrorModel::builder()
+            .r#type("NamespaceBusy")
+            .code(StatusCode::SERVICE_UNAVAILABLE.as_u16())
             .message(err.to_string())
             .stack(err.stack)
             .build()

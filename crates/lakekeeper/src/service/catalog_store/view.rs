@@ -12,9 +12,9 @@ use crate::{
         CatalogBackendError, CatalogGetNamespaceError, CatalogStore, ConcurrentUpdateError,
         ConversionError, CreateTabularError, DropTabularError, GetTabularInfoError,
         InternalParseLocationError, InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId,
-        ProtectedTabularDeletionWithoutForce, SerializationError, TabularAlreadyExists,
-        TabularNotFound, Transaction, UnexpectedTabularInResponse, ViewId, ViewInfo,
-        WarehouseVersion, define_simple_tabular_err, define_transparent_error,
+        NamespaceNotFound, ProtectedTabularDeletionWithoutForce, SerializationError,
+        TabularAlreadyExists, TabularNotFound, Transaction, UnexpectedTabularInResponse, ViewId,
+        ViewInfo, WarehouseVersion, define_simple_tabular_err, define_transparent_error,
         impl_error_stack_methods, impl_from_with_detail,
     },
 };
@@ -152,6 +152,7 @@ define_transparent_error! {
         ConversionError,
         UnexpectedTabularInResponse,
         InvalidNamespaceIdentifier,
+        NamespaceNotFound,
         TabularAlreadyExists,
     ]
 }
@@ -162,6 +163,7 @@ impl From<CreateTabularError> for CreateViewError {
             CreateTabularError::InternalParseLocationError(e) => e.into(),
             CreateTabularError::LocationAlreadyTaken(e) => e.into(),
             CreateTabularError::InvalidNamespaceIdentifier(e) => e.into(),
+            CreateTabularError::NamespaceNotFound(e) => e.into(),
             CreateTabularError::TabularAlreadyExists(e) => e.into(),
         }
     }
@@ -180,6 +182,7 @@ define_transparent_error! {
         ConversionError,
         UnexpectedTabularInResponse,
         ConcurrentUpdateError,
+        NamespaceNotFound,
         TabularAlreadyExists,
         ProtectedTabularDeletionWithoutForce
     ]
@@ -194,6 +197,7 @@ impl From<CreateViewError> for CommitViewError {
             CreateViewError::ConversionError(e) => e.into(),
             CreateViewError::UnexpectedTabularInResponse(e) => e.into(),
             CreateViewError::InvalidNamespaceIdentifier(e) => e.into(),
+            CreateViewError::NamespaceNotFound(e) => e.into(),
             CreateViewError::TabularAlreadyExists(e) => e.into(),
         }
     }
@@ -205,6 +209,7 @@ impl From<CreateTabularError> for CommitViewError {
             CreateTabularError::InternalParseLocationError(e) => e.into(),
             CreateTabularError::LocationAlreadyTaken(e) => e.into(),
             CreateTabularError::InvalidNamespaceIdentifier(e) => e.into(),
+            CreateTabularError::NamespaceNotFound(e) => e.into(),
             CreateTabularError::TabularAlreadyExists(e) => e.into(),
         }
     }

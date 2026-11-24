@@ -16,7 +16,8 @@ use crate::{
     service::{
         CatalogBackendError, ConcurrentUpdateError, GenericTableId, InternalParseLocationError,
         InvalidNamespaceIdentifier, InvalidPaginationToken, LocationAlreadyTaken, NamespaceId,
-        NamespaceVersion, ProtectedTabularDeletionWithoutForce, TabularId, WarehouseVersion,
+        NamespaceNotFound, NamespaceVersion, ProtectedTabularDeletionWithoutForce, TabularId,
+        WarehouseVersion,
     },
 };
 
@@ -240,6 +241,7 @@ define_transparent_error! {
         InternalParseLocationError,
         LocationAlreadyTaken,
         InvalidNamespaceIdentifier,
+        NamespaceNotFound,
     ]
 }
 
