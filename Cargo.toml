@@ -221,7 +221,7 @@ typetag = "0.2.21"
 unicase = "2.8.1"
 unicode-general-category = "1.1.0"
 
-url = { version = "^2.5", features = ["serde"] }
+url = { version = "2.5.9", features = ["serde"] }
 urlencoding = "^2.1"
 utoipa = { version = "5.4.0", features = [
     "axum_extras",

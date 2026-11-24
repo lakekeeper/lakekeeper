@@ -884,6 +884,7 @@ pub(super) mod s3_utils {
         .add(b'<')
         .add(b'>')
         .add(b'?')
+        .add(b'^')
         .add(b'`')
         .add(b'{')
         .add(b'}');
