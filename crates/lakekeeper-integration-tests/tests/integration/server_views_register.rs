@@ -365,23 +365,24 @@ async fn test_register_view_with_owner_property_refused_from_untrusted_client(po
     assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
 }
 
-/// Registering adopts an existing file, so it needs the register right on the warehouse besides
-/// `create_view` on the namespace. It is checked before the metadata file is read. A refusal is
-/// recorded on the warehouse and, by the requested name, as a refused `create_view` on the
-/// namespace.
-#[lakekeeper_storage_postgres::db_test]
-async fn test_register_view_requires_the_register_right(pool: PgPool) {
+/// A warehouse on a [`HidingAuthorizer`](lakekeeper::service::authz::tests::HidingAuthorizer)
+/// with a namespace and one created view, `template`, whose metadata the registered files copy.
+/// Returns a free view location next to the template's.
+async fn hiding_register_setup(
+    pool: PgPool,
+) -> (
+    Ctx<lakekeeper::service::authz::tests::HidingAuthorizer>,
+    lakekeeper::service::authz::tests::HidingAuthorizer,
+    NamespaceIdent,
+    WarehouseId,
+    ViewMetadata,
+    String,
+) {
     use lakekeeper::{
         api::management::v1::warehouse::TabularDeleteProfile,
-        service::{
-            UserId,
-            authz::{CatalogWarehouseAction, tests::HidingAuthorizer},
-            events::{AuthorizationFailureReason, EventListener, context::ActionContextKey},
-        },
+        service::{UserId, authz::tests::HidingAuthorizer},
     };
-    use lakekeeper_integration_tests::{
-        CapturingAuthzListener, RecordedAction, create_ns, create_view, setup_simple,
-    };
+    use lakekeeper_integration_tests::{create_ns, create_view, setup_simple};
 
     let authz = HidingAuthorizer::new();
     let (ctx, warehouse) = setup_simple(
@@ -403,9 +404,31 @@ async fn test_register_view_requires_the_register_right(pool: PgPool) {
         .unwrap();
     let (parent, _) = template.metadata.location().rsplit_once('/').unwrap();
     let location = format!("{parent}/registered-{}", Uuid::now_v7());
-    let metadata_location = ViewFile::from_template(&template.metadata, &location)
-        .write()
-        .await;
+    (
+        ctx,
+        authz,
+        namespace,
+        warehouse_id,
+        template.metadata.as_ref().clone(),
+        location,
+    )
+}
+
+/// Registering adopts an existing file, so it needs the register right on the warehouse besides
+/// `create_view` on the namespace. It is checked before the metadata file is read. A refusal is
+/// recorded on the warehouse and, by the requested name, as a refused `create_view` on the
+/// namespace.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_requires_the_register_right(pool: PgPool) {
+    use lakekeeper::service::{
+        authz::CatalogWarehouseAction,
+        events::{AuthorizationFailureReason, EventListener, context::ActionContextKey},
+    };
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, namespace, warehouse_id, template, location) =
+        hiding_register_setup(pool).await;
+    let metadata_location = ViewFile::from_template(&template, &location).write().await;
     let missing_location = format!("{location}/metadata/does-not-exist.metadata.json");
 
     authz.block_action(&format!(
@@ -463,6 +486,98 @@ async fn test_register_view_requires_the_register_right(pool: PgPool) {
             register_view_action,
         ]
     );
+
+    let err = load_view(ctx, warehouse_id, namespace, "registered")
+        .await
+        .unwrap_err();
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+}
+
+/// The register right on the warehouse is not enough: registering also needs `create_view` on
+/// the namespace. It is checked with the view ID and the properties from the file, before the
+/// view location in the file is validated, so a caller who may not create views here learns
+/// nothing about a file the warehouse would refuse.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_register_view_requires_create_view(pool: PgPool) {
+    use lakekeeper::service::events::{
+        AuthorizationFailureReason, EventListener, context::ActionContextKey,
+    };
+    use lakekeeper_integration_tests::{CapturingAuthzListener, RecordedAction};
+
+    let (ctx, authz, namespace, warehouse_id, template, location) =
+        hiding_register_setup(pool).await;
+    let inside = ViewFile::from_template(&template, &location);
+    let inside_location = inside.write().await;
+    let outside = ViewFile::from_template(
+        &template,
+        &format!("memory://outside-{}/view", Uuid::now_v7()),
+    );
+    let outside_location = outside.write_under(&location).await;
+
+    authz.block_action("namespace:CreateView");
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    // Without the check, the file whose view location is outside the warehouse would fail with
+    // 400 `InvalidLocation`, not with a refusal.
+    for metadata_location in [&inside_location, &outside_location] {
+        let err = register_view(
+            ctx.clone(),
+            warehouse_id,
+            namespace.clone(),
+            "registered",
+            metadata_location,
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::FORBIDDEN, "{err:?}");
+        assert_eq!(err.error.r#type, "NamespaceActionForbidden");
+    }
+
+    assert_eq!(listener.settled_counts(2, 2).await, (2, 2));
+    assert_eq!(
+        listener.failure_reasons(),
+        vec![AuthorizationFailureReason::ActionForbidden; 2]
+    );
+    let (succeeded, mut failed) = listener.recorded_actions();
+    let register_view_action = vec![RecordedAction {
+        action_name: "register_view".to_string(),
+        context: vec![],
+    }];
+    assert_eq!(
+        succeeded,
+        vec![register_view_action.clone(), register_view_action]
+    );
+    let properties: std::collections::BTreeMap<String, String> = template
+        .properties()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let create_view = |file: &ViewFile| {
+        vec![RecordedAction {
+            action_name: "create_view".to_string(),
+            context: vec![
+                ActionContextKey::Name("registered".to_string()),
+                ActionContextKey::ViewId(file.uuid().to_string()),
+                ActionContextKey::Properties(properties.clone()),
+            ],
+        }]
+    };
+    // Records are written from separate tasks, so they may arrive in any order.
+    let mut expected = vec![create_view(&inside), create_view(&outside)];
+    let by_view_id = |a: &Vec<RecordedAction>| {
+        a[0].context.iter().find_map(|key| match key {
+            ActionContextKey::ViewId(id) => Some(id.clone()),
+            _ => None,
+        })
+    };
+    failed.sort_by_key(by_view_id);
+    expected.sort_by_key(by_view_id);
+    assert_eq!(failed, expected);
 
     let err = load_view(ctx, warehouse_id, namespace, "registered")
         .await
