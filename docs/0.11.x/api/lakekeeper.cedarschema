@@ -1,0 +1,200 @@
+namespace Lakekeeper {
+  // ============================================================================
+  // ENTITY TYPE DEFINITIONS
+  // ============================================================================
+
+ entity User in [Role, Server] {
+    // Email of the user, extracted from the User's token.
+    // Not available for all token types.
+    email?: String,
+    // Roles of the user, extracted from the User's token.
+    // Only available if role extraction from tokens is configured and
+    // the token contains the configured claim.
+    roles: Set<Role>,
+  };
+
+  // Roles in Lakekeeper are scoped to projects.
+  entity Role in [Role, Project] = {
+  };
+
+  // Server is the top-level administrative entity
+  entity Server {};
+
+  // Project is a container for warehouses
+  entity Project in [Server];
+
+  // Warehouse is a container for namespaces
+  entity Warehouse in [Project] {
+    name: String,
+    project: Project,
+    is_active: Bool,
+    protected: Bool,
+  };
+
+  // Namespace can be nested within other namespaces or warehouses
+  // This models the hierarchical structure of data organization
+  entity Namespace in [Namespace, Warehouse] {
+    project: Project,
+    warehouse: Warehouse,
+    // Full name of the namespace including all UTF-8 characters.
+    // Segments are separated by '.'
+    // Lakekeeper enforces that no segment contains '.'
+    name: String,
+    protected: Bool,    
+    properties: Set<{key: String, value: String}>,
+
+    // If a table is created in this namespace, these properties are requested for the table
+    create_table_properties?: Set<{key: String, value: String}>,
+    // If a view is created in this namespace, these properties are requested for the view
+    create_view_properties?: Set<{key: String, value: String}>,
+    // If a child namespace is created in this namespace, these properties are requested for the child namespace
+    create_namespace_properties?: Set<{key: String, value: String}>,
+    // Properties to be updated on this namespace
+    namespace_properties_updated?: Set<{key: String, value: String}>,
+    // Properties to be removed from this namespace
+    namespace_properties_removed?: Set<String>,
+  };
+
+  // Table entity for Iceberg tables
+  entity Table in [Namespace] {
+    project: Project,
+    warehouse: Warehouse,
+    // Direct parent namespace
+    namespace: Namespace,
+    // Name of the table within its namespace
+    name: String,
+    protected: Bool,
+    properties: Set<{key: String, value: String}>,
+
+    // Properties to be updated on this table
+    table_properties_updated?: Set<{key: String, value: String}>,
+    // Properties to be removed from this table
+    table_properties_removed?: Set<String>,
+  };
+
+  // View entity for Iceberg views
+  entity View in [Namespace] {
+    project: Project,
+    warehouse: Warehouse,
+    // Direct parent namespace
+    namespace: Namespace,
+    // Name of the view within its namespace
+    name: String,
+    protected: Bool,
+    properties: Set<{key: String, value: String}>,
+
+    // Properties to be updated on this view
+    view_properties_updated?: Set<{key: String, value: String}>,
+    // Properties to be removed from this view
+    view_properties_removed?: Set<String>,
+  };
+
+  // ============================================================================
+  // ACTION DEFINITIONS
+  // ============================================================================
+  // Actions follow Cedar naming conventions (PascalCase)
+  // Mapped from actions.rs enums
+
+  // ---------- Server Actions ----------
+  action "ServerActions";
+  action ListServerCedarEntitySources, ListCedarPoliciesFromServerSources, ListServerCedarPolicySources, CreateProject, UpdateUsers, DeleteUsers, ListUsers, ProvisionUsers, IntrospectServerAuthorization in ["ServerActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server]
+    };
+
+  // ---------- Project Actions ----------
+  action "ProjectActions";
+  action "ProjectDescribeActions" in ["ProjectActions", "ProjectModifyActions"];
+  action "ProjectModifyActions" in ["ProjectActions"];
+  action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles, SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig, GetProjectTasks in ["ProjectDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+  action IntrospectProjectAuthorization, CreateWarehouse, DeleteProject, RenameProject, CreateRole, ModifyProjectTaskQueueConfig, ControlProjectTasks in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+  
+  // ---------- Role Actions ----------
+  action "RoleActions";
+  action AssumeRole, DeleteRole, UpdateRole, ReadRole, ReadRoleMetadata, IntrospectRoleAuthorization in ["RoleActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role]
+    };
+
+  // ---------- Warehouse Actions ----------
+  action "WarehouseActions";
+  action "WarehouseDescribeActions" in ["WarehouseActions", "WarehouseModifyActions"];
+  action "WarehouseModifyActions" in ["WarehouseActions"];
+  action UseWarehouse, ListNamespacesInWarehouse, GetWarehouseMetadata, GetConfig,
+         IncludeWarehouseInList, ListDeletedTabulars, GetTaskQueueConfig, GetAllTasks,
+         ListEverythingInWarehouse, GetWarehouseEndpointStatistics in ["WarehouseDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  action IntrospectWarehouseAuthorization, CreateNamespaceInWarehouse, DeleteWarehouse, UpdateStorage, UpdateStorageCredential,
+         DeactivateWarehouse, ActivateWarehouse,
+         RenameWarehouse, ModifySoftDeletion,
+         ModifyTaskQueueConfig, ControlAllTasks, SetWarehouseProtection in ["WarehouseModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+
+  // ---------- Namespace Actions ----------
+  action "NamespaceActions";
+  action "NamespaceDescribeActions" in ["NamespaceActions", "NamespaceModifyActions"];
+  action "NamespaceModifyActions" in ["NamespaceActions"];
+
+  action ListEverythingInNamespace, GetNamespaceMetadata, IncludeNamespaceInList, ListTables, ListViews, ListNamespacesInNamespace in ["NamespaceDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace]
+    };  
+  action IntrospectNamespaceAuthorization, CreateTable, CreateView, CreateNamespaceInNamespace, DeleteNamespace, UpdateProperties, SetNamespaceProtection in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace]
+    };
+
+  // ---------- Table Actions ----------
+  action "TableActions";
+  action "TableDescribeActions" in ["TableActions", "TableSelectActions", "TableModifyActions"];
+  action "TableSelectActions" in ["TableActions", "TableModifyActions"];
+  action "TableModifyActions" in ["TableActions"];
+  action GetTableMetadata, IncludeTableInList, GetTableTasks in ["TableDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  action ReadTableData in ["TableSelectActions"] 
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  action IntrospectTableAuthorization, DropTable, WriteTableData, CommitTable, RenameTable, UndropTable, ControlTableTasks, SetTableProtection in ["TableModifyActions"] 
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+
+  // ---------- View Actions ----------
+  action "ViewActions";
+  action "ViewDescribeActions" in ["ViewActions", "ViewModifyActions"];
+  action "ViewModifyActions" in ["ViewActions"];
+  action GetViewMetadata, IncludeViewInList, GetViewTasks in ["ViewDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+  action IntrospectViewAuthorization, DropView, CommitView, RenameView, UndropView, ControlViewTasks, SetViewProtection in ["ViewModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+}
