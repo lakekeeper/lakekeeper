@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use iceberg::spec::{TableMetadataRef, ViewMetadata, ViewMetadataRef};
 use iceberg_ext::catalog::rest::{
-    CreateTableRequest, CreateViewRequest, ErrorModel, RegisterTableRequest,
+    CreateTableRequest, CreateViewRequest, ErrorModel, RegisterTableRequest, RegisterViewRequest,
     UpdateNamespacePropertiesResponse,
 };
 use lakekeeper_io::Location;
@@ -118,6 +118,17 @@ pub struct CreateViewEvent {
     pub metadata_location: Arc<Location>,
     pub request_metadata: ArcRequestMetadata,
     pub request: Arc<CreateViewRequest>,
+}
+
+/// Event emitted when a view is registered within a namespace (adopted from an existing
+/// metadata file, which Lakekeeper does not rewrite)
+#[derive(Clone, Debug)]
+pub struct RegisterViewEvent {
+    pub namespace: ResolvedNamespace,
+    pub request: Arc<RegisterViewRequest>,
+    pub metadata: ViewMetadataRef,
+    pub metadata_location: Arc<Location>,
+    pub request_metadata: ArcRequestMetadata,
 }
 
 #[derive(Clone, Debug, derive_more::From)]
@@ -363,6 +374,26 @@ impl
         let dispatcher = self.dispatcher;
         tokio::spawn(async move {
             let () = dispatcher.view_created(event).await;
+        });
+    }
+
+    /// Emit view registered event
+    pub(crate) fn emit_view_registered_async(
+        self,
+        request: Arc<RegisterViewRequest>,
+        metadata: ViewMetadataRef,
+        metadata_location: Arc<Location>,
+    ) {
+        let event = RegisterViewEvent {
+            namespace: self.resolved_entity.data,
+            request,
+            metadata,
+            metadata_location,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher.view_registered(event).await;
         });
     }
 }

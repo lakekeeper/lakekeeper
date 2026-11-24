@@ -1043,6 +1043,7 @@ pub enum WarehouseRelation {
     CanSetFormatVersionPolicy,
     CanGetEndpointStatistics,
     CanRegisterTable,
+    CanRegisterView,
     // -- Revoke actions --
     CanRevokeCreate,
     CanRevokeDescribe,
@@ -1349,6 +1350,7 @@ impl ReducedRelation for CatalogWarehouseAction {
                 WarehouseRelation::CanGetEndpointStatistics
             }
             CatalogWarehouseAction::RegisterTable => WarehouseRelation::CanRegisterTable,
+            CatalogWarehouseAction::RegisterView => WarehouseRelation::CanRegisterView,
             // Same permission as `APIWarehouseAction::ReadAssignments`; see the
             // grant/assignment naming note at the top of this file.
             CatalogWarehouseAction::ReadGrants => WarehouseRelation::CanReadAssignments,

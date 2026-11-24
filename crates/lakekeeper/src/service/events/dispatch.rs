@@ -189,6 +189,10 @@ impl EventDispatcher {
         dispatch_event!(self, view_created, event);
     }
 
+    pub(crate) async fn view_registered(&self, event: types::RegisterViewEvent) {
+        dispatch_event!(self, view_registered, event);
+    }
+
     pub(crate) async fn view_committed(&self, event: types::CommitViewEvent) {
         dispatch_event!(self, view_committed, event);
     }
@@ -520,6 +524,12 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a view has been successfully created
     async fn view_created(&self, _event: types::CreateViewEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a view has been successfully registered (adopted from an existing
+    /// metadata file). A registered view emits no `view_created`.
+    async fn view_registered(&self, _event: types::RegisterViewEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

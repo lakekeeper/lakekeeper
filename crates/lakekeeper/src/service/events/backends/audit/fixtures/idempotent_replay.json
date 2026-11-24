@@ -1,9 +1,9 @@
 {
   "event_source": "audit",
-  "audit_format": "1.1",
+  "audit_format": "1.2",
   "record_type": "replay",
   "emitters": {
-    "lakekeeper": "1.1"
+    "lakekeeper": "1.2"
   },
   "event_id": "019b76da-a800-7000-8000-000000000000",
   "request_id": "019684ff-0000-7000-8000-000000000005",

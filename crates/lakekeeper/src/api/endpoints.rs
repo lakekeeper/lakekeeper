@@ -191,6 +191,7 @@ generate_endpoints! {
         DropView(DELETE, "/catalog/v1/{prefix}/namespaces/{namespace}/views/{view}"),
         ViewExists(HEAD, "/catalog/v1/{prefix}/namespaces/{namespace}/views/{view}"),
         RenameView(POST, "/catalog/v1/{prefix}/views/rename"),
+        RegisterView(POST, "/catalog/v1/{prefix}/namespaces/{namespace}/register-view"),
         CancelPlanning(DELETE, "/catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}"),
         FetchPlanningResult(GET, "/catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}"),
         PlanTableScan(POST, "/catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/plan"),
@@ -730,7 +731,6 @@ mod test {
             "catalog/v1/{prefix}/namespaces/{namespace}/functions",
             "catalog/v1/{prefix}/namespaces/{namespace}/functions/{function}",
             "catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister",
-            "catalog/v1/{prefix}/namespaces/{namespace}/register-view",
         ];
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
@@ -1122,6 +1122,7 @@ mod test {
         "management-v1-list-warehouse-subtree-grants",
         "management-v1-revoke-warehouse-subtree-grants",
         "management-v1-set-maintenance-mode",
+        "catalog-v1-register-view",
     ];
 
     #[test]

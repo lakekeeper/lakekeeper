@@ -54,6 +54,7 @@ mod server_views_drop;
 mod server_views_exists;
 mod server_views_list;
 mod server_views_load;
+mod server_views_register;
 mod server_views_rename;
 mod service_authz_table;
 mod service_post_migration_hooks;

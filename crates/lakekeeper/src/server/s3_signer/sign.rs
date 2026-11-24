@@ -876,7 +876,9 @@ pub(super) mod s3_utils {
     /// not either: `url` treats it as a second separator for http but not for `s3`, so an
     /// object key containing it is refused while a list prefix keeps the byte S3 matches
     /// against. Control characters are left out so that `Location` keeps refusing them; object
-    /// keys refuse them before encoding.
+    /// keys refuse them before encoding. `^` is left out although `url` encodes it: a key
+    /// holding `^` would get the location of the key holding a literal `%5E`, so an object key
+    /// containing `^` is refused while a list prefix keeps it.
     const URL_PATH_ENCODE_SET: &AsciiSet = &AsciiSet::EMPTY
         .add(b' ')
         .add(b'"')
@@ -2247,8 +2249,9 @@ mod test {
         }
 
         // Both rejecting is the trivially passing case, so make sure the sweep did compare the
-        // printable range rather than run empty.
-        assert_eq!(compared, 95, "the sweep must not go vacuous");
+        // printable range rather than run empty. Of the printable bytes, object keys also refuse
+        // `^`, see [`test_caret_and_literal_percent_5e_reach_different_tables`].
+        assert_eq!(compared, 94, "the sweep must not go vacuous");
     }
 
     /// `url` treats `\` as a second path separator for http, so an object key containing it
@@ -3311,6 +3314,55 @@ mod test {
                 "s3://bucket/wh/tbl/data/name=a%2Fb/x.parquet",
                 "s3://bucket/wh/tbl/data/",
             ]
+        );
+    }
+
+    /// `url` encodes `^` in a path as `%5E`, the spelling of a key that holds a literal `%5E`.
+    /// An object key containing `^` is refused, so the table at `t^a` and the table at `t%5Ea`
+    /// never authorize each other's keys.
+    #[test]
+    fn test_caret_and_literal_percent_5e_reach_different_tables() {
+        let tables = ["s3://bucket/ns/t^a", "s3://bucket/ns/t%5Ea"];
+        let cases = [
+            // The list prefix `ns/t^a/`.
+            (
+                "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ft%5Ea%2F",
+                "s3://bucket/ns/t^a",
+            ),
+            // The list prefix `ns/t%5Ea/`.
+            (
+                "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ft%255Ea%2F",
+                "s3://bucket/ns/t%5Ea",
+            ),
+            // The object key `ns/t%5Ea/f.parquet`.
+            (
+                "http://s3.example.com:8333/bucket/ns/t%255Ea/f.parquet",
+                "s3://bucket/ns/t%5Ea",
+            ),
+        ];
+
+        for (uri, table) in cases {
+            let (parsed, _) = parse_uri(
+                &url::Url::parse(uri).unwrap(),
+                S3UrlStyleDetectionMode::Auto,
+                &http::Method::GET,
+                None,
+            )
+            .unwrap();
+            let authorized_for = tables
+                .into_iter()
+                .filter(|t| validate_uri(&parsed, &Location::from_str(t).unwrap()).is_ok())
+                .collect::<Vec<_>>();
+            assert_eq!(authorized_for, vec![table], "Test case: {uri}");
+        }
+
+        // The object key `ns/t^a/f.parquet`.
+        assert_eq!(
+            parse_object_err(
+                "http://s3.example.com:8333/bucket/ns/t%5Ea/f.parquet",
+                &http::Method::GET
+            ),
+            (400, "AmbiguousUriPath".to_string())
         );
     }
 }

@@ -217,6 +217,7 @@ async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
             destination_namespace,
             CatalogNamespaceAction::CreateView {
                 name: Some(destination.name.clone()),
+                view_id: None,
                 properties: Arc::new(source_view_info.properties().clone().into_iter().collect()),
             },
         ),

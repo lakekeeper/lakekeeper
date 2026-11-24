@@ -37,8 +37,8 @@ pub mod v1 {
             CreateNamespaceResponse, CreateTableRequest, CreateViewRequest, ErrorModel,
             GetNamespaceResponse, IcebergErrorResponse, ListNamespacesResponse, ListTablesResponse,
             LoadTableResult, LoadViewResult, OAuthTokenRequest, OAuthTokenResponse,
-            RegisterTableRequest, RenameTableRequest, Result, UpdateNamespacePropertiesRequest,
-            UpdateNamespacePropertiesResponse, iceberg::types::*,
+            RegisterTableRequest, RegisterViewRequest, RenameTableRequest, Result,
+            UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse, iceberg::types::*,
         },
         request_metadata::RequestMetadata,
     };
@@ -349,7 +349,6 @@ mod test {
             "/v1/{prefix}/namespaces/{namespace}/functions",
             "/v1/{prefix}/namespaces/{namespace}/functions/{function}",
             "/v1/{prefix}/namespaces/{namespace}/tables/{table}/unregister",
-            "/v1/{prefix}/namespaces/{namespace}/register-view",
         ];
         // Mounted, and so advertised, only with `s3-signer`.
         let signing = crate::api::endpoints::SignEndpoint::S3RequestByTableName
