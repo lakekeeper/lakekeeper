@@ -521,14 +521,19 @@ async fn test_register_view_requires_create_view(pool: PgPool) {
         .append(listener.clone() as std::sync::Arc<dyn EventListener>)
         .await;
 
-    // Without the check, the file whose view location is outside the warehouse would fail with
-    // 400 `InvalidLocation`, not with a refusal.
-    for metadata_location in [&inside_location, &outside_location] {
+    // Each request has its own name, so each record can be matched to its request. Without the
+    // check, the file whose view location is outside the warehouse would fail with 400
+    // `InvalidLocation`, not with a refusal.
+    let requests = [
+        ("registered_inside", &inside, &inside_location),
+        ("registered_outside", &outside, &outside_location),
+    ];
+    for (name, _, metadata_location) in requests {
         let err = register_view(
             ctx.clone(),
             warehouse_id,
             namespace.clone(),
-            "registered",
+            name,
             metadata_location,
             RequestMetadata::new_unauthenticated(),
         )
@@ -557,32 +562,35 @@ async fn test_register_view_requires_create_view(pool: PgPool) {
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    let create_view = |file: &ViewFile| {
-        vec![RecordedAction {
-            action_name: "create_view".to_string(),
-            context: vec![
-                ActionContextKey::Name("registered".to_string()),
-                ActionContextKey::ViewId(file.uuid().to_string()),
-                ActionContextKey::Properties(properties.clone()),
-            ],
-        }]
-    };
-    // Records are written from separate tasks, so they may arrive in any order.
-    let mut expected = vec![create_view(&inside), create_view(&outside)];
-    let by_view_id = |a: &Vec<RecordedAction>| {
+    let expected: Vec<_> = requests
+        .iter()
+        .map(|(name, file, _)| {
+            vec![RecordedAction {
+                action_name: "create_view".to_string(),
+                context: vec![
+                    ActionContextKey::Name((*name).to_string()),
+                    ActionContextKey::ViewId(file.uuid().to_string()),
+                    ActionContextKey::Properties(properties.clone()),
+                ],
+            }]
+        })
+        .collect();
+    // Records are written from separate tasks, so they may arrive in any order. `expected` is
+    // in name order.
+    failed.sort_by_key(|a| {
         a[0].context.iter().find_map(|key| match key {
-            ActionContextKey::ViewId(id) => Some(id.clone()),
+            ActionContextKey::Name(name) => Some(name.clone()),
             _ => None,
         })
-    };
-    failed.sort_by_key(by_view_id);
-    expected.sort_by_key(by_view_id);
+    });
     assert_eq!(failed, expected);
 
-    let err = load_view(ctx, warehouse_id, namespace, "registered")
-        .await
-        .unwrap_err();
-    assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{err:?}");
+    for (name, _, _) in requests {
+        let err = load_view(ctx.clone(), warehouse_id, namespace.clone(), name)
+            .await
+            .unwrap_err();
+        assert_eq!(err.error.code, StatusCode::NOT_FOUND, "{name}: {err:?}");
+    }
 }
 
 /// Soft deletion with an expiration far beyond any test.
