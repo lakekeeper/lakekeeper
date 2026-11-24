@@ -177,6 +177,20 @@ fn read_err_to_os(path: &str, err: ReadError) -> object_store::Error {
     }
 }
 
+/// [`read_err_to_os`] for a read pinned to the metadata it was given: a failed condition
+/// means the object changed since, which `object_store` reports as `Precondition`.
+fn pinned_read_err_to_os(path: &str, err: ReadError) -> object_store::Error {
+    match &err {
+        ReadError::IOError(e) if e.kind() == ErrorKind::ConditionNotMatch => {
+            object_store::Error::Precondition {
+                path: path.to_string(),
+                source: Box::new(err),
+            }
+        }
+        _ => read_err_to_os(path, err),
+    }
+}
+
 fn write_err_to_os(err: WriteError) -> object_store::Error {
     object_store::Error::Generic {
         store: STORE,
@@ -308,18 +322,17 @@ impl ObjectStore for ObjectStoreBridge {
             // on S3. Otherwise the range is read from the object the metadata describes, so the
             // metadata describes the bytes even if the object is replaced in between.
             let bytes = match version {
-                Some(version) => {
-                    self.lakekeeper_io
-                        .read_range_version(&path, version, range.clone())
-                        .await
-                }
-                None => {
-                    self.lakekeeper_io
-                        .read_range_of(&path, &info, range.clone())
-                        .await
-                }
-            }
-            .map_err(|e| read_err_to_os(location.as_ref(), e))?;
+                Some(version) => self
+                    .lakekeeper_io
+                    .read_range_version(&path, version, range.clone())
+                    .await
+                    .map_err(|e| read_err_to_os(location.as_ref(), e)),
+                None => self
+                    .lakekeeper_io
+                    .read_range_of(&path, &info, range.clone())
+                    .await
+                    .map_err(|e| pinned_read_err_to_os(location.as_ref(), e)),
+            }?;
             let meta = object_meta(location.clone(), &info, size);
             (bytes, meta, range)
         } else {
@@ -1090,6 +1103,41 @@ mod tests {
             "Reading an object version is not supported by this storage backend"
         );
         assert_eq!(implementer, STORE);
+    }
+
+    #[test]
+    fn a_failed_pin_is_a_precondition_failure() {
+        let failed_condition = || {
+            ReadError::IOError(crate::IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "The condition specified using HTTP conditional header(s) is not met.",
+                "memory://bucket/object.bin".to_string(),
+            ))
+        };
+        let error = pinned_read_err_to_os("object.bin", failed_condition());
+        let object_store::Error::Precondition { path, .. } = error else {
+            panic!("expected Precondition, got {error:?}");
+        };
+        assert_eq!(path, "object.bin");
+        // Only a pinned read reports the failed condition as a changed object.
+        let error = read_err_to_os("object.bin", failed_condition());
+        assert!(
+            matches!(error, object_store::Error::Generic { store: STORE, .. }),
+            "{error:?}"
+        );
+        // Other errors of a pinned read map as for any read.
+        let error = pinned_read_err_to_os(
+            "object.bin",
+            ReadError::IOError(crate::IOError::new(
+                ErrorKind::NotFound,
+                "Not found",
+                "memory://bucket/object.bin".to_string(),
+            )),
+        );
+        let object_store::Error::NotFound { path, .. } = error else {
+            panic!("expected NotFound, got {error:?}");
+        };
+        assert_eq!(path, "object.bin");
     }
 
     #[tokio::test]
