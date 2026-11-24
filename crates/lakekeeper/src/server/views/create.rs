@@ -64,6 +64,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
     let action = CatalogNamespaceAction::CreateView {
         name: Some(request.name.clone()),
+        view_id: None,
         properties: Arc::new(request.properties.clone().into_iter().collect()),
     };
     let event_ctx = APIEventContext::for_namespace(
@@ -201,7 +202,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
 /// Writes the bootstrap grants of a created view and commits its transaction. If that fails,
 /// removes the authorizer entry of the view, unless the commit may have been applied.
-async fn commit_created_view<C: CatalogStore, A: Authorizer>(
+pub(super) async fn commit_created_view<C: CatalogStore, A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,

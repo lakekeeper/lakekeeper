@@ -1135,6 +1135,11 @@ pub enum CatalogWarehouseAction {
     /// Asked together with the create action on the namespace. The files may be anywhere in
     /// the warehouse's storage, so it is a right on the warehouse.
     RegisterTable,
+    /// Register a view from a view metadata file that is already in the warehouse's storage.
+    /// Asked together with `CreateView` on the namespace. The file may be anywhere in the
+    /// warehouse's storage, so it is a right on the warehouse. Separate from `RegisterTable`, so
+    /// that an authorizer can allow one without the other.
+    RegisterView,
     /// Attach/detach governance tags on this warehouse.
     ManageTags,
     /// Accept a namespace being moved in from elsewhere as a child of this entity.
@@ -1184,7 +1189,7 @@ pub enum CatalogWarehouseAction {
 /// The warehouse actions enumerated for permission introspection (`GET
 /// /warehouse/{id}/actions`). The subtree grant actions are enumerated with the
 /// absent scope (the base-capability form).
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 28]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 29]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -1212,6 +1217,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 28]> = LazyL
         CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
         CatalogWarehouseAction::RegisterTable,
+        CatalogWarehouseAction::RegisterView,
         CatalogWarehouseAction::ManageTags,
         CatalogWarehouseAction::AcceptMovedNamespace {
             source: Arc::new(Vec::new()),
@@ -1224,7 +1230,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 28]> = LazyL
 impl CatalogWarehouseAction {
     /// Introspectable warehouse actions — see [`WAREHOUSE_ACTION_VARIANTS`].
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 28] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 29] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -1264,8 +1270,9 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::GetAllTasks
             | CatalogWarehouseAction::ControlAllTasks
             | CatalogWarehouseAction::GetEndpointStatistics
-            // Adds a table, does not change the warehouse.
+            // Adds a table or a view, does not change the warehouse.
             | CatalogWarehouseAction::RegisterTable
+            | CatalogWarehouseAction::RegisterView
             // Governance tag attachment is metadata, not part of the reconciled spec.
             | CatalogWarehouseAction::ManageTags
             // Grant administration is not part of the reconciled spec.
@@ -1322,6 +1329,7 @@ impl EventAction for CatalogWarehouseAction {
             | Self::SetFormatVersionPolicy { .. }
             | Self::GetEndpointStatistics { .. }
             | Self::RegisterTable { .. }
+            | Self::RegisterView { .. }
             | Self::ManageTags { .. }
             | Self::ReadGrants { .. } => {}
         }
@@ -1362,6 +1370,10 @@ pub enum CatalogNamespaceAction {
         /// Name of the view to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// View ID from the metadata file of a register. Absent on a create or a rename.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "open-api", schema(value_type = Option<Uuid>))]
+        view_id: Option<ViewId>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
@@ -1510,6 +1522,7 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 21]> = LazyL
         },
         CatalogNamespaceAction::CreateView {
             name: None,
+            view_id: None,
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::CreateNamespace {
@@ -1606,7 +1619,20 @@ impl EventAction for CatalogNamespaceAction {
                 }
                 b = b.context(ActionContextKey::Properties(properties.as_ref().clone()));
             }
-            Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
+            Self::CreateView {
+                name,
+                view_id,
+                properties,
+            } => {
+                if let Some(n) = name {
+                    b = b.context(ActionContextKey::Name(n.clone()));
+                }
+                if let Some(vid) = view_id {
+                    b = b.context(ActionContextKey::ViewId(vid.to_string()));
+                }
+                b = b.context(ActionContextKey::Properties(properties.as_ref().clone()));
+            }
+            Self::CreateNamespace { name, properties } => {
                 if let Some(n) = name {
                     b = b.context(ActionContextKey::Name(n.clone()));
                 }
@@ -2401,6 +2427,7 @@ pub enum CatalogWarehouseActionKind {
     SetFormatVersionPolicy,
     GetEndpointStatistics,
     RegisterTable,
+    RegisterView,
     ManageTags,
     AcceptMovedNamespace,
     ReadGrants,
@@ -2434,6 +2461,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
             CatalogWarehouseAction::RegisterTable => Self::RegisterTable,
+            CatalogWarehouseAction::RegisterView => Self::RegisterView,
             CatalogWarehouseAction::ManageTags => Self::ManageTags,
             CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
             CatalogWarehouseAction::ReadSubtreeGrants { .. } => Self::ReadSubtreeGrants,
@@ -3417,6 +3445,7 @@ pub mod tests {
             A::ControlAllTasks,
             A::GetEndpointStatistics,
             A::RegisterTable,
+            A::RegisterView,
             A::ManageTags,
         ] {
             assert!(!a.is_spec_mutation(), "{a:?} should not be a spec mutation");
@@ -3552,6 +3581,7 @@ pub mod tests {
             (
                 CatalogNamespaceAction::CreateView {
                     name: None,
+                    view_id: None,
                     properties: Arc::new(BTreeMap::new()),
                 },
                 serde_json::json!({"action": "create_view"}),
@@ -4531,10 +4561,24 @@ pub mod tests {
         // CreateView with name
         let action = CatalogNamespaceAction::CreateView {
             name: Some("my-view".to_string()),
+            view_id: None,
             properties: Arc::new(BTreeMap::new()),
         };
         let log = log_string(&action);
         assert!(log.contains("name=my-view"), "got: {log}");
+        assert!(!log.contains("view_id"), "got: {log}");
+
+        // CreateView with name and view_id, as register asks it
+        let action = CatalogNamespaceAction::CreateView {
+            name: Some("my-view".to_string()),
+            view_id: Some(ViewId::from(Uuid::nil())),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = log_string(&action);
+        assert!(
+            log.contains("view_id=00000000-0000-0000-0000-000000000000"),
+            "got: {log}"
+        );
 
         // CreateNamespace in namespace with name
         let action = CatalogNamespaceAction::CreateNamespace {

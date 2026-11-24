@@ -75,6 +75,7 @@ fn project_source(endpoint: Endpoint) -> ProjectSource {
             | CatalogV1Endpoint::DropView
             | CatalogV1Endpoint::ViewExists
             | CatalogV1Endpoint::RenameView
+            | CatalogV1Endpoint::RegisterView
             | CatalogV1Endpoint::CancelPlanning
             | CatalogV1Endpoint::FetchPlanningResult
             | CatalogV1Endpoint::PlanTableScan

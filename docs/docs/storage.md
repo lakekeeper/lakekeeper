@@ -36,6 +36,8 @@ Table and view locations must use the scheme of the Warehouse's storage, which m
 
 Alternative protocols are meant for registering legacy Hadoop-based tables. Tables with `s3a://` paths are not accessible outside the Java ecosystem.
 
+Registering a table or a view adopts a metadata file that already exists in storage. The metadata file and the location of the table or view must be inside the Warehouse's storage location. They do not need to be inside the location of the namespace, so a table or view that comes from another catalog keeps its paths. Because these files can be anywhere in the Warehouse's storage, registering needs a right on the Warehouse: `register_table` for tables and `register_view` for views, in addition to the right to create in the namespace. With OpenFGA, both come with `modify` on the Warehouse.
+
 ## How Clients Access Data
 
 Lakekeeper gives query engines access to table data in one of two ways:

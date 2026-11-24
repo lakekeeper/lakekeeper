@@ -2754,7 +2754,7 @@ mod tests {
         write_file(&io, &metadata_location, m.clone(), CompressionCodec::Gzip)
             .await
             .unwrap();
-        let read_metadata = read_metadata_file(&io, &metadata_location)
+        let read_metadata: TableMetadata = read_metadata_file(&io, &metadata_location)
             .await
             .expect("Failed to read metadata file");
         assert_eq!(read_metadata, m);

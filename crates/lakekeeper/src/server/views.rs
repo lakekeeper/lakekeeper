@@ -5,6 +5,7 @@ pub mod exists;
 pub mod list;
 pub mod load;
 pub(crate) mod owner_property;
+pub mod register;
 pub mod rename;
 pub(crate) mod security_mode;
 
@@ -16,8 +17,8 @@ use crate::{
         types::DropParams,
         v1::{
             ApiContext, CommitViewRequest, CreateViewRequest, DataAccessMode, ListTablesQuery,
-            ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix, RenameTableRequest,
-            Result, ViewParameters, views::LoadViewRequest,
+            ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix, RegisterViewRequest,
+            RenameTableRequest, Result, ViewParameters, views::LoadViewRequest,
         },
     },
     request_metadata::RequestMetadata,
@@ -48,6 +49,19 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<LoadViewResult> {
         create::create_view(parameters, request, state, request_metadata).await
+    }
+
+    /// Register a view in the given namespace from an existing view metadata file. A view
+    /// response carries no storage access; `data_access` applies only to an idempotent replay,
+    /// which loads the view.
+    async fn register_view(
+        parameters: NamespaceParameters,
+        request: RegisterViewRequest,
+        state: ApiContext<State<A, C, S>>,
+        data_access: impl Into<DataAccessMode> + Send,
+        request_metadata: RequestMetadata,
+    ) -> Result<LoadViewResult> {
+        register::register_view(parameters, request, state, data_access, request_metadata).await
     }
 
     /// Load a view from the catalog

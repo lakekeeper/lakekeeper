@@ -4,12 +4,9 @@ use iceberg::spec::TableMetadata;
 use lakekeeper_io::Location;
 
 use crate::{
-    api::{
-        ErrorModel,
-        iceberg::v1::{
-            LoadTableResult, Result,
-            tables::{DataAccessMode, SnapshotsQuery},
-        },
+    api::iceberg::v1::{
+        LoadTableResult, Result,
+        tables::{DataAccessMode, SnapshotsQuery},
     },
     request_metadata::ArcRequestMetadata,
     server::tables::{
@@ -18,76 +15,15 @@ use crate::{
         load_table::storage_access_for,
     },
     service::{
-        ArcResolvedWarehouse, NamespaceHierarchy, ResolvedWarehouse, TableInfo,
+        NamespaceHierarchy, ResolvedWarehouse, TableInfo,
         authz::{
-            ActionOnTable, AuthZCannotSeeTable, AuthZTableOps, Authorizer, AuthzWarehouseOps,
-            CatalogTableAction, CatalogWarehouseAction, RequireTableActionError,
+            ActionOnTable, AuthZCannotSeeTable, AuthZTableOps, Authorizer, CatalogTableAction,
+            RequireTableActionError,
         },
-        events::{
-            APIEventContext, AuthorizationFailureReason, AuthorizationFailureSource,
-            EventDispatcher,
-            context::{APIEventActions, ResolutionState, UserProvidedEntity},
-        },
+        events::{APIEventContext, EventDispatcher},
         storage::{StorageCredential, StoragePermissions, credential_revalidate_after_ms},
     },
 };
-
-/// Registering adopts files that are already in storage, so it needs `RegisterTable` on the
-/// warehouse as well as `CreateTable` on the namespace. Asked before the metadata file is read,
-/// and recorded on its own. A refusal also refuses the call's `CreateTable`, recorded as well.
-pub(super) async fn authorize_register_on_warehouse<A, P, R, Act>(
-    authorizer: &A,
-    event_ctx: &APIEventContext<P, R, Act>,
-    warehouse: &ArcResolvedWarehouse,
-) -> Result<()>
-where
-    A: Authorizer,
-    P: UserProvidedEntity,
-    R: ResolutionState,
-    Act: APIEventActions,
-{
-    let action = CatalogWarehouseAction::RegisterTable;
-    let register_ctx = APIEventContext::for_warehouse(
-        event_ctx.request_metadata_arc(),
-        event_ctx.dispatcher().clone(),
-        warehouse.warehouse_id,
-        action.clone(),
-    );
-    let authz_result = authorizer
-        .require_warehouse_action(
-            register_ctx.request_metadata(),
-            warehouse.warehouse_id,
-            Ok(Some(Arc::clone(warehouse))),
-            action,
-        )
-        .await
-        .map_err(|refusal| {
-            let failure_reason = refusal.to_failure_reason();
-            let error = event_ctx.emit_early_authz_failure(refusal);
-            RecordedFailure {
-                failure_reason,
-                error,
-            }
-        });
-    let (_register_ctx, _) = register_ctx.emit_authz(authz_result)?;
-    Ok(())
-}
-
-/// A failure already recorded on one context, to record it on another.
-struct RecordedFailure {
-    failure_reason: AuthorizationFailureReason,
-    error: ErrorModel,
-}
-
-impl AuthorizationFailureSource for RecordedFailure {
-    fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        self.failure_reason.clone()
-    }
-
-    fn into_error_model(self) -> ErrorModel {
-        self.error
-    }
-}
 
 /// A table that a register has committed, and what its response is built from.
 #[derive(typed_builder::TypedBuilder)]

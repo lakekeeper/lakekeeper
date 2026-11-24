@@ -310,6 +310,35 @@ impl EventListener for CloudEventsPublisher {
         Ok(())
     }
 
+    async fn view_registered(&self, event: types::RegisterViewEvent) -> anyhow::Result<()> {
+        let types::RegisterViewEvent {
+            namespace,
+            request,
+            metadata,
+            metadata_location: _metadata_location,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "registerView",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::View(metadata.uuid().into()),
+                warehouse_id: namespace.warehouse.warehouse_id,
+                name: request.name.clone(),
+                namespace: namespace.namespace.namespace_ident().to_string(),
+                prefix: namespace.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id().clone(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `registerView` event")?;
+        Ok(())
+    }
+
     async fn view_committed(&self, event: types::CommitViewEvent) -> anyhow::Result<()> {
         let types::CommitViewEvent {
             view,
