@@ -562,7 +562,10 @@ async fn test_set_ref(pool: PgPool) {
         .with_timestamp_ms(last_updated + 1)
         .with_sequence_number(0)
         .with_schema_id(0)
-        .with_manifest_list(format!("{}/metadata/snap-1.avro", table.metadata.location()))
+        .with_manifest_list(format!(
+            "{}/metadata/snap-1.avro",
+            table.metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::from_iter(vec![
@@ -1110,7 +1113,13 @@ async fn test_table_v3(pg_pool: PgPool) {
     );
     let snapshot = final_table.metadata.snapshot_by_id(3).unwrap();
     assert_eq!(snapshot.row_range(), Some((100, 50)));
-    assert_eq!(snapshot.manifest_list(), format!("{}/metadata/snap-3-valid.avro", final_table.metadata.location()));
+    assert_eq!(
+        snapshot.manifest_list(),
+        format!(
+            "{}/metadata/snap-3-valid.avro",
+            final_table.metadata.location()
+        )
+    );
 }
 
 #[lakekeeper_storage_postgres::db_test]
@@ -1173,7 +1182,10 @@ async fn test_v2_to_v3_migration(pg_pool: PgPool) {
         .with_timestamp_ms(last_updated + 1)
         .with_sequence_number(1)
         .with_schema_id(0)
-        .with_manifest_list(format!("{}/metadata/snap-1.avro", table.metadata.location()))
+        .with_manifest_list(format!(
+            "{}/metadata/snap-1.avro",
+            table.metadata.location()
+        ))
         // No row_range for V2 table - this is the realistic scenario
         .with_summary(Summary {
             operation: Operation::Append,
@@ -1283,7 +1295,10 @@ async fn test_v2_to_v3_migration(pg_pool: PgPool) {
         .with_timestamp_ms(last_updated + 2)
         .with_sequence_number(2)
         .with_schema_id(0)
-        .with_manifest_list(format!("{}/metadata/snap-2.avro", table.metadata.location()))
+        .with_manifest_list(format!(
+            "{}/metadata/snap-2.avro",
+            table.metadata.location()
+        ))
         .with_row_range(0, 50) // first_row_id: 0, added_rows_count: 50
         .with_summary(Summary {
             operation: Operation::Append,
@@ -1350,7 +1365,10 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         .with_timestamp_ms(last_updated + 1)
         .with_sequence_number(0)
         .with_schema_id(0)
-        .with_manifest_list(format!("{}/metadata/snap-1.avro", table.metadata.location()))
+        .with_manifest_list(format!(
+            "{}/metadata/snap-1.avro",
+            table.metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::from_iter(vec![
@@ -1433,7 +1451,10 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         .with_timestamp_ms(last_updated + 1)
         .with_sequence_number(1)
         .with_schema_id(0)
-        .with_manifest_list(format!("{}/metadata/snap-2.avro", table.metadata.location()))
+        .with_manifest_list(format!(
+            "{}/metadata/snap-2.avro",
+            table.metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::from_iter(vec![
@@ -1498,7 +1519,10 @@ async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         .with_parent_snapshot_id(Some(2))
         .with_sequence_number(2)
         .with_schema_id(0)
-        .with_manifest_list(format!("{}/metadata/snap-2.avro", table.metadata.location()))
+        .with_manifest_list(format!(
+            "{}/metadata/snap-2.avro",
+            table.metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::from_iter(vec![
@@ -1628,7 +1652,10 @@ async fn test_remove_snapshots_refuses_to_drop_a_concurrently_created_tag(pg_poo
             .with_timestamp_ms(metadata.last_updated_ms() + 1)
             .with_sequence_number(snapshot_id)
             .with_schema_id(0)
-            .with_manifest_list(format!("{}/snap-{snapshot_id}.avro", table.metadata.location()))
+            .with_manifest_list(format!(
+                "{}/snap-{snapshot_id}.avro",
+                table.metadata.location()
+            ))
             .with_summary(Summary {
                 operation: Operation::Append,
                 additional_properties: HashMap::new(),
@@ -2163,7 +2190,10 @@ async fn test_stale_snapshot_after_a_branch_commit_is_a_conflict(pool: PgPool) {
             .with_timestamp_ms(ts + snapshot_id)
             .with_sequence_number(sequence_number)
             .with_schema_id(0)
-            .with_manifest_list(format!("{}/metadata/snap-{snapshot_id}.avro", table.metadata.location()))
+            .with_manifest_list(format!(
+                "{}/metadata/snap-{snapshot_id}.avro",
+                table.metadata.location()
+            ))
             .with_summary(Summary {
                 operation: Operation::Append,
                 additional_properties: HashMap::new(),
