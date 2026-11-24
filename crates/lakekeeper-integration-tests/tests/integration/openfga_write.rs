@@ -120,12 +120,14 @@ mod write {
             .map_err(|e| e.error)
         }
 
-        fn append(snapshot_id: i64) -> Vec<TableUpdate> {
+        fn append(table_location: &str, snapshot_id: i64) -> Vec<TableUpdate> {
             let snapshot = Snapshot::builder()
                 .with_snapshot_id(snapshot_id)
                 .with_timestamp_ms(chrono::Utc::now().timestamp_millis())
                 .with_sequence_number(snapshot_id)
-                .with_manifest_list(format!("/path/to/manifest-{snapshot_id}.avro"))
+                .with_manifest_list(format!(
+                    "{table_location}/metadata/manifest-{snapshot_id}.avro"
+                ))
                 .with_summary(Summary {
                     operation: Operation::Append,
                     additional_properties: HashMap::new(),
@@ -211,13 +213,13 @@ mod write {
         }
 
         /// Stages table `name` in `ns` as the principal of `md`, which then owns it, and
-        /// returns its id.
+        /// returns its create response, including its id and location in the metadata.
         async fn stage(
             ctx: &Ctx,
             md: &RequestMetadata,
             warehouse_id: WarehouseId,
             name: &str,
-        ) -> uuid::Uuid {
+        ) -> lakekeeper::api::iceberg::v1::LoadTableResult {
             CatalogServer::create_table(
                 NamespaceParameters {
                     prefix: Some(Prefix(warehouse_id.to_string())),
@@ -230,8 +232,6 @@ mod write {
             )
             .await
             .unwrap()
-            .metadata
-            .uuid()
         }
 
         async fn load(
@@ -281,20 +281,14 @@ mod write {
             let writer_md =
                 namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t"]).await;
 
-            CatalogServer::load_table(
-                table_params(warehouse_id),
-                LoadTableRequest::default(),
-                ctx.clone(),
-                writer_md.clone(),
-            )
-            .await
-            .expect("write implies select");
+            let loaded = load(&ctx, &writer_md, table_params(warehouse_id)).await;
+            let table_location = loaded.metadata.location();
             for (what, updates) in [
-                ("an append", append(1)),
+                ("an append", append(table_location, 1)),
                 ("a commit request without updates", vec![]),
                 ("a schema change", schema_change()),
                 ("a property change", property_change()),
-                ("a second append", append(2)),
+                ("a second append", append(table_location, 2)),
                 (
                     "snapshot expiry",
                     vec![TableUpdate::RemoveSnapshots {
@@ -386,6 +380,7 @@ mod write {
             let writer_md =
                 namespace_with_writer(&ctx, &admin_md, &project_id, warehouse_id, &["t", "t2"])
                     .await;
+            let loaded = load(&ctx, &writer_md, table_params(warehouse_id)).await;
             let change = |table: &str, updates: Vec<TableUpdate>| CommitTableRequest {
                 identifier: Some(TableIdent::new(namespace(), table.to_string())),
                 requirements: vec![],
@@ -395,7 +390,10 @@ mod write {
             CatalogServer::commit_transaction(
                 Some(Prefix(warehouse_id.to_string())),
                 CommitTransactionRequest {
-                    table_changes: vec![change("t", append(1)), change("t2", schema_change())],
+                    table_changes: vec![
+                        change("t", append(loaded.metadata.location(), 1)),
+                        change("t2", schema_change()),
+                    ],
                 },
                 ctx.clone(),
                 writer_md.clone(),
@@ -429,11 +427,11 @@ mod write {
                 "create",
             )
             .await;
-            stage(&ctx, &creator_md, warehouse_id, "staged").await;
+            let staged_table = stage(&ctx, &creator_md, warehouse_id, "staged").await;
             let staged = || named_table_params(warehouse_id, "staged");
 
             let mut updates = schema_change();
-            updates.extend(append(1));
+            updates.extend(append(staged_table.metadata.location(), 1));
             commit_to(&ctx, &writer_md, staged(), updates)
                 .await
                 .expect("write finishes the staged create");
@@ -459,7 +457,10 @@ mod write {
                 "select",
             )
             .await;
-            let staged = stage(&ctx, &admin_md, warehouse_id, "staged").await;
+            let staged = stage(&ctx, &admin_md, warehouse_id, "staged")
+                .await
+                .metadata
+                .uuid();
 
             let on_t = |action: serde_json::Value| {
                 serde_json::json!({"operation": {"table": {
