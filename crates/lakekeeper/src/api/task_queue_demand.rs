@@ -322,7 +322,7 @@ mod tests {
         config::MaintenanceMode,
         service::tasks::{
             QueueRegistration, QueueScope, TaskConfig, TaskData, TaskDemandClass,
-            TaskQueueRegistry, TaskResourceDemandRange, UserScheduling,
+            TaskQueueRegistry, TaskResourceDemandRange, UserConfiguration, UserScheduling,
         },
     };
 
@@ -355,6 +355,7 @@ mod tests {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
         registry
@@ -438,6 +439,49 @@ mod tests {
         }
         // One count for the class, one for the whole queue.
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    static UNCONFIGURABLE_QUEUE_NAME: LazyLock<TaskQueueName> =
+        LazyLock::new(|| "demand-endpoint-unconfigurable".into());
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+    struct UnconfigurableConfig {}
+
+    impl TaskConfig for UnconfigurableConfig {
+        fn queue_name() -> &'static TaskQueueName {
+            &UNCONFIGURABLE_QUEUE_NAME
+        }
+
+        fn max_time_since_last_heartbeat() -> chrono::Duration {
+            chrono::Duration::seconds(60)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_queue_without_user_configuration_reports_its_demand() {
+        let registry = TaskQueueRegistry::new();
+        registry
+            .register_queue::<UnconfigurableConfig, Payload>(QueueRegistration {
+                queue_name: &UNCONFIGURABLE_QUEUE_NAME,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Disabled,
+            })
+            .await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let router = router_with(registry.registered_task_queues(), counting(&calls), &OFF);
+        assert_eq!(
+            get(&router, "/task-queue/demand-endpoint-unconfigurable/demand").await,
+            (
+                StatusCode::OK,
+                r#"{"demand":1005,"due":1000,"heartbeat-expired":2,"running":3,"oldest-due-seconds":1000}"#
+                    .to_string()
+            )
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

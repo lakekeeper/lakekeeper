@@ -33,7 +33,7 @@ pub use queue_metrics::record_timed_out_attempt;
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
 pub use task_registry::{
     ConfigCheckFn, QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues,
-    ScheduleEligibilityFn, TaskQueueRegistry, UserScheduling, ValidatorFn,
+    ScheduleEligibilityFn, TaskQueueRegistry, UserConfiguration, UserScheduling, ValidatorFn,
 };
 #[cfg(feature = "router")]
 pub(crate) use task_registry::{DemandLookupError, DemandTarget};
@@ -312,6 +312,18 @@ mod built_in_schedulable_pin_test {
             "OSS schedulable-queue set changed; review the security \
              implications and update the operator docs."
         );
+    }
+
+    /// Every OSS queue keeps its `task-queue/{name}/config` endpoints.
+    #[test]
+    fn oss_queues_are_user_configurable() {
+        let unconfigurable: Vec<&str> = BUILT_IN_API_CONFIGS
+            .iter()
+            .chain(BUILT_IN_PROJECT_API_CONFIGS.iter())
+            .filter(|c| !c.user_configuration.is_enabled())
+            .map(|c| c.queue_name.as_str())
+            .collect();
+        assert_eq!(unconfigurable, Vec::<&str>::new());
     }
 
     /// Belt-and-braces: explicitly assert the two queues we must never expose
