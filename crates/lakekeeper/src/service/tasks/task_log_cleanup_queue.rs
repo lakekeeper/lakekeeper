@@ -33,6 +33,7 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
     utoipa_schema: TaskLogCleanupConfig::schema(),
     scope: super::QueueScope::Project,
     user_scheduling: super::UserScheduling::Disabled,
+    user_configuration: super::UserConfiguration::Enabled,
 });
 
 const DEFAULT_CLEANUP_PERIOD_DAYS: Duration = Duration::days(1);

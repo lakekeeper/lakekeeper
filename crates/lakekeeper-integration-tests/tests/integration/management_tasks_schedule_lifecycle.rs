@@ -15,6 +15,7 @@ use lakekeeper::{
         management::v1::{
             ApiServer,
             project::Service as _,
+            server::Service as _,
             task_queue::{
                 QueueConfig, ScheduleTaskRequest, ScheduleTaskResponse, SetTaskQueueConfigRequest,
             },
@@ -24,17 +25,19 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{
-        TableId,
+        CatalogTaskOps, TableId,
         authz::AllowAllAuthorizer,
+        task_configs::TaskQueueConfigFilter,
         tasks::{
-            QueueRegistration, QueueScope, TaskConfig, TaskData, TaskQueueName, UserScheduling,
-            WarehouseTaskEntityId,
+            QueueRegistration, QueueScope, TaskConfig, TaskData, TaskQueueName, TaskQueueRegistry,
+            UserConfiguration, UserScheduling, WarehouseTaskEntityId,
         },
     },
 };
 use lakekeeper_integration_tests::{
     create_ns, memory_io_profile, random_request_metadata, setup_with_registry,
 };
+use lakekeeper_storage_postgres::PostgresBackend;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -133,6 +136,7 @@ async fn schedule_then_409_then_runnow(pool: PgPool) {
             },
             #[cfg(not(feature = "open-api"))]
             user_scheduling: UserScheduling::Enabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
 
@@ -244,6 +248,7 @@ async fn schedule_eligibility_rejection_surfaces_as_400(pool: PgPool) {
             },
             #[cfg(not(feature = "open-api"))]
             user_scheduling: UserScheduling::Enabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
 
@@ -474,6 +479,7 @@ async fn schedule_invalid_payload_returns_400(pool: PgPool) {
             },
             #[cfg(not(feature = "open-api"))]
             user_scheduling: UserScheduling::Enabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
 
@@ -548,6 +554,7 @@ async fn schedule_missing_table_returns_404(pool: PgPool) {
             },
             #[cfg(not(feature = "open-api"))]
             user_scheduling: UserScheduling::Enabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
 
@@ -653,6 +660,7 @@ async fn set_config_refused_by_check_config_is_not_stored(pool: PgPool) {
             num_workers: 0,
             scope: QueueScope::Warehouse,
             user_scheduling: UserScheduling::Disabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
     registry
@@ -662,6 +670,7 @@ async fn set_config_refused_by_check_config_is_not_stored(pool: PgPool) {
             num_workers: 0,
             scope: QueueScope::Project,
             user_scheduling: UserScheduling::Disabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
     let warehouse_id = warehouse.warehouse_id;
@@ -752,7 +761,7 @@ async fn get_config_of_unregistered_queue_returns_404(pool: PgPool) {
     let expected = (
         404,
         "QueueNotFound".to_string(),
-        "Queue 'never-registered-queue' not found! Existing queues: \
+        "Queue 'never-registered-queue' not found! Configurable queues: \
          [soft_deletion, tabular_purge, task_log_cleanup]"
             .to_string(),
     );
@@ -815,4 +824,198 @@ async fn get_config_of_registered_queue_without_config_returns_empty_config(pool
             "{queue_name}"
         );
     }
+}
+
+static UNCONFIGURABLE_WAREHOUSE_QUEUE_NAME: LazyLock<TaskQueueName> =
+    LazyLock::new(|| "test_unconfigurable_warehouse".into());
+static UNCONFIGURABLE_PROJECT_QUEUE_NAME: LazyLock<TaskQueueName> =
+    LazyLock::new(|| "test_unconfigurable_project".into());
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(lakekeeper::utoipa::ToSchema))]
+struct UnconfigurableWarehouseConfig {}
+
+impl TaskConfig for UnconfigurableWarehouseConfig {
+    fn queue_name() -> &'static TaskQueueName {
+        &UNCONFIGURABLE_WAREHOUSE_QUEUE_NAME
+    }
+    fn max_time_since_last_heartbeat() -> chrono::Duration {
+        chrono::Duration::seconds(60)
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(lakekeeper::utoipa::ToSchema))]
+struct UnconfigurableProjectConfig {}
+
+impl TaskConfig for UnconfigurableProjectConfig {
+    fn queue_name() -> &'static TaskQueueName {
+        &UNCONFIGURABLE_PROJECT_QUEUE_NAME
+    }
+    fn max_time_since_last_heartbeat() -> chrono::Duration {
+        chrono::Duration::seconds(60)
+    }
+}
+
+/// Registers a warehouse and a project queue, both with configuration disabled.
+async fn register_unconfigurable_queues(registry: &TaskQueueRegistry) {
+    registry
+        .register_queue::<UnconfigurableWarehouseConfig, TestSchedulablePayload>(
+            QueueRegistration {
+                queue_name: &UNCONFIGURABLE_WAREHOUSE_QUEUE_NAME,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Disabled,
+            },
+        )
+        .await;
+    registry
+        .register_queue::<UnconfigurableProjectConfig, TestSchedulablePayload>(QueueRegistration {
+            queue_name: &UNCONFIGURABLE_PROJECT_QUEUE_NAME,
+            worker_fn: Arc::new(|_| Box::pin(async {})),
+            num_workers: 0,
+            scope: QueueScope::Project,
+            user_scheduling: UserScheduling::Disabled,
+            user_configuration: UserConfiguration::Disabled,
+        })
+        .await;
+}
+
+/// The config routes answer for a queue registered with configuration disabled as for a queue
+/// that is not registered: GET with 404, SET with 400. Neither lists the queue among the
+/// configurable ones, and SET stores nothing.
+#[lakekeeper_storage_postgres::db_test]
+async fn config_of_queue_without_user_configuration_is_not_found(pool: PgPool) {
+    let (ctx, warehouse, registry) = setup_with_registry(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+        1,
+        None,
+    )
+    .await;
+    register_unconfigurable_queues(&registry).await;
+    let warehouse_id = warehouse.warehouse_id;
+    let project_metadata = || {
+        let mut request_metadata = random_request_metadata();
+        request_metadata.with_project_id((*warehouse.project_id).clone());
+        request_metadata
+    };
+    let request = || SetTaskQueueConfigRequest {
+        queue_config: QueueConfig::from_json(serde_json::json!({})),
+        max_seconds_since_last_heartbeat: Some(1),
+    };
+    let not_found = |code: u16, queue_name: &TaskQueueName| {
+        (
+            code,
+            "QueueNotFound".to_string(),
+            format!(
+                "Queue '{queue_name}' not found! Configurable queues: \
+                 [soft_deletion, tabular_purge, task_log_cleanup]"
+            ),
+        )
+    };
+
+    // Warehouse routes.
+    let queue_name = &*UNCONFIGURABLE_WAREHOUSE_QUEUE_NAME;
+    let err = ApiServer::get_task_queue_config(
+        warehouse_id,
+        queue_name,
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("warehouse route: GET must not return 2xx");
+    assert_eq!(
+        (err.error.code, err.error.r#type, err.error.message),
+        not_found(404, queue_name)
+    );
+    let err = ApiServer::set_task_queue_config(
+        warehouse_id,
+        queue_name,
+        request(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("warehouse route: SET must not return 2xx");
+    assert_eq!(
+        (err.error.code, err.error.r#type, err.error.message),
+        not_found(400, queue_name)
+    );
+    let stored = PostgresBackend::get_task_queue_config(
+        &TaskQueueConfigFilter::WarehouseId { warehouse_id },
+        queue_name,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(stored.is_none(), "warehouse route stored {stored:?}");
+
+    // Project routes.
+    let queue_name = &*UNCONFIGURABLE_PROJECT_QUEUE_NAME;
+    let err = ApiServer::get_project_task_queue_config(queue_name, ctx.clone(), project_metadata())
+        .await
+        .expect_err("project route: GET must not return 2xx");
+    assert_eq!(
+        (err.error.code, err.error.r#type, err.error.message),
+        not_found(404, queue_name)
+    );
+    let err = ApiServer::set_project_task_queue_config(
+        queue_name,
+        request(),
+        ctx.clone(),
+        project_metadata(),
+    )
+    .await
+    .expect_err("project route: SET must not return 2xx");
+    assert_eq!(
+        (err.error.code, err.error.r#type, err.error.message),
+        not_found(400, queue_name)
+    );
+    let stored = PostgresBackend::get_task_queue_config(
+        &TaskQueueConfigFilter::ProjectId {
+            project_id: warehouse.project_id.clone(),
+        },
+        queue_name,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(stored.is_none(), "project route stored {stored:?}");
+}
+
+#[lakekeeper_storage_postgres::db_test]
+async fn queue_without_user_configuration_is_listed_in_server_info(pool: PgPool) {
+    let (ctx, _warehouse, registry) = setup_with_registry(
+        pool,
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        TabularDeleteProfile::Hard {},
+        None,
+        1,
+        None,
+    )
+    .await;
+    register_unconfigurable_queues(&registry).await;
+
+    let server_info = ApiServer::server_info(ctx, RequestMetadata::new_unauthenticated())
+        .await
+        .unwrap();
+    assert_eq!(
+        server_info.queues,
+        vec![
+            "soft_deletion",
+            "tabular_purge",
+            "task_log_cleanup",
+            "test_unconfigurable_project",
+            "test_unconfigurable_warehouse",
+        ]
+    );
 }

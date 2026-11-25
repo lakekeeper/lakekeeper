@@ -18,7 +18,8 @@ mod test {
             tasks::{
                 QueueRegistration, QueueScope, ScheduleTaskMetadata, SpecializedTask,
                 TaskConfig as QueueConfigTrait, TaskData, TaskEntity, TaskExecutionDetails,
-                TaskInput, TaskQueueName, TaskQueueRegistry, UserScheduling, WarehouseTaskEntityId,
+                TaskInput, TaskQueueName, TaskQueueRegistry, UserConfiguration, UserScheduling,
+                WarehouseTaskEntityId,
             },
         },
     };
@@ -99,6 +100,7 @@ mod test {
                 num_workers: 1,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
         let mut transaction =
