@@ -1115,13 +1115,13 @@ fn to_pascal_case(value: &str) -> String {
 ///
 /// The utoipa-registered placeholder uses `{queue_name}` as a path
 /// parameter and a single generic `ScheduleTaskRequest` body. For each
-/// queue that opted in via `TaskConfig::user_schedulable()` we:
+/// queue registered with [`UserScheduling::Enabled`] we:
 ///
 /// - Clone the placeholder, hard-code its `queue_name` into the URL, and
 ///   rewrite `operation_id` to `schedule_task_<queue>` so each queue is a
 ///   distinct `OpenAPI` operation.
 /// - Clone `ScheduleTaskRequest::schema()` and strip the generic `payload`
-///   property when the queue declares no payload (`utoipa_payload_schema =
+///   property when the queue declares no payload (`payload_schema:
 ///   None`), or rewrite it to reference the queue's payload schema when
 ///   provided. Either way the published request body is type-correct per
 ///   queue rather than the generic "any JSON" the placeholder shows.
@@ -1131,7 +1131,6 @@ fn to_pascal_case(value: &str) -> String {
 /// Finally the generic `ScheduleTaskRequest` placeholder is removed from
 /// `components/schemas`. Queues that did not opt in are invisible in the
 /// generated spec.
-#[allow(clippy::too_many_lines)]
 fn fix_task_queue_schedule_paths(
     doc: &mut utoipa::openapi::OpenApi,
     queue_api_configs: &[&QueueApiConfig],
@@ -1159,34 +1158,13 @@ fn fix_task_queue_schedule_paths(
         user_scheduling,
         scope: _,
         utoipa_schema: _,
+        user_configuration: _,
     } in queue_api_configs
     {
         let UserScheduling::Enabled { payload_schema } = user_scheduling else {
             continue;
         };
 
-        // Build the per-queue request schema by cloning the placeholder
-        // and adjusting its `payload` property to match what the queue
-        // actually accepts.
-        let mut per_queue_request_schema = ScheduleTaskRequest::schema();
-        match &mut per_queue_request_schema {
-            RefOr::Ref(_) => {
-                unreachable!("ScheduleTaskRequest::schema() returns an inline schema");
-            }
-            RefOr::T(Schema::Object(obj)) => match payload_schema.as_ref() {
-                None => {
-                    obj.properties.remove("payload");
-                    obj.required.retain(|r| r != "payload");
-                }
-                Some(payload_ref) => {
-                    obj.properties
-                        .insert("payload".to_string(), payload_ref.clone());
-                }
-            },
-            RefOr::T(_) => {
-                unreachable!("ScheduleTaskRequest::schema() returns an Object schema");
-            }
-        }
         // The display stem for the schedule request schema. We strip a
         // trailing `QueueConfig` from the config type name so we get e.g.
         // `ScheduleRemoveOrphanFilesTaskRequest` instead of
@@ -1196,9 +1174,10 @@ fn fix_task_queue_schedule_paths(
             .unwrap_or(utoipa_type_name);
         let per_queue_request_name = format!("Schedule{display_stem}TaskRequest");
 
-        comps
-            .schemas
-            .insert(per_queue_request_name.clone(), per_queue_request_schema);
+        comps.schemas.insert(
+            per_queue_request_name.clone(),
+            schedule_request_schema(payload_schema.as_ref()),
+        );
 
         let concrete_path = schedule_path.replace("{queue_name}", queue_name);
         let mut path_item = placeholder.clone();
@@ -1212,22 +1191,13 @@ fn fix_task_queue_schedule_paths(
             );
             continue;
         };
-        post.parameters = post.parameters.take().map(|params| {
-            params
-                .into_iter()
-                .filter(|p| p.name != "queue_name")
-                .collect()
-        });
+        post.parameters = without_queue_name_parameter(post.parameters.take());
         post.operation_id = Some(format!("schedule_task_{}", queue_name.replace('-', "_")));
         if let Some(body) = post.request_body.as_mut() {
             body.content.insert(
                 "application/json".to_string(),
                 utoipa::openapi::ContentBuilder::new()
-                    .schema(Some(RefOr::Ref(
-                        utoipa::openapi::schema::RefBuilder::new()
-                            .ref_location_from_schema_name(per_queue_request_name)
-                            .build(),
-                    )))
+                    .schema(Some(schema_ref(&per_queue_request_name)))
                     .build(),
             );
         }
@@ -1242,7 +1212,36 @@ fn fix_task_queue_schedule_paths(
         .remove(&ScheduleTaskRequest::name().to_string());
 }
 
-#[allow(clippy::too_many_lines)]
+/// The per-queue schedule request schema: the placeholder with its `payload`
+/// property adjusted to match what the queue actually accepts.
+fn schedule_request_schema(payload_schema: Option<&RefOr<Schema>>) -> RefOr<Schema> {
+    let mut schema = ScheduleTaskRequest::schema();
+    match &mut schema {
+        RefOr::Ref(_) => {
+            unreachable!("ScheduleTaskRequest::schema() returns an inline schema");
+        }
+        RefOr::T(Schema::Object(obj)) => match payload_schema {
+            None => {
+                obj.properties.remove("payload");
+                obj.required.retain(|r| r != "payload");
+            }
+            Some(payload_ref) => {
+                obj.properties
+                    .insert("payload".to_string(), payload_ref.clone());
+            }
+        },
+        RefOr::T(_) => {
+            unreachable!("ScheduleTaskRequest::schema() returns an Object schema");
+        }
+    }
+    schema
+}
+
+/// Materialise per-queue config paths and request and response schemas. Queues registered with
+/// [`UserConfiguration::Disabled`] have no config path; their schedule path follows their
+/// [`UserScheduling`].
+///
+/// [`UserConfiguration::Disabled`]: crate::service::tasks::UserConfiguration::Disabled
 fn fix_task_queue_config_paths(
     doc: &mut utoipa::openapi::OpenApi,
     queue_api_configs: &[&QueueApiConfig],
@@ -1268,167 +1267,44 @@ fn fix_task_queue_config_paths(
         utoipa_schema,
         scope,
         user_scheduling: _,
+        user_configuration,
     } in queue_api_configs
     {
+        if !user_configuration.is_enabled() {
+            continue;
+        }
         let operation_object = match scope {
             QueueScope::Project => "project_task_queue_config",
             QueueScope::Warehouse => "task_queue_config",
         };
-
-        let mut set_queue_config_schema = SetTaskQueueConfigRequest::schema();
-        let mut get_queue_config_schema = GetTaskQueueConfigResponse::schema();
         let set_queue_config_type_name = format!("Set{utoipa_type_name}");
         let get_queue_config_type_name = format!("Get{utoipa_type_name}");
-        let queue_config_type_ref = RefOr::Ref(
-            utoipa::openapi::schema::RefBuilder::new()
-                .ref_location_from_schema_name(utoipa_type_name.to_string())
-                .build(),
-        );
-        let set_queue_config_type_ref = RefOr::Ref(
-            utoipa::openapi::schema::RefBuilder::new()
-                .ref_location_from_schema_name(set_queue_config_type_name.clone())
-                .build(),
-        );
-        let get_queue_config_type_ref = RefOr::Ref(
-            utoipa::openapi::schema::RefBuilder::new()
-                .ref_location_from_schema_name(get_queue_config_type_name.clone())
-                .build(),
-        );
 
-        // replace the "queue-config" property with a ref to the actual queue config type
-        match &mut set_queue_config_schema {
-            RefOr::Ref(_) => {
-                unreachable!("The schema for SetTaskQueueConfigRequest should not be a reference.");
-            }
-            RefOr::T(s) => match s {
-                utoipa::openapi::schema::Schema::Object(obj) => {
-                    let ins = obj
-                        .properties
-                        .insert("queue-config".to_string(), queue_config_type_ref.clone());
-                    if ins.is_none() {
-                        unreachable!(
-                            "The schema for SetTaskQueueConfigRequest should have a 'queue-config' property."
-                        );
-                    }
-                }
-                _ => {
-                    unreachable!("The schema for SetTaskQueueConfigRequest should be an object.");
-                }
-            },
-        }
-        match &mut get_queue_config_schema {
-            RefOr::Ref(_) => {
-                unreachable!(
-                    "The schema for GetTaskQueueConfigResponse should not be a reference."
-                );
-            }
-            RefOr::T(s) => match s {
-                utoipa::openapi::schema::Schema::Object(obj) => {
-                    let ins = obj
-                        .properties
-                        .insert("queue-config".to_string(), queue_config_type_ref.clone());
-                    if ins.is_none() {
-                        unreachable!(
-                            "The schema for GetTaskQueueConfigResponse should have a 'queue-config' property."
-                        );
-                    }
-                }
-                _ => {
-                    unreachable!("The schema for GetTaskQueueConfigResponse should be an object.");
-                }
-            },
-        }
-
+        let Some(path_item) = queue_config_path_item(
+            &config_path,
+            set_task_queue_config_path,
+            queue_name,
+            operation_object,
+            schema_ref(&set_queue_config_type_name),
+            schema_ref(&get_queue_config_type_name),
+        ) else {
+            continue;
+        };
         let path = set_task_queue_config_path.replace("{queue_name}", queue_name);
+        paths.insert(path, path_item);
 
-        let mut p = config_path.clone();
-
-        let Some(post) = p.post.as_mut() else {
-            tracing::warn!(
-                "No post method found for '{}' for queue '{queue_name}'; \
-                 skipping this queue and continuing with the rest.",
-                set_task_queue_config_path
-            );
-            continue;
-        };
-        post.parameters = post.parameters.take().map(|params| {
-            params
-                .into_iter()
-                .filter(|param| param.name != "queue_name")
-                .collect()
-        });
-        post.operation_id = Some(format!(
-            "set_{operation_object}_{}",
-            queue_name.replace('-', "_")
-        ));
-        let Some(body) = post.request_body.as_mut() else {
-            tracing::warn!(
-                "No request body found for '{}' for queue '{queue_name}'; \
-                 skipping this queue and continuing with the rest.",
-                set_task_queue_config_path
-            );
-            continue;
-        };
-        body.content.insert(
-            "application/json".to_string(),
-            utoipa::openapi::ContentBuilder::new()
-                .schema(Some(set_queue_config_type_ref))
-                .build(),
-        );
-        let Some(get) = p.get.as_mut() else {
-            tracing::warn!(
-                "No get method found for '{}' for queue '{queue_name}'; \
-                 skipping this queue and continuing with the rest.",
-                set_task_queue_config_path
-            );
-            continue;
-        };
-        get.parameters = get.parameters.take().map(|params| {
-            params
-                .into_iter()
-                .filter(|param| param.name != "queue_name")
-                .collect()
-        });
-        get.operation_id = Some(format!(
-            "get_{operation_object}_{}",
-            queue_name.replace('-', "_")
-        ));
-        let response = utoipa::openapi::response::ResponseBuilder::new()
-            .content(
-                "application/json",
-                utoipa::openapi::content::ContentBuilder::new()
-                    .schema(Some(get_queue_config_type_ref))
-                    .build(),
-            )
-            .header(
-                "x-request-id",
-                utoipa::openapi::HeaderBuilder::new()
-                    .schema(utoipa::openapi::schema::Object::builder().schema_type(
-                        utoipa::openapi::schema::SchemaType::new(
-                            utoipa::openapi::schema::Type::String,
-                        ),
-                    ))
-                    .description(Some(
-                        "Request identifier, add this to your bug reports. The `x-request-id` \
-                         the client sent, whatever its form, or one generated for the request.",
-                    ))
-                    .build(),
-            );
-        get.responses
-            .responses
-            .insert("200".to_string(), RefOr::T(response.build()));
-
-        paths.insert(path, p);
-
+        let queue_config_type_ref = schema_ref(utoipa_type_name);
         comps
             .schemas
             .insert(utoipa_type_name.to_string(), utoipa_schema.clone());
-        comps
-            .schemas
-            .insert(set_queue_config_type_name, set_queue_config_schema);
-        comps
-            .schemas
-            .insert(get_queue_config_type_name, get_queue_config_schema);
+        comps.schemas.insert(
+            set_queue_config_type_name,
+            with_queue_config_type::<SetTaskQueueConfigRequest>(&queue_config_type_ref),
+        );
+        comps.schemas.insert(
+            get_queue_config_type_name,
+            with_queue_config_type::<GetTaskQueueConfigResponse>(&queue_config_type_ref),
+        );
     }
 
     // Remove the generic placeholder schemas — every callable path now
@@ -1441,6 +1317,128 @@ fn fix_task_queue_config_paths(
     comps
         .schemas
         .remove(&GetTaskQueueConfigResponse::name().to_string());
+}
+
+/// The config path of one queue: `config_path` with the queue's name in place of the
+/// `queue_name` parameter, its own `operationId`s and its own request and response types.
+/// `None`, after a warning, if `config_path` lacks an operation or the request body.
+fn queue_config_path_item(
+    config_path: &utoipa::openapi::PathItem,
+    set_task_queue_config_path: &str,
+    queue_name: &str,
+    operation_object: &str,
+    set_queue_config_type_ref: RefOr<Schema>,
+    get_queue_config_type_ref: RefOr<Schema>,
+) -> Option<utoipa::openapi::PathItem> {
+    let mut p = config_path.clone();
+
+    let Some(post) = p.post.as_mut() else {
+        tracing::warn!(
+            "No post method found for '{}' for queue '{queue_name}'; \
+             skipping this queue and continuing with the rest.",
+            set_task_queue_config_path
+        );
+        return None;
+    };
+    post.parameters = without_queue_name_parameter(post.parameters.take());
+    post.operation_id = Some(format!(
+        "set_{operation_object}_{}",
+        queue_name.replace('-', "_")
+    ));
+    let Some(body) = post.request_body.as_mut() else {
+        tracing::warn!(
+            "No request body found for '{}' for queue '{queue_name}'; \
+             skipping this queue and continuing with the rest.",
+            set_task_queue_config_path
+        );
+        return None;
+    };
+    body.content.insert(
+        "application/json".to_string(),
+        utoipa::openapi::ContentBuilder::new()
+            .schema(Some(set_queue_config_type_ref))
+            .build(),
+    );
+    let Some(get) = p.get.as_mut() else {
+        tracing::warn!(
+            "No get method found for '{}' for queue '{queue_name}'; \
+             skipping this queue and continuing with the rest.",
+            set_task_queue_config_path
+        );
+        return None;
+    };
+    get.parameters = without_queue_name_parameter(get.parameters.take());
+    get.operation_id = Some(format!(
+        "get_{operation_object}_{}",
+        queue_name.replace('-', "_")
+    ));
+    let response = utoipa::openapi::response::ResponseBuilder::new()
+        .content(
+            "application/json",
+            utoipa::openapi::content::ContentBuilder::new()
+                .schema(Some(get_queue_config_type_ref))
+                .build(),
+        )
+        .header(
+            "x-request-id",
+            utoipa::openapi::HeaderBuilder::new()
+                .schema(utoipa::openapi::schema::Object::builder().schema_type(
+                    utoipa::openapi::schema::SchemaType::new(utoipa::openapi::schema::Type::String),
+                ))
+                .description(Some(
+                    "Request identifier, add this to your bug reports. The `x-request-id` \
+                     the client sent, whatever its form, or one generated for the request.",
+                ))
+                .build(),
+        );
+    get.responses
+        .responses
+        .insert("200".to_string(), RefOr::T(response.build()));
+    Some(p)
+}
+
+/// `T`'s schema with its `queue-config` property referencing the queue's config type.
+fn with_queue_config_type<T: ToSchema>(queue_config_type_ref: &RefOr<Schema>) -> RefOr<Schema> {
+    let name = T::name();
+    let mut schema = T::schema();
+    match &mut schema {
+        RefOr::Ref(_) => {
+            unreachable!("The schema for {name} should not be a reference.");
+        }
+        RefOr::T(Schema::Object(obj)) => {
+            let ins = obj
+                .properties
+                .insert("queue-config".to_string(), queue_config_type_ref.clone());
+            if ins.is_none() {
+                unreachable!("The schema for {name} should have a 'queue-config' property.");
+            }
+        }
+        RefOr::T(_) => {
+            unreachable!("The schema for {name} should be an object.");
+        }
+    }
+    schema
+}
+
+/// A reference to the component schema `name`.
+fn schema_ref(name: &str) -> RefOr<Schema> {
+    RefOr::Ref(
+        utoipa::openapi::schema::RefBuilder::new()
+            .ref_location_from_schema_name(name)
+            .build(),
+    )
+}
+
+/// `parameters` without the `queue_name` path parameter, which a per-queue path fills in.
+fn without_queue_name_parameter(
+    parameters: Option<Vec<utoipa::openapi::path::Parameter>>,
+) -> Option<Vec<utoipa::openapi::path::Parameter>> {
+    parameters.map(|params| {
+        params
+            .into_iter()
+            .filter(|param| param.name != "queue_name")
+            .collect()
+    })
 }
 
 fn add_dependent_schemas(
@@ -1457,6 +1455,208 @@ fn add_dependent_schemas(
         return;
     };
     comps.schemas.extend(dependent_schemas);
+}
+
+#[cfg(test)]
+mod task_queue_path_tests {
+    use std::sync::LazyLock;
+
+    use serde_json::{Value, json};
+    use utoipa::ToSchema;
+
+    use super::{api_doc, spec_integrity::assert_internally_consistent};
+    use crate::service::{
+        authz::AllowAllAuthorizer,
+        tasks::{QueueApiConfig, QueueScope, TaskQueueName, UserConfiguration, UserScheduling},
+    };
+
+    static CONFIGURABLE: LazyLock<TaskQueueName> = LazyLock::new(|| "configurable".into());
+    static UNCONFIGURABLE: LazyLock<TaskQueueName> = LazyLock::new(|| "unconfigurable".into());
+    static PROJECT_CONFIGURABLE: LazyLock<TaskQueueName> =
+        LazyLock::new(|| "project-configurable".into());
+    static PROJECT_UNCONFIGURABLE: LazyLock<TaskQueueName> =
+        LazyLock::new(|| "project-unconfigurable".into());
+
+    #[derive(ToSchema)]
+    struct ConfigurableQueueConfig {}
+    #[derive(ToSchema)]
+    struct UnconfigurableQueueConfig {}
+    #[derive(ToSchema)]
+    struct ProjectConfigurableQueueConfig {}
+    #[derive(ToSchema)]
+    struct ProjectUnconfigurableQueueConfig {}
+
+    fn api_config<T: ToSchema>(
+        queue_name: &'static TaskQueueName,
+        scope: QueueScope,
+        user_scheduling: UserScheduling,
+        user_configuration: UserConfiguration,
+    ) -> QueueApiConfig {
+        QueueApiConfig {
+            queue_name,
+            utoipa_type_name: T::name(),
+            utoipa_schema: T::schema(),
+            scope,
+            user_scheduling,
+            user_configuration,
+        }
+    }
+
+    fn schedulable() -> UserScheduling {
+        UserScheduling::Enabled {
+            payload_schema: None,
+        }
+    }
+
+    /// The document with two warehouse and two project queues, one of each with configuration
+    /// disabled. Both warehouse queues are schedulable.
+    fn spec() -> Value {
+        let warehouse_queues = [
+            api_config::<ConfigurableQueueConfig>(
+                &CONFIGURABLE,
+                QueueScope::Warehouse,
+                schedulable(),
+                UserConfiguration::Enabled,
+            ),
+            api_config::<UnconfigurableQueueConfig>(
+                &UNCONFIGURABLE,
+                QueueScope::Warehouse,
+                schedulable(),
+                UserConfiguration::Disabled,
+            ),
+        ];
+        let project_queues = [
+            api_config::<ProjectConfigurableQueueConfig>(
+                &PROJECT_CONFIGURABLE,
+                QueueScope::Project,
+                UserScheduling::Disabled,
+                UserConfiguration::Enabled,
+            ),
+            api_config::<ProjectUnconfigurableQueueConfig>(
+                &PROJECT_UNCONFIGURABLE,
+                QueueScope::Project,
+                UserScheduling::Disabled,
+                UserConfiguration::Disabled,
+            ),
+        ];
+        let doc = api_doc::<AllowAllAuthorizer>(
+            &warehouse_queues.iter().collect::<Vec<_>>(),
+            &project_queues.iter().collect::<Vec<_>>(),
+            &[],
+        );
+        serde_json::to_value(doc).unwrap()
+    }
+
+    /// Method and `operationId` of each operation of each task queue path.
+    fn queue_operations(spec: &Value) -> Vec<(String, String, String)> {
+        let mut operations = Vec::new();
+        for (path, item) in spec["paths"].as_object().unwrap() {
+            if !path.contains("/task-queue/") {
+                continue;
+            }
+            for (method, operation) in item.as_object().unwrap() {
+                operations.push((
+                    path.clone(),
+                    method.clone(),
+                    operation["operationId"].as_str().unwrap().to_string(),
+                ));
+            }
+        }
+        operations.sort();
+        operations
+    }
+
+    #[test]
+    fn config_paths_follow_user_configuration_and_schedule_paths_user_scheduling() {
+        let spec = spec();
+        assert_internally_consistent(&spec, "task queues");
+        let operation = |path: &str, method: &str, operation_id: &str| {
+            (
+                path.to_string(),
+                method.to_string(),
+                operation_id.to_string(),
+            )
+        };
+        assert_eq!(
+            queue_operations(&spec),
+            vec![
+                operation(
+                    "/management/v1/project/task-queue/project-configurable/config",
+                    "get",
+                    "get_project_task_queue_config_project_configurable"
+                ),
+                operation(
+                    "/management/v1/project/task-queue/project-configurable/config",
+                    "post",
+                    "set_project_task_queue_config_project_configurable"
+                ),
+                operation(
+                    "/management/v1/warehouse/{warehouse_id}/task-queue/configurable/config",
+                    "get",
+                    "get_task_queue_config_configurable"
+                ),
+                operation(
+                    "/management/v1/warehouse/{warehouse_id}/task-queue/configurable/config",
+                    "post",
+                    "set_task_queue_config_configurable"
+                ),
+                operation(
+                    "/management/v1/warehouse/{warehouse_id}/task-queue/configurable/schedule",
+                    "post",
+                    "schedule_task_configurable"
+                ),
+                operation(
+                    "/management/v1/warehouse/{warehouse_id}/task-queue/unconfigurable/schedule",
+                    "post",
+                    "schedule_task_unconfigurable"
+                ),
+            ]
+        );
+
+        let mut queue_schemas = spec["components"]["schemas"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|name| name.to_lowercase().contains("configurable"))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        queue_schemas.sort_unstable();
+        assert_eq!(
+            queue_schemas,
+            vec![
+                "ConfigurableQueueConfig",
+                "GetConfigurableQueueConfig",
+                "GetProjectConfigurableQueueConfig",
+                "ProjectConfigurableQueueConfig",
+                "ScheduleConfigurableTaskRequest",
+                "ScheduleUnconfigurableTaskRequest",
+                "SetConfigurableQueueConfig",
+                "SetProjectConfigurableQueueConfig",
+            ]
+        );
+
+        let config = &spec["paths"]["/management/v1/warehouse/{warehouse_id}/task-queue/configurable/config"];
+        assert_eq!(
+            config["post"]["requestBody"]["content"]["application/json"]["schema"],
+            json!({"$ref": "#/components/schemas/SetConfigurableQueueConfig"})
+        );
+        assert_eq!(
+            config["get"]["responses"]["200"]["content"]["application/json"]["schema"],
+            json!({"$ref": "#/components/schemas/GetConfigurableQueueConfig"})
+        );
+        for schema in ["SetConfigurableQueueConfig", "GetConfigurableQueueConfig"] {
+            assert_eq!(
+                spec["components"]["schemas"][schema]["properties"]["queue-config"],
+                json!({"$ref": "#/components/schemas/ConfigurableQueueConfig"}),
+                "{schema}"
+            );
+        }
+        let schedule = &spec["paths"]["/management/v1/warehouse/{warehouse_id}/task-queue/unconfigurable/schedule"];
+        assert_eq!(
+            schedule["post"]["requestBody"]["content"]["application/json"]["schema"],
+            json!({"$ref": "#/components/schemas/ScheduleUnconfigurableTaskRequest"})
+        );
+    }
 }
 
 /// Collision handling in the two hoisting passes.

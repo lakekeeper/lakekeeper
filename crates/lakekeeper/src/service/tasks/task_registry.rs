@@ -71,6 +71,26 @@ impl std::fmt::Debug for UserScheduling {
     }
 }
 
+/// Whether users configure a queue through the `task-queue/{name}/config` endpoints of its
+/// scope: its config and its heartbeat timeout (`max-seconds-since-last-heartbeat`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserConfiguration {
+    /// Users read and set the queue's configuration through the config endpoints.
+    Enabled,
+    /// The config endpoints answer as for a queue that is not registered, and the `OpenAPI`
+    /// patcher omits the queue's config paths. For queues that were never configurable and
+    /// whose workers depend on the queue's own [`TaskConfig::max_time_since_last_heartbeat`].
+    Disabled,
+}
+
+impl UserConfiguration {
+    /// Whether the queue is exposed via the config endpoints.
+    #[must_use]
+    pub fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
 /// Eligibility pre-check invoked by the `task-queue/{name}/schedule`
 /// endpoint after authz. Receives the queue's current raw config JSON and
 /// the entity's table properties; returns `Err(ErrorModel)` to reject the
@@ -216,21 +236,46 @@ impl RegisteredTaskQueues {
     /// Resolve a possibly-legacy queue name to the current name of the queue
     /// that answers to it. Returns the canonical `&'static TaskQueueName` when
     /// `queue_name` is a registered queue or one of its pre-rename aliases;
-    /// `None` when no registered queue claims it. Lets the config endpoints
-    /// accept requests against an old `task-queue/{name}/config` path.
+    /// `None` when no registered queue claims it.
     #[must_use]
     pub async fn resolve_queue_name(
         &self,
         queue_name: &TaskQueueName,
     ) -> Option<&'static TaskQueueName> {
-        let queues = self.queues.read().await;
-        if let Some((name, _)) = queues.get_key_value(queue_name) {
-            return Some(*name);
-        }
-        queues
+        find_queue(&*self.queues.read().await, queue_name).map(|(name, _)| name)
+    }
+
+    /// [`Self::resolve_queue_name`] for the `task-queue/{name}/config` endpoints, so they accept
+    /// requests against an old path. `None` also when the queue that answers to `queue_name`
+    /// is registered with [`UserConfiguration::Disabled`].
+    #[must_use]
+    pub(crate) async fn resolve_configurable_queue_name(
+        &self,
+        queue_name: &TaskQueueName,
+    ) -> Option<&'static TaskQueueName> {
+        find_queue(&*self.queues.read().await, queue_name)
+            .filter(|(_, q)| q.api_config.user_configuration.is_enabled())
+            .map(|(name, _)| name)
+    }
+
+    /// Names of all registered queues whose configuration users set via the
+    /// `task-queue/{name}/config` endpoints. Sorted for stable output.
+    #[must_use]
+    pub(crate) async fn configurable_queue_names(&self) -> Vec<&'static TaskQueueName> {
+        let mut v: Vec<_> = self
+            .queues
+            .read()
+            .await
             .iter()
-            .find(|(_, q)| q.legacy_names.iter().any(|n| **n == *queue_name))
-            .map(|(name, _)| *name)
+            .filter_map(|(name, q)| {
+                q.api_config
+                    .user_configuration
+                    .is_enabled()
+                    .then_some(*name)
+            })
+            .collect();
+        v.sort_unstable();
+        v
     }
 
     /// Structural payload validator for the schedule endpoint. Returns
@@ -299,14 +344,8 @@ impl RegisteredTaskQueues {
         class: Option<&str>,
     ) -> Result<DemandTarget, DemandLookupError> {
         let queues = self.queues.read().await;
-        let (name, queue) = queues
-            .get_key_value(queue_name)
-            .or_else(|| {
-                queues
-                    .iter()
-                    .find(|(_, q)| q.legacy_names.iter().any(|n| **n == *queue_name))
-            })
-            .ok_or(DemandLookupError::UnknownQueue)?;
+        let (name, queue) =
+            find_queue(&queues, queue_name).ok_or(DemandLookupError::UnknownQueue)?;
         let resource_demand = match class {
             None => super::TaskResourceDemandRange::default(),
             Some(class) => {
@@ -366,6 +405,22 @@ impl RegisteredTaskQueues {
         v.sort_unstable();
         v
     }
+}
+
+/// The queue that answers to `queue_name`: the queue of that name, else the queue that had it
+/// before a rename.
+fn find_queue<'a>(
+    queues: &'a HashMap<&'static TaskQueueName, RegisteredQueue>,
+    queue_name: &TaskQueueName,
+) -> Option<(&'static TaskQueueName, &'a RegisteredQueue)> {
+    queues
+        .get_key_value(queue_name)
+        .or_else(|| {
+            queues
+                .iter()
+                .find(|(_, q)| q.legacy_names.iter().any(|n| **n == *queue_name))
+        })
+        .map(|(name, queue)| (*name, queue))
 }
 
 /// The tasks a demand count covers.
@@ -433,6 +488,8 @@ pub struct QueueRegistration {
     /// Whether this queue is exposed via the schedule endpoint and (under
     /// `open-api`) the payload schema of its request body. See [`UserScheduling`].
     pub user_scheduling: UserScheduling,
+    /// Whether this queue is exposed via the config endpoints. See [`UserConfiguration`].
+    pub user_configuration: UserConfiguration,
 }
 
 impl std::fmt::Debug for QueueRegistration {
@@ -443,6 +500,7 @@ impl std::fmt::Debug for QueueRegistration {
             .field("num_workers", &self.num_workers)
             .field("scope", &self.scope)
             .field("user_scheduling", &self.user_scheduling)
+            .field("user_configuration", &self.user_configuration)
             .finish()
     }
 }
@@ -466,6 +524,7 @@ impl TaskQueueRegistry {
             num_workers,
             scope,
             user_scheduling,
+            user_configuration,
         } = task_queue;
         let schema_validator_fn = |v| serde_json::from_value::<T>(v).map(|_| ());
         let schema_validator_fn = Arc::new(schema_validator_fn) as ValidatorFn;
@@ -496,6 +555,7 @@ impl TaskQueueRegistry {
             utoipa_schema: (),
             scope,
             user_scheduling,
+            user_configuration,
         };
 
         if let Some(_prev) = self.registered_queues.write().await.insert(
@@ -591,6 +651,7 @@ impl TaskQueueRegistry {
                 num_workers: CONFIG.task_soft_deletion_workers,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             },
         )
         .await;
@@ -617,6 +678,7 @@ impl TaskQueueRegistry {
             num_workers: CONFIG.task_tabular_purge_workers,
             scope: QueueScope::Warehouse,
             user_scheduling: UserScheduling::Disabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
 
@@ -640,6 +702,7 @@ impl TaskQueueRegistry {
             num_workers: CONFIG.task_log_cleanup_workers,
             scope: QueueScope::Project,
             user_scheduling: UserScheduling::Disabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
 
@@ -739,6 +802,8 @@ pub struct QueueApiConfig {
     /// Whether this queue is exposed via the schedule endpoint and (under
     /// `open-api`) the schema of its request payload. See [`UserScheduling`].
     pub user_scheduling: UserScheduling,
+    /// Whether this queue is exposed via the config endpoints. See [`UserConfiguration`].
+    pub user_configuration: UserConfiguration,
 }
 
 impl std::fmt::Debug for QueueApiConfig {
@@ -749,6 +814,7 @@ impl std::fmt::Debug for QueueApiConfig {
             .field("utoipa_schema", &"<schema>")
             .field("scope", &self.scope)
             .field("user_scheduling", &self.user_scheduling)
+            .field("user_configuration", &self.user_configuration)
             .finish()
     }
 }
@@ -852,6 +918,7 @@ mod test {
                 num_workers: 1,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
 
@@ -908,6 +975,7 @@ mod test {
                 num_workers: 2,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
 
@@ -998,6 +1066,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
         assert!(!registry.is_empty().await);
@@ -1010,6 +1079,7 @@ mod test {
                 num_workers: 3,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
         assert_eq!(registry.total_workers().await, 3);
@@ -1042,6 +1112,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
         registry
@@ -1056,6 +1127,7 @@ mod test {
                 },
                 #[cfg(not(feature = "open-api"))]
                 user_scheduling: UserScheduling::Enabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
 
@@ -1084,6 +1156,89 @@ mod test {
             .expect("opted-in queue registered");
         assert!(!default_cfg.user_scheduling.is_enabled());
         assert!(opted_in_cfg.user_scheduling.is_enabled());
+    }
+
+    #[tokio::test]
+    async fn test_user_configuration_propagates_through_register_queue() {
+        static UNCONFIGURABLE_QN: LazyLock<TaskQueueName> =
+            LazyLock::new(|| "unconfigurable-queue".into());
+        static UNCONFIGURABLE_LEGACY_QN: LazyLock<TaskQueueName> =
+            LazyLock::new(|| "unconfigurable-queue-legacy".into());
+
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct UnconfigurableCfg {}
+        impl TaskConfig for UnconfigurableCfg {
+            fn queue_name() -> &'static TaskQueueName {
+                &UNCONFIGURABLE_QN
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+            fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
+                vec![&UNCONFIGURABLE_LEGACY_QN]
+            }
+        }
+
+        let registry = TaskQueueRegistry::new();
+        let queues = registry.registered_task_queues();
+        // With `UserConfiguration::Enabled`.
+        register_demand_queue(&registry).await;
+        registry
+            .register_queue::<UnconfigurableCfg, TestPayload>(QueueRegistration {
+                queue_name: &UNCONFIGURABLE_QN,
+                worker_fn: Arc::new(|_| Box::pin(async {})),
+                num_workers: 0,
+                scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Disabled,
+            })
+            .await;
+
+        // Only the config endpoints leave out the unconfigurable queue.
+        let demand_queue = Some(&*DEMAND_QUEUE_NAME);
+        let unconfigurable = Some(&*UNCONFIGURABLE_QN);
+        for (queue_name, resolved, configurable) in [
+            (&*DEMAND_QUEUE_NAME, demand_queue, demand_queue),
+            (&*DEMAND_LEGACY_NAME, demand_queue, demand_queue),
+            (&*UNCONFIGURABLE_QN, unconfigurable, None),
+            (&*UNCONFIGURABLE_LEGACY_QN, unconfigurable, None),
+            (&TaskQueueName::from("never-registered"), None, None),
+        ] {
+            assert_eq!(
+                queues.resolve_queue_name(queue_name).await,
+                resolved,
+                "{queue_name}"
+            );
+            assert_eq!(
+                queues.resolve_configurable_queue_name(queue_name).await,
+                configurable,
+                "{queue_name}"
+            );
+        }
+        assert_eq!(
+            queues.queue_names().await,
+            vec![&*DEMAND_QUEUE_NAME, &*UNCONFIGURABLE_QN]
+        );
+        assert_eq!(
+            queues.configurable_queue_names().await,
+            vec![&*DEMAND_QUEUE_NAME]
+        );
+
+        let mut api_configs = queues
+            .api_config()
+            .await
+            .into_iter()
+            .map(|c| (c.queue_name, c.user_configuration))
+            .collect::<Vec<_>>();
+        api_configs.sort_unstable_by_key(|(queue_name, _)| *queue_name);
+        assert_eq!(
+            api_configs,
+            vec![
+                (&*DEMAND_QUEUE_NAME, UserConfiguration::Enabled),
+                (&*UNCONFIGURABLE_QN, UserConfiguration::Disabled),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1150,6 +1305,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
         registry
@@ -1159,6 +1315,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
 
@@ -1233,6 +1390,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
 
@@ -1298,6 +1456,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
         registry
@@ -1307,6 +1466,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
 
@@ -1403,6 +1563,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
         registry
@@ -1412,6 +1573,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
 
@@ -1451,6 +1613,7 @@ mod test {
                 num_workers: 0,
                 scope: QueueScope::Warehouse,
                 user_scheduling: UserScheduling::Disabled,
+                user_configuration: UserConfiguration::Enabled,
             })
             .await;
     }

@@ -49,5 +49,15 @@
       "matchPackageNames": ["mkdocs", "mkdocs-material", "mkdocs-material-extensions", "mkdocs-autorefs", "mkdocs-exclude-search", "mkdocs-monorepo-plugin", "markdown-grid-tables"],
       "enabled": false
     }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Versions annotated with a `# renovate:` comment on the line above",
+      "managerFilePatterns": ["/^justfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?\\s*\\n[^\\n]*?(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"
+      ]
+    }
   ]
 }

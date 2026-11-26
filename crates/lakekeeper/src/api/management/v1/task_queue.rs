@@ -82,27 +82,31 @@ pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
     // Accept the queue's pre-rename name on the config path: resolve it to the
     // current name before validating and persisting, so config set against an
     // old name lands on the same row the worker reads.
-    let queue_name = task_queues
-        .resolve_queue_name(queue_name)
+    let configurable = match task_queues
+        .resolve_configurable_queue_name(queue_name)
         .await
-        .unwrap_or(queue_name);
-
-    if let Some(validate_config_fn) = task_queues.validate_config_fn(queue_name).await {
-        validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
-            ErrorModel::bad_request(
-                format!("Failed to deserialize queue config for queue-name '{queue_name}': '{e}'"),
-                "InvalidQueueConfig",
-                Some(Box::new(e)),
-            )
-        })?;
-    } else {
+    {
+        Some(resolved) => task_queues
+            .validate_config_fn(resolved)
+            .await
+            .map(|validate_config_fn| (resolved, validate_config_fn)),
+        None => None,
+    };
+    let Some((queue_name, validate_config_fn)) = configurable else {
         return Err(ErrorModel::bad_request(
             queue_not_found_message(&task_queues, queue_name).await,
             "QueueNotFound",
             None,
         )
         .into());
-    }
+    };
+    validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
+        ErrorModel::bad_request(
+            format!("Failed to deserialize queue config for queue-name '{queue_name}': '{e}'"),
+            "InvalidQueueConfig",
+            Some(Box::new(e)),
+        )
+    })?;
     if let Some(config_check_fn) = task_queues.config_check_fn(queue_name).await {
         config_check_fn(request.queue_config.0.clone())?;
     }
@@ -165,17 +169,20 @@ impl axum::response::IntoResponse for ScheduleTaskResponse {
     }
 }
 
-/// The current name of the queue registered on this server that answers to `queue_name`.
-/// A pre-rename name resolves to the current name, so a config read against an old path
-/// returns the config the worker uses.
+/// The current name of the queue registered on this server that answers to `queue_name` and
+/// whose configuration users set. A pre-rename name resolves to the current name, so a config
+/// read against an old path returns the config the worker uses.
 ///
 /// # Errors
-/// `404 QueueNotFound` if no registered queue answers to `queue_name`.
-pub(crate) async fn require_registered_queue(
+/// `404 QueueNotFound` if no such queue answers to `queue_name`.
+pub(crate) async fn require_configurable_queue(
     task_queues: &crate::service::tasks::RegisteredTaskQueues,
     queue_name: &TaskQueueName,
 ) -> Result<&'static TaskQueueName> {
-    match task_queues.resolve_queue_name(queue_name).await {
+    match task_queues
+        .resolve_configurable_queue_name(queue_name)
+        .await
+    {
         Some(queue_name) => Ok(queue_name),
         None => Err(ErrorModel::not_found(
             queue_not_found_message(task_queues, queue_name).await,
@@ -186,16 +193,21 @@ pub(crate) async fn require_registered_queue(
     }
 }
 
+/// The not-found message of the config endpoints. Lists the queues they accept.
 async fn queue_not_found_message(
     task_queues: &crate::service::tasks::RegisteredTaskQueues,
     queue_name: &TaskQueueName,
 ) -> String {
-    let existing_queue_names = task_queues.queue_names().await.iter().join(", ");
-    format!("Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]")
+    let configurable_queue_names = task_queues
+        .configurable_queue_names()
+        .await
+        .iter()
+        .join(", ");
+    format!("Queue '{queue_name}' not found! Configurable queues: [{configurable_queue_names}]")
 }
 
 /// The stored config of the queue, or an empty config if none is stored. `queue_name` is the
-/// current name from [`require_registered_queue`].
+/// current name from [`require_configurable_queue`].
 pub(crate) async fn get_task_queue_config<C: CatalogStore, A: Authorizer, S: SecretStore>(
     filter: &TaskQueueConfigFilter,
     queue_name: &TaskQueueName,
@@ -261,8 +273,8 @@ pub(crate) async fn schedule_task<C: CatalogStore, A: Authorizer, S: SecretStore
     enqueue_or_format_conflict::<C>(catalog_state, queue_name, queue_name_static, task_input).await
 }
 
-/// Reject the schedule call early when the queue is unknown or has not
-/// opted in via `TaskConfig::user_schedulable()`. Returns the
+/// Reject the schedule call early when the queue is unknown or is not
+/// registered with `UserScheduling::Enabled`. Returns the
 /// `&'static TaskQueueName` the registry holds (needed by `enqueue_task`).
 async fn resolve_schedulable_queue(
     task_queues: &crate::service::tasks::RegisteredTaskQueues,

@@ -29,7 +29,7 @@ use lakekeeper::{
             CancelTasksFilter, OnWarehouseDelete, QueueRegistration, QueueScope,
             ScheduleTaskMetadata, SpecializedTask, TaskCheckState, TaskConfig, TaskData,
             TaskEntity, TaskExecutionDetails, TaskId, TaskInput, TaskQueueName, TaskQueueRegistry,
-            TaskScheduleUpsert, UserScheduling, WarehouseTaskEntityId,
+            TaskScheduleUpsert, UserConfiguration, UserScheduling, WarehouseTaskEntityId,
         },
     },
 };
@@ -233,6 +233,7 @@ async fn register_without_workers<T: TaskConfig>(registry: &TaskQueueRegistry) {
             num_workers: 0,
             scope: QueueScope::Warehouse,
             user_scheduling: UserScheduling::Disabled,
+            user_configuration: UserConfiguration::Enabled,
         })
         .await;
 }

@@ -1,0 +1,3 @@
+# graphify knowledge graph: union-merge with the graphify driver (`just graph-setup`),
+# collapse in GitHub PRs, and keep it out of `git diff`.
+graphify-out/graph.json merge=graphify linguist-generated=true -diff
