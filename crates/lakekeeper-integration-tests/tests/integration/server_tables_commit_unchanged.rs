@@ -233,7 +233,10 @@ fn append(metadata: &TableMetadata, snapshot_id: i64) -> Vec<TableUpdate> {
         .with_timestamp_ms(chrono::Utc::now().timestamp_millis())
         .with_sequence_number(metadata.last_sequence_number() + 1)
         .with_schema_id(metadata.current_schema_id())
-        .with_manifest_list(format!("/snap-{snapshot_id}.avro"))
+        .with_manifest_list(format!(
+            "{}/metadata/snap-{snapshot_id}.avro",
+            metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::new(),

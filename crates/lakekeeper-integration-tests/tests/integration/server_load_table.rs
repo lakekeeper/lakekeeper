@@ -191,7 +191,10 @@ async fn setup_table_with_snapshots(
         .with_snapshot_id(1)
         .with_timestamp_ms(base_time + 1000)
         .with_sequence_number(1)
-        .with_manifest_list("/path/to/manifest1.avro")
+        .with_manifest_list(format!(
+            "{}/metadata/manifest1.avro",
+            table.metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::new(),
@@ -221,7 +224,10 @@ async fn setup_table_with_snapshots(
         .with_snapshot_id(2)
         .with_timestamp_ms(base_time + 2000)
         .with_sequence_number(2)
-        .with_manifest_list("/path/to/manifest2.avro")
+        .with_manifest_list(format!(
+            "{}/metadata/manifest2.avro",
+            table.metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::new(),
@@ -251,7 +257,10 @@ async fn setup_table_with_snapshots(
         .with_snapshot_id(3)
         .with_timestamp_ms(base_time + 3000)
         .with_sequence_number(3)
-        .with_manifest_list("/path/to/manifest3.avro")
+        .with_manifest_list(format!(
+            "{}/metadata/manifest3.avro",
+            table.metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::new(),
@@ -485,15 +494,24 @@ async fn test_load_table_snapshots_filter_all(pool: PgPool) {
     // Verify snapshot details - check manifest lists and that timestamps are reasonable
     let snapshot1 = result.metadata.snapshot_by_id(1).unwrap();
     assert!(snapshot1.timestamp_ms() > 0);
-    assert_eq!(snapshot1.manifest_list(), "/path/to/manifest1.avro");
+    assert_eq!(
+        snapshot1.manifest_list(),
+        format!("{}/metadata/manifest1.avro", result.metadata.location())
+    );
 
     let snapshot2 = result.metadata.snapshot_by_id(2).unwrap();
     assert!(snapshot2.timestamp_ms() > snapshot1.timestamp_ms());
-    assert_eq!(snapshot2.manifest_list(), "/path/to/manifest2.avro");
+    assert_eq!(
+        snapshot2.manifest_list(),
+        format!("{}/metadata/manifest2.avro", result.metadata.location())
+    );
 
     let snapshot3 = result.metadata.snapshot_by_id(3).unwrap();
     assert!(snapshot3.timestamp_ms() > snapshot2.timestamp_ms());
-    assert_eq!(snapshot3.manifest_list(), "/path/to/manifest3.avro");
+    assert_eq!(
+        snapshot3.manifest_list(),
+        format!("{}/metadata/manifest3.avro", result.metadata.location())
+    );
 }
 
 #[lakekeeper_storage_postgres::db_test]
@@ -539,11 +557,17 @@ async fn test_load_table_snapshots_filter_refs(pool: PgPool) {
     // Verify snapshot details for referenced snapshots
     let snapshot2 = result.metadata.snapshot_by_id(2).unwrap();
     assert!(snapshot2.timestamp_ms() > 0);
-    assert_eq!(snapshot2.manifest_list(), "/path/to/manifest2.avro");
+    assert_eq!(
+        snapshot2.manifest_list(),
+        format!("{}/metadata/manifest2.avro", result.metadata.location())
+    );
 
     let snapshot3 = result.metadata.snapshot_by_id(3).unwrap();
     assert!(snapshot3.timestamp_ms() > snapshot2.timestamp_ms());
-    assert_eq!(snapshot3.manifest_list(), "/path/to/manifest3.avro");
+    assert_eq!(
+        snapshot3.manifest_list(),
+        format!("{}/metadata/manifest3.avro", result.metadata.location())
+    );
 
     // Verify that snapshot 1 is not present
     assert!(result.metadata.snapshot_by_id(1).is_none());
@@ -619,7 +643,7 @@ async fn test_load_table_snapshots_filter_with_no_refs(pool: PgPool) {
 
     // Create table
     let table_ident = TableIdent::new(ns_name, "test_table_no_refs".to_string());
-    let _table = CatalogServer::create_table(
+    let table = CatalogServer::create_table(
         ns_params.clone(),
         create_table_request("test_table_no_refs"),
         DataAccess::not_specified(),
@@ -647,7 +671,10 @@ async fn test_load_table_snapshots_filter_with_no_refs(pool: PgPool) {
         .with_snapshot_id(1)
         .with_timestamp_ms(base_time + 1000)
         .with_sequence_number(1)
-        .with_manifest_list("/path/to/manifest1.avro")
+        .with_manifest_list(format!(
+            "{}/metadata/manifest1.avro",
+            table.metadata.location()
+        ))
         .with_summary(Summary {
             operation: Operation::Append,
             additional_properties: HashMap::new(),
