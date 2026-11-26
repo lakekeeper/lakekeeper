@@ -796,17 +796,20 @@ async fn assert_recursive_drop_lock_conflict(ctx: &HidingCtx, warehouse_id: Ware
 
 #[lakekeeper_storage_postgres::db_test]
 async fn test_recursive_namespace_drop_retries_a_contended_namespace_lock(pool: PgPool) {
-    let table = soft_deleted_table_with_task(pool.clone()).await;
+    let (ctx, warehouse_id, _, _) =
+        namespace_with_soft_deleted_generic_table(pool.clone(), false).await;
     let mut t = pool.begin().await.unwrap();
     sqlx::query(
         "SELECT namespace_id FROM namespace WHERE warehouse_id = $1 AND namespace_name = ARRAY['ns'] FOR UPDATE",
     )
-    .bind(*table.warehouse_id)
+    .bind(*warehouse_id)
     .fetch_one(&mut *t)
     .await
     .unwrap();
-    assert_recursive_drop_lock_conflict(&table.ctx, table.warehouse_id).await;
+    assert_recursive_drop_lock_conflict(&ctx, warehouse_id).await;
     t.commit().await.unwrap();
+
+    force_drop_ns(&ctx, warehouse_id).await.unwrap();
 }
 
 #[lakekeeper_storage_postgres::db_test]
