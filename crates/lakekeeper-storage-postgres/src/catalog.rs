@@ -456,6 +456,13 @@ impl CatalogStore for super::PostgresBackend {
         crate::table_health::get_table_health(warehouse_id, table_id, &state.read_pool()).await
     }
 
+    async fn get_warehouse_health_totals_impl(
+        warehouse_id: WarehouseId,
+        state: CatalogState,
+    ) -> Result<lakekeeper::api::management::v1::health::WarehouseHealthTotalsResponse> {
+        crate::table_health::get_warehouse_health_totals(warehouse_id, &state.read_pool()).await
+    }
+
     // ---------------- Role Management API ----------------
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,

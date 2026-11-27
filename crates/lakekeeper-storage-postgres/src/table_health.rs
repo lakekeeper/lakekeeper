@@ -6,8 +6,9 @@ use lakekeeper::{
         Result,
         iceberg::v1::{PaginatedMapping, PaginationQuery},
         management::v1::health::{
-            FindingSeverity, GetTableHealthResponse, NotMeasurableReason, TableHealthFinding,
-            TableHealthOrderBy, TableHealthStatus, TableHealthSummary,
+            FindingSeverity, GetTableHealthResponse, MeasurementVersionCount, NotMeasurableReason,
+            SoftDeletedHealthTotals, TableHealthFinding, TableHealthOrderBy, TableHealthStatus,
+            TableHealthSummary, WarehouseHealthTotalsResponse,
         },
     },
     service::{
@@ -332,6 +333,72 @@ pub(crate) async fn get_table_health(
             task: None,
         }
     }))
+}
+
+/// Counts and sums over the Iceberg tables of the warehouse, read in one statement.
+pub(crate) async fn get_warehouse_health_totals(
+    warehouse_id: WarehouseId,
+    connection: &sqlx::PgPool,
+) -> Result<WarehouseHealthTotalsResponse> {
+    let row = sqlx::query!(
+        r#"
+        WITH t AS (
+            SELECT tb.deleted_at IS NOT NULL AS deleted,
+                   h.status,
+                   h.measurement_version,
+                   h.live_data_bytes,
+                   h.live_delete_bytes,
+                   h.live_metadata_bytes
+            FROM tabular tb
+            LEFT JOIN health_iceberg_table h
+                   ON h.warehouse_id = tb.warehouse_id AND h.table_id = tb.tabular_id
+            WHERE tb.warehouse_id = $1 AND tb.typ = 'table'
+        )
+        SELECT count(*) AS "tables!",
+               count(*) FILTER (WHERE status = 'measured') AS "tables_measured!",
+               count(*) FILTER (WHERE status = 'not-measurable') AS "tables_not_measurable!",
+               coalesce(sum(live_data_bytes), 0)::bigint AS "live_data_bytes!",
+               coalesce(sum(live_delete_bytes), 0)::bigint AS "live_delete_bytes!",
+               coalesce(sum(live_metadata_bytes), 0)::bigint AS "live_metadata_bytes!",
+               count(*) FILTER (WHERE deleted) AS "soft_deleted_tables!",
+               coalesce(sum(live_data_bytes) FILTER (WHERE deleted), 0)::bigint
+                   AS "soft_deleted_live_data_bytes!",
+               coalesce(sum(live_delete_bytes) FILTER (WHERE deleted), 0)::bigint
+                   AS "soft_deleted_live_delete_bytes!",
+               coalesce(sum(live_metadata_bytes) FILTER (WHERE deleted), 0)::bigint
+                   AS "soft_deleted_live_metadata_bytes!",
+               (SELECT coalesce(jsonb_agg(jsonb_build_object(
+                           'version', v.measurement_version,
+                           'tables', v.tables) ORDER BY v.measurement_version), '[]'::jsonb)
+                FROM (SELECT measurement_version, count(*) AS tables
+                      FROM t
+                      WHERE measurement_version IS NOT NULL
+                      GROUP BY measurement_version) v
+               ) AS "measurement_versions!: Json<Vec<MeasurementVersionCount>>"
+        FROM t
+        "#,
+        *warehouse_id,
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error reading warehouse health totals".to_string()))?;
+
+    Ok(WarehouseHealthTotalsResponse {
+        tables: row.tables,
+        tables_measured: row.tables_measured,
+        tables_not_measurable: row.tables_not_measurable,
+        tables_without_value: row.tables - row.tables_measured,
+        live_data_bytes: row.live_data_bytes,
+        live_delete_bytes: row.live_delete_bytes,
+        live_metadata_bytes: row.live_metadata_bytes,
+        soft_deleted: SoftDeletedHealthTotals {
+            tables: row.soft_deleted_tables,
+            live_data_bytes: row.soft_deleted_live_data_bytes,
+            live_delete_bytes: row.soft_deleted_live_delete_bytes,
+            live_metadata_bytes: row.soft_deleted_live_metadata_bytes,
+        },
+        measurement_versions: row.measurement_versions.0,
+    })
 }
 
 #[cfg(test)]

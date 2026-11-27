@@ -174,3 +174,46 @@ pub struct GetTableHealthResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<TableHealthTask>,
 }
+
+/// The part of the health totals of a warehouse that comes from soft-deleted tables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct SoftDeletedHealthTotals {
+    /// Number of soft-deleted Iceberg tables
+    pub tables: i64,
+    pub live_data_bytes: i64,
+    pub live_delete_bytes: i64,
+    pub live_metadata_bytes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct MeasurementVersionCount {
+    pub version: i32,
+    pub tables: i64,
+}
+
+/// Health totals of the Iceberg tables of a warehouse. Sums include soft-deleted tables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct WarehouseHealthTotalsResponse {
+    /// Number of Iceberg tables, soft-deleted tables included
+    pub tables: i64,
+    pub tables_measured: i64,
+    pub tables_not_measurable: i64,
+    /// Tables never measured or not measurable
+    pub tables_without_value: i64,
+    /// Sum over the measured tables
+    pub live_data_bytes: i64,
+    /// Sum over the measured tables
+    pub live_delete_bytes: i64,
+    /// Sum over the measured tables
+    pub live_metadata_bytes: i64,
+    /// The part of the counts and sums that comes from soft-deleted tables
+    pub soft_deleted: SoftDeletedHealthTotals,
+    /// Measurement versions in use, with the number of tables measured by each
+    pub measurement_versions: Vec<MeasurementVersionCount>,
+}

@@ -1,0 +1,93 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH t AS (\n            SELECT tb.deleted_at IS NOT NULL AS deleted,\n                   h.status,\n                   h.measurement_version,\n                   h.live_data_bytes,\n                   h.live_delete_bytes,\n                   h.live_metadata_bytes\n            FROM tabular tb\n            LEFT JOIN health_iceberg_table h\n                   ON h.warehouse_id = tb.warehouse_id AND h.table_id = tb.tabular_id\n            WHERE tb.warehouse_id = $1 AND tb.typ = 'table'\n        )\n        SELECT count(*) AS \"tables!\",\n               count(*) FILTER (WHERE status = 'measured') AS \"tables_measured!\",\n               count(*) FILTER (WHERE status = 'not-measurable') AS \"tables_not_measurable!\",\n               coalesce(sum(live_data_bytes), 0)::bigint AS \"live_data_bytes!\",\n               coalesce(sum(live_delete_bytes), 0)::bigint AS \"live_delete_bytes!\",\n               coalesce(sum(live_metadata_bytes), 0)::bigint AS \"live_metadata_bytes!\",\n               count(*) FILTER (WHERE deleted) AS \"soft_deleted_tables!\",\n               coalesce(sum(live_data_bytes) FILTER (WHERE deleted), 0)::bigint\n                   AS \"soft_deleted_live_data_bytes!\",\n               coalesce(sum(live_delete_bytes) FILTER (WHERE deleted), 0)::bigint\n                   AS \"soft_deleted_live_delete_bytes!\",\n               coalesce(sum(live_metadata_bytes) FILTER (WHERE deleted), 0)::bigint\n                   AS \"soft_deleted_live_metadata_bytes!\",\n               (SELECT coalesce(jsonb_agg(jsonb_build_object(\n                           'version', v.measurement_version,\n                           'tables', v.tables) ORDER BY v.measurement_version), '[]'::jsonb)\n                FROM (SELECT measurement_version, count(*) AS tables\n                      FROM t\n                      WHERE measurement_version IS NOT NULL\n                      GROUP BY measurement_version) v\n               ) AS \"measurement_versions!: Json<Vec<MeasurementVersionCount>>\"\n        FROM t\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tables!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "tables_measured!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "tables_not_measurable!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "live_data_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "live_delete_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "live_metadata_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "soft_deleted_tables!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "soft_deleted_live_data_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "soft_deleted_live_delete_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "soft_deleted_live_metadata_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "measurement_versions!: Json<Vec<MeasurementVersionCount>>",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "1a8d9fd35a7d1ecb39cfd9c974f75558be3efe922f9b5ddb1c7b310266f67e50"
+}

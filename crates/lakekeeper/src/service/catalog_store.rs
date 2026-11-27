@@ -1003,6 +1003,12 @@ where
         state: Self::State,
     ) -> Result<Option<crate::api::management::v1::health::GetTableHealthResponse>>;
 
+    /// Health totals of the Iceberg tables of a warehouse.
+    async fn get_warehouse_health_totals_impl(
+        warehouse_id: WarehouseId,
+        state: Self::State,
+    ) -> Result<crate::api::management::v1::health::WarehouseHealthTotalsResponse>;
+
     // ---------------- View Management ----------------
     async fn create_view_impl<'a>(
         warehouse_id: WarehouseId,

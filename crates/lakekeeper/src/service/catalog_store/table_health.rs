@@ -2,7 +2,10 @@ use crate::{
     WarehouseId,
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
-        management::v1::health::{GetTableHealthResponse, TableHealthOrderBy, TableHealthSummary},
+        management::v1::health::{
+            GetTableHealthResponse, TableHealthOrderBy, TableHealthSummary,
+            WarehouseHealthTotalsResponse,
+        },
     },
     service::{
         CatalogStore, TableId, Transaction,
@@ -52,6 +55,14 @@ where
         state: Self::State,
     ) -> super::Result<Option<GetTableHealthResponse>> {
         Self::get_table_health_impl(warehouse_id, table_id, state).await
+    }
+
+    /// Health totals of the Iceberg tables of a warehouse, soft-deleted tables included.
+    async fn get_warehouse_health_totals(
+        warehouse_id: WarehouseId,
+        state: Self::State,
+    ) -> super::Result<WarehouseHealthTotalsResponse> {
+        Self::get_warehouse_health_totals_impl(warehouse_id, state).await
     }
 }
 
