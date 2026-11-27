@@ -4403,11 +4403,13 @@ dependencies = [
 
 [[package]]
 name = "limes"
-version = "0.7.0"
-source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=7f85fe865f8bb6f6ad9e1d651277015638308c02#7f85fe865f8bb6f6ad9e1d651277015638308c02"
+version = "0.8.0"
+source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=32a34376f68b53c83446cb2458a3dc5458b91d58#32a34376f68b53c83446cb2458a3dc5458b91d58"
 dependencies = [
+ "aws-lc-rs",
  "axum",
  "axum-extra",
+ "base64 0.23.1",
  "bytes",
  "http 1.5.0",
  "http-body-util",
