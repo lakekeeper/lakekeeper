@@ -970,18 +970,8 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<Vec<TableInfo>, CommitTableTransactionError>;
 
-    /// Metadata location of a table, read under a share lock that waits for a running commit to
-    /// the table and holds off later commits until the transaction ends.
-    /// Includes soft-deleted tables. `None` if the table does not exist or is staged.
-    async fn lock_table_metadata_location_impl<'a>(
-        warehouse_id: WarehouseId,
-        table_id: TableId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> std::result::Result<Option<Location>, LoadTableError>;
-
     // ---------------- Table Health ----------------
-    /// Store the result of a health run. Replaces the table's stored result unless that comes
-    /// from a newer measurement version.
+    /// Store the result of a health run, see [`CatalogTableHealthOps::write_table_health`].
     async fn write_table_health_impl<'a>(
         write: &crate::service::table_health::TableHealthWrite,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,

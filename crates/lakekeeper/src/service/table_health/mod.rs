@@ -9,7 +9,7 @@ mod measure;
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use lakekeeper_io::Location;
 pub use measure::{MeasureError, measure};
 use serde::{Deserialize, Serialize};
@@ -122,10 +122,8 @@ pub struct TableHealthWrite {
     pub warehouse_id: WarehouseId,
     pub table_id: TableId,
     pub measurement_version: i32,
-    /// End of the run.
-    pub measured_at: DateTime<Utc>,
-    /// Earliest start of the next run.
-    pub next_not_before: DateTime<Utc>,
+    /// Time from the end of the run to the earliest start of the next run.
+    pub next_run_delay: TimeDelta,
     pub outcome: MeasureOutcome,
     /// The metadata location that was measured.
     pub metadata_location: Location,
@@ -185,10 +183,26 @@ impl TableHealthWrite {
     }
 }
 
+/// The next run of a table, as a write sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NextRun {
+    /// The end of the run, taken after commits to the table are held off, plus
+    /// [`TableHealthWrite::next_run_delay`].
+    pub not_before: DateTime<Utc>,
+    /// The table's metadata location differs from the measured one: a commit changed the table
+    /// during the run.
+    pub location_changed: bool,
+}
+
 /// Whether a run's result was stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableHealthWriteOutcome {
-    Written,
+    /// The table does not exist or is staged. Nothing was written.
+    TableGone,
+    /// A file was missing and a commit changed the table during the run: the commit can have
+    /// deleted the file. Nothing was written.
+    Raced(NextRun),
+    Written(NextRun),
     /// The table's stored result comes from a newer measurement version and was kept.
-    NewerExists,
+    NewerExists(NextRun),
 }

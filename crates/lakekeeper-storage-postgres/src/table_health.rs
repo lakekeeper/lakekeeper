@@ -1,9 +1,9 @@
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound as _, Utc};
 use lakekeeper::{
     WarehouseId,
     api::{
-        Result,
+        ErrorModel, Result,
         iceberg::v1::{PaginatedMapping, PaginationQuery},
         management::v1::health::{
             FindingSeverity, GetTableHealthResponse, MeasurementVersionCount, NotMeasurableReason,
@@ -13,14 +13,16 @@ use lakekeeper::{
     },
     service::{
         InvalidPaginationToken, TableId,
-        table_health::{Severity, TableHealthWrite, TableHealthWriteOutcome},
+        table_health::{
+            self, MeasureOutcome, NextRun, Severity, TableHealthWrite, TableHealthWriteOutcome,
+        },
     },
 };
 use serde::Deserialize;
 use sqlx::types::Json;
 use uuid::Uuid;
 
-use crate::dbutils::DBErrorHandler as _;
+use crate::{dbutils::DBErrorHandler as _, tabular::table::lock_table_metadata_location};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
 #[sqlx(type_name = "health_status", rename_all = "kebab-case")]
@@ -62,6 +64,31 @@ pub(crate) async fn write_table_health(
     write: &TableHealthWrite,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<TableHealthWriteOutcome> {
+    // `FOR SHARE`: waits for a running commit and holds off later ones.
+    let Some(current_location) =
+        lock_table_metadata_location(write.warehouse_id, write.table_id, &mut *transaction)
+            .await
+            .map_err(ErrorModel::from)?
+    else {
+        return Ok(TableHealthWriteOutcome::TableGone);
+    };
+    // Rounded to what Postgres stores, so the returned time equals the stored one.
+    let measured_at = Utc::now().trunc_subsecs(6);
+    let next_run = NextRun {
+        not_before: measured_at + write.next_run_delay,
+        location_changed: current_location != write.metadata_location,
+    };
+    if next_run.location_changed
+        && matches!(
+            write.outcome,
+            MeasureOutcome::NotMeasurable(
+                table_health::NotMeasurableReason::MetadataMissing { .. }
+            )
+        )
+    {
+        return Ok(TableHealthWriteOutcome::Raced(next_run));
+    }
+
     let sizes = write.sizes();
     let status = if sizes.is_some() {
         DbHealthStatus::Measured
@@ -94,8 +121,8 @@ pub(crate) async fn write_table_health(
         *write.table_id,
         write.measurement_version,
         status as _,
-        write.measured_at,
-        write.next_not_before,
+        measured_at,
+        next_run.not_before,
         db_severity(write.max_severity()),
         finding_count,
         Json(write.result()) as _,
@@ -108,9 +135,9 @@ pub(crate) async fn write_table_health(
     .map_err(|e| e.into_error_model("Error writing table health".to_string()))?;
 
     Ok(if written.is_some() {
-        TableHealthWriteOutcome::Written
+        TableHealthWriteOutcome::Written(next_run)
     } else {
-        TableHealthWriteOutcome::NewerExists
+        TableHealthWriteOutcome::NewerExists(next_run)
     })
 }
 
@@ -419,8 +446,8 @@ mod tests {
         service::{
             TableId, TabularId,
             table_health::{
-                Finding, FindingKind, MeasureOutcome, Measurement, NotMeasurableReason, Severity,
-                Sizes, TableHealthWrite, TableHealthWriteOutcome,
+                Finding, FindingKind, MeasureOutcome, Measurement, NextRun, NotMeasurableReason,
+                Severity, Sizes, TableHealthWrite, TableHealthWriteOutcome,
             },
         },
     };
@@ -517,6 +544,13 @@ mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+        // The location the writes in these tests measured.
+        sqlx::query("UPDATE tabular SET metadata_location = $1 WHERE tabular_id = $2")
+            .bind(MEASURED_LOCATION)
+            .bind(*table.table_id)
+            .execute(pool)
+            .await
+            .unwrap();
         (state, warehouse_id, table)
     }
 
@@ -616,9 +650,7 @@ mod tests {
         assert_eq!(row_count(&pool, *other.table_id).await, 1);
     }
 
-    fn measured_at() -> DateTime<Utc> {
-        DateTime::from_timestamp(1_800_000_000, 0).unwrap()
-    }
+    const MEASURED_LOCATION: &str = "s3://bucket/t/metadata/00001.metadata.json";
 
     fn health_write(
         warehouse_id: WarehouseId,
@@ -630,11 +662,9 @@ mod tests {
             warehouse_id,
             table_id,
             measurement_version: version,
-            measured_at: measured_at(),
-            next_not_before: measured_at() + chrono::TimeDelta::hours(1),
+            next_run_delay: chrono::TimeDelta::hours(1),
             outcome,
-            metadata_location: Location::from_str("s3://bucket/t/metadata/00001.metadata.json")
-                .unwrap(),
+            metadata_location: Location::from_str(MEASURED_LOCATION).unwrap(),
             scan_duration: Duration::from_millis(4100),
         }
     }
@@ -662,6 +692,15 @@ mod tests {
         let outcome = write_table_health(write, &mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
         outcome
+    }
+
+    /// The next run of a result that was written, with the location unchanged.
+    fn written(outcome: TableHealthWriteOutcome) -> NextRun {
+        let TableHealthWriteOutcome::Written(next_run) = outcome else {
+            panic!("not written: {outcome:?}");
+        };
+        assert!(!next_run.location_changed);
+        next_run
     }
 
     /// The stored row: version, status, measured at, next not before, max severity, finding
@@ -702,14 +741,14 @@ mod tests {
         )
         .await;
 
-        assert_eq!(outcome, TableHealthWriteOutcome::Written);
+        let next_run = written(outcome);
         assert_eq!(
             stored(&pool, table.table_id).await,
             (
                 1,
                 "measured".to_string(),
-                measured_at(),
-                measured_at() + chrono::TimeDelta::hours(1),
+                next_run.not_before - chrono::TimeDelta::hours(1),
+                next_run.not_before,
                 2,
                 1,
                 Some(100),
@@ -755,7 +794,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(outcome, TableHealthWriteOutcome::Written);
+        written(outcome);
         let (_, status, _, _, max_severity, finding_count, data, delete, metadata, result) =
             stored(&pool, table.table_id).await;
         assert_eq!(
@@ -810,7 +849,13 @@ mod tests {
             &health_write(warehouse_id, table.table_id, 1, no_findings()),
         )
         .await;
-        assert_eq!(outcome, TableHealthWriteOutcome::NewerExists);
+        assert!(matches!(
+            outcome,
+            TableHealthWriteOutcome::NewerExists(NextRun {
+                location_changed: false,
+                ..
+            })
+        ));
         assert_eq!(stored(&pool, table.table_id).await, newer);
 
         for version in [2, 3] {
@@ -819,7 +864,7 @@ mod tests {
                 &health_write(warehouse_id, table.table_id, version, no_findings()),
             )
             .await;
-            assert_eq!(outcome, TableHealthWriteOutcome::Written);
+            written(outcome);
             let (stored_version, _, _, _, max_severity, finding_count, _, _, _, _) =
                 stored(&pool, table.table_id).await;
             assert_eq!(
@@ -827,6 +872,55 @@ mod tests {
                 (version, 0, 0)
             );
         }
+    }
+
+    /// A commit during the run: a result is stored, a missing file is not. A dropped table
+    /// stores nothing.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn a_changed_or_dropped_table(pool: sqlx::PgPool) {
+        let (_, warehouse_id, table) = setup(&pool).await;
+        let mut older = health_write(warehouse_id, table.table_id, 1, measured_with_finding());
+        older.metadata_location =
+            Location::from_str("s3://bucket/t/metadata/00000.metadata.json").unwrap();
+
+        assert!(matches!(
+            write(&pool, &older).await,
+            TableHealthWriteOutcome::Written(NextRun {
+                location_changed: true,
+                ..
+            })
+        ));
+        let stored_before = stored(&pool, table.table_id).await;
+
+        older.outcome = MeasureOutcome::NotMeasurable(NotMeasurableReason::MetadataMissing {
+            path: "s3://bucket/t/metadata/00000.metadata.json".to_string(),
+        });
+        assert!(matches!(
+            write(&pool, &older).await,
+            TableHealthWriteOutcome::Raced(_)
+        ));
+        assert_eq!(stored(&pool, table.table_id).await, stored_before);
+
+        let mut transaction = pool.begin().await.unwrap();
+        drop_tabular(
+            warehouse_id,
+            TabularId::Table(table.table_id),
+            false,
+            None,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(
+            write(
+                &pool,
+                &health_write(warehouse_id, table.table_id, 1, measured_with_finding())
+            )
+            .await,
+            TableHealthWriteOutcome::TableGone
+        );
+        assert_eq!(row_count(&pool, *table.table_id).await, 0);
     }
 
     /// Ids of the ranking, read page by page.
@@ -934,11 +1028,13 @@ mod tests {
     async fn a_ranking_row_carries_the_stored_values(pool: sqlx::PgPool) {
         let (state, warehouse_id, table) = setup(&pool).await;
         let other = initialize_table(warehouse_id, state, false, None, None, None).await;
-        write(
-            &pool,
-            &health_write(warehouse_id, table.table_id, 1, measured_with_finding()),
-        )
-        .await;
+        let next_run = written(
+            write(
+                &pool,
+                &health_write(warehouse_id, table.table_id, 1, measured_with_finding()),
+            )
+            .await,
+        );
         insert(&pool, warehouse_id, *other.table_id, not_measurable())
             .await
             .unwrap();
@@ -971,7 +1067,7 @@ mod tests {
                     live_data_bytes: Some(100),
                     live_delete_bytes: Some(20),
                     live_metadata_bytes: Some(3),
-                    measured_at: measured_at(),
+                    measured_at: next_run.not_before - chrono::TimeDelta::hours(1),
                     measurement_version: 1,
                 },
                 TableHealthSummary {
@@ -1083,11 +1179,13 @@ mod tests {
                 .unwrap(),
             None
         );
-        write(
-            &pool,
-            &health_write(warehouse_id, table.table_id, 1, measured_with_finding()),
-        )
-        .await;
+        let next_run = written(
+            write(
+                &pool,
+                &health_write(warehouse_id, table.table_id, 1, measured_with_finding()),
+            )
+            .await,
+        );
 
         assert_eq!(
             get_table_health(warehouse_id, table.table_id, &pool)
@@ -1104,7 +1202,7 @@ mod tests {
                 live_data_bytes: Some(100),
                 live_delete_bytes: Some(20),
                 live_metadata_bytes: Some(3),
-                measured_at: Some(measured_at()),
+                measured_at: Some(next_run.not_before - chrono::TimeDelta::hours(1)),
                 measurement_version: Some(1),
                 findings: vec![TableHealthFinding {
                     kind: "manifest-length-mismatch".to_string(),
@@ -1116,7 +1214,7 @@ mod tests {
                 metadata_location: Some("s3://bucket/t/metadata/00001.metadata.json".to_string()),
                 snapshot_id: Some(7),
                 manifests_read: Some(2),
-                next_not_before: Some(measured_at() + chrono::TimeDelta::hours(1)),
+                next_not_before: Some(next_run.not_before),
                 task: None,
             })
         );

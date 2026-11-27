@@ -19,9 +19,16 @@ pub trait CatalogTableHealthOps
 where
     Self: CatalogStore,
 {
-    /// Store the result of a health run. Replaces the table's stored result unless that comes
-    /// from a newer measurement version; then nothing is written and
-    /// [`TableHealthWriteOutcome::NewerExists`] is returned.
+    /// Store the result of a health run. First waits for a running commit to the table and holds
+    /// off later ones until the transaction ends, so a commit and the run's finish can't miss
+    /// each other. Call it before anything in the transaction touches the task row: a commit
+    /// holds off the finish, then writes the task row.
+    ///
+    /// Replaces the table's stored result unless that comes from a newer measurement version
+    /// ([`TableHealthWriteOutcome::NewerExists`]), the table is gone or staged
+    /// ([`TableHealthWriteOutcome::TableGone`]), or a file was missing and the table's metadata
+    /// location changed during the run ([`TableHealthWriteOutcome::Raced`]). Soft-deleted tables
+    /// are stored.
     async fn write_table_health(
         write: &TableHealthWrite,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,

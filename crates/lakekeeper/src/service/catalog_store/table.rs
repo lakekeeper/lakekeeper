@@ -227,17 +227,6 @@ where
     ) -> Result<Vec<TableInfo>, CommitTableTransactionError> {
         Self::commit_table_transaction_impl(warehouse_id, commits, transaction).await
     }
-
-    /// Metadata location of a table, read under a share lock that waits for a running commit to
-    /// the table and holds off later commits until the transaction ends.
-    /// Includes soft-deleted tables. `None` if the table does not exist or is staged.
-    async fn lock_table_metadata_location<'a>(
-        warehouse_id: WarehouseId,
-        table_id: TableId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<Location>, LoadTableError> {
-        Self::lock_table_metadata_location_impl(warehouse_id, table_id, transaction).await
-    }
 }
 
 impl<T> CatalogTableOps for T where T: CatalogStore {}

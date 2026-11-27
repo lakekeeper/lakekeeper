@@ -20,8 +20,7 @@ use super::{
     FailedAttempt, OnWarehouseDelete, QueueRegistration, QueueScope, RetryDecision,
     ScheduleTaskMetadata, SpecializedTask, TaskCheckState, TaskConfig, TaskData, TaskEntity,
     TaskExecutionDetails, TaskQueueName, TaskQueueRegistry, UserConfiguration, UserScheduling,
-    WarehouseTaskEntityId,
-    heartbeat::with_heartbeat, retry_backoff,
+    WarehouseTaskEntityId, heartbeat::with_heartbeat, retry_backoff,
 };
 use crate::{
     CONFIG, CancellationToken,
@@ -340,11 +339,10 @@ async fn run<C: CatalogStore, S: SecretStore>(
 /// Store the result and record the task's success. If a commit changed the table during the run,
 /// schedule the next measurement in the same transaction; a missing file is then not stored.
 ///
-/// The share lock on the table row closes the race with a commit: a commit that locked the row
-/// first ends before the read, so the read sees its location; a commit that locks it later waits
-/// until the task is no longer active, so its own schedule succeeds. The lock also keeps the table
-/// from being dropped before the result is stored. On an error the task is recorded as failed and
-/// retried.
+/// `write_table_health` holds off commits to the table, which closes the race with a commit: a
+/// commit that ran first is seen as a changed location; a commit that comes later waits until the
+/// task is no longer active, so its own schedule succeeds. It also keeps the table from being
+/// dropped before the result is stored. On an error the task is recorded as failed and retried.
 async fn finish<C: CatalogStore>(catalog_state: C::State, task: &TableHealthTask, scan: ScanEnd) {
     if let Err(err) = finish_in_transaction::<C>(catalog_state.clone(), task, scan).await {
         tracing::error!("Failed to finish the table health measurement: {err}");
@@ -380,56 +378,53 @@ async fn finish_in_transaction<C: CatalogStore>(
         MeasureOutcome::Measured(_) => "Measured.".to_string(),
         MeasureOutcome::NotMeasurable(reason) => format!("Not measurable: {reason:?}"),
     };
+    let write = TableHealthWrite {
+        warehouse_id,
+        table_id,
+        measurement_version: MEASUREMENT_VERSION,
+        // Counted from after a running commit: the next run is due at least this long after it.
+        next_run_delay: COMMIT_DELAY,
+        outcome: scan.outcome,
+        metadata_location: scan.metadata_location,
+        scan_duration: scan.scan_duration,
+    };
     let mut transaction = C::Transaction::begin_write(catalog_state).await?;
-    let current_location =
-        C::lock_table_metadata_location(warehouse_id, table_id, transaction.transaction())
-            .await
-            .map_err(ErrorModel::from)?;
-    // After the lock, which waits for a running commit: the next run is due at least
-    // `COMMIT_DELAY` after that commit.
-    let measured_at = chrono::Utc::now();
-    let next_not_before = measured_at + COMMIT_DELAY;
+    // Before the heartbeat: a commit holds off the finish, then writes the task row.
+    let outcome = C::write_table_health(&write, transaction.transaction()).await?;
     // A success moves the task's execution details into its log.
     if matches!(
         task.heartbeat_in_transaction::<C>(transaction.transaction(), 1.0, Some(details))
             .await?,
         TaskCheckState::NotActive
     ) {
-        // Another worker holds a newer attempt and records the outcome. Nothing is written.
+        // Another worker holds a newer attempt and records the outcome. The transaction rolls
+        // back, so nothing is written.
         return Ok(());
     }
-    let changed = current_location
-        .as_ref()
-        .is_some_and(|location| location != &scan.metadata_location);
-    // The commit can have deleted the missing file; the follow-up measures the new metadata.
-    let missing_after_commit = changed
-        && matches!(
-            scan.outcome,
-            MeasureOutcome::NotMeasurable(NotMeasurableReason::MetadataMissing { .. })
-        );
-    if missing_after_commit {
-        message = "Not stored: a file was missing and a commit changed the table during the run."
-            .to_string();
-    } else if current_location.is_some() {
-        let write = TableHealthWrite {
-            warehouse_id,
-            table_id,
-            measurement_version: MEASUREMENT_VERSION,
-            measured_at,
-            next_not_before,
-            outcome: scan.outcome,
-            metadata_location: scan.metadata_location,
-            scan_duration: scan.scan_duration,
-        };
-        if C::write_table_health(&write, transaction.transaction()).await?
-            == TableHealthWriteOutcome::NewerExists
-        {
-            message = "Not stored: a newer measurement version measured the table.".to_string();
+    // Set if a commit changed the table during the run.
+    let follow_up = match outcome {
+        TableHealthWriteOutcome::TableGone => {
+            message = "Not stored: the table no longer exists.".to_string();
+            None
         }
-    }
+        // The commit can have deleted the missing file; the follow-up measures the new metadata.
+        TableHealthWriteOutcome::Raced(next_run) => {
+            message =
+                "Not stored: a file was missing and a commit changed the table during the run."
+                    .to_string();
+            Some(next_run.not_before)
+        }
+        TableHealthWriteOutcome::Written(next_run) => {
+            next_run.location_changed.then_some(next_run.not_before)
+        }
+        TableHealthWriteOutcome::NewerExists(next_run) => {
+            message = "Not stored: a newer measurement version measured the table.".to_string();
+            next_run.location_changed.then_some(next_run.not_before)
+        }
+    };
     task.record_success_in_transaction::<C>(transaction.transaction(), Some(&message))
         .await;
-    if changed {
+    if let Some(next_not_before) = follow_up {
         TableHealthTask::schedule_task::<C>(
             ScheduleTaskMetadata {
                 project_id: task.task_metadata.project_id.clone(),
