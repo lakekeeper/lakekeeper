@@ -1,5 +1,6 @@
 //! The table health routes: the ranking shows only tables whose metadata the caller may read,
-//! and the detail shows the table's task only to a caller who may see its tasks.
+//! the detail shows the table's task only to a caller who may see its tasks, and the totals sum
+//! the sizes over the warehouse's Iceberg tables.
 
 use std::{collections::HashMap, time::Duration};
 
@@ -15,8 +16,9 @@ use lakekeeper::{
         management::v1::{
             ApiServer,
             health::{
-                GetTableHealthResponse, ListTableHealthQuery, TableHealthOrderBy,
-                TableHealthService as _, TableHealthStatus, TableHealthTask,
+                GetTableHealthResponse, ListTableHealthQuery, MeasurementVersionCount,
+                SoftDeletedHealthTotals, TableHealthOrderBy, TableHealthService as _,
+                TableHealthStatus, TableHealthTask, WarehouseHealthTotalsResponse,
             },
             tasks::TaskStatus,
             warehouse::TabularDeleteProfile,
@@ -341,4 +343,64 @@ async fn test_detail_shows_the_result_and_the_task(pool: PgPool) {
     .await
     .unwrap_err();
     assert_eq!(error.error.code, 404);
+}
+
+/// Sums include soft-deleted tables, and break them out. A table without a row and a
+/// not-measurable table have no value.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_totals_sum_the_sizes(pool: PgPool) {
+    let setup = setup(pool.clone()).await;
+    let measured = create_table(&setup, "measured").await;
+    let deleted = create_table(&setup, "deleted").await;
+    let not_measurable = create_table(&setup, "not_measurable").await;
+    create_table(&setup, "not_measured").await;
+    insert_health(&pool, setup.warehouse_id, measured, Some((100, 20, 3))).await;
+    insert_health(&pool, setup.warehouse_id, deleted, Some((10, 0, 5))).await;
+    insert_health(&pool, setup.warehouse_id, not_measurable, None).await;
+    sqlx::query("UPDATE tabular SET deleted_at = now() WHERE tabular_id = $1")
+        .bind(*deleted)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let totals = Api::get_warehouse_health_totals(
+        setup.warehouse_id,
+        setup.ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        totals,
+        WarehouseHealthTotalsResponse {
+            tables: 4,
+            tables_measured: 2,
+            tables_not_measurable: 1,
+            tables_without_value: 2,
+            live_data_bytes: 110,
+            live_delete_bytes: 20,
+            live_metadata_bytes: 8,
+            soft_deleted: SoftDeletedHealthTotals {
+                tables: 1,
+                live_data_bytes: 10,
+                live_delete_bytes: 0,
+                live_metadata_bytes: 5,
+            },
+            measurement_versions: vec![MeasurementVersionCount {
+                version: 1,
+                tables: 3
+            }],
+        }
+    );
+
+    setup.authz.block_action("warehouse:GetMetadata");
+    let error = Api::get_warehouse_health_totals(
+        setup.warehouse_id,
+        setup.ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.error.code, 403);
 }

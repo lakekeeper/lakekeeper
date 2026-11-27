@@ -754,6 +754,7 @@ pub enum ManagementAction {
     RevokeSubtreeGrants,
     ListTableHealth,
     GetTableHealth,
+    GetWarehouseHealthTotals,
 }
 
 /// The actions the authentication layer checks.
@@ -844,6 +845,18 @@ impl APIEventActions for TableActionGetTableHealth {
         vec![
             ActionDescriptor::builder()
                 .action_name(ManagementAction::GetTableHealth.as_wire())
+                .build(),
+        ]
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WarehouseActionGetWarehouseHealthTotals {}
+impl APIEventActions for WarehouseActionGetWarehouseHealthTotals {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name(ManagementAction::GetWarehouseHealthTotals.as_wire())
                 .build(),
         ]
     }

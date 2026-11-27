@@ -337,6 +337,7 @@ generate_endpoints! {
         ListDeletedTabulars(GET, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars"),
         UndropTabulars(POST, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop"),
         ListTableHealth(GET, "/management/v1/warehouse/{warehouse_id}/table-health"),
+        GetWarehouseHealthTotals(GET, "/management/v1/warehouse/{warehouse_id}/table-health/totals"),
         GetTableHealth(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health"),
         GetTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
         SetTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
@@ -1128,6 +1129,7 @@ mod test {
         "management-v1-set-maintenance-mode",
         "catalog-v1-register-view",
         "management-v1-list-table-health",
+        "management-v1-get-warehouse-health-totals",
         "management-v1-get-table-health",
     ];
 

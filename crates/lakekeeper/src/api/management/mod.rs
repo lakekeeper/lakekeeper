@@ -42,7 +42,7 @@ pub mod v1 {
     };
     use health::{
         GetTableHealthResponse, ListTableHealthQuery, ListTableHealthResponse,
-        TableHealthService as _,
+        TableHealthService as _, WarehouseHealthTotalsResponse,
     };
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
@@ -3436,6 +3436,35 @@ pub mod v1 {
             .map(Json)
     }
 
+    /// Get Warehouse Health Totals
+    ///
+    /// Returns the measurements of all Iceberg tables in the warehouse, summed, including
+    /// soft-deleted tables, the number of tables without a value, and the measurement versions in
+    /// use.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::GetWarehouseHealthTotals.path(),
+        params(("warehouse_id" = Uuid,)),
+        responses(
+            (status = 200, description = "Health totals of the warehouse", body = WarehouseHealthTotalsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_warehouse_health_totals<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<Json<WarehouseHealthTotalsResponse>> {
+        ApiServer::<C, A, S>::get_warehouse_health_totals(
+            warehouse_id.into(),
+            api_context,
+            metadata,
+        )
+        .await
+        .map(Json)
+    }
+
     /// Get Table Health
     ///
     /// Returns the measurements and findings of a table. A table without a result yet has the
@@ -4988,6 +5017,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ListTableHealth.path_in_management_v1(),
                     get(list_table_health),
+                )
+                .route(
+                    ManagementV1Endpoint::GetWarehouseHealthTotals.path_in_management_v1(),
+                    get(get_warehouse_health_totals),
                 )
                 .route(
                     ManagementV1Endpoint::GetTableHealth.path_in_management_v1(),

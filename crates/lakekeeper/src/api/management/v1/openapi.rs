@@ -101,6 +101,7 @@ use crate::{
         super::get_generic_table_protection,
         super::get_view_protection,
         super::get_warehouse_actions,
+        super::get_warehouse_health_totals,
         super::get_warehouse_statistics,
         super::get_warehouse,
         super::list_deleted_tabulars,

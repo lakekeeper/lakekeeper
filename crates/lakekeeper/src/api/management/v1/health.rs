@@ -21,6 +21,7 @@ use crate::{
         ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogTableHealthOps,
         CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, NamespaceHierarchy, SecretStore,
         State, TableId, TableInfo, TabularId, TabularListFlags, Transaction, ViewOrTableInfo,
+        WarehouseStatus,
         authz::{
             ActionOnTable, AuthZError, AuthZTableOps, Authorizer, AuthzWarehouseOps,
             CatalogTableAction, CatalogWarehouseAction,
@@ -28,7 +29,8 @@ use crate::{
         events::{
             APIEventContext,
             context::{
-                TableActionGetTableHealth, WarehouseActionListTableHealth, authz_to_error_no_audit,
+                TableActionGetTableHealth, WarehouseActionGetWarehouseHealthTotals,
+                WarehouseActionListTableHealth, authz_to_error_no_audit,
             },
         },
         tasks::{TaskFilter, TaskId, TaskInfo, table_health_queue::QUEUE_NAME},
@@ -478,6 +480,41 @@ where
             response.task = Some(TableHealthTask::from_tasks(&tasks.tasks));
         }
         Ok(response)
+    }
+
+    async fn get_warehouse_health_totals(
+        warehouse_id: WarehouseId,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<WarehouseHealthTotalsResponse> {
+        // ------------------- AuthZ -------------------
+        let catalog = context.v1_state.catalog;
+        let authorizer = context.v1_state.authz;
+
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            WarehouseActionGetWarehouseHealthTotals {},
+        );
+        let warehouse = C::get_warehouse_by_id(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            catalog.clone(),
+        )
+        .await;
+        let authz_result = authorizer
+            .require_warehouse_action(
+                event_ctx.request_metadata(),
+                warehouse_id,
+                warehouse,
+                CatalogWarehouseAction::GetMetadata,
+            )
+            .await;
+        let (_event_ctx, _warehouse) = event_ctx.emit_authz(authz_result)?;
+
+        // ------------------- Business Logic -------------------
+        C::get_warehouse_health_totals(warehouse_id, catalog).await
     }
 }
 

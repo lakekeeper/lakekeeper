@@ -6693,6 +6693,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table-health/totals:
+    get:
+      tags:
+        - warehouse
+      summary: Get Warehouse Health Totals
+      description: |-
+        Returns the measurements of all Iceberg tables in the warehouse, summed, including
+        soft-deleted tables, the number of tables without a value, and the measurement versions in
+        use.
+      operationId: get_warehouse_health_totals
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Health totals of the warehouse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WarehouseHealthTotalsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/actions:
     get:
       tags:
@@ -14466,6 +14496,18 @@ components:
       enum:
         - self-managed
         - instance-admin
+    MeasurementVersionCount:
+      type: object
+      required:
+        - version
+        - tables
+      properties:
+        tables:
+          type: integer
+          format: int64
+        version:
+          type: integer
+          format: int32
     MoveNamespaceRequest:
       type: object
       description: Request to move a namespace to a new location in the hierarchy.
@@ -16358,6 +16400,28 @@ components:
           description: |-
             New managed-by marker. Use `self-managed` to clear. Setting or clearing the
             marker requires instance-admin privilege.
+    SoftDeletedHealthTotals:
+      type: object
+      description: The part of the health totals of a warehouse that comes from soft-deleted tables.
+      required:
+        - tables
+        - live-data-bytes
+        - live-delete-bytes
+        - live-metadata-bytes
+      properties:
+        live-data-bytes:
+          type: integer
+          format: int64
+        live-delete-bytes:
+          type: integer
+          format: int64
+        live-metadata-bytes:
+          type: integer
+          format: int64
+        tables:
+          type: integer
+          format: int64
+          description: Number of soft-deleted Iceberg tables
     SoftDeletionQueueConfig:
       type: object
       description: Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.
@@ -18825,6 +18889,54 @@ components:
           type: string
           enum:
             - warehouse-id
+    WarehouseHealthTotalsResponse:
+      type: object
+      description: Health totals of the Iceberg tables of a warehouse. Sums include soft-deleted tables.
+      required:
+        - tables
+        - tables-measured
+        - tables-not-measurable
+        - tables-without-value
+        - live-data-bytes
+        - live-delete-bytes
+        - live-metadata-bytes
+        - soft-deleted
+        - measurement-versions
+      properties:
+        live-data-bytes:
+          type: integer
+          format: int64
+          description: Sum over the measured tables
+        live-delete-bytes:
+          type: integer
+          format: int64
+          description: Sum over the measured tables
+        live-metadata-bytes:
+          type: integer
+          format: int64
+          description: Sum over the measured tables
+        measurement-versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MeasurementVersionCount'
+          description: Measurement versions in use, with the number of tables measured by each
+        soft-deleted:
+          $ref: '#/components/schemas/SoftDeletedHealthTotals'
+          description: The part of the counts and sums that comes from soft-deleted tables
+        tables:
+          type: integer
+          format: int64
+          description: Number of Iceberg tables, soft-deleted tables included
+        tables-measured:
+          type: integer
+          format: int64
+        tables-not-measurable:
+          type: integer
+          format: int64
+        tables-without-value:
+          type: integer
+          format: int64
+          description: Tables never measured or not measurable
     WarehouseRelation:
       type: string
       enum:

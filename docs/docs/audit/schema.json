@@ -1635,6 +1635,7 @@
         "control_tasks",
         "get_table_health",
         "get_task_details",
+        "get_warehouse_health_totals",
         "introspect_permissions",
         "list_projects",
         "list_table_health",
