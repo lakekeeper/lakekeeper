@@ -7180,6 +7180,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/health:
+    get:
+      tags:
+        - warehouse
+      summary: Get Table Health
+      description: |-
+        Returns the measurements and findings of a table. A table without a result yet has the
+        status `not-measured`. The table's `table_health` task is included if the current user may
+        see the table's tasks.
+      operationId: get_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Health of the table
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTableHealthResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
     get:
       tags:
@@ -10349,6 +10385,116 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    GetTableHealthResponse:
+      type: object
+      required:
+        - table-id
+        - namespace
+        - name
+        - status
+        - finding-count
+        - findings
+      properties:
+        finding-count:
+          type: integer
+          format: int32
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableHealthFinding'
+        live-data-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Bytes of the data files of the current snapshot. Set if `status` is `measured`.
+        live-delete-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Bytes of the delete files of the current snapshot. Set if `status` is `measured`.
+        live-metadata-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Bytes of the metadata files of the current snapshot. Set if `status` is `measured`.
+        manifests-read:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Number of manifests read. Set if `status` is `measured`.
+        max-severity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/FindingSeverity'
+              description: |-
+                Highest severity of the table's findings. `warning` for a table that cannot be measured.
+                Not set if the table has no findings.
+        measured-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: End of the last run. Not set if `status` is `not-measured`.
+        measurement-version:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: |-
+            Version of the measurement code that produced these values. Not set if `status` is
+            `not-measured`.
+        metadata-location:
+          type:
+            - string
+            - 'null'
+          description: Metadata file that was measured
+        name:
+          type: string
+          description: Name of the table
+        namespace:
+          type: array
+          items:
+            type: string
+          description: Namespace parts of the table
+        next-not-before:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Earliest time of the next run. Not set if `status` is `not-measured`.
+        not-measurable-reason:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/NotMeasurableReason'
+              description: Set if `status` is `not-measurable`
+        scan-duration-ms:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Duration of the last run
+        snapshot-id:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            Current snapshot that was measured. Not set for a table without a snapshot or a table
+            that cannot be measured.
+        status:
+          $ref: '#/components/schemas/TableHealthStatus'
+        table-id:
+          type: string
+          format: uuid
+        task:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TableHealthTask'
+              description: Only set if the caller may see the table's tasks
     GetTagAssignmentsResponse:
       type: object
       required:
@@ -17101,6 +17247,22 @@ components:
               type: string
               enum:
                 - write
+    TableHealthFinding:
+      type: object
+      description: A problem health found in a table.
+      required:
+        - kind
+        - severity
+      properties:
+        evidence:
+          description: Kind-specific data that shows the problem
+        kind:
+          type: string
+          description: Kind of the finding, e.g. `manifest-length-mismatch`
+        severity:
+          $ref: '#/components/schemas/FindingSeverity'
+        thresholds:
+          description: The values the decision used
     TableHealthOrderBy:
       type: string
       description: Sort order of the table health ranking.
@@ -17184,6 +17346,32 @@ components:
         table-id:
           type: string
           format: uuid
+    TableHealthTask:
+      type: object
+      description: The `table_health` task of a table.
+      properties:
+        last-outcome:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TaskStatus'
+              description: Outcome of the last finished attempt
+        scheduled-for:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the active task runs
+        status:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TaskStatus'
+              description: Status of the active task
+        task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: The active task. Not set if no task is scheduled or running.
     TableRelation:
       type: string
       enum:

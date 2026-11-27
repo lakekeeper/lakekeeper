@@ -1,5 +1,10 @@
-//! The table health ranking shows only tables whose metadata the caller may read.
+//! The table health routes: the ranking shows only tables whose metadata the caller may read,
+//! and the detail shows the table's task only to a caller who may see its tasks.
 
+use std::{collections::HashMap, time::Duration};
+
+use iceberg::{TableIdent, TableUpdate};
+use iceberg_ext::catalog::rest::{CommitTableRequest, CommitTransactionRequest};
 use lakekeeper::{
     api::{
         ApiContext, RequestMetadata,
@@ -9,19 +14,27 @@ use lakekeeper::{
         },
         management::v1::{
             ApiServer,
-            health::{ListTableHealthQuery, TableHealthOrderBy, TableHealthService as _},
+            health::{
+                GetTableHealthResponse, ListTableHealthQuery, TableHealthOrderBy,
+                TableHealthService as _, TableHealthStatus, TableHealthTask,
+            },
+            tasks::TaskStatus,
             warehouse::TabularDeleteProfile,
         },
     },
     server::CatalogServer,
-    service::{State, TableId, WarehouseId, authz::tests::HidingAuthorizer},
+    service::{
+        CatalogStore, CatalogTaskOps as _, State, TableId, Transaction, WarehouseId,
+        authz::tests::HidingAuthorizer,
+    },
 };
 use lakekeeper_integration_tests::{
-    create_ns, create_table_request, memory_io_profile, setup_simple,
+    create_ns, create_table_request, memory_io_profile, setup_simple, spawn_build_in_queues,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use serde_json::json;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 type Ctx = ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>;
 type Api = ApiServer<PostgresBackend, HidingAuthorizer, SecretsState>;
@@ -70,6 +83,29 @@ async fn create_table(setup: &Setup, name: &str) -> TableId {
     .await
     .unwrap();
     TableId::from(table.metadata.uuid())
+}
+
+/// Commits a property change to the table, which schedules a measurement.
+async fn commit(setup: &Setup, name: &str) {
+    CatalogServer::commit_transaction(
+        setup.ns_params.prefix.clone(),
+        CommitTransactionRequest {
+            table_changes: vec![CommitTableRequest {
+                identifier: Some(TableIdent::new(
+                    setup.ns_params.namespace.clone(),
+                    name.to_string(),
+                )),
+                requirements: vec![],
+                updates: vec![TableUpdate::SetProperties {
+                    updates: HashMap::from([("key".to_string(), Uuid::now_v7().to_string())]),
+                }],
+            }],
+        },
+        setup.ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
 }
 
 /// Stores a health row as a run of measurement version 1 would. `sizes` are the live data,
@@ -137,6 +173,17 @@ async fn ranking(setup: &Setup) -> Vec<TableId> {
     }
 }
 
+async fn detail(setup: &Setup, table_id: TableId) -> GetTableHealthResponse {
+    Api::get_table_health(
+        setup.warehouse_id,
+        table_id,
+        setup.ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap()
+}
+
 /// A hidden table is left out and the page refilled. `ListEverything` on the warehouse doesn't
 /// skip the `GetMetadata` check.
 #[lakekeeper_storage_postgres::db_test]
@@ -157,4 +204,141 @@ async fn test_ranking_lists_only_tables_whose_metadata_the_caller_may_read(pool:
 
     setup.authz.block_action("table:GetMetadata");
     assert_eq!(ranking(&setup).await, vec![]);
+}
+
+/// A table without a result shows `not-measured` and its waiting task. After the run, it shows
+/// the result and the task's outcome, and then the next task together with that outcome. Without
+/// the right to see tasks, there is no task.
+#[lakekeeper_storage_postgres::db_test]
+async fn test_detail_shows_the_result_and_the_task(pool: PgPool) {
+    let setup = setup(pool.clone()).await;
+    let table_id = create_table(&setup, "t").await;
+    commit(&setup, "t").await;
+    let (task_id, scheduled_for) = sqlx::query_as::<_, (Uuid, chrono::DateTime<chrono::Utc>)>(
+        "SELECT task_id, scheduled_for FROM task WHERE queue_name = 'table_health'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let waiting = detail(&setup, table_id).await;
+    assert_eq!(
+        (
+            waiting.status,
+            waiting.namespace,
+            waiting.name,
+            waiting.task
+        ),
+        (
+            TableHealthStatus::NotMeasured,
+            vec!["ns".to_string()],
+            "t".to_string(),
+            Some(TableHealthTask {
+                task_id: Some(task_id.into()),
+                status: Some(TaskStatus::Scheduled),
+                scheduled_for: Some(scheduled_for),
+                last_outcome: None,
+            })
+        )
+    );
+
+    // `GetTasks` on the table is enough.
+    setup.authz.block_action("warehouse:GetAllTasks");
+    assert!(detail(&setup, table_id).await.task.is_some());
+    setup.authz.block_action("table:GetTasks");
+    assert_eq!(detail(&setup, table_id).await.task, None);
+    setup.authz.unblock_action("warehouse:GetAllTasks");
+    assert!(detail(&setup, table_id).await.task.is_some());
+    setup.authz.unblock_action("table:GetTasks");
+
+    let mut transaction = <PostgresBackend as CatalogStore>::Transaction::begin_write(
+        setup.ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    PostgresBackend::run_tasks_at(&[task_id.into()], None, transaction.transaction())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    let cancellation_token = lakekeeper::CancellationToken::new();
+    let _queues = spawn_build_in_queues(
+        &setup.ctx,
+        Some(Duration::from_millis(100)),
+        cancellation_token.clone(),
+    )
+    .await;
+    let mut measured = detail(&setup, table_id).await;
+    for _ in 0..300 {
+        if measured
+            .task
+            .as_ref()
+            .and_then(|task| task.last_outcome)
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        measured = detail(&setup, table_id).await;
+    }
+    cancellation_token.cancel();
+
+    // The table has no snapshot, so only metadata.json counts.
+    let metadata_bytes = measured.live_metadata_bytes.unwrap();
+    assert!(metadata_bytes > 0);
+    assert_eq!(
+        (
+            measured.status,
+            (measured.live_data_bytes, measured.live_delete_bytes),
+            measured.measurement_version,
+            measured.manifests_read,
+            measured.findings,
+            measured.task,
+        ),
+        (
+            TableHealthStatus::Measured,
+            (Some(0), Some(0)),
+            Some(1),
+            Some(0),
+            vec![],
+            Some(TableHealthTask {
+                task_id: None,
+                status: None,
+                scheduled_for: None,
+                last_outcome: Some(TaskStatus::Success),
+            }),
+        )
+    );
+
+    // The next commit's task shows together with the last outcome.
+    commit(&setup, "t").await;
+    let (next_task_id, next_scheduled_for) =
+        sqlx::query_as::<_, (Uuid, chrono::DateTime<chrono::Utc>)>(
+            "SELECT task_id, scheduled_for FROM task WHERE queue_name = 'table_health'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        detail(&setup, table_id).await.task,
+        Some(TableHealthTask {
+            task_id: Some(next_task_id.into()),
+            status: Some(TaskStatus::Scheduled),
+            scheduled_for: Some(next_scheduled_for),
+            last_outcome: Some(TaskStatus::Success),
+        })
+    );
+
+    // A table the caller may not see is not found.
+    setup
+        .authz
+        .hide(&format!("table:{}/{table_id}", setup.warehouse_id));
+    let error = Api::get_table_health(
+        setup.warehouse_id,
+        table_id,
+        setup.ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.error.code, 404);
 }

@@ -1633,6 +1633,7 @@
       "x-audit-values": [
         "apply_grants",
         "control_tasks",
+        "get_table_health",
         "get_task_details",
         "introspect_permissions",
         "list_projects",

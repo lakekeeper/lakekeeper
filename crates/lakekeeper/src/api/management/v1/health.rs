@@ -6,7 +6,10 @@ use chrono::{DateTime, Utc};
 use futures::FutureExt as _;
 use serde::{Deserialize, Serialize};
 
-use super::{ApiServer, tasks::TaskStatus};
+use super::{
+    ApiServer,
+    tasks::{ListTasksRequest, TaskStatus, WarehouseTaskEntityFilter},
+};
 use crate::{
     WarehouseId,
     api::{
@@ -16,17 +19,19 @@ use crate::{
     server::UnfilteredPage,
     service::{
         ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogTableHealthOps,
-        CatalogTabularOps, CatalogWarehouseOps, SecretStore, State, TableId, TabularId,
-        TabularListFlags, ViewOrTableInfo,
+        CatalogTabularOps, CatalogTaskOps, CatalogWarehouseOps, NamespaceHierarchy, SecretStore,
+        State, TableId, TableInfo, TabularId, TabularListFlags, Transaction, ViewOrTableInfo,
         authz::{
-            ActionOnTable, AuthZTableOps, Authorizer, AuthzWarehouseOps, CatalogTableAction,
-            CatalogWarehouseAction,
+            ActionOnTable, AuthZError, AuthZTableOps, Authorizer, AuthzWarehouseOps,
+            CatalogTableAction, CatalogWarehouseAction,
         },
         events::{
             APIEventContext,
-            context::{WarehouseActionListTableHealth, authz_to_error_no_audit},
+            context::{
+                TableActionGetTableHealth, WarehouseActionListTableHealth, authz_to_error_no_audit,
+            },
         },
-        tasks::TaskId,
+        tasks::{TaskFilter, TaskId, TaskInfo, table_health_queue::QUEUE_NAME},
     },
 };
 
@@ -195,6 +200,22 @@ pub struct TableHealthTask {
     pub last_outcome: Option<TaskStatus>,
 }
 
+impl TableHealthTask {
+    /// Reads the active task and the last finished attempt from the `table_health` tasks of one
+    /// table, newest first.
+    fn from_tasks(tasks: &[TaskInfo]) -> Self {
+        let is_active = |t: &&TaskInfo| t.status.split().0.is_some();
+        let active = tasks.iter().find(is_active);
+        let finished = tasks.iter().find(|t| !is_active(t));
+        Self {
+            task_id: active.map(TaskInfo::task_id),
+            status: active.map(|t| t.status),
+            scheduled_for: active.map(|t| t.task_metadata.scheduled_for),
+            last_outcome: finished.map(|t| t.status),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -238,6 +259,33 @@ pub struct GetTableHealthResponse {
     /// Only set if the caller may see the table's tasks
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<TableHealthTask>,
+}
+
+impl GetTableHealthResponse {
+    /// The response for a table without a result.
+    fn not_measured(table: &TableInfo) -> Self {
+        Self {
+            table_id: table.tabular_id,
+            namespace: table.tabular_ident.namespace.clone().inner(),
+            name: table.tabular_ident.name.clone(),
+            status: TableHealthStatus::NotMeasured,
+            not_measurable_reason: None,
+            max_severity: None,
+            finding_count: 0,
+            live_data_bytes: None,
+            live_delete_bytes: None,
+            live_metadata_bytes: None,
+            measured_at: None,
+            measurement_version: None,
+            findings: vec![],
+            scan_duration_ms: None,
+            metadata_location: None,
+            snapshot_id: None,
+            manifests_read: None,
+            next_not_before: None,
+            task: None,
+        }
+    }
 }
 
 /// The part of the health totals of a warehouse that comes from soft-deleted tables.
@@ -386,6 +434,51 @@ where
             next_page_token,
         })
     }
+
+    async fn get_table_health(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<GetTableHealthResponse> {
+        // ------------------- AuthZ -------------------
+        let catalog = context.v1_state.catalog;
+        let authorizer = context.v1_state.authz;
+
+        let event_ctx = APIEventContext::for_table(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            table_id,
+            TableActionGetTableHealth {},
+        );
+        let authz_result =
+            authorize_get_table_health::<C, A>(&authorizer, &event_ctx, catalog.clone()).await;
+        let (_event_ctx, (warehouse, table, can_see_tasks)) = event_ctx.emit_authz(authz_result)?;
+
+        // ------------------- Business Logic -------------------
+        let health = C::get_table_health(warehouse_id, table_id, catalog.clone()).await?;
+        let mut response = health.unwrap_or_else(|| GetTableHealthResponse::not_measured(&table));
+        if can_see_tasks {
+            let filter = TaskFilter::WarehouseId {
+                warehouse_id,
+                project_id: warehouse.project_id.clone(),
+            };
+            // A table has at most one active task per queue, and it is the newest. The list has
+            // one finished row per task, so two rows hold the active task and the last finished
+            // attempt.
+            let query = ListTasksRequest::builder()
+                .queue_name(Some(vec![QUEUE_NAME.clone()]))
+                .entities(Some(vec![WarehouseTaskEntityFilter::Table { table_id }]))
+                .page_size(Some(2))
+                .build();
+            let mut t = C::Transaction::begin_read(catalog).await?;
+            let tasks = C::list_tasks(&filter, &query, t.transaction()).await?;
+            t.commit().await?;
+            response.task = Some(TableHealthTask::from_tasks(&tasks.tasks));
+        }
+        Ok(response)
+    }
 }
 
 /// Which of `table_ids` the caller may read the metadata of. The health of a table shows its
@@ -456,4 +549,50 @@ async fn readable_tables<C: CatalogStore, A: Authorizer>(
         allowed[index] = decision;
     }
     Ok(allowed)
+}
+
+/// Requires `GetMetadata` on the table, and says whether the caller may also see its tasks:
+/// `GetTasks` on the table or `GetAllTasks` on the warehouse, as for the task details.
+async fn authorize_get_table_health<C: CatalogStore, A: Authorizer>(
+    authorizer: &A,
+    event_ctx: &APIEventContext<
+        crate::service::events::context::UserProvidedTable,
+        crate::service::events::context::Unresolved,
+        TableActionGetTableHealth,
+    >,
+    catalog: C::State,
+) -> std::result::Result<(ArcResolvedWarehouse, TableInfo, bool), AuthZError> {
+    let (warehouse, namespace, table): (ArcResolvedWarehouse, NamespaceHierarchy, TableInfo) =
+        authorizer
+            .load_and_authorize_table_operation::<C>(
+                event_ctx.request_metadata(),
+                event_ctx.user_provided_entity(),
+                TabularListFlags::all(),
+                CatalogTableAction::GetMetadata,
+                catalog,
+            )
+            .await?;
+
+    let can_get_all_tasks = authorizer
+        .is_allowed_warehouse_action(
+            event_ctx.request_metadata(),
+            None,
+            &warehouse,
+            CatalogWarehouseAction::GetAllTasks,
+        )
+        .await?
+        .into_inner();
+    let can_see_tasks = can_get_all_tasks
+        || authorizer
+            .is_allowed_table_action(
+                event_ctx.request_metadata(),
+                None,
+                &warehouse,
+                &namespace,
+                &table,
+                CatalogTableAction::GetTasks,
+            )
+            .await?
+            .into_inner();
+    Ok((warehouse, table, can_see_tasks))
 }

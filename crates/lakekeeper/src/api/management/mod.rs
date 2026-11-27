@@ -40,7 +40,10 @@ pub mod v1 {
         ResourceGrantablePrivilegesResponse, RevokeSubtreeGrantsRequest,
         RevokeSubtreeGrantsResponse, Service as _,
     };
-    use health::{ListTableHealthQuery, ListTableHealthResponse, TableHealthService as _};
+    use health::{
+        GetTableHealthResponse, ListTableHealthQuery, ListTableHealthResponse,
+        TableHealthService as _,
+    };
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     #[cfg(feature = "open-api")]
@@ -3433,6 +3436,36 @@ pub mod v1 {
             .map(Json)
     }
 
+    /// Get Table Health
+    ///
+    /// Returns the measurements and findings of a table. A table without a result yet has the
+    /// status `not-measured`. The table's `table_health` task is included if the current user may
+    /// see the table's tasks.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::GetTableHealth.path(),
+        params(("warehouse_id" = Uuid,), ("table_id" = Uuid,)),
+        responses(
+            (status = 200, description = "Health of the table", body = GetTableHealthResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_table_health<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<Json<GetTableHealthResponse>> {
+        ApiServer::<C, A, S>::get_table_health(
+            warehouse_id.into(),
+            table_id.into(),
+            api_context,
+            metadata,
+        )
+        .await
+        .map(Json)
+    }
+
     #[derive(Serialize, Deserialize, Debug)]
     #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     pub struct ProtectionResponse {
@@ -4955,6 +4988,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ListTableHealth.path_in_management_v1(),
                     get(list_table_health),
+                )
+                .route(
+                    ManagementV1Endpoint::GetTableHealth.path_in_management_v1(),
+                    get(get_table_health),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/delete-profile",

@@ -88,6 +88,7 @@ use crate::{
         super::get_server_actions,
         super::get_server_info,
         super::get_table_actions,
+        super::get_table_health,
         super::get_table_protection,
         super::get_tag_definition,
         super::get_task_details,
