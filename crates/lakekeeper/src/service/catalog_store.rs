@@ -82,6 +82,8 @@ mod view;
 pub use view::*;
 mod table;
 pub use table::*;
+mod table_health;
+pub use table_health::*;
 mod role;
 pub use role::*;
 mod role_assignment;
@@ -976,6 +978,14 @@ where
         table_id: TableId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<Option<Location>, LoadTableError>;
+
+    // ---------------- Table Health ----------------
+    /// Store the result of a health run. Replaces the table's stored result unless that comes
+    /// from a newer measurement version.
+    async fn write_table_health_impl<'a>(
+        write: &crate::service::table_health::TableHealthWrite,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<crate::service::table_health::TableHealthWriteOutcome>;
 
     // ---------------- View Management ----------------
     async fn create_view_impl<'a>(

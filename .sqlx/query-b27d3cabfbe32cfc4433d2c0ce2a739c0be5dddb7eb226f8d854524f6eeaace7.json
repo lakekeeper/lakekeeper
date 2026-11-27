@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO health_iceberg_table (warehouse_id, table_id, measurement_version, status,\n                                          measured_at, next_not_before, max_severity,\n                                          finding_count, result, live_data_bytes,\n                                          live_delete_bytes, live_metadata_bytes)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n        ON CONFLICT (warehouse_id, table_id) DO UPDATE SET\n            measurement_version = excluded.measurement_version,\n            status              = excluded.status,\n            measured_at         = excluded.measured_at,\n            next_not_before     = excluded.next_not_before,\n            max_severity        = excluded.max_severity,\n            finding_count       = excluded.finding_count,\n            result              = excluded.result,\n            live_data_bytes     = excluded.live_data_bytes,\n            live_delete_bytes   = excluded.live_delete_bytes,\n            live_metadata_bytes = excluded.live_metadata_bytes\n        WHERE health_iceberg_table.measurement_version <= excluded.measurement_version\n        RETURNING true AS \"written!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "written!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        {
+          "Custom": {
+            "name": "health_status",
+            "kind": {
+              "Enum": [
+                "measured",
+                "not-measurable"
+              ]
+            }
+          }
+        },
+        "Timestamptz",
+        "Timestamptz",
+        "Int2",
+        "Int4",
+        "Jsonb",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b27d3cabfbe32cfc4433d2c0ce2a739c0be5dddb7eb226f8d854524f6eeaace7"
+}

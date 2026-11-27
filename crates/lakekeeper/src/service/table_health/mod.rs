@@ -7,8 +7,14 @@
 mod findings;
 mod measure;
 
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use lakekeeper_io::Location;
 pub use measure::{MeasureError, measure};
 use serde::{Deserialize, Serialize};
+
+use crate::{WarehouseId, service::TableId};
 
 /// Version of the measurement code. Stored with every result.
 ///
@@ -93,4 +99,96 @@ pub struct Measurement {
     pub snapshot_id: Option<i64>,
     /// Number of manifests read.
     pub manifests_read: u64,
+}
+
+/// The details a run stores for a table: findings, the reason the table could not be measured,
+/// and the scan.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct HealthResult<'a> {
+    pub not_measurable: Option<&'a NotMeasurableReason>,
+    pub findings: &'a [Finding],
+    pub metadata_location: &'a str,
+    /// `None` if the table has no current snapshot or could not be measured.
+    pub snapshot_id: Option<i64>,
+    pub scan_duration_ms: i64,
+    /// `None` if the table could not be measured.
+    pub manifests_read: Option<u64>,
+}
+
+/// The result of one run on one table, as it is stored.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableHealthWrite {
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
+    pub measurement_version: i32,
+    /// End of the run.
+    pub measured_at: DateTime<Utc>,
+    /// Earliest start of the next run.
+    pub next_not_before: DateTime<Utc>,
+    pub outcome: MeasureOutcome,
+    /// The metadata location that was measured.
+    pub metadata_location: Location,
+    pub scan_duration: Duration,
+}
+
+impl TableHealthWrite {
+    /// Highest severity of the findings. Warning for a table that could not be measured, so that
+    /// it ranks among the tables to look at.
+    #[must_use]
+    pub fn max_severity(&self) -> Option<Severity> {
+        match &self.outcome {
+            MeasureOutcome::Measured(measurement) => measurement
+                .findings
+                .iter()
+                .map(|finding| finding.severity)
+                .max(),
+            MeasureOutcome::NotMeasurable(_) => Some(Severity::Warning),
+        }
+    }
+
+    #[must_use]
+    pub fn findings(&self) -> &[Finding] {
+        match &self.outcome {
+            MeasureOutcome::Measured(measurement) => &measurement.findings,
+            MeasureOutcome::NotMeasurable(_) => &[],
+        }
+    }
+
+    /// `None` if the table could not be measured.
+    #[must_use]
+    pub fn sizes(&self) -> Option<Sizes> {
+        match &self.outcome {
+            MeasureOutcome::Measured(measurement) => Some(measurement.sizes),
+            MeasureOutcome::NotMeasurable(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn result(&self) -> HealthResult<'_> {
+        let (not_measurable, snapshot_id, manifests_read) = match &self.outcome {
+            MeasureOutcome::Measured(measurement) => (
+                None,
+                measurement.snapshot_id,
+                Some(measurement.manifests_read),
+            ),
+            MeasureOutcome::NotMeasurable(reason) => (Some(reason), None, None),
+        };
+        HealthResult {
+            not_measurable,
+            findings: self.findings(),
+            metadata_location: self.metadata_location.as_str(),
+            snapshot_id,
+            scan_duration_ms: i64::try_from(self.scan_duration.as_millis()).unwrap_or(i64::MAX),
+            manifests_read,
+        }
+    }
+}
+
+/// Whether a run's result was stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableHealthWriteOutcome {
+    Written,
+    /// The table's stored result comes from a newer measurement version and was kept.
+    NewerExists,
 }
