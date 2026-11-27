@@ -3882,6 +3882,7 @@ name = "lakekeeper"
 version = "0.15.0"
 dependencies = [
  "anyhow",
+ "apache-avro",
  "assert-json-diff",
  "async-trait",
  "aws-config",
@@ -3956,6 +3957,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "tryhard",
  "typed-builder 0.23.2",
  "unicase",
  "url",

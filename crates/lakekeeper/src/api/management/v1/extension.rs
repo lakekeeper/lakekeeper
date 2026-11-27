@@ -541,12 +541,12 @@ mod tests {
     static HEALTH: ExtensionEndpoint = ExtensionEndpoint::new(
         "ext-table-health",
         Method::GET,
-        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/ext-health",
     );
     static RECHECK: ExtensionEndpoint = ExtensionEndpoint::new(
         "ext-table-health-recheck",
         Method::POST,
-        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/ext-health",
     );
     static RECHECK_ALL: ExtensionEndpoint = ExtensionEndpoint::new(
         "ext-table-health-recheck-all",

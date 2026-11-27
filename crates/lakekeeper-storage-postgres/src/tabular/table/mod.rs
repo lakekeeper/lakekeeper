@@ -25,6 +25,7 @@ use lakekeeper::{
         storage::join_location,
     },
 };
+use lakekeeper_io::Location;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -498,6 +499,34 @@ impl TableQueryStruct {
 
         Ok(table_metadata)
     }
+}
+
+pub(crate) async fn lock_table_metadata_location(
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Option<Location>, LoadTableError> {
+    // `FOR SHARE` conflicts with the `FOR NO KEY UPDATE` a commit takes on the row.
+    let metadata_location = sqlx::query_scalar!(
+        r#"
+        SELECT metadata_location
+        FROM tabular
+        WHERE warehouse_id = $1 AND tabular_id = $2 AND typ = 'table'
+        FOR SHARE
+        "#,
+        *warehouse_id,
+        *table_id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+    .flatten();
+
+    metadata_location
+        .as_deref()
+        .map(Location::from_str)
+        .transpose()
+        .map_err(|e| InternalParseLocationError::from(e).into())
 }
 
 #[allow(clippy::too_many_lines)]

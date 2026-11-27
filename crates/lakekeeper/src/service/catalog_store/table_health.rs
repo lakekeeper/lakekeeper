@@ -1,0 +1,76 @@
+use crate::{
+    WarehouseId,
+    api::{
+        iceberg::v1::{PaginatedMapping, PaginationQuery},
+        management::v1::health::{
+            GetTableHealthResponse, TableHealthOrderBy, TableHealthSummary,
+            WarehouseHealthTotalsResponse,
+        },
+    },
+    service::{
+        CatalogStore, TableId, Transaction,
+        table_health::{TableHealthWrite, TableHealthWriteOutcome},
+    },
+};
+
+/// Table health operations on the catalog store.
+#[allow(async_fn_in_trait)]
+pub trait CatalogTableHealthOps
+where
+    Self: CatalogStore,
+{
+    /// Store the result of a health run. First waits for a running commit to the table and holds
+    /// off later ones until the transaction ends, so a commit and the run's finish can't miss
+    /// each other. Call it before anything in the transaction touches the task row: a commit
+    /// holds off the finish, then writes the task row.
+    ///
+    /// Replaces the table's stored result unless that comes from a newer measurement version
+    /// ([`TableHealthWriteOutcome::NewerExists`]), the table is gone or staged
+    /// ([`TableHealthWriteOutcome::TableGone`]), or a file was missing and the table's metadata
+    /// location changed during the run ([`TableHealthWriteOutcome::Raced`]). Soft-deleted tables
+    /// are stored.
+    async fn write_table_health(
+        write: &TableHealthWrite,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> super::Result<TableHealthWriteOutcome> {
+        Self::write_table_health_impl(write, transaction).await
+    }
+
+    /// A page of the stored health of the Iceberg tables of a warehouse, in the given order.
+    /// Tables without a result are not listed.
+    async fn list_table_health(
+        warehouse_id: WarehouseId,
+        order_by: TableHealthOrderBy,
+        include_soft_deleted: bool,
+        pagination_query: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> super::Result<PaginatedMapping<TableId, TableHealthSummary>> {
+        Self::list_table_health_impl(
+            warehouse_id,
+            order_by,
+            include_soft_deleted,
+            pagination_query,
+            transaction,
+        )
+        .await
+    }
+
+    /// The stored health of a table. `None` if the table has no result. `task` is not set.
+    async fn get_table_health(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        state: Self::State,
+    ) -> super::Result<Option<GetTableHealthResponse>> {
+        Self::get_table_health_impl(warehouse_id, table_id, state).await
+    }
+
+    /// Health totals of the Iceberg tables of a warehouse, soft-deleted tables included.
+    async fn get_warehouse_health_totals(
+        warehouse_id: WarehouseId,
+        state: Self::State,
+    ) -> super::Result<WarehouseHealthTotalsResponse> {
+        Self::get_warehouse_health_totals_impl(warehouse_id, state).await
+    }
+}
+
+impl<T> CatalogTableHealthOps for T where T: CatalogStore {}

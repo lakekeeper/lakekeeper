@@ -20,6 +20,7 @@ use crate::{
     },
 };
 
+mod heartbeat;
 mod queue_demand;
 mod queue_metrics;
 pub(crate) mod task_drain;
@@ -37,6 +38,7 @@ pub use task_registry::{
 };
 #[cfg(feature = "router")]
 pub(crate) use task_registry::{DemandLookupError, DemandTarget};
+pub mod table_health_queue;
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
@@ -219,19 +221,23 @@ impl TaskResourceDemandRange {
     }
 }
 
-/// Delay before a failed attempt is retried: 30 seconds after the first failed attempt,
-/// doubling with each further one, at most one hour. Shortened by up to 10%, depending on the
-/// task id and attempt, so that tasks failing together do not retry together.
+/// [`retry_backoff`] with a cap of one hour.
 #[must_use]
 pub fn default_retry_backoff(failed: &FailedAttempt<'_>) -> chrono::Duration {
+    retry_backoff(failed, DEFAULT_RETRY_BACKOFF_MAX)
+}
+
+/// Delay before a failed attempt is retried: 30 seconds after the first failed attempt,
+/// doubling with each further one, at most `max`. Shortened by up to 10%, depending on the task
+/// id and attempt, so that tasks failing together do not retry together.
+#[must_use]
+pub fn retry_backoff(failed: &FailedAttempt<'_>, max: chrono::Duration) -> chrono::Duration {
     let doublings = u32::try_from(failed.attempt.saturating_sub(1))
         .unwrap_or(0)
         .min(16);
     let backoff = DEFAULT_RETRY_BACKOFF_BASE
         .checked_mul(1 << doublings)
-        .map_or(DEFAULT_RETRY_BACKOFF_MAX, |d| {
-            d.min(DEFAULT_RETRY_BACKOFF_MAX)
-        });
+        .map_or(max, |d| d.min(max));
     let seed = failed.task_id.as_u64_pair().1
         ^ u64::from(failed.attempt.unsigned_abs()).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let permille = i32::try_from(seed % 101).unwrap_or(0);
@@ -268,6 +274,7 @@ pub static BUILT_IN_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>> =
         vec![
             tabular_expiration_queue::API_CONFIG.clone(),
             tabular_purge_queue::API_CONFIG.clone(),
+            table_health_queue::API_CONFIG.clone(),
         ]
     });
 
@@ -288,10 +295,11 @@ mod built_in_schedulable_pin_test {
 
     /// Pin the set of OSS queues that opt in to `task-queue/{name}/schedule`.
     ///
-    /// **OSS has zero schedulable queues.** Destructive (`tabular_purge`) and
-    /// lifecycle-managed (`soft_deletion`) queues intentionally stay
-    /// opted out so they can't be enqueued out-of-band; `task_log_cleanup` is
-    /// project-scoped and not meaningful to trigger manually.
+    /// **OSS has one schedulable queue:** `table_health`, which only reads
+    /// table metadata. Destructive (`tabular_purge`) and lifecycle-managed
+    /// (`soft_deletion`) queues intentionally stay opted out so they can't be
+    /// enqueued out-of-band; `task_log_cleanup` is project-scoped and not
+    /// meaningful to trigger manually.
     ///
     /// Enterprise has its own pin test for `expire_snapshots` and
     /// `remove_orphan_files`. If a new OSS queue legitimately needs to be
@@ -306,7 +314,7 @@ mod built_in_schedulable_pin_test {
             .map(|c| c.queue_name.as_str())
             .collect();
         names.sort_unstable();
-        let expected: Vec<&str> = vec![];
+        let expected: Vec<&str> = vec!["table_health"];
         assert_eq!(
             names, expected,
             "OSS schedulable-queue set changed; review the security \

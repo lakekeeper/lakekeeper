@@ -5,6 +5,7 @@ pub mod v1 {
     pub mod extension;
     pub mod generic_table;
     pub mod grant;
+    pub mod health;
     pub mod lakekeeper_actions;
     pub mod namespace;
     pub mod project;
@@ -38,6 +39,10 @@ pub mod v1 {
         ListGrantsResponse, ListSubtreeGrantsQuery, ListSubtreeGrantsResponse,
         ResourceGrantablePrivilegesResponse, RevokeSubtreeGrantsRequest,
         RevokeSubtreeGrantsResponse, Service as _,
+    };
+    use health::{
+        GetTableHealthResponse, ListTableHealthQuery, ListTableHealthResponse,
+        TableHealthService as _, WarehouseHealthTotalsResponse,
     };
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
@@ -3405,6 +3410,91 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    /// List Table Health
+    ///
+    /// Returns the health of the measured Iceberg tables in the warehouse whose metadata the
+    /// current user may read: measurements, highest finding severity and number of findings.
+    /// Tables that were never measured are not in the list.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::ListTableHealth.path(),
+        params(("warehouse_id" = Uuid,), ListTableHealthQuery),
+        responses(
+            (status = 200, description = "Health of the tables in the warehouse", body = ListTableHealthResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_table_health<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Query(query): Query<ListTableHealthQuery>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<Json<ListTableHealthResponse>> {
+        ApiServer::<C, A, S>::list_table_health(warehouse_id.into(), query, api_context, metadata)
+            .await
+            .map(Json)
+    }
+
+    /// Get Warehouse Health Totals
+    ///
+    /// Returns the measurements of all Iceberg tables in the warehouse, summed, including
+    /// soft-deleted tables, the number of tables without a value, and the measurement versions in
+    /// use.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::GetWarehouseHealthTotals.path(),
+        params(("warehouse_id" = Uuid,)),
+        responses(
+            (status = 200, description = "Health totals of the warehouse", body = WarehouseHealthTotalsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_warehouse_health_totals<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<Json<WarehouseHealthTotalsResponse>> {
+        ApiServer::<C, A, S>::get_warehouse_health_totals(
+            warehouse_id.into(),
+            api_context,
+            metadata,
+        )
+        .await
+        .map(Json)
+    }
+
+    /// Get Table Health
+    ///
+    /// Returns the measurements and findings of a table. A table without a result yet has the
+    /// status `not-measured`. The table's `table_health` task is included if the current user may
+    /// see the table's tasks.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::GetTableHealth.path(),
+        params(("warehouse_id" = Uuid,), ("table_id" = Uuid,)),
+        responses(
+            (status = 200, description = "Health of the table", body = GetTableHealthResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_table_health<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<Json<GetTableHealthResponse>> {
+        ApiServer::<C, A, S>::get_table_health(
+            warehouse_id.into(),
+            table_id.into(),
+            api_context,
+            metadata,
+        )
+        .await
+        .map(Json)
+    }
+
     #[derive(Serialize, Deserialize, Debug)]
     #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     pub struct ProtectionResponse {
@@ -4923,6 +5013,18 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/deleted-tabulars/undrop",
                     post(undrop_tabulars),
+                )
+                .route(
+                    ManagementV1Endpoint::ListTableHealth.path_in_management_v1(),
+                    get(list_table_health),
+                )
+                .route(
+                    ManagementV1Endpoint::GetWarehouseHealthTotals.path_in_management_v1(),
+                    get(get_warehouse_health_totals),
+                )
+                .route(
+                    ManagementV1Endpoint::GetTableHealth.path_in_management_v1(),
+                    get(get_table_health),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/delete-profile",

@@ -103,7 +103,7 @@ use crate::{
         secrets::SecretStore,
         storage::StoragePermissions,
         tasks::{
-            ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
+            ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId, table_health_queue,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
@@ -2053,6 +2053,12 @@ async fn write_commits<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         C::commit_table_transaction(
             warehouse_id,
             commits.iter().map(CommitContext::commit),
+            transaction.transaction(),
+        )
+        .await?;
+        table_health_queue::schedule_after_commit::<C>(
+            &warehouse.project_id,
+            commits.iter().map(|commit| &*commit.table_info),
             transaction.transaction(),
         )
         .await?;

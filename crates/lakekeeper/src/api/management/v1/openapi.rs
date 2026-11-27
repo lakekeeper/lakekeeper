@@ -88,6 +88,7 @@ use crate::{
         super::get_server_actions,
         super::get_server_info,
         super::get_table_actions,
+        super::get_table_health,
         super::get_table_protection,
         super::get_tag_definition,
         super::get_task_details,
@@ -100,9 +101,11 @@ use crate::{
         super::get_generic_table_protection,
         super::get_view_protection,
         super::get_warehouse_actions,
+        super::get_warehouse_health_totals,
         super::get_warehouse_statistics,
         super::get_warehouse,
         super::list_deleted_tabulars,
+        super::list_table_health,
         super::list_projects,
         super::list_project_tasks,
         super::list_roles,
@@ -200,6 +203,8 @@ use crate::{
         // auto-collect into `components/schemas`. Register it explicitly so the
         // `$ref`s those params emit resolve instead of dangling.
         crate::api::management::v1::role_membership::RoleMemberType,
+        // Referenced only through the `?orderBy=` query parameter of the table health ranking.
+        crate::api::management::v1::health::TableHealthOrderBy,
     )),
     modifiers(&SecurityAddon)
 )]

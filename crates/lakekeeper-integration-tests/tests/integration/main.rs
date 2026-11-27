@@ -63,6 +63,8 @@ mod soft_deletion;
 mod soft_deletion_skip;
 mod stats;
 mod subtree_grant_ops;
+mod table_health_api;
+mod table_health_scheduling;
 mod tag_ops;
 mod task_schedules;
 mod tasks;

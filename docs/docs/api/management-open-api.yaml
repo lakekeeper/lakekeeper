@@ -6632,6 +6632,97 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table-health:
+    get:
+      tags:
+        - warehouse
+      summary: List Table Health
+      description: |-
+        Returns the health of the measured Iceberg tables in the warehouse whose metadata the
+        current user may read: measurements, highest finding severity and number of findings.
+        Tables that were never measured are not in the list.
+      operationId: list_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: orderBy
+          in: query
+          description: 'Sort order. Default: `severity`'
+          required: false
+          schema:
+            $ref: '#/components/schemas/TableHealthOrderBy'
+        - name: includeSoftDeleted
+          in: query
+          description: 'Include soft-deleted tables. Default: false'
+          required: false
+          schema:
+            type: boolean
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: |-
+            Signals an upper bound of the number of results that a client will receive.
+            Default: 100
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: Health of the tables in the warehouse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTableHealthResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table-health/totals:
+    get:
+      tags:
+        - warehouse
+      summary: Get Warehouse Health Totals
+      description: |-
+        Returns the measurements of all Iceberg tables in the warehouse, summed, including
+        soft-deleted tables, the number of tables without a value, and the measurement versions in
+        use.
+      operationId: get_warehouse_health_totals
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Health totals of the warehouse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WarehouseHealthTotalsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/actions:
     get:
       tags:
@@ -7119,6 +7210,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/health:
+    get:
+      tags:
+        - warehouse
+      summary: Get Table Health
+      description: |-
+        Returns the measurements and findings of a table. A table without a result yet has the
+        status `not-measured`. The table's `table_health` task is included if the current user may
+        see the table's tasks.
+      operationId: get_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Health of the table
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTableHealthResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
     get:
       tags:
@@ -7541,6 +7668,133 @@ paths:
       responses:
         '204':
           description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/table_health/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetHealthQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetHealthQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/table_health/schedule:
+    post:
+      tags:
+        - tasks
+      summary: Schedule a task for an entity.
+      description: |-
+        Pre-checks run against the warehouse config and target entity
+        properties before the task is enqueued. A failure surfaces as `400`
+        with a specific error code (see the operator guide for the full set
+        of pre-check codes).
+
+        When a task is already active for the same (warehouse, entity,
+        queue) triple, the call returns `409 TaskAlreadyActive` with the
+        existing `task-id` in the body — chain to `POST /task/control`
+        with `run-now` or `run-at` to retime it without an extra
+        `task/list` round-trip.
+      operationId: schedule_task_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleHealthTaskRequest'
+        required: true
+      responses:
+        '200':
+          description: Task scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleTaskResponse'
+        '400':
+          description: Pre-check failed (e.g. scheduling disabled at the warehouse, entity opted out, unsupported entity type) or the request violates a shape limit (e.g. scheduled-for too far in the future).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '404':
+          description: Target entity not found in this warehouse.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '409':
+          description: A task is already active for this (warehouse, entity, queue). The error message includes the existing task-id; retime or cancel via POST /task/control.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -9499,6 +9753,13 @@ components:
         type:
           type: string
           description: Internal type definition of the error
+    FindingSeverity:
+      type: string
+      description: Severity of a finding.
+      enum:
+        - info
+        - warning
+        - critical
     GcsCredential:
       oneOf:
         - $ref: '#/components/schemas/GcsCredentialServiceAccountKey'
@@ -9810,6 +10071,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GenericTableAssignment'
+    GetHealthQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/HealthQueueConfig'
     GetLakekeeperGenericTableActionsResponse:
       type: object
       required:
@@ -10142,6 +10415,116 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    GetTableHealthResponse:
+      type: object
+      required:
+        - table-id
+        - namespace
+        - name
+        - status
+        - finding-count
+        - findings
+      properties:
+        finding-count:
+          type: integer
+          format: int32
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableHealthFinding'
+        live-data-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Bytes of the data files of the current snapshot. Set if `status` is `measured`.
+        live-delete-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Bytes of the delete files of the current snapshot. Set if `status` is `measured`.
+        live-metadata-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Bytes of the metadata files of the current snapshot. Set if `status` is `measured`.
+        manifests-read:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Number of manifests read. Set if `status` is `measured`.
+        max-severity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/FindingSeverity'
+              description: |-
+                Highest severity of the table's findings. `warning` for a table that cannot be measured.
+                Not set if the table has no findings.
+        measured-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: End of the last run. Not set if `status` is `not-measured`.
+        measurement-version:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: |-
+            Version of the measurement code that produced these values. Not set if `status` is
+            `not-measured`.
+        metadata-location:
+          type:
+            - string
+            - 'null'
+          description: Metadata file that was measured
+        name:
+          type: string
+          description: Name of the table
+        namespace:
+          type: array
+          items:
+            type: string
+          description: Namespace parts of the table
+        next-not-before:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Earliest time of the next run. Not set if `status` is `not-measured`.
+        not-measurable-reason:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/NotMeasurableReason'
+              description: Set if `status` is `not-measurable`
+        scan-duration-ms:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Duration of the last run
+        snapshot-id:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            Current snapshot that was measured. Not set for a table without a snapshot or a table
+            that cannot be measured.
+        status:
+          $ref: '#/components/schemas/TableHealthStatus'
+        table-id:
+          type: string
+          format: uuid
+        task:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TableHealthTask'
+              description: Only set if the caller may see the table's tasks
     GetTagAssignmentsResponse:
       type: object
       required:
@@ -10556,6 +10939,18 @@ components:
               $ref: '#/components/schemas/PrivilegeDescriptor'
           propertyNames:
             type: string
+    HealthQueueConfig:
+      type: object
+      properties:
+        max-run-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How long one measurement may run, in seconds. A table whose scan takes longer is reported
+            as not measurable. Default: 900
+          minimum: 0
     IcebergErrorResponse:
       type: object
       description: JSON wrapper for all error responses (non-2xx)
@@ -13911,6 +14306,20 @@ components:
             Present when another page may follow; follow it until it is absent. The token
             also pins the walk's ceiling, so every page reads under the instant page one
             bound.
+    ListTableHealthResponse:
+      type: object
+      required:
+        - tables
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Token to fetch the next page
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableHealthSummary'
     ListTagAttachmentsResponse:
       type: object
       required:
@@ -14087,6 +14496,18 @@ components:
       enum:
         - self-managed
         - instance-admin
+    MeasurementVersionCount:
+      type: object
+      required:
+        - version
+        - tables
+      properties:
+        tables:
+          type: integer
+          format: int64
+        version:
+          type: integer
+          format: int32
     MoveNamespaceRequest:
       type: object
       description: Request to move a namespace to a new location in the hierarchy.
@@ -14318,6 +14739,84 @@ components:
         - write
         - modify
         - manage_tags
+    NotMeasurableReason:
+      oneOf:
+        - $ref: '#/components/schemas/NotMeasurableReasonEncrypted'
+        - $ref: '#/components/schemas/NotMeasurableReasonTimeLimit'
+        - $ref: '#/components/schemas/NotMeasurableReasonMissingFileSize'
+        - $ref: '#/components/schemas/NotMeasurableReasonMetadataUnreadable'
+        - $ref: '#/components/schemas/NotMeasurableReasonMetadataMissing'
+      description: Why a table cannot be measured.
+      discriminator:
+        propertyName: reason
+        mapping:
+          encrypted: '#/components/schemas/NotMeasurableReasonEncrypted'
+          metadata-missing: '#/components/schemas/NotMeasurableReasonMetadataMissing'
+          metadata-unreadable: '#/components/schemas/NotMeasurableReasonMetadataUnreadable'
+          missing-file-size: '#/components/schemas/NotMeasurableReasonMissingFileSize'
+          time-limit: '#/components/schemas/NotMeasurableReasonTimeLimit'
+    NotMeasurableReasonEncrypted:
+      type: object
+      description: The table is encrypted.
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          enum:
+            - encrypted
+    NotMeasurableReasonMetadataMissing:
+      type: object
+      description: The metadata file, the manifest list or a manifest does not exist.
+      required:
+        - path
+        - reason
+      properties:
+        path:
+          type: string
+          description: The missing file
+        reason:
+          type: string
+          enum:
+            - metadata-missing
+    NotMeasurableReasonMetadataUnreadable:
+      type: object
+      description: A manifest list or manifest cannot be read.
+      required:
+        - path
+        - reason
+      properties:
+        path:
+          type: string
+          description: The file that cannot be read
+        reason:
+          type: string
+          enum:
+            - metadata-unreadable
+    NotMeasurableReasonMissingFileSize:
+      type: object
+      description: A data or delete file in the current snapshot has no file size.
+      required:
+        - path
+        - reason
+      properties:
+        path:
+          type: string
+          description: The file without a size
+        reason:
+          type: string
+          enum:
+            - missing-file-size
+    NotMeasurableReasonTimeLimit:
+      type: object
+      description: The scan ran over the run time limit.
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          enum:
+            - time-limit
     OneLakeProfile:
       type: object
       description: |-
@@ -15496,6 +15995,28 @@ components:
         - path
         - virtual_host
         - auto
+    ScheduleHealthTaskRequest:
+      type: object
+      description: Request body for scheduling a task.
+      required:
+        - entity
+      properties:
+        entity:
+          $ref: '#/components/schemas/WarehouseTaskEntityId'
+          description: |-
+            Entity to schedule the task for. Unsupported entity types return
+            `400` from the pre-check.
+        scheduled-for:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            When the task should run. Omit (or pass `null`) to run on the next
+            worker poll. RFC 3339 / ISO 8601 format. Must be within roughly one
+            year of now; further-out values return
+            `400 ScheduledForTooFarInFuture`.
+          example: 2026-12-31T23:59:59Z
     ScheduleTaskResponse:
       type: object
       description: Response returned on a successful schedule call.
@@ -15785,6 +16306,18 @@ components:
       enum:
         - admin
         - operator
+    SetHealthQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/HealthQueueConfig'
     SetMaintenanceModeRequest:
       type: object
       description: Request to switch this process into or out of read-only maintenance mode.
@@ -15867,6 +16400,28 @@ components:
           description: |-
             New managed-by marker. Use `self-managed` to clear. Setting or clearing the
             marker requires instance-admin privilege.
+    SoftDeletedHealthTotals:
+      type: object
+      description: The part of the health totals of a warehouse that comes from soft-deleted tables.
+      required:
+        - tables
+        - live-data-bytes
+        - live-delete-bytes
+        - live-metadata-bytes
+      properties:
+        live-data-bytes:
+          type: integer
+          format: int64
+        live-delete-bytes:
+          type: integer
+          format: int64
+        live-metadata-bytes:
+          type: integer
+          format: int64
+        tables:
+          type: integer
+          format: int64
+          description: Number of soft-deleted Iceberg tables
     SoftDeletionQueueConfig:
       type: object
       description: Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.
@@ -16756,6 +17311,131 @@ components:
               type: string
               enum:
                 - write
+    TableHealthFinding:
+      type: object
+      description: A problem health found in a table.
+      required:
+        - kind
+        - severity
+      properties:
+        evidence:
+          description: Kind-specific data that shows the problem
+        kind:
+          type: string
+          description: Kind of the finding, e.g. `manifest-length-mismatch`
+        severity:
+          $ref: '#/components/schemas/FindingSeverity'
+        thresholds:
+          description: The values the decision used
+    TableHealthOrderBy:
+      type: string
+      description: Sort order of the table health ranking.
+      enum:
+        - severity
+    TableHealthStatus:
+      type: string
+      description: Whether the last run measured the table.
+      enum:
+        - measured
+        - not-measurable
+        - not-measured
+    TableHealthSummary:
+      type: object
+      description: One table in the health ranking of a warehouse.
+      required:
+        - table-id
+        - namespace
+        - name
+        - status
+        - finding-count
+        - measured-at
+        - measurement-version
+      properties:
+        finding-count:
+          type: integer
+          format: int32
+        live-data-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Bytes of the data files of the current snapshot. Not set if `status` is `not-measurable`.
+        live-delete-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            Bytes of the delete files of the current snapshot. Not set if `status` is
+            `not-measurable`.
+        live-metadata-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            Bytes of the metadata files of the current snapshot. Not set if `status` is
+            `not-measurable`.
+        max-severity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/FindingSeverity'
+              description: |-
+                Highest severity of the table's findings. `warning` for a table that cannot be measured.
+                Not set if the table has no findings.
+        measured-at:
+          type: string
+          format: date-time
+          description: End of the last run
+        measurement-version:
+          type: integer
+          format: int32
+          description: Version of the measurement code that produced these values
+        name:
+          type: string
+          description: Name of the table
+        namespace:
+          type: array
+          items:
+            type: string
+          description: Namespace parts of the table
+        not-measurable-reason:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/NotMeasurableReason'
+              description: Set if `status` is `not-measurable`
+        status:
+          $ref: '#/components/schemas/TableHealthStatus'
+          description: '`measured` or `not-measurable`'
+        table-id:
+          type: string
+          format: uuid
+    TableHealthTask:
+      type: object
+      description: The `table_health` task of a table.
+      properties:
+        last-outcome:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TaskStatus'
+              description: Outcome of the last finished attempt
+        scheduled-for:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the active task runs
+        status:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TaskStatus'
+              description: Status of the active task
+        task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: The active task. Not set if no task is scheduled or running.
     TableRelation:
       type: string
       enum:
@@ -18209,6 +18889,54 @@ components:
           type: string
           enum:
             - warehouse-id
+    WarehouseHealthTotalsResponse:
+      type: object
+      description: Health totals of the Iceberg tables of a warehouse. Sums include soft-deleted tables.
+      required:
+        - tables
+        - tables-measured
+        - tables-not-measurable
+        - tables-without-value
+        - live-data-bytes
+        - live-delete-bytes
+        - live-metadata-bytes
+        - soft-deleted
+        - measurement-versions
+      properties:
+        live-data-bytes:
+          type: integer
+          format: int64
+          description: Sum over the measured tables
+        live-delete-bytes:
+          type: integer
+          format: int64
+          description: Sum over the measured tables
+        live-metadata-bytes:
+          type: integer
+          format: int64
+          description: Sum over the measured tables
+        measurement-versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MeasurementVersionCount'
+          description: Measurement versions in use, with the number of tables measured by each
+        soft-deleted:
+          $ref: '#/components/schemas/SoftDeletedHealthTotals'
+          description: The part of the counts and sums that comes from soft-deleted tables
+        tables:
+          type: integer
+          format: int64
+          description: Number of Iceberg tables, soft-deleted tables included
+        tables-measured:
+          type: integer
+          format: int64
+        tables-not-measurable:
+          type: integer
+          format: int64
+        tables-without-value:
+          type: integer
+          format: int64
+          description: Tables never measured or not measurable
     WarehouseRelation:
       type: string
       enum:

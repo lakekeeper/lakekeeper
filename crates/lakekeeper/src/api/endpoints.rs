@@ -336,6 +336,9 @@ generate_endpoints! {
         SearchTabular(POST, "/management/v1/warehouse/{warehouse_id}/search-tabular"),
         ListDeletedTabulars(GET, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars"),
         UndropTabulars(POST, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop"),
+        ListTableHealth(GET, "/management/v1/warehouse/{warehouse_id}/table-health"),
+        GetWarehouseHealthTotals(GET, "/management/v1/warehouse/{warehouse_id}/table-health/totals"),
+        GetTableHealth(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health"),
         GetTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
         SetTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
         GetTableActions(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions"),
@@ -723,6 +726,8 @@ mod test {
         let exempt_config_paths = [
             "management/v1/warehouse/{warehouse_id}/task-queue/soft_deletion/config",
             "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/table_health/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/table_health/schedule",
             "management/v1/project/task-queue/task_log_cleanup/config",
         ];
         // Upstream Iceberg REST routes Lakekeeper does not serve. They are in the vendored
@@ -1123,6 +1128,9 @@ mod test {
         "management-v1-revoke-warehouse-subtree-grants",
         "management-v1-set-maintenance-mode",
         "catalog-v1-register-view",
+        "management-v1-list-table-health",
+        "management-v1-get-warehouse-health-totals",
+        "management-v1-get-table-health",
     ];
 
     #[test]
@@ -1211,12 +1219,12 @@ mod test {
     static HEALTH: ExtensionEndpoint = ExtensionEndpoint::new(
         "ext-table-health",
         Method::GET,
-        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/ext-health",
     );
     static RECHECK: ExtensionEndpoint = ExtensionEndpoint::new(
         "ext-table-health-recheck",
         Method::POST,
-        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/health",
+        "/management/v1/warehouse/{warehouse_id}/table/{table_id}/ext-health",
     );
 
     fn extension_endpoints() -> ExtensionEndpoints {
@@ -1282,7 +1290,7 @@ mod test {
         assert_eq!(extension.name(), "ext-table-health-recheck");
         assert_eq!(
             extension.http_route(),
-            "POST /management/v1/warehouse/{warehouse_id}/table/{table_id}/health"
+            "POST /management/v1/warehouse/{warehouse_id}/table/{table_id}/ext-health"
         );
     }
 

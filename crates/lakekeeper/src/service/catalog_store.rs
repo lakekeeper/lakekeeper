@@ -82,6 +82,8 @@ mod view;
 pub use view::*;
 mod table;
 pub use table::*;
+mod table_health;
+pub use table_health::*;
 mod role;
 pub use role::*;
 mod role_assignment;
@@ -967,6 +969,35 @@ where
         commits: impl IntoIterator<Item = TableCommit> + Send,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<Vec<TableInfo>, CommitTableTransactionError>;
+
+    // ---------------- Table Health ----------------
+    /// Store the result of a health run, see [`CatalogTableHealthOps::write_table_health`].
+    async fn write_table_health_impl<'a>(
+        write: &crate::service::table_health::TableHealthWrite,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<crate::service::table_health::TableHealthWriteOutcome>;
+
+    /// A page of the stored health of the Iceberg tables of a warehouse, in the given order.
+    async fn list_table_health_impl<'a>(
+        warehouse_id: WarehouseId,
+        order_by: crate::api::management::v1::health::TableHealthOrderBy,
+        include_soft_deleted: bool,
+        pagination_query: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<PaginatedMapping<TableId, crate::api::management::v1::health::TableHealthSummary>>;
+
+    /// The stored health of a table. `None` if the table has no result. `task` is not set.
+    async fn get_table_health_impl(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        state: Self::State,
+    ) -> Result<Option<crate::api::management::v1::health::GetTableHealthResponse>>;
+
+    /// Health totals of the Iceberg tables of a warehouse.
+    async fn get_warehouse_health_totals_impl(
+        warehouse_id: WarehouseId,
+        state: Self::State,
+    ) -> Result<crate::api::management::v1::health::WarehouseHealthTotalsResponse>;
 
     // ---------------- View Management ----------------
     async fn create_view_impl<'a>(

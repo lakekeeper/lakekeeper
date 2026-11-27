@@ -840,6 +840,8 @@ pub struct DynAppConfig {
     pub task_tabular_purge_workers: usize,
     /// Number of workers to spawn for cleaning task logs. (default: 2)
     pub task_log_cleanup_workers: usize,
+    /// Number of workers to spawn for measuring table health. (default: 2)
+    pub task_table_health_workers: usize,
     /// How long the task workers may finish their running tasks after a stop signal before they
     /// are stopped. Zero stops them without waiting. (default: 0)
     #[serde(
@@ -1655,6 +1657,7 @@ impl Default for DynAppConfig {
             task_soft_deletion_workers: 2,
             task_tabular_purge_workers: 2,
             task_log_cleanup_workers: 2,
+            task_table_health_workers: 2,
             task_drain_timeout: Duration::ZERO,
             task_idle_exit_after: None,
             task_max_lifetime: None,

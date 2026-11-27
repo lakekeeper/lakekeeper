@@ -72,6 +72,7 @@ use lakekeeper::{
         cache_invalidation::{BoxedCacheChangeLog, ChangeSet},
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
+        table_health::{TableHealthWrite, TableHealthWriteOutcome},
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, EnqueueOutcome, MaterializedTick, PickTaskRequest,
@@ -410,6 +411,48 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<Vec<TableInfo>, CommitTableTransactionError> {
         commit_table_transaction(warehouse_id, commits, transaction).await
+    }
+
+    // ---------------- Table Health ----------------
+    async fn write_table_health_impl<'a>(
+        write: &TableHealthWrite,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<TableHealthWriteOutcome> {
+        crate::table_health::write_table_health(write, transaction).await
+    }
+
+    async fn list_table_health_impl<'a>(
+        warehouse_id: WarehouseId,
+        order_by: lakekeeper::api::management::v1::health::TableHealthOrderBy,
+        include_soft_deleted: bool,
+        pagination_query: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<
+        PaginatedMapping<TableId, lakekeeper::api::management::v1::health::TableHealthSummary>,
+    > {
+        crate::table_health::list_table_health(
+            warehouse_id,
+            order_by,
+            include_soft_deleted,
+            pagination_query,
+            transaction,
+        )
+        .await
+    }
+
+    async fn get_table_health_impl(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        state: CatalogState,
+    ) -> Result<Option<lakekeeper::api::management::v1::health::GetTableHealthResponse>> {
+        crate::table_health::get_table_health(warehouse_id, table_id, &state.read_pool()).await
+    }
+
+    async fn get_warehouse_health_totals_impl(
+        warehouse_id: WarehouseId,
+        state: CatalogState,
+    ) -> Result<lakekeeper::api::management::v1::health::WarehouseHealthTotalsResponse> {
+        crate::table_health::get_warehouse_health_totals(warehouse_id, &state.read_pool()).await
     }
 
     // ---------------- Role Management API ----------------

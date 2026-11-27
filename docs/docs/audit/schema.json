@@ -1633,9 +1633,12 @@
       "x-audit-values": [
         "apply_grants",
         "control_tasks",
+        "get_table_health",
         "get_task_details",
+        "get_warehouse_health_totals",
         "introspect_permissions",
         "list_projects",
+        "list_table_health",
         "list_tasks",
         "revoke_subtree_grants",
         "schedule_task",

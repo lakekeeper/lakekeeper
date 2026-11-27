@@ -32,6 +32,7 @@ sqlx-postgres = ["dep:sqlx"]
 
 [dependencies]
 anyhow = { workspace = true }
+apache-avro = { workspace = true }
 async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
@@ -105,6 +106,7 @@ tower-http = { workspace = true, optional = true, features = [
 ] }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
 tracing-subscriber = { workspace = true }
+tryhard = { workspace = true }
 typed-builder = { workspace = true }
 unicase = { workspace = true }
 url = { workspace = true }
