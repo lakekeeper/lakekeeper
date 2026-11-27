@@ -448,6 +448,14 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    async fn get_table_health_impl(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        state: CatalogState,
+    ) -> Result<Option<lakekeeper::api::management::v1::health::GetTableHealthResponse>> {
+        crate::table_health::get_table_health(warehouse_id, table_id, &state.read_pool()).await
+    }
+
     // ---------------- Role Management API ----------------
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,

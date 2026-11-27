@@ -996,6 +996,13 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<PaginatedMapping<TableId, crate::api::management::v1::health::TableHealthSummary>>;
 
+    /// The stored health of a table. `None` if the table has no result. `task` is not set.
+    async fn get_table_health_impl(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        state: Self::State,
+    ) -> Result<Option<crate::api::management::v1::health::GetTableHealthResponse>>;
+
     // ---------------- View Management ----------------
     async fn create_view_impl<'a>(
         warehouse_id: WarehouseId,

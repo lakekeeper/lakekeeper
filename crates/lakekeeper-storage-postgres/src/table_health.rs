@@ -6,8 +6,8 @@ use lakekeeper::{
         Result,
         iceberg::v1::{PaginatedMapping, PaginationQuery},
         management::v1::health::{
-            FindingSeverity, NotMeasurableReason, TableHealthOrderBy, TableHealthStatus,
-            TableHealthSummary,
+            FindingSeverity, GetTableHealthResponse, NotMeasurableReason, TableHealthFinding,
+            TableHealthOrderBy, TableHealthStatus, TableHealthSummary,
         },
     },
     service::{
@@ -15,6 +15,7 @@ use lakekeeper::{
         table_health::{Severity, TableHealthWrite, TableHealthWriteOutcome},
     },
 };
+use serde::Deserialize;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -264,6 +265,75 @@ pub(crate) async fn list_table_health(
     Ok(page)
 }
 
+/// The `result` column as the detail route reads it. Keys a newer version adds are ignored.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct StoredResult {
+    not_measurable: Option<NotMeasurableReason>,
+    #[serde(default)]
+    findings: Vec<TableHealthFinding>,
+    metadata_location: Option<String>,
+    snapshot_id: Option<i64>,
+    scan_duration_ms: Option<i64>,
+    manifests_read: Option<i64>,
+}
+
+pub(crate) async fn get_table_health(
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+    connection: &sqlx::PgPool,
+) -> Result<Option<GetTableHealthResponse>> {
+    let row = sqlx::query!(
+        r#"
+        SELECT t.tabular_namespace_name AS namespace,
+               t.name,
+               h.status AS "status: DbHealthStatus",
+               h.max_severity,
+               h.finding_count,
+               h.live_data_bytes,
+               h.live_delete_bytes,
+               h.live_metadata_bytes,
+               h.measured_at,
+               h.measurement_version,
+               h.next_not_before,
+               h.result AS "result: Json<StoredResult>"
+        FROM health_iceberg_table h
+        JOIN tabular t ON t.warehouse_id = h.warehouse_id AND t.tabular_id = h.table_id
+        WHERE h.warehouse_id = $1 AND h.table_id = $2
+        "#,
+        *warehouse_id,
+        *table_id,
+    )
+    .fetch_optional(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error reading table health".to_string()))?;
+
+    Ok(row.map(|row| {
+        let Json(result) = row.result;
+        GetTableHealthResponse {
+            table_id,
+            namespace: row.namespace,
+            name: row.name,
+            status: row.status.into(),
+            not_measurable_reason: result.not_measurable,
+            max_severity: severity_from_db(row.max_severity),
+            finding_count: row.finding_count,
+            live_data_bytes: row.live_data_bytes,
+            live_delete_bytes: row.live_delete_bytes,
+            live_metadata_bytes: row.live_metadata_bytes,
+            measured_at: Some(row.measured_at),
+            measurement_version: Some(row.measurement_version),
+            findings: result.findings,
+            scan_duration_ms: result.scan_duration_ms,
+            metadata_location: result.metadata_location,
+            snapshot_id: result.snapshot_id,
+            manifests_read: result.manifests_read,
+            next_not_before: Some(row.next_not_before),
+            task: None,
+        }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{str::FromStr, time::Duration};
@@ -275,8 +345,8 @@ mod tests {
         api::{
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::health::{
-                FindingSeverity, NotMeasurableReason as ApiReason, TableHealthOrderBy,
-                TableHealthStatus, TableHealthSummary,
+                FindingSeverity, GetTableHealthResponse, NotMeasurableReason as ApiReason,
+                TableHealthFinding, TableHealthOrderBy, TableHealthStatus, TableHealthSummary,
             },
         },
         service::{
@@ -291,7 +361,7 @@ mod tests {
     use serde_json::{Value, json};
     use uuid::Uuid;
 
-    use super::{list_table_health, write_table_health};
+    use super::{get_table_health, list_table_health, write_table_health};
     use crate::{
         CatalogState,
         tabular::{
@@ -935,5 +1005,106 @@ mod tests {
             );
             assert!(!plan.contains("Sort"), "{plan}");
         }
+    }
+
+    #[lakekeeper_storage_postgres::db_test]
+    async fn the_detail_carries_the_stored_result(pool: sqlx::PgPool) {
+        let (_, warehouse_id, table) = setup(&pool).await;
+        assert_eq!(
+            get_table_health(warehouse_id, table.table_id, &pool)
+                .await
+                .unwrap(),
+            None
+        );
+        write(
+            &pool,
+            &health_write(warehouse_id, table.table_id, 1, measured_with_finding()),
+        )
+        .await;
+
+        assert_eq!(
+            get_table_health(warehouse_id, table.table_id, &pool)
+                .await
+                .unwrap(),
+            Some(GetTableHealthResponse {
+                table_id: table.table_id,
+                namespace: table.namespace.clone().inner(),
+                name: table.table_ident.name.clone(),
+                status: TableHealthStatus::Measured,
+                not_measurable_reason: None,
+                max_severity: Some(FindingSeverity::Warning),
+                finding_count: 1,
+                live_data_bytes: Some(100),
+                live_delete_bytes: Some(20),
+                live_metadata_bytes: Some(3),
+                measured_at: Some(measured_at()),
+                measurement_version: Some(1),
+                findings: vec![TableHealthFinding {
+                    kind: "manifest-length-mismatch".to_string(),
+                    severity: FindingSeverity::Warning,
+                    evidence: json!({"count": 1}),
+                    thresholds: json!({}),
+                }],
+                scan_duration_ms: Some(4100),
+                metadata_location: Some("s3://bucket/t/metadata/00001.metadata.json".to_string()),
+                snapshot_id: Some(7),
+                manifests_read: Some(2),
+                next_not_before: Some(measured_at() + chrono::TimeDelta::hours(1)),
+                task: None,
+            })
+        );
+    }
+
+    /// A row written by a newer version, with a finding kind and a result key this version
+    /// doesn't know, still loads.
+    #[lakekeeper_storage_postgres::db_test]
+    async fn a_row_with_unknown_names_loads(pool: sqlx::PgPool) {
+        let (_, warehouse_id, table) = setup(&pool).await;
+        insert(
+            &pool,
+            warehouse_id,
+            *table.table_id,
+            Row {
+                status: "measured",
+                max_severity: 3,
+                sizes: Some((7, 0, 1)),
+                result: json!({
+                    "not-measurable": null,
+                    "findings": [{
+                        "kind": "future-finding",
+                        "severity": "critical",
+                        "evidence": {"x": 1},
+                        "thresholds": {"y": 2}
+                    }],
+                    "future-key": true
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+        let detail = get_table_health(warehouse_id, table.table_id, &pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                detail.live_data_bytes,
+                detail.findings,
+                detail.max_severity,
+                detail.metadata_location
+            ),
+            (
+                Some(7),
+                vec![TableHealthFinding {
+                    kind: "future-finding".to_string(),
+                    severity: FindingSeverity::Critical,
+                    evidence: json!({"x": 1}),
+                    thresholds: json!({"y": 2}),
+                }],
+                Some(FindingSeverity::Critical),
+                None
+            )
+        );
     }
 }

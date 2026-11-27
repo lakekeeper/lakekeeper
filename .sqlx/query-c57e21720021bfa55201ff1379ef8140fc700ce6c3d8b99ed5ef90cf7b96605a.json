@@ -1,0 +1,171 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.tabular_namespace_name AS namespace,\n               t.name,\n               h.status AS \"status: DbHealthStatus\",\n               h.max_severity,\n               h.finding_count,\n               h.live_data_bytes,\n               h.live_delete_bytes,\n               h.live_metadata_bytes,\n               h.measured_at,\n               h.measurement_version,\n               h.next_not_before,\n               h.result AS \"result: Json<StoredResult>\"\n        FROM health_iceberg_table h\n        JOIN tabular t ON t.warehouse_id = h.warehouse_id AND t.tabular_id = h.table_id\n        WHERE h.warehouse_id = $1 AND h.table_id = $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_namespace_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status: DbHealthStatus",
+        "type_info": {
+          "Custom": {
+            "name": "health_status",
+            "kind": {
+              "Enum": [
+                "measured",
+                "not-measurable"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "max_severity",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "max_severity"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "finding_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "finding_count"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "live_data_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "live_data_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "live_delete_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "live_delete_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "live_metadata_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "live_metadata_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "measured_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "measured_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "measurement_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "measurement_version"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "next_not_before",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "next_not_before"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "result: Json<StoredResult>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "result"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c57e21720021bfa55201ff1379ef8140fc700ce6c3d8b99ed5ef90cf7b96605a"
+}

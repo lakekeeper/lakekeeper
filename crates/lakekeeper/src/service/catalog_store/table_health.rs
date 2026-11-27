@@ -2,7 +2,7 @@ use crate::{
     WarehouseId,
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
-        management::v1::health::{TableHealthOrderBy, TableHealthSummary},
+        management::v1::health::{GetTableHealthResponse, TableHealthOrderBy, TableHealthSummary},
     },
     service::{
         CatalogStore, TableId, Transaction,
@@ -43,6 +43,15 @@ where
             transaction,
         )
         .await
+    }
+
+    /// The stored health of a table. `None` if the table has no result. `task` is not set.
+    async fn get_table_health(
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        state: Self::State,
+    ) -> super::Result<Option<GetTableHealthResponse>> {
+        Self::get_table_health_impl(warehouse_id, table_id, state).await
     }
 }
 
