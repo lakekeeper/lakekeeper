@@ -52,8 +52,9 @@ pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone,
 
     // Built before the idempotency check so a served replay can be audited.
     let idempotency_key = request_metadata.idempotency_key().copied();
+    let request_metadata = Arc::new(request_metadata);
     let event_ctx = APIEventContext::for_generic_table(
-        Arc::new(request_metadata.clone()),
+        Arc::clone(&request_metadata),
         state.v1_state.events.clone(),
         warehouse_id,
         source.clone(),

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lakekeeper::{
     SecretBackend,
-    limes::{Authenticator, AuthenticatorEnum},
+    limes::Authenticator,
     serve::{ServeConfiguration, serve},
     service::{
         CatalogStore, SecretStore,
@@ -75,22 +75,16 @@ async fn serve_with_authn<C: CatalogStore, S: SecretStore, A: Authorizer>(
         None
     };
 
-    match authentication {
-        None => {
-            serve_inner::<C, _, _, AuthenticatorEnum>(
-                bind, secret, catalog, authz, None, stats, events,
-            )
-            .await
-        }
-        Some(BuiltInAuthenticators::Chain(authn)) => {
-            serve_inner::<C, _, _, _>(bind, secret, catalog, authz, Some(authn), stats, events)
-                .await
-        }
-        Some(BuiltInAuthenticators::Single(authn)) => {
-            serve_inner::<C, _, _, _>(bind, secret, catalog, authz, Some(authn), stats, events)
-                .await
-        }
-    }
+    serve_inner::<C, _, _, BuiltInAuthenticators>(
+        bind,
+        secret,
+        catalog,
+        authz,
+        authentication,
+        stats,
+        events,
+    )
+    .await
 }
 
 async fn serve_inner<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(

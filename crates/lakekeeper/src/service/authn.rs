@@ -16,7 +16,7 @@ use axum_extra::{
 #[cfg(feature = "router")]
 use http::HeaderMap;
 use iceberg_ext::catalog::rest::ErrorModel;
-use limes::{AuthenticatorEnum, Subject, parse_subject};
+use limes::{AuthenticatorEnum, Subject, cache::CachedAuthenticator};
 use serde::{Deserialize, Serialize};
 
 use crate::{CONFIG, api, service::ArcRole};
@@ -25,7 +25,7 @@ use crate::{
     WarehouseId, XXHashSet,
     request_metadata::RequestMetadata,
     service::{
-        ArcProjectId, ArcRoleIdent, RoleIdent,
+        ArcProjectId, ArcRoleIdent, ArcRoleProviderId, RoleIdent,
         admission::{
             AdmissionContext, AdmissionGates, AdmissionTrigger, RejectionKind, TokenClaims,
         },
@@ -33,6 +33,12 @@ use crate::{
         events::EventDispatcher,
     },
 };
+
+mod display_name_template;
+mod principal_details;
+
+use display_name_template::{DisplayNameTemplate, DisplayNameTemplateError};
+pub use principal_details::PrincipalDetails;
 
 pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_BY_ID_HEADER: &str = "x-assume-role";
@@ -74,6 +80,8 @@ pub(crate) struct AuthMiddlewareState<
     /// request before the assume-role check and before the request reaches any
     /// handler. Empty by default (admits everything).
     pub admission_gates: AdmissionGates,
+    /// What Lakekeeper needs to read the tokens of each configured OIDC provider.
+    pub token_settings: Arc<TokenSettingsByProvider>,
 }
 
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
@@ -202,6 +210,17 @@ pub struct ClaimRuleConfig {
 }
 
 impl OidcProviderConfig {
+    /// The parsed `display_name_template`. An empty template is none.
+    pub(crate) fn to_display_name_template(
+        &self,
+    ) -> Result<Option<DisplayNameTemplate>, DisplayNameTemplateError> {
+        self.display_name_template
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .map(DisplayNameTemplate::parse)
+            .transpose()
+    }
+
     /// Whether this provider rejects tokens a bare signature check would admit.
     ///
     /// The one definition, shared by startup validation and the routing check, so a third
@@ -294,10 +313,45 @@ const fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone)]
-pub enum BuiltInAuthenticators {
-    Single(AuthenticatorEnum),
-    Chain(limes::AuthenticatorChain<AuthenticatorEnum>),
+/// The authenticators Lakekeeper builds from its configuration: a chain of one or more, behind
+/// the authentication cache (`LAKEKEEPER__CACHE__AUTHENTICATION__*`).
+pub type BuiltInAuthenticators = CachedAuthenticator<limes::AuthenticatorChain<AuthenticatorEnum>>;
+
+/// How often the authentication cache removes ended entries and its statistics reach the
+/// metrics.
+const AUTHENTICATION_CACHE_REPORT_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
+/// Wraps `authenticator` in the authentication cache. While the cache is active, a task
+/// removes its ended entries, which hold the claims of tokens, and copies its statistics into
+/// the cache metrics with `cache_type="authentication"`.
+fn cached<A>(
+    authenticator: A,
+    config: &crate::config::AuthenticationCache,
+) -> CachedAuthenticator<A>
+where
+    A: limes::Authenticator + 'static,
+{
+    let cache = CachedAuthenticator::new(authenticator, config.to_limes());
+    if config.is_active() {
+        let reported = cache.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(AUTHENTICATION_CACHE_REPORT_INTERVAL);
+            loop {
+                interval.tick().await;
+                reported.remove_expired();
+                let stats = reported.stats();
+                crate::service::cache_metrics::set_cache_totals(
+                    "authentication",
+                    stats.hits,
+                    stats.misses,
+                    stats.evicted,
+                    stats.entries,
+                );
+            }
+        });
+    }
+    cache
 }
 
 /// Get the default authenticator configuration from the environment.
@@ -411,23 +465,21 @@ async fn assemble_authenticator_chain(
         all_authenticators.push(authn);
     }
 
-    match all_authenticators.len() {
-        0 => {
-            tracing::warn!("Authentication is disabled. This is not suitable for production!");
-            Ok(None)
-        }
-        1 => Ok(Some(all_authenticators.remove(0).into())),
-        _ => {
-            let mut chain_builder = limes::AuthenticatorChain::<AuthenticatorEnum>::builder();
-            for auth in all_authenticators {
-                chain_builder = chain_builder.add_authenticator(auth);
-            }
-            Ok(Some(chain_builder.build().into()))
-        }
+    if all_authenticators.is_empty() {
+        tracing::warn!("Authentication is disabled. This is not suitable for production!");
+        return Ok(None);
     }
+    let mut chain_builder = limes::AuthenticatorChain::<AuthenticatorEnum>::builder();
+    for auth in all_authenticators {
+        chain_builder = chain_builder.add_authenticator(auth);
+    }
+    Ok(Some(cached(
+        chain_builder.build(),
+        &config.cache.authentication,
+    )))
 }
 
-fn oidc_provider_configs_from_config(
+pub(crate) fn oidc_provider_configs_from_config(
     config: &crate::config::DynAppConfig,
 ) -> Vec<(String, OidcProviderConfig)> {
     let mut providers = Vec::new();
@@ -470,39 +522,25 @@ fn oidc_provider_configs_from_config(
 async fn build_oidc_authenticators(
     providers: Vec<(String, OidcProviderConfig)>,
 ) -> anyhow::Result<Vec<AuthenticatorEnum>> {
-    // Validate every provider's display-name template up front, before any network
-    // work. A malformed template is a static config bug, so a typo in any provider's
-    // template aborts startup cleanly rather than after earlier providers' JWKS have
-    // already been fetched. Malformed templates never take the "skip this provider"
-    // path below (which is only for connectivity failures) — that would silently
-    // disable an IdP over a typo.
+    // Build every provider's required-claim rules before any network work. A malformed rule
+    // is a static config bug: it aborts startup before any JWKS is fetched, and never takes
+    // the "skip this provider" path below, which is for connectivity failures only.
     let mut validated = Vec::with_capacity(providers.len());
     for (idp_id, provider) in providers {
-        let display_name_template = provider
-            .display_name_template
-            .as_deref()
-            .filter(|t| !t.is_empty())
-            .map(limes::jwks::DisplayNameTemplate::parse)
-            .transpose()
-            .map_err(|e| {
-                anyhow::anyhow!("invalid `display_name_template` for OIDC provider `{idp_id}`: {e}")
-            })?;
         let required_claims = required_claim_rules(&idp_id, &provider.required_claims)?;
-        validated.push((idp_id, provider, display_name_template, required_claims));
+        validated.push((idp_id, provider, required_claims));
     }
 
     let mut authenticators = Vec::new();
     let mut routing = Vec::new();
-    for (idp_id, provider, display_name_template, required_claims) in validated {
+    for (idp_id, provider, required_claims) in validated {
         tracing::info!(
             "Creating OIDC authenticator for {} ({})",
             idp_id,
             provider.uri
         );
 
-        match build_oidc_authenticator(&idp_id, &provider, display_name_template, required_claims)
-            .await
-        {
+        match build_oidc_authenticator(&idp_id, &provider, required_claims).await {
             Ok(authenticator) => {
                 routing.push(AuthenticatorRouting {
                     idp_id: idp_id.clone(),
@@ -605,7 +643,6 @@ fn validate_authenticator_routing(providers: &[AuthenticatorRouting]) -> anyhow:
 async fn build_oidc_authenticator(
     idp_id: &str,
     provider: &OidcProviderConfig,
-    display_name_template: Option<limes::jwks::DisplayNameTemplate>,
     required_claims: Vec<(String, limes::ClaimRule)>,
 ) -> anyhow::Result<limes::jwks::JWKSWebAuthenticator> {
     let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
@@ -651,16 +688,6 @@ async fn build_oidc_authenticator(
         );
     }
 
-    if let Some(roles_claim) = &provider.roles_claim {
-        tracing::debug!("Setting roles claim for {idp_id}: {roles_claim}");
-        authenticator = authenticator.with_role_claim(roles_claim.clone());
-    }
-
-    if let Some(template) = display_name_template {
-        tracing::debug!("Setting display name template for {idp_id}");
-        authenticator = authenticator.with_display_name_template(template);
-    }
-
     // At info, and unconditionally: an operator needs boot-time confirmation that the rules
     // they configured are active, and a count of zero is how a misspelled `REQUIRED_CLAIMS`
     // container shows up — the spelling that reaches no field is silently dropped, so the
@@ -677,10 +704,60 @@ async fn build_oidc_authenticator(
     Ok(authenticator)
 }
 
+/// What Lakekeeper needs to read the tokens of one OIDC provider.
+#[cfg(feature = "router")]
+#[derive(Debug)]
+struct TokenSettings {
+    roles_claim: Option<String>,
+    display_name_template: Option<DisplayNameTemplate>,
+    /// The provider of the roles in `roles_claim`.
+    role_provider_id: ArcRoleProviderId,
+}
+
+/// The [`TokenSettings`] of every configured OIDC provider, by `idp_id`.
+#[cfg(feature = "router")]
+#[derive(Debug)]
+pub(crate) struct TokenSettingsByProvider(HashMap<String, TokenSettings>);
+
+#[cfg(feature = "router")]
+impl TokenSettingsByProvider {
+    /// The settings of the OIDC providers `config` configures. An empty `roles_claim` reads
+    /// no roles.
+    ///
+    /// # Errors
+    /// A display-name template that does not parse. Config load refuses such a template.
+    pub(crate) fn from_config(config: &crate::config::DynAppConfig) -> anyhow::Result<Self> {
+        oidc_provider_configs_from_config(config)
+            .into_iter()
+            .map(|(idp_id, provider)| {
+                let display_name_template = provider.to_display_name_template().map_err(|e| {
+                    anyhow::anyhow!(
+                        "invalid `display_name_template` for OIDC provider `{idp_id}`: {e}"
+                    )
+                })?;
+                let settings = TokenSettings {
+                    roles_claim: provider.roles_claim.filter(|claim| !claim.is_empty()),
+                    display_name_template,
+                    role_provider_id: Arc::new(crate::service::RoleProviderId::new_unchecked(
+                        idp_id.clone(),
+                    )),
+                };
+                Ok((idp_id, settings))
+            })
+            .collect::<anyhow::Result<_>>()
+            .map(Self)
+    }
+
+    /// The settings of the OIDC provider whose id is the token's `idp_id`.
+    fn of_token(&self, authentication: &limes::Authentication) -> Option<&TokenSettings> {
+        self.0.get(authentication.subject().idp_id()?)
+    }
+}
+
 /// The response for a token the authenticator did not accept (401), or could not check: 503
-/// if the identity provider or the Kubernetes API could not be reached, 500 if this server
-/// is misconfigured. The cause is attached for server-side logging only; the body never
-/// names a rule, claim or expected value.
+/// if the identity provider or the Kubernetes API could not be reached or too many Kubernetes
+/// `TokenReview`s are running, 500 if this server is misconfigured. The cause is attached for
+/// server-side logging only; the body never names a rule, claim or expected value.
 #[cfg(feature = "router")]
 fn authentication_failed_response(cause: limes::error::Error) -> Response {
     let kind = cause.kind();
@@ -704,7 +781,6 @@ fn authentication_failed_response(cause: limes::error::Error) -> Response {
 }
 
 #[cfg(feature = "router")]
-#[allow(clippy::too_many_lines)]
 /// Use a limes [`Authenticator`] to Authenticate a request.
 ///
 /// This middleware needs to run after [`create_request_metadata_with_trace_and_project_fn`](crate::request_metadata::create_request_metadata_with_trace_and_project_fn).
@@ -731,9 +807,8 @@ pub(crate) async fn auth_middleware_fn<
         .into_response();
     };
 
-    let token = authorization.token();
-    let introspection = limes::introspect::introspect(token);
-    let authentication = match authenticator.authenticate(token, &introspection).await {
+    let token = limes::Token::new(authorization.token());
+    let authentication = match authenticator.authenticate(&token).await {
         Ok(principal) => principal,
         Err(e) => return authentication_failed_response(e),
     };
@@ -779,11 +854,17 @@ pub(crate) async fn auth_middleware_fn<
         if let Some(project_id) = warehouse_project {
             request_metadata.set_warehouse_project_id(project_id);
         }
-        if let Err(e) = apply_token_roles(&authentication, request_metadata) {
+        if let Some(engines) = matched_engines(&authentication) {
+            request_metadata.set_engines(engines);
+        }
+        if let Err(e) = record_authentication(
+            &state.token_settings,
+            authentication,
+            actor.clone(),
+            request_metadata,
+        ) {
             return e.into_response();
         }
-
-        request_metadata.set_authentication(actor.clone(), authentication.clone());
 
         // Instance-admin membership is only ever consulted for an authenticated
         // principal. Assumed-roles (`Actor::Role`) and anonymous callers never
@@ -797,30 +878,6 @@ pub(crate) async fn auth_middleware_fn<
                 .await
         {
             request_metadata.set_instance_admin(true);
-        }
-
-        // Identify trusted engines: each engine configures, per IdP, the conditions a token
-        // must meet to act as that engine. Several engines may match one token.
-        if let Some(token_idp) = authentication.subject().idp_id() {
-            let matching_engines: Vec<_> = CONFIG
-                .trusted_engines
-                .values()
-                .filter(|engine| {
-                    engine
-                        .identities()
-                        .get(token_idp)
-                        .is_some_and(|identity| identity.matches(&authentication))
-                })
-                .cloned()
-                .collect();
-
-            if !matching_engines.is_empty() {
-                tracing::debug!(
-                    count = matching_engines.len(),
-                    "Identified trusted engine(s) from token identity"
-                );
-                request_metadata.set_engines(crate::config::MatchedEngines::new(matching_engines));
-            }
         }
 
         if let Some(refusal) = admit_then_check_actor(
@@ -838,6 +895,53 @@ pub(crate) async fn auth_middleware_fn<
     }
 
     next.run(request).await
+}
+
+/// The trusted engines the token acts as. Each engine configures, per identity provider, the
+/// conditions a token must meet to act as that engine. Several engines may match one token.
+#[cfg(feature = "router")]
+fn matched_engines(
+    authentication: &limes::Authentication,
+) -> Option<crate::config::MatchedEngines> {
+    let token_idp = authentication.subject().idp_id()?;
+    let matching_engines: Vec<_> = CONFIG
+        .trusted_engines
+        .values()
+        .filter(|engine| {
+            engine
+                .identities()
+                .get(token_idp)
+                .is_some_and(|identity| identity.matches(authentication))
+        })
+        .cloned()
+        .collect();
+    if matching_engines.is_empty() {
+        return None;
+    }
+    tracing::debug!(
+        count = matching_engines.len(),
+        "Identified trusted engine(s) from token identity"
+    );
+    Some(crate::config::MatchedEngines::new(matching_engines))
+}
+
+/// Records the verified token on the request: its roles, the principal's details and the
+/// authentication itself.
+#[cfg(feature = "router")]
+fn record_authentication(
+    token_settings: &TokenSettingsByProvider,
+    authentication: limes::Authentication,
+    actor: Actor,
+    request_metadata: &mut RequestMetadata,
+) -> Result<(), ErrorModel> {
+    let settings = token_settings.of_token(&authentication);
+    apply_token_roles(&authentication, settings, request_metadata)?;
+    let principal_details = PrincipalDetails::of(
+        &authentication,
+        settings.and_then(|s| s.display_name_template.as_ref()),
+    );
+    request_metadata.set_authentication(actor, authentication, principal_details);
+    Ok(())
 }
 
 /// Admission gates, then the assume-role check. `Some` is the refusal the request gets.
@@ -1079,9 +1183,10 @@ where
 #[cfg(feature = "router")]
 fn apply_token_roles(
     authentication: &limes::Authentication,
+    settings: Option<&TokenSettings>,
     request_metadata: &mut RequestMetadata,
 ) -> Result<(), ErrorModel> {
-    if let Some(token_roles) = extract_token_roles(authentication)? {
+    if let Some(token_roles) = extract_token_roles(authentication, settings)? {
         request_metadata.set_token_roles(token_roles);
     }
     Ok(())
@@ -1092,15 +1197,20 @@ fn apply_token_roles(
 #[cfg(feature = "router")]
 fn extract_token_roles(
     authentication: &limes::Authentication,
+    settings: Option<&TokenSettings>,
 ) -> Result<Option<XXHashSet<ArcRoleIdent>>, ErrorModel> {
-    use crate::service::{RoleProviderId, RoleSourceId};
+    use crate::service::RoleSourceId;
 
-    let Some(roles) = authentication.roles() else {
+    let Some((settings, roles_claim)) = settings.and_then(|s| Some((s, s.roles_claim.as_deref()?)))
+    else {
+        return Ok(None);
+    };
+    let Some(roles) = principal_details::token_roles(authentication, roles_claim) else {
         return Ok(None);
     };
 
     let role_idents = roles
-        .iter()
+        .into_iter()
         .map(|source_id| {
             let source_id = RoleSourceId::try_new(source_id).map_err(|e| {
                 ErrorModel::bad_request(
@@ -1110,16 +1220,10 @@ fn extract_token_roles(
                 )
                 .append_detail("Could not build Request Metadata")
             })?;
-            let provider_id = authentication.subject().idp_id().ok_or_else(|| {
-                ErrorModel::internal(
-                    "Encountered Authenticator without provider / idp_id",
-                    "AuthenticatorMissingProviderId",
-                    None,
-                )
-            })?;
-            let provider_id = RoleProviderId::new_unchecked(provider_id.clone());
-
-            Ok(Arc::new(RoleIdent::new(provider_id, source_id)))
+            Ok(Arc::new(RoleIdent::new(
+                Arc::clone(&settings.role_provider_id),
+                source_id,
+            )))
         })
         .collect::<Result<XXHashSet<_>, ErrorModel>>()?;
 
@@ -1128,8 +1232,8 @@ fn extract_token_roles(
 
 impl std::fmt::Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `format_subject` with `IDP_SEPARATOR`, written without building a `String` first.
-        let idp_id = self.0.idp_id().map_or("", String::as_str);
+        // `<idp_id>~<sub>`; a subject without an IdP id displays as `~<sub>`.
+        let idp_id = self.0.idp_id().unwrap_or("");
         let sub = self.0.subject_in_idp();
         write!(f, "{idp_id}{IDP_SEPARATOR}{sub}")
     }
@@ -1154,7 +1258,7 @@ impl UserId {
 
     #[must_use]
     pub fn idp_id(&self) -> Option<&str> {
-        self.0.idp_id().map(std::string::String::as_str)
+        self.0.idp_id()
     }
 
     #[must_use]
@@ -1239,14 +1343,14 @@ impl<'a> TryFrom<&'a str> for UserId {
     type Error = ErrorModel;
 
     fn try_from(s: &'a str) -> Result<Self, Self::Error> {
-        let subject = parse_subject(s, Some(IDP_SEPARATOR)).map_err(|_e| {
+        let (idp_id, sub) = s.split_once(IDP_SEPARATOR).ok_or_else(|| {
             ErrorModel::bad_request(
                 format!("Invalid user id: `{s}`. Expected format: `<idp_id>~<user-id>`"),
                 "InvalidUserId",
                 None,
             )
         })?;
-        UserId::try_new(subject)
+        UserId::try_new(Subject::new(Some(idp_id.to_string()), sub.to_string()))
     }
 }
 
@@ -1280,18 +1384,6 @@ impl Serialize for UserId {
         S: serde::Serializer,
     {
         serializer.collect_str(self)
-    }
-}
-
-impl From<AuthenticatorEnum> for BuiltInAuthenticators {
-    fn from(authenticator: AuthenticatorEnum) -> Self {
-        Self::Single(authenticator)
-    }
-}
-
-impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticators {
-    fn from(authenticator: limes::AuthenticatorChain<AuthenticatorEnum>) -> Self {
-        Self::Chain(authenticator)
     }
 }
 
@@ -1435,11 +1527,7 @@ mod tests {
         chain: &BuiltInAuthenticators,
         token: &str,
     ) -> Result<limes::Authentication, limes::error::Error> {
-        let introspection = limes::introspect::introspect(token);
-        match chain {
-            BuiltInAuthenticators::Single(auth) => auth.authenticate(token, &introspection).await,
-            BuiltInAuthenticators::Chain(chain) => chain.authenticate(token, &introspection).await,
-        }
+        chain.authenticate(&limes::Token::new(token)).await
     }
 
     /// `to_rule` itself refuses the rules startup refuses, so a configuration that reuses
@@ -2087,17 +2175,19 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn build_oidc_authenticators_rejects_malformed_display_name_template() {
-        // A malformed template is a static config error: it must fail before any
-        // network work and regardless of `require_connected_on_startup`. Parsing
-        // happens in a pre-pass before the build loop, so this errors without touching the
-        // network — keeping the test hermetic.
-        let providers = vec![provider_with_template(Some("Service Account {email"))];
-        let err = build_oidc_authenticators(providers).await.unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("display_name_template"), "message: {msg}");
-        assert!(msg.contains("acme"), "message names the provider: {msg}");
+    /// Config load refuses a malformed template; the settings report it too, naming the
+    /// provider.
+    #[test]
+    fn token_settings_reject_a_malformed_display_name_template() {
+        let (idp_id, provider) = provider_with_template(Some("Service Account {email"));
+        let mut config = DynAppConfig::default();
+        config.openid_providers.insert(idp_id, provider);
+        let err = TokenSettingsByProvider::from_config(&config).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid `display_name_template` for OIDC provider `acme`: unmatched `{` in \
+             display-name template (write a literal brace as `{{`)"
+        );
     }
 
     #[tokio::test]
@@ -2134,18 +2224,11 @@ mod tests {
                 .expect("build authenticators")
                 .expect("authn enabled");
 
-        let idp_ids = match authenticator {
-            BuiltInAuthenticators::Single(auth) => auth
-                .idp_ids()
-                .into_iter()
-                .map(|id| id.map(str::to_string))
-                .collect::<Vec<_>>(),
-            BuiltInAuthenticators::Chain(chain) => chain
-                .idp_ids()
-                .into_iter()
-                .map(|id| id.map(str::to_string))
-                .collect::<Vec<_>>(),
-        };
+        let idp_ids = authenticator
+            .idp_ids()
+            .into_iter()
+            .map(|id| id.map(str::to_string))
+            .collect::<Vec<_>>();
         assert_eq!(
             idp_ids,
             vec![
@@ -2183,18 +2266,11 @@ mod tests {
             .expect("build authenticators")
             .expect("authn enabled");
 
-        let idp_ids = match authenticator {
-            BuiltInAuthenticators::Single(auth) => auth
-                .idp_ids()
-                .into_iter()
-                .map(|id| id.map(str::to_string))
-                .collect::<Vec<_>>(),
-            BuiltInAuthenticators::Chain(chain) => chain
-                .idp_ids()
-                .into_iter()
-                .map(|id| id.map(str::to_string))
-                .collect::<Vec<_>>(),
-        };
+        let idp_ids = authenticator
+            .idp_ids()
+            .into_iter()
+            .map(|id| id.map(str::to_string))
+            .collect::<Vec<_>>();
         assert_eq!(idp_ids, vec![Some(OIDC_IDP_ID.to_string())]);
 
         server.abort();
@@ -2300,18 +2376,11 @@ mod tests {
                 .expect("build authenticators")
                 .expect("authn enabled");
 
-        let idp_ids = match authenticator {
-            BuiltInAuthenticators::Single(auth) => auth
-                .idp_ids()
-                .into_iter()
-                .map(|id| id.map(str::to_string))
-                .collect::<Vec<_>>(),
-            BuiltInAuthenticators::Chain(chain) => chain
-                .idp_ids()
-                .into_iter()
-                .map(|id| id.map(str::to_string))
-                .collect::<Vec<_>>(),
-        };
+        let idp_ids = authenticator
+            .idp_ids()
+            .into_iter()
+            .map(|id| id.map(str::to_string))
+            .collect::<Vec<_>>();
         assert_eq!(
             idp_ids,
             vec![Some("ekscluster".to_string()), Some(K8S_IDP_ID.to_string()),],
@@ -2322,13 +2391,18 @@ mod tests {
     }
 
     #[test]
-    fn user_id_displays_as_format_subject() {
-        for subject in [
-            Subject::new(Some("oidc".to_string()), "123".to_string()),
-            Subject::new(Some("kubernetes".to_string()), "a~b".to_string()),
-            Subject::new(None, "123".to_string()),
+    fn user_id_displays_as_idp_id_separator_subject() {
+        for (subject, expected) in [
+            (
+                Subject::new(Some("oidc".to_string()), "123".to_string()),
+                "oidc~123",
+            ),
+            (
+                Subject::new(Some("kubernetes".to_string()), "a~b".to_string()),
+                "kubernetes~a~b",
+            ),
+            (Subject::new(None, "123".to_string()), "~123"),
         ] {
-            let expected = limes::format_subject(&subject, Some(IDP_SEPARATOR));
             assert_eq!(UserId(subject).to_string(), expected);
         }
     }
@@ -2659,6 +2733,8 @@ mod tests {
     }
 
     mod token_roles {
+        use std::{collections::HashMap, sync::Arc};
+
         use axum::{
             Router,
             body::Body,
@@ -2670,22 +2746,38 @@ mod tests {
         };
         use tower::ServiceExt as _;
 
-        use super::super::{apply_token_roles, extract_token_roles};
-        use crate::{request_metadata::RequestMetadata, service::UserId};
+        use super::super::{
+            Actor, OIDC_IDP_ID, OidcProviderConfig, TokenSettings, TokenSettingsByProvider,
+            apply_token_roles, extract_token_roles, record_authentication,
+        };
+        use crate::{
+            config::DynAppConfig,
+            request_metadata::RequestMetadata,
+            service::{RoleProviderId, UserId},
+        };
 
-        fn authentication(idp_id: Option<&str>, roles: Option<&[&str]>) -> limes::Authentication {
+        /// A token of the `oidc` provider with `roles` in its `roles` claim.
+        fn authentication(roles: Option<&[&str]>) -> limes::Authentication {
+            let claims = roles.map_or_else(
+                || serde_json::json!({}),
+                |roles| serde_json::json!({ "roles": roles }),
+            );
             limes::Authentication::builder()
-                .token_header(None)
-                .claims(serde_json::json!({}))
                 .subject(limes::Subject::new(
-                    idp_id.map(ToString::to_string),
+                    Some(OIDC_IDP_ID.to_string()),
                     "test-user-one".to_string(),
                 ))
-                .name(None)
-                .email(None)
-                .principal_type(None)
-                .roles(roles.map(|roles| roles.iter().map(ToString::to_string).collect()))
+                .identity(limes::VerifiedClaims::try_from(claims).unwrap())
                 .build()
+        }
+
+        /// The settings of the `oidc` provider: its roles claim is `roles`.
+        fn oidc_settings() -> TokenSettings {
+            TokenSettings {
+                roles_claim: Some("roles".to_string()),
+                display_name_template: None,
+                role_provider_id: Arc::new(RoleProviderId::new_unchecked(OIDC_IDP_ID)),
+            }
         }
 
         /// Runs one request through a router shaped like the real one: the metadata
@@ -2697,7 +2789,8 @@ mod tests {
                 let authentication = authentication.clone();
                 async move {
                     if let Some(metadata) = request.extensions_mut().get_mut::<RequestMetadata>()
-                        && let Err(e) = apply_token_roles(&authentication, metadata)
+                        && let Err(e) =
+                            apply_token_roles(&authentication, Some(&oidc_settings()), metadata)
                     {
                         return e.into_response();
                     }
@@ -2751,35 +2844,128 @@ mod tests {
         /// process-global, so a run without one is not possible in-process.
         #[tokio::test]
         async fn a_header_less_request_with_token_roles_reaches_the_handler() {
-            let (status, body) = respond(authentication(
-                Some("oidc"),
-                Some(&["test-readers", "test-writers"]),
-            ))
-            .await;
+            let (status, body) =
+                respond(authentication(Some(&["test-readers", "test-writers"]))).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body, "none|oidc~test-readers,oidc~test-writers");
         }
 
         #[tokio::test]
         async fn a_token_without_roles_sets_none() {
-            let (status, body) = respond(authentication(Some("oidc"), None)).await;
+            let (status, body) = respond(authentication(None)).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body, "none|none");
         }
 
         #[tokio::test]
         async fn an_invalid_role_in_the_token_is_a_bad_request() {
-            let (status, body) =
-                respond(authentication(Some("oidc"), Some(&["test-readers", ""]))).await;
+            let (status, body) = respond(authentication(Some(&["test-readers", ""]))).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
             assert!(body.contains("RoleSourceIdError"), "{body}");
         }
 
+        /// The settings of the provider that issued the token apply, and an empty
+        /// `roles_claim` reads no roles.
         #[test]
-        fn a_token_without_an_idp_id_is_an_internal_error() {
-            let err =
-                extract_token_roles(&authentication(None, Some(&["test-readers"]))).unwrap_err();
-            assert_eq!(err.r#type, "AuthenticatorMissingProviderId");
+        fn roles_come_from_the_issuing_providers_roles_claim() {
+            let mut config = DynAppConfig::default();
+            config.openid_provider_uri =
+                Some(url::Url::parse("https://issuer.example.com").unwrap());
+            config.openid_roles_claim = Some("roles".to_string());
+            let token = authentication(Some(&["test-readers"]));
+
+            let settings = TokenSettingsByProvider::from_config(&config).unwrap();
+            let roles = extract_token_roles(&token, settings.of_token(&token))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                roles.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                ["oidc~test-readers"]
+            );
+
+            config.openid_roles_claim = Some(String::new());
+            let settings = TokenSettingsByProvider::from_config(&config).unwrap();
+            assert_eq!(
+                extract_token_roles(&token, settings.of_token(&token)).unwrap(),
+                None
+            );
+        }
+
+        /// With several providers, a token gets the roles and the display name of the
+        /// provider that issued it, and a token of an identity provider without OIDC
+        /// settings gets neither.
+        #[test]
+        fn each_token_gets_the_roles_and_name_of_its_own_provider() {
+            fn provider(roles_claim: &str, display_name_template: &str) -> OidcProviderConfig {
+                OidcProviderConfig {
+                    uri: url::Url::parse("https://issuer.example.com").unwrap(),
+                    audience: None,
+                    additional_issuers: None,
+                    scope: None,
+                    subject_claims: None,
+                    roles_claim: Some(roles_claim.to_string()),
+                    display_name_template: Some(display_name_template.to_string()),
+                    require_connected_on_startup: true,
+                    required_claims: HashMap::new(),
+                }
+            }
+
+            let mut config = DynAppConfig::default();
+            config
+                .openid_providers
+                .insert("test-a".to_string(), provider("groups", "A {team}"));
+            config
+                .openid_providers
+                .insert("test-b".to_string(), provider("realm_roles", "B {team}"));
+            let settings = TokenSettingsByProvider::from_config(&config).unwrap();
+
+            for (idp_id, expected_roles, expected_name) in [
+                (
+                    "test-a",
+                    Some(vec!["test-a~test-group"]),
+                    Some("A test-team"),
+                ),
+                (
+                    "test-b",
+                    Some(vec!["test-b~test-realm-role"]),
+                    Some("B test-team"),
+                ),
+                ("kubernetes", None, None),
+            ] {
+                let user_id = UserId::new_unchecked(idp_id, "test-user-one");
+                let token = limes::Authentication::builder()
+                    .subject(limes::Subject::new(
+                        Some(idp_id.to_string()),
+                        "test-user-one".to_string(),
+                    ))
+                    .identity(
+                        limes::VerifiedClaims::try_from(serde_json::json!({
+                            "team": "test-team",
+                            "groups": ["test-group"],
+                            "realm_roles": ["test-realm-role"],
+                        }))
+                        .unwrap(),
+                    )
+                    .build();
+                let mut metadata = RequestMetadata::test_user(user_id.clone());
+
+                record_authentication(&settings, token, Actor::Principal(user_id), &mut metadata)
+                    .unwrap();
+
+                let roles = metadata
+                    .token_roles()
+                    .map(|roles| roles.iter().map(ToString::to_string).collect::<Vec<_>>());
+                assert_eq!(
+                    roles,
+                    expected_roles.map(|r| r.into_iter().map(String::from).collect()),
+                    "{idp_id}"
+                );
+                assert_eq!(
+                    metadata.principal_details().name(),
+                    expected_name,
+                    "{idp_id}"
+                );
+            }
         }
     }
 

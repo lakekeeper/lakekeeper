@@ -412,14 +412,14 @@ impl<'a> AdmissionContext<'a> {
 /// gate's caches, logs or records.
 #[derive(Clone, Copy, Default)]
 pub struct TokenClaims<'a> {
-    claims: Option<&'a serde_json::Value>,
+    authentication: Option<&'a limes::Authentication>,
 }
 
 // Claim values stay out of every rendering of the context.
 impl std::fmt::Debug for TokenClaims<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokenClaims")
-            .field("present", &self.claims.is_some())
+            .field("present", &self.authentication.is_some())
             .finish()
     }
 }
@@ -429,9 +429,7 @@ impl<'a> TokenClaims<'a> {
     #[must_use]
     pub fn from_request(metadata: &'a RequestMetadata) -> Self {
         Self {
-            claims: metadata
-                .authentication()
-                .map(limes::Authentication::all_claims),
+            authentication: metadata.authentication(),
         }
     }
 
@@ -440,7 +438,8 @@ impl<'a> TokenClaims<'a> {
     /// Without a token no rule holds, not even one that asks for a claim to be absent.
     #[must_use]
     pub fn satisfy(&self, rule: &limes::ClaimRule) -> bool {
-        self.claims.is_some_and(|claims| rule.matches(claims))
+        self.authentication
+            .is_some_and(|authentication| authentication.satisfies(rule))
     }
 }
 

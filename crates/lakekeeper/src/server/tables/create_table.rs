@@ -240,8 +240,9 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         ),
     };
 
+    let request_metadata = Arc::new(request_metadata);
     let event_ctx = APIEventContext::for_namespace(
-        Arc::new(request_metadata.clone()),
+        Arc::clone(&request_metadata),
         state.v1_state.events,
         warehouse_id,
         provided_ns.clone(),

@@ -4403,17 +4403,21 @@ dependencies = [
 
 [[package]]
 name = "limes"
-version = "0.7.0"
-source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=7f85fe865f8bb6f6ad9e1d651277015638308c02#7f85fe865f8bb6f6ad9e1d651277015638308c02"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cc95588ffd347f6cc821f94c377abd8b0e6c39c63959c2928d4da3d30a6629c"
 dependencies = [
+ "aws-lc-rs",
  "axum",
  "axum-extra",
+ "base64 0.23.1",
  "bytes",
  "http 1.5.0",
  "http-body-util",
  "jsonwebtoken",
  "k8s-openapi",
  "kube",
+ "quick_cache",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -5583,6 +5587,16 @@ checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
  "serde",
+]
+
+[[package]]
+name = "quick_cache"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "403c1a912fec895cafb223201e368234842acb9220aaf08ab042ae89ba5f135c"
+dependencies = [
+ "equivalent",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]

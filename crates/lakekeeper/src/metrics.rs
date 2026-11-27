@@ -5,7 +5,9 @@ use axum::response::IntoResponse;
 use axum_prometheus::{
     AXUM_HTTP_REQUESTS_DURATION_SECONDS, EndpointLabel, PREFIXED_HTTP_REQUESTS_DURATION_SECONDS,
     PrometheusMetricLayer, PrometheusMetricLayerBuilder, metrics,
-    metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle},
+    metrics_exporter_prometheus::{
+        Matcher, PrometheusBuilder, PrometheusHandle, PrometheusRecorder,
+    },
     utils,
 };
 
@@ -142,6 +144,24 @@ pub fn get_axum_layer_and_install_recorder(
 ) -> anyhow::Result<(PrometheusMetricLayer<'static>, MetricsServer)> {
     let listener = std::net::TcpListener::bind((CONFIG.bind_ip, metrics_port))?;
     listener.set_nonblocking(true)?;
+    let recorder = build_recorder()?;
+    let handle = recorder.handle();
+    metrics::set_global_recorder(recorder)?;
+
+    Ok((
+        build_metric_layer(handle.clone()),
+        MetricsServer {
+            handle,
+            listener,
+            port: metrics_port,
+        },
+    ))
+}
+
+/// The Prometheus recorder of the server, with the descriptions of the shared cache metrics.
+/// The authentication cache reports from startup, which can be before this recorder exists,
+/// so the one-time registration of those descriptions may have reached no recorder.
+fn build_recorder() -> anyhow::Result<PrometheusRecorder> {
     let recorder = PrometheusBuilder::new()
         .set_buckets_for_metric(
             Matcher::Full(
@@ -162,17 +182,8 @@ pub fn get_axum_layer_and_install_recorder(
             utils::SECONDS_DURATION_BUCKETS,
         )?
         .build_recorder();
-    let handle = recorder.handle();
-    metrics::set_global_recorder(recorder)?;
-
-    Ok((
-        build_metric_layer(handle.clone()),
-        MetricsServer {
-            handle,
-            listener,
-            port: metrics_port,
-        },
-    ))
+    metrics::with_local_recorder(&recorder, crate::service::cache_metrics::describe_metrics);
+    Ok(recorder)
 }
 
 #[cfg(test)]
@@ -195,6 +206,36 @@ mod tests {
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// The cache metrics keep their help text when a cache reports before the server's
+    /// recorder exists.
+    #[test]
+    fn cache_metrics_reported_before_the_recorder_keep_their_help_text() {
+        // A report without a recorder spends the one-time descriptions.
+        let () = &*crate::service::cache_metrics::METRICS_INITIALIZED;
+
+        let recorder = build_recorder().unwrap();
+        metrics::with_local_recorder(&recorder, || {
+            crate::service::cache_metrics::set_cache_totals("authentication", 1, 2, 0, 1);
+        });
+
+        let rendered = recorder.handle().render();
+        let mut help = rendered
+            .lines()
+            .filter(|line| line.starts_with("# HELP"))
+            .collect::<Vec<_>>();
+        help.sort_unstable();
+        assert_eq!(
+            help,
+            [
+                "# HELP lakekeeper_cache_evictions_total Total number of entries removed from the cache to make room while they were still valid",
+                "# HELP lakekeeper_cache_hits_total Total number of cache hits",
+                "# HELP lakekeeper_cache_misses_total Total number of cache misses",
+                "# HELP lakekeeper_cache_size Current number of entries in the cache",
+            ],
+            "{rendered}"
+        );
     }
 
     #[tokio::test]

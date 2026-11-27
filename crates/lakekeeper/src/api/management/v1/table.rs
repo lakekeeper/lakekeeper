@@ -77,7 +77,7 @@ where
         let authorizer = state.v1_state.authz;
 
         let event_ctx = APIEventContext::for_table(
-            Arc::new(request_metadata.clone()),
+            Arc::new(request_metadata),
             state.v1_state.events.clone(),
             warehouse_id,
             table_id,

@@ -530,8 +530,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUDIT CONTEXT -------------------
         // Built before the idempotency check so a served replay can be audited.
         let idempotency_key = request_metadata.idempotency_key().copied();
+        let request_metadata = Arc::new(request_metadata);
         let event_ctx = APIEventContext::for_namespace(
-            Arc::new(request_metadata.clone()),
+            Arc::clone(&request_metadata),
             state.v1_state.events,
             warehouse_id,
             parameters.namespace.clone(),

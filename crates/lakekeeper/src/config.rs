@@ -23,7 +23,10 @@ use crate::{
     WarehouseId,
     service::{
         ArcProjectId, ProjectId, UserId,
-        authn::{ClaimRuleConfig, K8S_IDP_ID, OIDC_IDP_ID, OidcProviderConfig},
+        authn::{
+            ClaimRuleConfig, K8S_IDP_ID, OIDC_IDP_ID, OidcProviderConfig,
+            oidc_provider_configs_from_config,
+        },
     },
 };
 
@@ -85,6 +88,7 @@ pub(crate) fn get_config() -> DynAppConfig {
 
     validate_openid_provider_ids(&config);
     validate_required_claims(&config);
+    validate_display_name_templates(&config);
     validate_task_drain(&config);
 
     if !config.openid_providers.is_empty() && config.openid_provider_uri.is_none() {
@@ -129,6 +133,7 @@ pub(crate) fn get_config() -> DynAppConfig {
 
     validate_cache_ttls(&mut config);
     validate_cache_invalidation(&mut config.cache.invalidation);
+    validate_authentication_cache(&mut config.cache.authentication);
     warn_deprecated_cache_options(&config);
 
     config
@@ -150,6 +155,20 @@ fn validate_cache_invalidation(config: &mut CacheInvalidation) {
     if config.reevict_grace != grace {
         tracing::warn!(
             "LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE ({grace:?}) is above 60 s; using 60 s"
+        );
+    }
+}
+
+/// The time to live is kept at most 300 s.
+fn validate_authentication_cache(config: &mut AuthenticationCache) {
+    let time_to_live = config.time_to_live_secs;
+    config.time_to_live_secs = time_to_live.min(AuthenticationCache::MAX_TIME_TO_LIVE_SECS);
+    if config.time_to_live_secs != time_to_live {
+        tracing::warn!(
+            "LAKEKEEPER__CACHE__AUTHENTICATION__TIME_TO_LIVE_SECS ({time_to_live}) is above {}; \
+             using {}",
+            AuthenticationCache::MAX_TIME_TO_LIVE_SECS,
+            AuthenticationCache::MAX_TIME_TO_LIVE_SECS,
         );
     }
 }
@@ -333,6 +352,15 @@ fn validate_required_claims(config: &DynAppConfig) {
             if let Err(e) = rule.to_rule() {
                 panic!("Invalid required claim rule '{name}' for OIDC provider '{idp_id}': {e}");
             }
+        }
+    }
+}
+
+/// Refuses a display-name template that can never render, so no provider names users with it.
+fn validate_display_name_templates(config: &DynAppConfig) {
+    for (idp_id, provider) in oidc_provider_configs_from_config(config) {
+        if let Err(e) = provider.to_display_name_template() {
+            panic!("Invalid `display_name_template` for OIDC provider '{idp_id}': {e}");
         }
     }
 }
@@ -1414,6 +1442,8 @@ pub(crate) struct Cache {
     pub(crate) role_ancestors: RoleAncestorsCache,
     /// User cache: `UserId → the user's email`, for audit email enrichment.
     pub(crate) user: UserCache,
+    /// Authentication cache: token → the identity its verification returned.
+    pub(crate) authentication: AuthenticationCache,
     /// Eviction of entries that another Lakekeeper instance changed.
     pub(crate) invalidation: CacheInvalidation,
 }
@@ -1544,6 +1574,54 @@ impl std::default::Default for UserCache {
             capacity: 10_000,
             time_to_live_secs: 600,
         }
+    }
+}
+
+/// Cache of successful authentications: a token verified less than `time_to_live_secs` ago is
+/// not verified again. Each instance keeps its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct AuthenticationCache {
+    pub(crate) enabled: bool,
+    /// How long one verification is reused, in seconds, at most 300. Defaults to 30 seconds.
+    pub(crate) time_to_live_secs: u64,
+    /// The memory the cache may hold, estimated, in bytes. Defaults to 64 mebibytes.
+    pub(crate) memory_limit_bytes: u64,
+}
+
+impl std::default::Default for AuthenticationCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            time_to_live_secs: 30,
+            memory_limit_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+impl AuthenticationCache {
+    /// The longest `time_to_live_secs`: a deleted Kubernetes service account or pod keeps
+    /// working this long on each instance.
+    const MAX_TIME_TO_LIVE_SECS: u64 = 300;
+
+    /// Whether the cache keeps verifications: it is enabled, and neither its time to live nor
+    /// its memory limit is zero.
+    pub(crate) fn is_active(&self) -> bool {
+        self.enabled && self.time_to_live_secs > 0 && self.memory_limit_bytes > 0
+    }
+
+    /// The configuration of limes' cache. An inactive cache has a time to live of zero, which
+    /// verifies every request.
+    pub(crate) fn to_limes(&self) -> limes::cache::CacheConfig {
+        let time_to_live = if self.is_active() {
+            Duration::from_secs(self.time_to_live_secs)
+        } else {
+            Duration::ZERO
+        };
+        limes::cache::CacheConfig::builder()
+            .time_to_live(time_to_live)
+            .max_bytes(self.memory_limit_bytes)
+            .build()
     }
 }
 
@@ -2459,6 +2537,73 @@ mod test {
     }
 
     #[test]
+    fn test_authentication_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert_eq!(config.cache.authentication, AuthenticationCache::default());
+            let limes = config.cache.authentication.to_limes();
+            assert_eq!(
+                format!("{limes:?}"),
+                "CacheConfig { time_to_live: 30s, max_bytes: 67108864 }"
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__AUTHENTICATION__ENABLED", "false");
+            let config = get_config();
+            let limes = config.cache.authentication.to_limes();
+            assert_eq!(
+                format!("{limes:?}"),
+                "CacheConfig { time_to_live: 0ns, max_bytes: 67108864 }"
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__AUTHENTICATION__TIME_TO_LIVE_SECS",
+                "3600",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__AUTHENTICATION__MEMORY_LIMIT_BYTES",
+                "16777216",
+            );
+            let config = get_config();
+            assert_eq!(
+                config.cache.authentication,
+                AuthenticationCache {
+                    enabled: true,
+                    time_to_live_secs: 300,
+                    memory_limit_bytes: 16 * 1024 * 1024,
+                }
+            );
+            Ok(())
+        });
+
+        // A time to live or a memory limit of zero turns the cache off.
+        for (key, expected) in [
+            (
+                "LAKEKEEPER_TEST__CACHE__AUTHENTICATION__TIME_TO_LIVE_SECS",
+                "CacheConfig { time_to_live: 0ns, max_bytes: 67108864 }",
+            ),
+            (
+                "LAKEKEEPER_TEST__CACHE__AUTHENTICATION__MEMORY_LIMIT_BYTES",
+                "CacheConfig { time_to_live: 0ns, max_bytes: 0 }",
+            ),
+        ] {
+            figment::Jail::expect_with(|jail| {
+                jail.set_env(key, "0");
+                let config = get_config();
+                assert!(!config.cache.authentication.is_active());
+                let limes = config.cache.authentication.to_limes();
+                assert_eq!(format!("{limes:?}"), expected);
+                Ok(())
+            });
+        }
+    }
+
+    #[test]
     fn test_stc_cache() {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
@@ -2797,6 +2942,34 @@ mod test {
             jail.set_env(format!("{X}__URI"), "https://idp.example.com");
             jail.set_env(format!("{X}__SCOPE"), "catalog");
             jail.set_env(format!("{X}__REQUIRE_CONNECTED_ON_STARTUP"), "false");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid `display_name_template` for OIDC provider 'x'")]
+    fn test_malformed_display_name_template_is_refused() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(format!("{X}__URI"), "https://idp.example.com");
+            jail.set_env(format!("{X}__DISPLAY_NAME_TEMPLATE"), "Team {Alpha");
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid `display_name_template` for OIDC provider 'oidc'")]
+    fn test_malformed_legacy_display_name_template_is_refused() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDER_URI",
+                "https://idp.example.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_DISPLAY_NAME_TEMPLATE",
+                "Team {Alpha",
+            );
             let _config = get_config();
             Ok(())
         });
@@ -3721,15 +3894,11 @@ mod test {
         claims: serde_json::Value,
     ) -> limes::Authentication {
         limes::Authentication::builder()
-            .token_header(None)
-            .claims(claims)
             .subject(limes::Subject::new(
                 Some("oidc".to_string()),
                 subject.to_string(),
             ))
-            .name(None)
-            .email(None)
-            .principal_type(None)
+            .identity(limes::VerifiedClaims::try_from(claims).unwrap())
             .audiences(audiences.iter().map(ToString::to_string).collect())
             .build()
     }

@@ -180,7 +180,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
         let event_ctx = APIEventContext::for_project_arc(
-            Arc::new(request_metadata.clone()),
+            Arc::new(request_metadata),
             context.v1_state.events.clone(),
             project_id.clone(),
             Arc::new(CatalogProjectAction::Rename),
@@ -213,7 +213,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
         let event_ctx = APIEventContext::for_project_arc(
-            Arc::new(request_metadata.clone()),
+            Arc::new(request_metadata),
             context.v1_state.events.clone(),
             project_id.clone(),
             Arc::new(CatalogProjectAction::GetMetadata),
@@ -254,8 +254,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
+        let request_metadata = Arc::new(request_metadata);
         let event_ctx = APIEventContext::for_project_arc(
-            Arc::new(request_metadata.clone()),
+            Arc::clone(&request_metadata),
             context.v1_state.events.clone(),
             project_id.clone(),
             Arc::new(CatalogProjectAction::Delete),
@@ -297,8 +298,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
+        let request_metadata = Arc::new(request_metadata);
         let event_ctx = APIEventContext::for_server(
-            Arc::new(request_metadata.clone()),
+            Arc::clone(&request_metadata),
             context.v1_state.events.clone(),
             ServerActionListProjects {},
             authorizer.server_id(),

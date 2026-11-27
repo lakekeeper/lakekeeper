@@ -351,12 +351,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
         t.commit().await?;
 
-        let request_metadata_arc = Arc::new(request_metadata.clone());
+        let request_metadata = Arc::new(request_metadata);
         state
             .v1_state
             .events
-            .users_written_async(user_write, Some(&request_metadata_arc));
-        emit_bootstrap_grants_async(&state.v1_state.events, request_metadata_arc, server_grants);
+            .users_written_async(user_write, Some(&request_metadata));
+        emit_bootstrap_grants_async(
+            &state.v1_state.events,
+            Arc::clone(&request_metadata),
+            server_grants,
+        );
 
         // If default project is specified, and the project does not exist, create it
         if let Some(default_project_id) = DEFAULT_PROJECT_ID.as_ref() {
@@ -390,7 +394,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
                 emit_bootstrap_grants_async(
                     &state.v1_state.events,
-                    Arc::new(request_metadata.clone()),
+                    request_metadata,
                     bootstrap_grants,
                 );
             }

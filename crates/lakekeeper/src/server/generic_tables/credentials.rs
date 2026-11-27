@@ -67,8 +67,9 @@ pub(super) async fn load_generic_table_credentials<
         CONFIG.referenced_by.max_nesting_depth,
     )?;
 
+    let request_metadata = Arc::new(request_metadata);
     let event_ctx = APIEventContext::for_generic_table(
-        Arc::new(request_metadata.clone()),
+        Arc::clone(&request_metadata),
         state.v1_state.events.clone(),
         warehouse_id,
         table_ident.clone(),
@@ -204,8 +205,7 @@ pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer 
     // 8. Resolve owners and assign current user for each tabular in the chain.
     let token_idp_id = request_metadata
         .authentication()
-        .and_then(|a| a.subject().idp_id())
-        .map(String::as_str);
+        .and_then(|a| a.subject().idp_id());
     let sorted_tabulars_with_full_info = resolve_users_for_authorize_load_tabular(
         &sorted_tabulars,
         request_metadata.actor(),

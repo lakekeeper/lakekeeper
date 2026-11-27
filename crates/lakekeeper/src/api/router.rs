@@ -48,7 +48,7 @@ use crate::{
     service::{
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, ServerAuthentication, State,
         admission::AdmissionGates,
-        authn::{AuthMiddlewareState, auth_middleware_fn},
+        authn::{AuthMiddlewareState, TokenSettingsByProvider, auth_middleware_fn},
         authz::{Authorizer, InstanceAdminMembership},
         health::{HealthState, HealthStatus, ServiceHealthProvider},
         tasks::QueueApiConfig,
@@ -179,6 +179,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + 
 /// - Fails if the token verifier chain cannot be created
 /// - Fails if a management API extension is invalid, or a different set of extension
 ///   endpoints is already installed in this process
+/// - Fails if the `display_name_template` of an OIDC provider does not parse. Config load
+///   refuses such a template.
 pub async fn new_full_router<
     C: CatalogStore,
     A: Authorizer + Clone,
@@ -234,6 +236,7 @@ pub async fn new_full_router<
                 catalog_state: state.v1_state.catalog.clone(),
                 instance_admin_membership,
                 admission_gates,
+                token_settings: Arc::new(TokenSettingsByProvider::from_config(&CONFIG)?),
             },
             auth_middleware_fn::<C, _, _>,
         )))

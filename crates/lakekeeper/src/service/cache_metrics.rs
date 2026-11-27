@@ -4,7 +4,7 @@
 //! `cache_type` label (values: `"role"`, `"warehouse"`, `"namespace"`,
 //! `"secrets"`, `"stc"`, `"s3_signing_identity"`, `"user_assignments"`, `"role_ancestors"`, `"user"`,
 //! `"warehouse_name_to_id"`, `"role_ident_to_id"`, `"namespace_ident_to_id"`,
-//! `"shared_role_idents"`, `"shared_project_ids"`). The user-assignments and user
+//! `"shared_role_idents"`, `"shared_project_ids"`, `"authentication"`). The user-assignments and user
 //! caches also count the results they leave uncached after an overlapping
 //! invalidation or sync ([`METRIC_CACHE_FENCED_TOTAL`]).
 //!
@@ -24,6 +24,9 @@ use axum_prometheus::metrics;
 pub(crate) const METRIC_CACHE_SIZE: &str = "lakekeeper_cache_size";
 pub(crate) const METRIC_CACHE_HITS_TOTAL: &str = "lakekeeper_cache_hits_total";
 pub(crate) const METRIC_CACHE_MISSES_TOTAL: &str = "lakekeeper_cache_misses_total";
+/// Entries a cache removed to make room while they were still valid, labelled by
+/// `cache_type`. Only caches that count evictions emit it.
+pub(crate) const METRIC_CACHE_EVICTIONS_TOTAL: &str = "lakekeeper_cache_evictions_total";
 /// Results a cache left uncached because an invalidation, or a sync of a key in the
 /// same invalidation stripe, overlapped them, labelled by `cache_type`. Only caches
 /// that count invalidations emit it.
@@ -37,11 +40,18 @@ pub(crate) const METRIC_CACHE_FENCED_TOTAL: &str = "lakekeeper_cache_fenced_tota
 pub(crate) const METRIC_ROLE_MEMBERSHIP_EDGE_FANOUT_USERS: &str =
     "lakekeeper_role_membership_edge_fanout_users";
 
-/// Registers metric descriptions exactly once for the shared cache metrics.
-pub(crate) static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
+/// Registers the metric descriptions of the shared cache metrics once, on first use.
+pub(crate) static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(describe_metrics);
+
+/// Registers the metric descriptions of the shared cache metrics with the current recorder.
+pub(crate) fn describe_metrics() {
     metrics::describe_gauge!(METRIC_CACHE_SIZE, "Current number of entries in the cache");
     metrics::describe_counter!(METRIC_CACHE_HITS_TOTAL, "Total number of cache hits");
     metrics::describe_counter!(METRIC_CACHE_MISSES_TOTAL, "Total number of cache misses");
+    metrics::describe_counter!(
+        METRIC_CACHE_EVICTIONS_TOTAL,
+        "Total number of entries removed from the cache to make room while they were still valid"
+    );
     metrics::describe_counter!(
         METRIC_CACHE_FENCED_TOTAL,
         "Total number of loaded or synced results left uncached because an invalidation or a sync in the same stripe overlapped them"
@@ -50,7 +60,7 @@ pub(crate) static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
         METRIC_ROLE_MEMBERSHIP_EDGE_FANOUT_USERS,
         "Number of users whose cached role assignments a single role-membership edge change records as changed"
     );
-});
+}
 
 /// Record one cache hit for `cache_type`.
 pub fn record_cache_hit(cache_type: &'static str) {
@@ -69,6 +79,22 @@ pub fn record_cache_miss(cache_type: &'static str) {
 pub(crate) fn record_cache_fenced(cache_type: &'static str) {
     let () = &*METRICS_INITIALIZED;
     metrics::counter!(METRIC_CACHE_FENCED_TOTAL, "cache_type" => cache_type).increment(1);
+}
+
+/// Publish the totals of a cache that counts on its own, such as limes' authentication
+/// cache: hits, misses, evictions and the current number of entries.
+pub(crate) fn set_cache_totals(
+    cache_type: &'static str,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    entries: u64,
+) {
+    let () = &*METRICS_INITIALIZED;
+    metrics::counter!(METRIC_CACHE_HITS_TOTAL, "cache_type" => cache_type).absolute(hits);
+    metrics::counter!(METRIC_CACHE_MISSES_TOTAL, "cache_type" => cache_type).absolute(misses);
+    metrics::counter!(METRIC_CACHE_EVICTIONS_TOTAL, "cache_type" => cache_type).absolute(evictions);
+    set_cache_size(cache_type, entries);
 }
 
 /// Publish the current number of entries held by `cache_type`.

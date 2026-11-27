@@ -190,7 +190,7 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
         namespace,
         &request,
         &state,
-        &request_metadata,
+        request_metadata,
         idempotency_key.as_ref(),
         &mut guard,
     )
@@ -266,7 +266,7 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
     namespace: &iceberg::NamespaceIdent,
     request: &CreateGenericTableRequest,
     state: &ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
+    request_metadata: RequestMetadata,
     idempotency_key: Option<&crate::service::idempotency::IdempotencyKey>,
     guard: &mut GenericTableCreationGuard<A>,
 ) -> Result<LoadGenericTableResponse> {
@@ -289,8 +289,9 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
         ),
     };
 
+    let request_metadata = Arc::new(request_metadata);
     let event_ctx = APIEventContext::for_namespace(
-        Arc::new(request_metadata.clone()),
+        Arc::clone(&request_metadata),
         state.v1_state.events.clone(),
         warehouse_id,
         namespace.clone(),
@@ -300,7 +301,7 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
     let (event_ctx, (warehouse, ns_hierarchy)) = event_ctx.emit_authz(
         authorizer
             .load_and_authorize_namespace_action::<C>(
-                request_metadata,
+                &request_metadata,
                 UserProvidedNamespace::new(warehouse_id, namespace.clone()),
                 action,
                 CachePolicy::Use,
@@ -358,7 +359,7 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
     // Create in authorizer
     authorizer
         .create_generic_table(
-            request_metadata,
+            &request_metadata,
             warehouse.warehouse_id,
             info.generic_table_id,
             namespace_id,
@@ -368,7 +369,7 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
 
     let bootstrap_grants = write_bootstrap_grants::<C, A>(
         authorizer,
-        request_metadata,
+        &request_metadata,
         &GrantResource::GenericTable {
             warehouse_id,
             generic_table_id: info.generic_table_id,
