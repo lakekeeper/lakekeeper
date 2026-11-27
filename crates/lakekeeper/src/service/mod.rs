@@ -15,6 +15,7 @@ pub mod maintenance_mode;
 pub(crate) mod request_project;
 pub mod secrets;
 pub mod storage;
+pub mod table_health;
 pub mod task_configs;
 pub mod tasks;
 pub use admission::{AdmissionGate, AdmissionGates, AdmissionRejection};
