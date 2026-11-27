@@ -987,6 +987,15 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<crate::service::table_health::TableHealthWriteOutcome>;
 
+    /// A page of the stored health of the Iceberg tables of a warehouse, in the given order.
+    async fn list_table_health_impl<'a>(
+        warehouse_id: WarehouseId,
+        order_by: crate::api::management::v1::health::TableHealthOrderBy,
+        include_soft_deleted: bool,
+        pagination_query: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<PaginatedMapping<TableId, crate::api::management::v1::health::TableHealthSummary>>;
+
     // ---------------- View Management ----------------
     async fn create_view_impl<'a>(
         warehouse_id: WarehouseId,

@@ -1,0 +1,177 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT h.table_id,\n                       t.tabular_namespace_name AS namespace,\n                       t.name,\n                       h.status AS \"status: DbHealthStatus\",\n                       h.max_severity,\n                       h.finding_count,\n                       h.live_data_bytes,\n                       h.live_delete_bytes,\n                       h.live_metadata_bytes,\n                       CASE WHEN h.status = 'not-measurable' THEN h.result -> 'not-measurable' END\n                           AS \"not_measurable: Json<NotMeasurableReason>\",\n                       h.measured_at,\n                       h.measurement_version,\n                       coalesce(h.live_data_bytes, -1) AS \"rank_bytes!\"\n                FROM health_iceberg_table h\n                JOIN tabular t ON t.warehouse_id = h.warehouse_id AND t.tabular_id = h.table_id\n                WHERE h.warehouse_id = $1\n                  AND t.typ = 'table'\n                  AND ($2 OR t.deleted_at IS NULL)\n                  AND ($3::smallint IS NULL\n                       OR (h.max_severity, coalesce(h.live_data_bytes, -1), h.table_id)\n                          < ($3, $4, $5))\n                ORDER BY h.max_severity DESC,\n                         coalesce(h.live_data_bytes, -1) DESC,\n                         h.table_id DESC\n                LIMIT $6\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "table_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "table_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "namespace",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_namespace_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "status: DbHealthStatus",
+        "type_info": {
+          "Custom": {
+            "name": "health_status",
+            "kind": {
+              "Enum": [
+                "measured",
+                "not-measurable"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "max_severity",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "max_severity"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "finding_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "finding_count"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "live_data_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "live_data_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "live_delete_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "live_delete_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "live_metadata_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "live_metadata_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "not_measurable: Json<NotMeasurableReason>",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "measured_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "measured_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "measurement_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "health_iceberg_table",
+            "name": "measurement_version"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "rank_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Int2",
+        "Int8",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      null,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a249526b4f1ab4cd98da8e4609abd95cb079ec3c0c443ccd7b1bf5439cb23638"
+}

@@ -1,6 +1,13 @@
-use crate::service::{
-    CatalogStore, Transaction,
-    table_health::{TableHealthWrite, TableHealthWriteOutcome},
+use crate::{
+    WarehouseId,
+    api::{
+        iceberg::v1::{PaginatedMapping, PaginationQuery},
+        management::v1::health::{TableHealthOrderBy, TableHealthSummary},
+    },
+    service::{
+        CatalogStore, TableId, Transaction,
+        table_health::{TableHealthWrite, TableHealthWriteOutcome},
+    },
 };
 
 /// Table health operations on the catalog store.
@@ -17,6 +24,25 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> super::Result<TableHealthWriteOutcome> {
         Self::write_table_health_impl(write, transaction).await
+    }
+
+    /// A page of the stored health of the Iceberg tables of a warehouse, in the given order.
+    /// Tables without a result are not listed.
+    async fn list_table_health(
+        warehouse_id: WarehouseId,
+        order_by: TableHealthOrderBy,
+        include_soft_deleted: bool,
+        pagination_query: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> super::Result<PaginatedMapping<TableId, TableHealthSummary>> {
+        Self::list_table_health_impl(
+            warehouse_id,
+            order_by,
+            include_soft_deleted,
+            pagination_query,
+            transaction,
+        )
+        .await
     }
 }
 

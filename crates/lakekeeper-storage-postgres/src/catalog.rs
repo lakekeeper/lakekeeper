@@ -429,6 +429,25 @@ impl CatalogStore for super::PostgresBackend {
         crate::table_health::write_table_health(write, transaction).await
     }
 
+    async fn list_table_health_impl<'a>(
+        warehouse_id: WarehouseId,
+        order_by: lakekeeper::api::management::v1::health::TableHealthOrderBy,
+        include_soft_deleted: bool,
+        pagination_query: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<
+        PaginatedMapping<TableId, lakekeeper::api::management::v1::health::TableHealthSummary>,
+    > {
+        crate::table_health::list_table_health(
+            warehouse_id,
+            order_by,
+            include_soft_deleted,
+            pagination_query,
+            transaction,
+        )
+        .await
+    }
+
     // ---------------- Role Management API ----------------
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,

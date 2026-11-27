@@ -5,6 +5,7 @@ pub mod v1 {
     pub mod extension;
     pub mod generic_table;
     pub mod grant;
+    pub mod health;
     pub mod lakekeeper_actions;
     pub mod namespace;
     pub mod project;
