@@ -40,6 +40,7 @@ pub mod v1 {
         ResourceGrantablePrivilegesResponse, RevokeSubtreeGrantsRequest,
         RevokeSubtreeGrantsResponse, Service as _,
     };
+    use health::{ListTableHealthQuery, ListTableHealthResponse, TableHealthService as _};
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     #[cfg(feature = "open-api")]
@@ -3406,6 +3407,32 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    /// List Table Health
+    ///
+    /// Returns the health of the measured Iceberg tables in the warehouse whose metadata the
+    /// current user may read: measurements, highest finding severity and number of findings.
+    /// Tables that were never measured are not in the list.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::ListTableHealth.path(),
+        params(("warehouse_id" = Uuid,), ListTableHealthQuery),
+        responses(
+            (status = 200, description = "Health of the tables in the warehouse", body = ListTableHealthResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_table_health<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Query(query): Query<ListTableHealthQuery>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<Json<ListTableHealthResponse>> {
+        ApiServer::<C, A, S>::list_table_health(warehouse_id.into(), query, api_context, metadata)
+            .await
+            .map(Json)
+    }
+
     #[derive(Serialize, Deserialize, Debug)]
     #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     pub struct ProtectionResponse {
@@ -4924,6 +4951,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/deleted-tabulars/undrop",
                     post(undrop_tabulars),
+                )
+                .route(
+                    ManagementV1Endpoint::ListTableHealth.path_in_management_v1(),
+                    get(list_table_health),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/delete-profile",

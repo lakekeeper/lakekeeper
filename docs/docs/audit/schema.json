@@ -1636,6 +1636,7 @@
         "get_task_details",
         "introspect_permissions",
         "list_projects",
+        "list_table_health",
         "list_tasks",
         "revoke_subtree_grants",
         "schedule_task",

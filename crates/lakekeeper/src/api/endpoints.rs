@@ -336,6 +336,7 @@ generate_endpoints! {
         SearchTabular(POST, "/management/v1/warehouse/{warehouse_id}/search-tabular"),
         ListDeletedTabulars(GET, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars"),
         UndropTabulars(POST, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop"),
+        ListTableHealth(GET, "/management/v1/warehouse/{warehouse_id}/table-health"),
         GetTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
         SetTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"),
         GetTableActions(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/actions"),
@@ -1125,6 +1126,7 @@ mod test {
         "management-v1-revoke-warehouse-subtree-grants",
         "management-v1-set-maintenance-mode",
         "catalog-v1-register-view",
+        "management-v1-list-table-health",
     ];
 
     #[test]

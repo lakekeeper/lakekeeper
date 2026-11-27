@@ -1,10 +1,34 @@
 //! Table health: sizes and findings of the Iceberg tables in a warehouse.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
+use futures::FutureExt as _;
 use serde::{Deserialize, Serialize};
 
-use super::tasks::TaskStatus;
-use crate::service::{TableId, tasks::TaskId};
+use super::{ApiServer, tasks::TaskStatus};
+use crate::{
+    WarehouseId,
+    api::{
+        ApiContext, RequestMetadata, Result,
+        iceberg::{types::PageToken, v1::PaginationQuery},
+    },
+    server::UnfilteredPage,
+    service::{
+        ArcResolvedWarehouse, CatalogNamespaceOps, CatalogStore, CatalogTableHealthOps,
+        CatalogTabularOps, CatalogWarehouseOps, SecretStore, State, TableId, TabularId,
+        TabularListFlags, ViewOrTableInfo,
+        authz::{
+            ActionOnTable, AuthZTableOps, Authorizer, AuthzWarehouseOps, CatalogTableAction,
+            CatalogWarehouseAction,
+        },
+        events::{
+            APIEventContext,
+            context::{WarehouseActionListTableHealth, authz_to_error_no_audit},
+        },
+        tasks::TaskId,
+    },
+};
 
 /// Sort order of the table health ranking.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +38,38 @@ pub enum TableHealthOrderBy {
     /// Highest severity first, then most live data bytes.
     #[default]
     Severity,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
+#[serde(rename_all = "camelCase")]
+pub struct ListTableHealthQuery {
+    /// Sort order. Default: `severity`
+    #[serde(default)]
+    pub order_by: TableHealthOrderBy,
+    /// Include soft-deleted tables. Default: false
+    #[serde(default)]
+    pub include_soft_deleted: bool,
+    /// Next page token
+    #[serde(default)]
+    pub page_token: Option<String>,
+    /// Signals an upper bound of the number of results that a client will receive.
+    /// Default: 100
+    #[serde(default)]
+    pub page_size: Option<i64>,
+}
+
+impl ListTableHealthQuery {
+    #[must_use]
+    pub fn pagination_query(&self) -> PaginationQuery {
+        PaginationQuery {
+            page_token: self
+                .page_token
+                .clone()
+                .map_or(PageToken::Empty, PageToken::Present),
+            page_size: self.page_size,
+        }
+    }
 }
 
 /// Whether the last run measured the table.
@@ -96,6 +152,15 @@ pub struct TableHealthSummary {
     pub measured_at: DateTime<Utc>,
     /// Version of the measurement code that produced these values
     pub measurement_version: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ListTableHealthResponse {
+    pub tables: Vec<TableHealthSummary>,
+    /// Token to fetch the next page
+    pub next_page_token: Option<String>,
 }
 
 /// A problem health found in a table.
@@ -216,4 +281,179 @@ pub struct WarehouseHealthTotalsResponse {
     pub soft_deleted: SoftDeletedHealthTotals,
     /// Measurement versions in use, with the number of tables measured by each
     pub measurement_versions: Vec<MeasurementVersionCount>,
+}
+
+impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> TableHealthService<C, A, S>
+    for ApiServer<C, A, S>
+{
+}
+
+#[async_trait::async_trait]
+pub trait TableHealthService<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
+where
+    Self: Send + Sync + 'static,
+{
+    async fn list_table_health(
+        warehouse_id: WarehouseId,
+        query: ListTableHealthQuery,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ListTableHealthResponse> {
+        // ------------------- AuthZ -------------------
+        let catalog = context.v1_state.catalog;
+        let authorizer = context.v1_state.authz;
+
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            WarehouseActionListTableHealth {},
+        );
+        let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog.clone()).await;
+        let authz_result = authorizer
+            .require_warehouse_action(
+                event_ctx.request_metadata(),
+                warehouse_id,
+                warehouse,
+                CatalogWarehouseAction::Use,
+            )
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+
+        // ------------- Business Logic & table level AuthZ filter -------------
+        let ListTableHealthQuery {
+            order_by,
+            include_soft_deleted,
+            ..
+        } = query;
+        let pagination_query = query.pagination_query();
+        let request_metadata = event_ctx.request_metadata().clone();
+        let (tables, _, next_page_token) = crate::server::fetch_until_full_page::<_, _, _, C>(
+            pagination_query.page_size,
+            pagination_query.page_token,
+            catalog.clone(),
+            |page_size, page_token, t| {
+                async move {
+                    C::list_table_health(
+                        warehouse_id,
+                        order_by,
+                        include_soft_deleted,
+                        PaginationQuery {
+                            page_size: Some(page_size),
+                            page_token: page_token.into(),
+                        },
+                        t.transaction(),
+                    )
+                    .await
+                }
+                .boxed()
+            },
+            |page_size, page| {
+                let authorizer = authorizer.clone();
+                let request_metadata = request_metadata.clone();
+                let warehouse = warehouse.clone();
+                let catalog = catalog.clone();
+                async move {
+                    let (ids, summaries, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                        itertools::multiunzip(page.into_iter_with_page_tokens());
+                    let allowed = readable_tables::<C, A>(
+                        &authorizer,
+                        &request_metadata,
+                        &warehouse,
+                        &ids,
+                        include_soft_deleted,
+                        catalog,
+                    )
+                    .await?;
+                    Ok(UnfilteredPage::new(
+                        summaries,
+                        ids,
+                        tokens,
+                        allowed,
+                        page_size
+                            .clamp(0, i64::MAX)
+                            .try_into()
+                            .expect("We clamped."),
+                    ))
+                }
+                .boxed()
+            },
+        )
+        .await?;
+
+        Ok(ListTableHealthResponse {
+            tables,
+            next_page_token,
+        })
+    }
+}
+
+/// Which of `table_ids` the caller may read the metadata of. The health of a table shows its
+/// sizes and problems, so the ranking checks `GetMetadata`, not `IncludeInList`, and
+/// `ListEverything` on the warehouse doesn't skip the check. A table that is gone, or whose
+/// namespace is gone, is not readable.
+async fn readable_tables<C: CatalogStore, A: Authorizer>(
+    authorizer: &A,
+    request_metadata: &RequestMetadata,
+    warehouse: &ArcResolvedWarehouse,
+    table_ids: &[TableId],
+    include_soft_deleted: bool,
+    catalog: C::State,
+) -> Result<Vec<bool>> {
+    let flags = if include_soft_deleted {
+        TabularListFlags::all()
+    } else {
+        TabularListFlags::active()
+    };
+    let tabular_ids = table_ids
+        .iter()
+        .copied()
+        .map(TabularId::Table)
+        .collect::<Vec<_>>();
+    let tables =
+        C::get_tabular_infos_by_id(warehouse.warehouse_id, &tabular_ids, flags, catalog.clone())
+            .await?
+            .into_iter()
+            .filter_map(ViewOrTableInfo::into_table_info)
+            .map(|info| (info.tabular_id, info))
+            .collect::<std::collections::HashMap<_, _>>();
+    let namespace_ids = tables
+        .values()
+        .map(|table| table.namespace_id)
+        .collect::<Vec<_>>();
+    let namespaces =
+        C::get_namespaces_by_id(warehouse.warehouse_id, &namespace_ids, catalog).await?;
+
+    // Index into `table_ids` of every table that can be checked.
+    let (indices, actions): (Vec<_>, Vec<_>) = table_ids
+        .iter()
+        .enumerate()
+        .filter_map(|(index, table_id)| {
+            let table = tables.get(table_id)?;
+            let namespace = namespaces.get(&table.namespace_id)?;
+            Some((
+                index,
+                (
+                    namespace,
+                    ActionOnTable {
+                        info: table,
+                        action: CatalogTableAction::GetMetadata,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
+            ))
+        })
+        .unzip();
+    let decisions = authorizer
+        .are_allowed_table_actions_vec(request_metadata, warehouse, &namespaces, &actions)
+        .await
+        .map_err(authz_to_error_no_audit)?
+        .into_allowed();
+
+    let mut allowed = vec![false; table_ids.len()];
+    for (index, decision) in indices.into_iter().zip(decisions) {
+        allowed[index] = decision;
+    }
+    Ok(allowed)
 }

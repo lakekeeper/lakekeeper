@@ -752,6 +752,7 @@ pub enum ManagementAction {
                    principal_scope, privilege_scope, privileges, resource_types, root_level"
     )]
     RevokeSubtreeGrants,
+    ListTableHealth,
 }
 
 /// The actions the authentication layer checks.
@@ -818,6 +819,18 @@ impl APIEventActions for GetTaskDetailsAction {
         vec![
             ActionDescriptor::builder()
                 .action_name(ManagementAction::GetTaskDetails.as_wire())
+                .build(),
+        ]
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WarehouseActionListTableHealth {}
+impl APIEventActions for WarehouseActionListTableHealth {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name(ManagementAction::ListTableHealth.as_wire())
                 .build(),
         ]
     }

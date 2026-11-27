@@ -6632,6 +6632,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table-health:
+    get:
+      tags:
+        - warehouse
+      summary: List Table Health
+      description: |-
+        Returns the health of the measured Iceberg tables in the warehouse whose metadata the
+        current user may read: measurements, highest finding severity and number of findings.
+        Tables that were never measured are not in the list.
+      operationId: list_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: orderBy
+          in: query
+          description: 'Sort order. Default: `severity`'
+          required: false
+          schema:
+            $ref: '#/components/schemas/TableHealthOrderBy'
+        - name: includeSoftDeleted
+          in: query
+          description: 'Include soft-deleted tables. Default: false'
+          required: false
+          schema:
+            type: boolean
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: |-
+            Signals an upper bound of the number of results that a client will receive.
+            Default: 100
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: Health of the tables in the warehouse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTableHealthResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/actions:
     get:
       tags:
@@ -9626,6 +9687,13 @@ components:
         type:
           type: string
           description: Internal type definition of the error
+    FindingSeverity:
+      type: string
+      description: Severity of a finding.
+      enum:
+        - info
+        - warning
+        - critical
     GcsCredential:
       oneOf:
         - $ref: '#/components/schemas/GcsCredentialServiceAccountKey'
@@ -14062,6 +14130,20 @@ components:
             Present when another page may follow; follow it until it is absent. The token
             also pins the walk's ceiling, so every page reads under the instant page one
             bound.
+    ListTableHealthResponse:
+      type: object
+      required:
+        - tables
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Token to fetch the next page
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableHealthSummary'
     ListTagAttachmentsResponse:
       type: object
       required:
@@ -14469,6 +14551,84 @@ components:
         - write
         - modify
         - manage_tags
+    NotMeasurableReason:
+      oneOf:
+        - $ref: '#/components/schemas/NotMeasurableReasonEncrypted'
+        - $ref: '#/components/schemas/NotMeasurableReasonTimeLimit'
+        - $ref: '#/components/schemas/NotMeasurableReasonMissingFileSize'
+        - $ref: '#/components/schemas/NotMeasurableReasonMetadataUnreadable'
+        - $ref: '#/components/schemas/NotMeasurableReasonMetadataMissing'
+      description: Why a table cannot be measured.
+      discriminator:
+        propertyName: reason
+        mapping:
+          encrypted: '#/components/schemas/NotMeasurableReasonEncrypted'
+          metadata-missing: '#/components/schemas/NotMeasurableReasonMetadataMissing'
+          metadata-unreadable: '#/components/schemas/NotMeasurableReasonMetadataUnreadable'
+          missing-file-size: '#/components/schemas/NotMeasurableReasonMissingFileSize'
+          time-limit: '#/components/schemas/NotMeasurableReasonTimeLimit'
+    NotMeasurableReasonEncrypted:
+      type: object
+      description: The table is encrypted.
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          enum:
+            - encrypted
+    NotMeasurableReasonMetadataMissing:
+      type: object
+      description: The metadata file, the manifest list or a manifest does not exist.
+      required:
+        - path
+        - reason
+      properties:
+        path:
+          type: string
+          description: The missing file
+        reason:
+          type: string
+          enum:
+            - metadata-missing
+    NotMeasurableReasonMetadataUnreadable:
+      type: object
+      description: A manifest list or manifest cannot be read.
+      required:
+        - path
+        - reason
+      properties:
+        path:
+          type: string
+          description: The file that cannot be read
+        reason:
+          type: string
+          enum:
+            - metadata-unreadable
+    NotMeasurableReasonMissingFileSize:
+      type: object
+      description: A data or delete file in the current snapshot has no file size.
+      required:
+        - path
+        - reason
+      properties:
+        path:
+          type: string
+          description: The file without a size
+        reason:
+          type: string
+          enum:
+            - missing-file-size
+    NotMeasurableReasonTimeLimit:
+      type: object
+      description: The scan ran over the run time limit.
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          enum:
+            - time-limit
     OneLakeProfile:
       type: object
       description: |-
@@ -16941,6 +17101,89 @@ components:
               type: string
               enum:
                 - write
+    TableHealthOrderBy:
+      type: string
+      description: Sort order of the table health ranking.
+      enum:
+        - severity
+    TableHealthStatus:
+      type: string
+      description: Whether the last run measured the table.
+      enum:
+        - measured
+        - not-measurable
+        - not-measured
+    TableHealthSummary:
+      type: object
+      description: One table in the health ranking of a warehouse.
+      required:
+        - table-id
+        - namespace
+        - name
+        - status
+        - finding-count
+        - measured-at
+        - measurement-version
+      properties:
+        finding-count:
+          type: integer
+          format: int32
+        live-data-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Bytes of the data files of the current snapshot. Not set if `status` is `not-measurable`.
+        live-delete-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            Bytes of the delete files of the current snapshot. Not set if `status` is
+            `not-measurable`.
+        live-metadata-bytes:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            Bytes of the metadata files of the current snapshot. Not set if `status` is
+            `not-measurable`.
+        max-severity:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/FindingSeverity'
+              description: |-
+                Highest severity of the table's findings. `warning` for a table that cannot be measured.
+                Not set if the table has no findings.
+        measured-at:
+          type: string
+          format: date-time
+          description: End of the last run
+        measurement-version:
+          type: integer
+          format: int32
+          description: Version of the measurement code that produced these values
+        name:
+          type: string
+          description: Name of the table
+        namespace:
+          type: array
+          items:
+            type: string
+          description: Namespace parts of the table
+        not-measurable-reason:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/NotMeasurableReason'
+              description: Set if `status` is `not-measurable`
+        status:
+          $ref: '#/components/schemas/TableHealthStatus'
+          description: '`measured` or `not-measurable`'
+        table-id:
+          type: string
+          format: uuid
     TableRelation:
       type: string
       enum:
