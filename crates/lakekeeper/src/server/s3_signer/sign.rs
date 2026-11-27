@@ -859,7 +859,6 @@ pub(super) mod s3_utils {
 
     use lakekeeper_io::s3::S3Location;
     use lazy_regex::regex;
-    use percent_encoding::{AsciiSet, utf8_percent_encode};
     use serde::{Deserialize, Serialize};
 
     use super::{
@@ -871,33 +870,14 @@ pub(super) mod s3_utils {
     };
     use crate::service::storage::{ValidationError, s3::S3UrlStyleDetectionMode};
 
-    /// The url path percent-encode set, which is what a `Location` built from an object key
-    /// carries. `/` is not part of it - it separates segments in both representations. `\` is
-    /// not either: `url` treats it as a second separator for http but not for `s3`, so an
-    /// object key containing it is refused while a list prefix keeps the byte S3 matches
-    /// against. Control characters are left out so that `Location` keeps refusing them; object
-    /// keys refuse them before encoding. `^` is left out although `url` encodes it: a key
-    /// holding `^` would get the location of the key holding a literal `%5E`, so an object key
-    /// containing `^` is refused while a list prefix keeps it.
-    const URL_PATH_ENCODE_SET: &AsciiSet = &AsciiSet::EMPTY
-        .add(b' ')
-        .add(b'"')
-        .add(b'#')
-        .add(b'<')
-        .add(b'>')
-        .add(b'?')
-        .add(b'`')
-        .add(b'{')
-        .add(b'}');
-
     /// The URI of a request to sign, both as received and with its path segments url-decoded.
     ///
     /// The signature covers the request as received, so anything that constrains the *shape*
-    /// of the request has to look at [`Self::received`]. Locations are derived from
-    /// [`Self::decoded`], because clients url-encode object keys. Decoding can change what a
-    /// path addresses - a `%2F` hides separators from the url parser, which then collapses the
-    /// `.`/`..` behind them - so the two are kept together rather than passed around as two
-    /// look-alike arguments.
+    /// of the request has to look at [`Self::received`]. Locations hold the object key as S3
+    /// stores it: each received path segment url-decoded once, see [`get_path_segments`], so
+    /// two keys never share a location. Decoding can change what a path addresses - a `%2F`
+    /// hides separators from the url parser, which then collapses the `.`/`..` behind them -
+    /// so the two are kept together rather than passed around as two look-alike arguments.
     #[derive(Debug, Clone)]
     pub(super) struct SignRequestUri {
         received: url::Url,
@@ -924,13 +904,10 @@ pub(super) mod s3_utils {
             self.received.path() == self.decoded.path()
         }
 
-        /// `false` unless every received path segment, url-decoded once, is the key segment S3
-        /// stores and maps one to one onto a segment of [`Self::decoded`], the path locations
-        /// are derived from. Url parsing resolves dot segments (also spelled `%2e`), splits on
-        /// `\\`, and strips tabs and newlines, so any such rewrite shows up as a mismatch.
-        ///
-        /// Each decoded segment is compared re-encoded with the url path percent-encode set,
-        /// not decoded a second time: a key segment holding a literal `%2F` is one segment.
+        /// `false` unless every received path segment, url-decoded once, is a key segment its
+        /// location keeps as it is: not `.`, `..` or an empty segment other than the last, and
+        /// without `/`, `\` or control characters. Url parsing resolves dot segments (also
+        /// spelled `%2e`) and splits on `\`, and `Location` refuses control characters.
         /// [`Self::path_survived_decoding`] is too strict for object keys: clients encode
         /// characters like `=` that the url parser keeps decoded.
         fn segments_survived_decoding(&self) -> bool {
@@ -939,28 +916,16 @@ pub(super) mod s3_utils {
                 .path_segments()
                 .map(Iterator::collect::<Vec<_>>)
                 .unwrap_or_default();
-            let decoded = self
-                .decoded
-                .path_segments()
-                .map(Iterator::collect::<Vec<_>>)
-                .unwrap_or_default();
-            if received.len() != decoded.len() {
-                return false;
-            }
 
             let last = received.len().saturating_sub(1);
-            received.iter().zip(&decoded).enumerate().all(
-                |(i, (received_segment, decoded_segment))| {
-                    let Ok(key) = urlencoding::decode(received_segment) else {
-                        return false;
-                    };
-                    !is_ambiguous_key_segment(&key, i == last)
-                        && !key.contains(['/', '\\'])
-                        && !key.chars().any(char::is_control)
-                        && utf8_percent_encode(&key, URL_PATH_ENCODE_SET).to_string()
-                            == *decoded_segment
-                },
-            )
+            received.iter().enumerate().all(|(i, received_segment)| {
+                let Ok(key) = urlencoding::decode(received_segment) else {
+                    return false;
+                };
+                !is_ambiguous_key_segment(&key, i == last)
+                    && !key.contains(['/', '\\'])
+                    && !key.chars().any(char::is_control)
+            })
         }
     }
 
@@ -1035,8 +1000,7 @@ pub(super) mod s3_utils {
             );
         }
 
-        let key = utf8_percent_encode(&key, URL_PATH_ENCODE_SET);
-        S3Location::try_from_str(&format!("s3://{bucket}/{key}"), false)
+        S3Location::new(bucket, &key.split('/').collect::<Vec<_>>(), None)
             .map(Some)
             .map_err(|e| {
                 ErrorModel::bad_request(
@@ -1341,16 +1305,10 @@ pub(super) mod s3_utils {
             .into());
         }
 
-        // The prefix arrives url-decoded, so it has to be encoded again to become a location.
-        // Object keys reach their location through `urldecode_uri_path_segments`, which
-        // re-encodes with the url path percent-encode set, so the same key has to end up as
-        // the same string here - otherwise a table whose location contains one of these
-        // characters can be read file by file but never listed. `%` and control characters
-        // are deliberately not encoded: the parser below must keep rejecting a prefix that
-        // does not round-trip - an empty segment, `.`/`..`, a control character - instead of
-        // it disappearing behind an encoding of ours.
-        let prefix = utf8_percent_encode(&prefix, URL_PATH_ENCODE_SET);
-
+        // The prefix arrives url-decoded: it is the key prefix as S3 matches it, and its
+        // location holds it as it is, like the location of an object key. The parser below
+        // rejects a prefix that a location would not round-trip - an empty segment, `.`/`..`,
+        // a control character, a `#` or `?`.
         S3Location::try_from_str(&format!("s3://{bucket}/{prefix}"), false).map_err(|e| {
             ErrorModel::bad_request(
                 format!("Invalid list prefix: {e}"),
@@ -1369,7 +1327,7 @@ pub(super) mod s3_utils {
         let host = uri.decoded().host().ok_or_else(|| {
             ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
         })?;
-        let path_segments = get_path_segments(uri.decoded(), allow_no_key)?;
+        let path_segments = get_path_segments(uri, allow_no_key)?;
         let port = uri.decoded().port_or_known_default().unwrap_or(443);
 
         let host_str = host.to_string();
@@ -1424,7 +1382,7 @@ pub(super) mod s3_utils {
     }
 
     fn path_style(uri: &SignRequestUri, allow_no_key: bool) -> Result<ParsedSignRequest> {
-        let path_segments = get_path_segments(uri.decoded(), allow_no_key)?;
+        let path_segments = get_path_segments(uri, allow_no_key)?;
 
         let min_path_segments = if allow_no_key { 1 } else { 2 };
 
@@ -1465,13 +1423,24 @@ pub(super) mod s3_utils {
         })
     }
 
-    fn get_path_segments(uri: &url::Url, allow_no_segments: bool) -> Result<Vec<String>> {
-        let segments = uri
-            .path_segments()
-            .map(|segments| segments.map(std::string::ToString::to_string).collect());
+    /// The received path segments, each url-decoded once: the bucket and the key as S3 stores
+    /// them.
+    fn get_path_segments(uri: &SignRequestUri, allow_no_segments: bool) -> Result<Vec<String>> {
+        let segments = uri.received().path_segments().map(|segments| {
+            segments
+                .map(|segment| urlencoding::decode(segment).map(std::borrow::Cow::into_owned))
+                .collect::<std::result::Result<Vec<_>, _>>()
+        });
 
         if let Some(segments) = segments {
-            Ok(segments)
+            segments.map_err(|e| {
+                ErrorModel::bad_request(
+                    "Failed to decode URI segment",
+                    "FailedToDecodeURISegment",
+                    Some(Box::new(e)),
+                )
+                .into()
+            })
         } else if allow_no_segments {
             Ok(vec![])
         } else {
@@ -2010,7 +1979,7 @@ mod test {
             // Basic bucket-style with special characters in key
             TC {
                 request_uri: "https://bucket.s3.my-region.amazonaws.com/key/with-special-chars%20/foo",
-                table_location: "s3://bucket/key/with-special-chars%20/foo",
+                table_location: "s3://bucket/key/with-special-chars /foo",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -2062,7 +2031,7 @@ mod test {
             // Basic path-style with special characters in key
             TC {
                 request_uri: "https://s3.my-region.amazonaws.com/bucket/key/with-special-chars%20/foo",
-                table_location: "s3://bucket/key/with-special-chars%20/foo",
+                table_location: "s3://bucket/key/with-special-chars /foo",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -2200,13 +2169,13 @@ mod test {
 
     /// A key must reach the same location whether it arrives as an object key in the path or
     /// as a list prefix in the query. Otherwise a table whose location contains the character
-    /// can be read file by file but never listed - and for `#` and `?` the prefix would not
-    /// even parse, because they start a fragment resp. a query string.
+    /// can be read file by file but never listed.
     ///
     /// Swept over every byte, so a change to either representation cannot pull them apart
     /// unnoticed. One of the two rejecting is fine - it just refuses to sign - so only the
     /// cases where both produce a location are compared. Object keys refuse `/` and `\`, see
-    /// [`test_list_prefix_keeps_a_backslash_that_an_object_key_refuses`].
+    /// [`test_list_prefix_keeps_a_backslash_that_an_object_key_refuses`]. List prefixes refuse
+    /// `#` and `?`, which start a fragment resp. a query string in a location.
     #[test]
     fn test_list_prefix_and_object_key_encode_alike() {
         let escapes = (0x00..=0xFF).map(|byte: u8| format!("%{byte:02X}")).chain([
@@ -2249,9 +2218,8 @@ mod test {
         }
 
         // Both rejecting is the trivially passing case, so make sure the sweep did compare the
-        // printable range rather than run empty. Of the printable bytes, object keys also refuse
-        // `^`, see [`test_caret_and_literal_percent_5e_reach_different_tables`].
-        assert_eq!(compared, 94, "the sweep must not go vacuous");
+        // printable range rather than run empty.
+        assert_eq!(compared, 93, "the sweep must not go vacuous");
     }
 
     /// `url` treats `\` as a second path separator for http, so an object key containing it
@@ -2398,7 +2366,8 @@ mod test {
 
     /// Url-decoding the path reveals separators hidden in `%2F` and lets the url parser
     /// collapse the `.`/`..` behind them, so a path that addresses a key can decode to the
-    /// bare bucket. The guard has to reject it, because the key is what gets signed.
+    /// bare bucket. It is refused, because the key is what gets signed: decoded once, its
+    /// first segment is not a bucket name.
     #[test]
     fn test_parse_s3_url_list_must_address_the_bucket_before_decoding() {
         let received = url::Url::parse(
@@ -2421,7 +2390,7 @@ mod test {
         )
         .map(|(parsed, _)| parsed)
         .expect_err("a path that only decodes to the bucket must not be signable");
-        assert_eq!(err.error.r#type, "UriNotBucket", "{err:?}");
+        assert_eq!(err.error.r#type, "UriNotS3", "{err:?}");
     }
 
     /// `+` in a query value is form-decoded to a space, by S3 as well as by the parameter
@@ -2438,7 +2407,7 @@ mod test {
                 .iter()
                 .map(ToString::to_string)
                 .collect_vec(),
-            vec!["s3://bucket/ns/tbl%20dir/"]
+            vec!["s3://bucket/ns/tbl dir/"]
         );
 
         let parsed = parse_list(
@@ -2487,10 +2456,9 @@ mod test {
             ("ns/tbl/metadata", "s3://bucket/ns/tbl", true),
             // Table locations may be stored with a trailing slash.
             ("ns/tbl/", "s3://bucket/ns/tbl/", true),
-            // A table whose location holds an encoded `#`, addressed by the decoded prefix
-            // the client sends.
-            ("ns/tbl%23a/", "s3://bucket/ns/tbl%23a", true),
-            ("ns/tbl%23a/", "s3://bucket/ns/tbl", false),
+            // A table whose location holds an encoded `#`: its keys hold the same `%23`.
+            ("ns/tbl%2523a/", "s3://bucket/ns/tbl%23a", true),
+            ("ns/tbl%2523a/", "s3://bucket/ns/tbl", false),
             // `s3a` and `s3n` table locations are normalized to `s3`.
             ("ns/tbl/", "s3a://bucket/ns/tbl", true),
             ("ns/tbl/", "s3n://bucket/ns/tbl", true),
@@ -2836,13 +2804,6 @@ mod test {
             // Empty segments collapse in a location but not in a key.
             "http://s3.example.com:8333/bucket/wh//tbl/x.parquet",
             "https://bucket.s3.my-region.amazonaws.com//wh/tbl/x.parquet",
-            // Decoded once, these are percent-encoded dots the url parser resolves.
-            "http://s3.example.com:8333/bucket/wh/other/%252E%252E/tbl/x.parquet",
-            "http://s3.example.com:8333/bucket/wh/other/%252e%252e/tbl/x.parquet",
-            "http://s3.example.com:8333/bucket/wh/other/.%252E/tbl/x.parquet",
-            "http://s3.example.com:8333/bucket/wh/other/%252E./tbl/x.parquet",
-            "http://s3.example.com:8333/bucket/wh/tbl/%252E/x.parquet",
-            "https://bucket.s3.my-region.amazonaws.com/wh/other/%252E%252E/tbl/x.parquet",
             // Tab, LF and CR are stripped by the url parser.
             "http://s3.example.com:8333/bucket/wh/tb%09l/x.parquet",
             "http://s3.example.com:8333/bucket/wh/tb%0Al/x.parquet",
@@ -2870,15 +2831,15 @@ mod test {
         for (uri, expected) in [
             (
                 "http://s3.example.com:8333/bucket/wh/tbl/data/name=a%20b/x.parquet",
-                "s3://bucket/wh/tbl/data/name=a%20b/x.parquet",
+                "s3://bucket/wh/tbl/data/name=a b/x.parquet",
             ),
             (
                 "http://s3.example.com:8333/bucket/wh/tbl/data/name%3Da%20b/x.parquet",
-                "s3://bucket/wh/tbl/data/name=a%20b/x.parquet",
+                "s3://bucket/wh/tbl/data/name=a b/x.parquet",
             ),
             (
                 "https://bucket.s3.my-region.amazonaws.com/wh/tbl/data/name%3Da%20b/x.parquet",
-                "s3://bucket/wh/tbl/data/name=a%20b/x.parquet",
+                "s3://bucket/wh/tbl/data/name=a b/x.parquet",
             ),
             (
                 "http://s3.example.com:8333/bucket/wh/tbl/data/100%25/x.parquet",
@@ -2891,7 +2852,7 @@ mod test {
             ),
             (
                 "http://s3.example.com:8333/bucket/wh/tbl/data/caf%C3%A9/x.parquet",
-                "s3://bucket/wh/tbl/data/caf%C3%A9/x.parquet",
+                "s3://bucket/wh/tbl/data/café/x.parquet",
             ),
             (
                 "http://s3.example.com:8333/bucket/wh/tbl/data/a.b..c/x.parquet",
@@ -2915,7 +2876,7 @@ mod test {
             ),
             (
                 "http://s3.example.com:8333/bucket/wh/tbl/data/%E2%82%AC%20%7B%7D/x.parquet",
-                "s3://bucket/wh/tbl/data/%E2%82%AC%20%7B%7D/x.parquet",
+                "s3://bucket/wh/tbl/data/€ {}/x.parquet",
             ),
             // Directory markers end in a separator.
             (
@@ -3096,7 +3057,7 @@ mod test {
             ),
             (
                 "/bucket/wh/tbl/data/name%3Da%20b/x.parquet",
-                "s3://bucket/wh/tbl/data/name=a%20b/x.parquet",
+                "s3://bucket/wh/tbl/data/name=a b/x.parquet",
             ),
             (
                 "/bucket/wh/tbl/data/a%2Bb.parquet",
@@ -3317,33 +3278,46 @@ mod test {
         );
     }
 
-    /// `url` encodes `^` in a path as `%5E`, the spelling of a key that holds a literal `%5E`.
-    /// An object key containing `^` is refused, so the table at `t^a` and the table at `t%5Ea`
-    /// never authorize each other's keys.
+    /// A location holds the key as S3 stores it, so a key with a space and a key with a literal
+    /// `%20` reach different tables - the table spelled like the key, and no other.
     #[test]
-    fn test_caret_and_literal_percent_5e_reach_different_tables() {
-        let tables = ["s3://bucket/ns/t^a", "s3://bucket/ns/t%5Ea"];
+    fn test_each_key_reaches_only_the_table_spelled_like_it() {
+        let tables = [
+            "s3://bucket/ns/t a",
+            "s3://bucket/ns/t%20a",
+            "s3://bucket/ns/t^a",
+            "s3://bucket/ns/t%5Ea",
+            "s3://bucket/ns/café",
+            "s3://bucket/ns/caf%C3%A9",
+            "s3://bucket/ns/tbl",
+        ];
+        let list =
+            |prefix: &str| format!("http://s3.example.com:8333/bucket?list-type=2&prefix={prefix}");
+        let object = |key: &str| format!("http://s3.example.com:8333/bucket/{key}");
         let cases = [
-            // The list prefix `ns/t^a/`.
+            (object("ns/t%20a/f.parquet"), Some("s3://bucket/ns/t a")),
+            (object("ns/t%2520a/f.parquet"), Some("s3://bucket/ns/t%20a")),
+            (list("ns%2Ft%20a%2F"), Some("s3://bucket/ns/t a")),
+            (list("ns%2Ft%2520a%2F"), Some("s3://bucket/ns/t%20a")),
+            (object("ns/t%5Ea/f.parquet"), Some("s3://bucket/ns/t^a")),
+            (object("ns/t%255Ea/f.parquet"), Some("s3://bucket/ns/t%5Ea")),
+            (list("ns%2Ft%5Ea%2F"), Some("s3://bucket/ns/t^a")),
+            (list("ns%2Ft%255Ea%2F"), Some("s3://bucket/ns/t%5Ea")),
             (
-                "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ft%5Ea%2F",
-                "s3://bucket/ns/t^a",
+                object("ns/caf%C3%A9/f.parquet"),
+                Some("s3://bucket/ns/café"),
             ),
-            // The list prefix `ns/t%5Ea/`.
             (
-                "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ft%255Ea%2F",
-                "s3://bucket/ns/t%5Ea",
+                object("ns/caf%25C3%25A9/f.parquet"),
+                Some("s3://bucket/ns/caf%C3%A9"),
             ),
-            // The object key `ns/t%5Ea/f.parquet`.
-            (
-                "http://s3.example.com:8333/bucket/ns/t%255Ea/f.parquet",
-                "s3://bucket/ns/t%5Ea",
-            ),
+            // S3 keeps the encoded dots of the key, which do not lead back into `ns/tbl`.
+            (object("ns/other/%252E%252E/tbl/f.parquet"), None),
         ];
 
         for (uri, table) in cases {
             let (parsed, _) = parse_uri(
-                &url::Url::parse(uri).unwrap(),
+                &url::Url::parse(&uri).unwrap(),
                 S3UrlStyleDetectionMode::Auto,
                 &http::Method::GET,
                 None,
@@ -3353,16 +3327,11 @@ mod test {
                 .into_iter()
                 .filter(|t| validate_uri(&parsed, &Location::from_str(t).unwrap()).is_ok())
                 .collect::<Vec<_>>();
-            assert_eq!(authorized_for, vec![table], "Test case: {uri}");
+            assert_eq!(
+                authorized_for,
+                table.into_iter().collect::<Vec<_>>(),
+                "Test case: {uri}"
+            );
         }
-
-        // The object key `ns/t^a/f.parquet`.
-        assert_eq!(
-            parse_object_err(
-                "http://s3.example.com:8333/bucket/ns/t%5Ea/f.parquet",
-                &http::Method::GET
-            ),
-            (400, "AmbiguousUriPath".to_string())
-        );
     }
 }
