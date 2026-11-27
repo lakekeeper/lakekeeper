@@ -769,7 +769,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // -------------------- AUTHZ --------------------
         let event_ctx = APIEventContext::for_task(
-            request_metadata.clone().into(),
+            Arc::new(request_metadata),
             context.v1_state.events,
             warehouse_id,
             task_id,
@@ -828,7 +828,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
 
         let event_ctx = APIEventContext::for_warehouse(
-            request_metadata.clone().into(),
+            Arc::new(request_metadata),
             context.v1_state.events,
             warehouse_id,
             query,

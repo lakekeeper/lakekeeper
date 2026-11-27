@@ -98,8 +98,7 @@ pub(super) async fn authorize_security_mode_switches<A: Authorizer>(
 
     let token_idp_id = request_metadata
         .authentication()
-        .and_then(|a| a.subject().idp_id())
-        .map(String::as_str);
+        .and_then(|a| a.subject().idp_id());
     let mut checked_owners = HashSet::new();
     for (property, switch) in switches {
         let SecurityModeSwitch::ToOwner { owner } = switch else {

@@ -160,8 +160,8 @@ fn advertised_idempotency_lifetime(idempotency: &IdempotencyConfig) -> Option<St
 /// placeholder name, locking out a later name-bearing login or SCIM full-sync.
 fn token_provides_name(request_metadata: &RequestMetadata) -> bool {
     request_metadata
-        .authentication()
-        .and_then(|auth| auth.full_name())
+        .principal_details()
+        .name()
         .is_some_and(|name| !name.is_empty())
 }
 

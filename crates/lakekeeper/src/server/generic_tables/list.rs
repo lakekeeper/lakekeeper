@@ -38,8 +38,9 @@ pub(super) async fn list_generic_tables<C: CatalogStore, A: Authorizer + Clone, 
     let authorizer = &state.v1_state.authz;
 
     // ------------------- AUTHZ: namespace-level ListGenericTables -------------------
+    let request_metadata = Arc::new(request_metadata);
     let event_ctx = APIEventContext::for_namespace(
-        Arc::new(request_metadata.clone()),
+        Arc::clone(&request_metadata),
         state.v1_state.events.clone(),
         warehouse_id,
         namespace.clone(),

@@ -65,8 +65,9 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     let authorizer = state.v1_state.authz;
     let catalog_state = state.v1_state.catalog;
 
+    let request_metadata = Arc::new(request_metadata);
     let event_ctx = APIEventContext::for_view(
-        Arc::new(request_metadata.clone()),
+        Arc::clone(&request_metadata),
         state.v1_state.events,
         warehouse_id,
         view.clone(),
@@ -190,8 +191,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     // 8. Resolve owners and assign current user
     let token_idp_id = request_metadata
         .authentication()
-        .and_then(|a| a.subject().idp_id())
-        .map(String::as_str);
+        .and_then(|a| a.subject().idp_id());
     let sorted_tabulars_with_full_info = resolve_users_for_authorize_load_tabular(
         &sorted_tabulars,
         request_metadata.actor(),

@@ -1300,8 +1300,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     //    an INVOKER view switches it back to the request actor.
     let token_idp_id = request_metadata
         .authentication()
-        .and_then(|a| a.subject().idp_id())
-        .map(String::as_str);
+        .and_then(|a| a.subject().idp_id());
     let sorted_tabulars_with_full_info = resolve_users_for_authorize_load_tabular(
         &sorted_tabulars,
         request_metadata.actor(),

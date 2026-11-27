@@ -332,7 +332,7 @@ A token is routed to the **first** authenticator whose `iss` set contains the to
 | `__URI` | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
 | `__AUDIENCE` | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. If set, the token's `aud` must contain at least one of the configured audiences; provide multiple as a comma-separated list and a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `__ADDITIONAL_ISSUERS` | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
-| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens (`scope` claim, or `scp` if absent; string or array). |
+| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens (`scope` claim, or `scp` if `scope` is absent or carries no scopes; string or array). |
 | `__REQUIRED_CLAIMS__<RULE>__…` | No | `__REQUIRED_CLAIMS__ORG__CLAIM=organizations` <br> `__REQUIRED_CLAIMS__ORG__ANY_OF='[tenant-a]'` | Rules a verified token must satisfy for this provider. See [Required Claims](#required-claims). |
 | `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claim paths to use as user ID (comma-separated, in order of preference). Dot notation nests, as for `ROLES_CLAIM`. Defaults to `oid,sub`. |
 | `__ROLES_CLAIM` | No | `resource_access.lakekeeper.roles` | Claim to use in provided JWT tokens to extract roles. |
@@ -512,7 +512,7 @@ Most cache entries' time-to-live is jittered downward by a small random fraction
 **Cache Invalidation Across Instances**
 {: #cache-invalidation }
 
-When several Lakekeeper instances share one database, a change made through one instance reaches the caches of all instances within one poll interval, about a second with the default settings. This covers the warehouse, namespace, secrets, role, user assignments and role ancestors caches. The short-term credentials cache and the user cache are not covered: their entries stay until their time-to-live ends.
+When several Lakekeeper instances share one database, a change made through one instance reaches the caches of all instances within one poll interval, about a second with the default settings. This covers the warehouse, namespace, secrets, role, user assignments and role ancestors caches. The short-term credentials cache, the user cache and the authentication cache are not covered: their entries stay until their time-to-live ends.
 
 The instance that makes a change removes the changed entries from its own caches at once. Every write that changes a cached entry also writes a change record to the database, in the same transaction. Each instance reads the new change records from the primary database every `LAKEKEEPER__CACHE__INVALIDATION__POLL_INTERVAL` (default 1 second), through `LAKEKEEPER__PG_DATABASE_URL_WRITE`, and removes the changed entries. After `LAKEKEEPER__CACHE__INVALIDATION__REEVICT_GRACE` (default 10 seconds), it removes them a second time: a read replica that is behind the primary can return old data, and the cache can store it again. If an instance cannot know which changes it missed, for example after a database failover, it empties all the caches listed above.
 
@@ -689,6 +689,28 @@ _Metrics_: The User cache exposes Prometheus metrics for monitoring:
 - `lakekeeper_cache_hits_total{cache_type="user"}`: Total number of cache hits
 - `lakekeeper_cache_misses_total{cache_type="user"}`: Total number of cache misses
 - `lakekeeper_cache_fenced_total{cache_type="user"}`: Total number of loaded entries left uncached because a user write overlapped the load
+
+**Authentication Cache**
+{: #authentication-cache }
+
+This cache remembers the tokens that Lakekeeper accepted. A request that brings the same token again within `LAKEKEEPER__CACHE__AUTHENTICATION__TIME_TO_LIVE_SECS` is not verified again. For a Kubernetes service account token, this saves a `TokenReview` request to the Kubernetes API server. For a token of an OpenID provider, it saves the signature check.
+
+An entry ends when the time-to-live has passed or when the token expires, whichever comes first. Only accepted tokens are kept. The cache holds a hash of each token, never the token itself, and the result of its check: all claims of an OpenID token, or the user name, UID, groups and extra fields that the Kubernetes `TokenReview` returned. Each instance removes expired entries every 10 seconds.
+
+Each instance has its own cache. While a client keeps using a token, each instance verifies it about once per time-to-live. A longer time-to-live saves more verifications. A shorter time-to-live ends access sooner after you delete a Kubernetes service account, a pod, or the Secret of a legacy service account token: a token that an instance accepted before keeps working on that instance until its entry ends. To verify every request, disable the cache.
+
+| Configuration Key                                        | Type    | Default | Description |
+|----------------------------------------------------------|---------|---------|-----|
+| `LAKEKEEPER__CACHE__AUTHENTICATION__ENABLED`           | boolean | `true`  | Enable/disable the authentication cache. With the cache disabled, every request verifies its token. Default: `true` |
+| `LAKEKEEPER__CACHE__AUTHENTICATION__TIME_TO_LIVE_SECS` | integer | `30`    | How long an accepted token is reused, in seconds. A value above `300` is lowered to `300`, with a warning at startup. A value of `0` turns the cache off. Default: `30` |
+| `LAKEKEEPER__CACHE__AUTHENTICATION__MEMORY_LIMIT_BYTES` | integer | `67108864` | The memory the cache may use for its entries, in bytes. A value of `0` turns the cache off. The cache can use about 20% more than this value. It needs room for the tokens that clients send within one time-to-live. An entry takes about 2 KB for a Kubernetes token, about 6 KB for a typical OpenID token, and up to 30 KB for an Entra ID token with 200 groups, so 64 MiB holds about 11,000 typical OpenID tokens. Default: `67108864` (64 MiB) |
+
+_Metrics_: The Authentication cache exposes Prometheus metrics for monitoring. Lakekeeper updates them every 10 seconds. While the cache is off, Lakekeeper reports none of them.
+
+- `lakekeeper_cache_size{cache_type="authentication"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="authentication"}`: Total number of requests whose token was found in the cache
+- `lakekeeper_cache_misses_total{cache_type="authentication"}`: Total number of requests whose token was not found in the cache
+- `lakekeeper_cache_evictions_total{cache_type="authentication"}`: Total number of entries of tokens in repeated use that were removed to make room before they expired. If it keeps rising, raise `LAKEKEEPER__CACHE__AUTHENTICATION__MEMORY_LIMIT_BYTES`.
 
 ### Endpoint Statistics
 

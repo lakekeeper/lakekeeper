@@ -98,36 +98,28 @@ struct FixedTokenAuthenticator {
 impl limes::Authenticator for FixedTokenAuthenticator {
     async fn authenticate(
         &self,
-        token: &str,
-        _introspection: &limes::introspect::IntrospectionResult,
+        token: &limes::Token<'_>,
     ) -> limes::error::Result<limes::Authentication> {
+        let token = token.as_str();
         if token != TOKEN {
             return Err(limes::error::Error::Unauthenticated {
                 reason: "unknown token".to_string(),
             });
         }
         Ok(limes::Authentication::builder()
-            .token_header(None)
-            .claims(serde_json::json!({}))
             .subject(limes::Subject::new(
                 Some(self.idp_id.clone()),
                 "extension-tester".to_string(),
             ))
-            .name(None)
-            .email(None)
-            .principal_type(None)
+            .identity(limes::VerifiedClaims::default())
             .build())
     }
 
-    fn can_handle_token(
-        &self,
-        _token: &str,
-        _introspection: &limes::introspect::IntrospectionResult,
-    ) -> bool {
+    fn can_handle_token(&self, _token: &limes::Token<'_>) -> bool {
         true
     }
 
-    fn idp_id(&self) -> Option<&String> {
+    fn idp_id(&self) -> Option<&str> {
         Some(&self.idp_id)
     }
 }

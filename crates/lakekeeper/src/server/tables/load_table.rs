@@ -109,8 +109,9 @@ pub(crate) async fn load_table_with_flags<
     let authorizer = state.v1_state.authz;
     let catalog_state = state.v1_state.catalog;
 
+    let request_metadata = Arc::new(request_metadata);
     let event_ctx = APIEventContext::for_table(
-        Arc::new(request_metadata.clone()),
+        Arc::clone(&request_metadata),
         state.v1_state.events,
         warehouse_id,
         table.clone(),

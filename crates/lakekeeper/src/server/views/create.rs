@@ -67,8 +67,9 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         view_id: None,
         properties: Arc::new(request.properties.clone().into_iter().collect()),
     };
+    let request_metadata = Arc::new(request_metadata);
     let event_ctx = APIEventContext::for_namespace(
-        Arc::new(request_metadata.clone()),
+        Arc::clone(&request_metadata),
         state.v1_state.events,
         warehouse_id,
         provided_ns.clone(),

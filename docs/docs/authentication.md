@@ -20,8 +20,8 @@ Users are automatically added to Lakekeeper after successful Authentication (use
 
 - `name`: `name` or `given_name`/ `first_name` and `family_name`/ `last_name` or `app_displayname` or `preferred_username`
 - `subject`: `sub` unless `subject_claim` is set, then it will be the value of the claim.
-- `claims`: all claims
 - `email`: `email` or `upn` if it contains an `@` or `preferred_username` if it contains an `@`
+- user type: a human if `idtyp` is `user`, and an application if `idtyp` is `app` or `device`. For any other `idtyp`, or none, a human if the token carries `name`, `given_name`, `first_name`, `family_name` or `last_name`, and an application in all other cases
 
 If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`. To give such tokens a friendlier name — for example machine or service-account tokens that only carry an `email` — set `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` (or the per-provider `..._DISPLAY_NAME_TEMPLATE`) to a template such as `Service Account {email}`; `{claim.path}` placeholders are filled from the token's claims (double a brace as `{{`/`}}` for a literal), and a real `name` claim always takes precedence. If a referenced claim is missing or not a string, the template is skipped and the principal keeps the default `Nameless App with ID <user-id>` name; a template with unbalanced or empty braces fails validation and aborts startup.
 Lakekeeper determines the ID of users in the following order:
@@ -474,7 +474,7 @@ We are now able to login and bootstrap Lakekeeper.
 
 For scenarios where you need to authenticate tokens from multiple identity providers simultaneously—such as Okta for human users and EKS OIDC for Kubernetes service accounts—Lakekeeper supports configuring multiple OIDC providers.
 
-When multiple providers are configured, each provider fetches its own JWKS keys independently. Incoming tokens are checked against each provider in order until one successfully validates the token.
+When multiple providers are configured, each provider fetches its own JWKS keys independently. A token goes to the first provider whose issuer and audience match it, and only that provider checks it: if it rejects the token, the request fails. See [Multiple OIDC Providers](./configuration.md#multiple-oidc-providers) for the order of the providers.
 
 ### Configuration
 
@@ -567,3 +567,11 @@ spark-submit \
 By default, user identities appear in Lakekeeper as `kubernetes~<service-account-uid>`, where the UID is the Kubernetes `uid` of the service account (as returned by the `TokenReview` API). The `system:serviceaccount:<namespace>:<service-account-name>` string is stored as the user's display name.
 
 The UID is assigned by Kubernetes and differs between clusters, so a given service account has a different Lakekeeper user ID in each cluster. If you pre-provision roles or set `LAKEKEEPER__INSTANCE_ADMINS` across environments, set `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username` instead. User identities then appear as `kubernetes~system:serviceaccount:<namespace>:<service-account-name>`, which is stable across clusters. Choose the subject source at initial setup: changing it after users exist changes their IDs and orphans existing role assignments.
+
+To protect the Kubernetes API server, each Lakekeeper instance sends at most 32 `TokenReview` requests at the same time. If `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` is on, legacy service account tokens get 32 more. A request that finds no free slot within 1 second gets `503` and can be retried. Most requests need no `TokenReview`, because Lakekeeper [reuses verified tokens](#reusing-verified-tokens) for a short time.
+
+## Reusing Verified Tokens
+
+Lakekeeper remembers each token it accepted for a short time, 30 seconds by default. A request that brings the same token again in that time is not verified again. This saves a `TokenReview` request to the Kubernetes API server, or the signature check of an OpenID token, for most requests. A token is never reused after it expires.
+
+Each Lakekeeper instance remembers tokens on its own. If you delete a Kubernetes service account, a pod, or the Secret of a legacy service account token, a token that an instance accepted before keeps working on that instance until the time-to-live ends, 30 seconds by default. See [Authentication Cache](./configuration.md#authentication-cache) to change the time or turn the cache off.

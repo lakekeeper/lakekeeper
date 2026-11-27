@@ -66,7 +66,7 @@ A worker that stops during a task, for example because it ran out of memory, lea
 
 ### Cache Metrics
 
-Lakekeeper maintains in-memory caches for Short-Term Credentials, S3 Signing Identities, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Ancestors, and Users. All caches share three metric names, differentiated by the `cache_type` label:
+Lakekeeper maintains in-memory caches for Short-Term Credentials, S3 Signing Identities, Warehouses, Namespaces, Secrets, Roles, User Assignments, Role Ancestors, Users, and Authentication. All caches share three metric names, differentiated by the `cache_type` label:
 
 | Metric                                                             | Type    | Labels       | Description |
 |--------------------------------------------------------------------|---------|--------------|-----|
@@ -74,7 +74,15 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, S3 Signing Ide
 | <code class="selectable">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
 | <code class="selectable">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
 
-`cache_type` values: `stc`, `s3_signing_identity`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_ancestors`, `user`, `shared_role_idents`, `shared_project_ids`. Lakekeeper Plus adds `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased. Two caches are exceptions. For `table_metadata`, a low hit rate is expected. For `admission_enforce`, a short TTL or many distinct subjects is the more common cause. See [Configuration > Caching](./configuration.md#caching) for details.
+`cache_type` values: `stc`, `s3_signing_identity`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_ancestors`, `user`, `shared_role_idents`, `shared_project_ids`, `authentication`. Lakekeeper Plus adds `admission_enforce` (see [External Enforce Gate](#external-enforce-gate)) and `table_metadata` (see [Table Metadata Cache](#table-metadata-cache)). A persistently low hit rate signals the cache capacity should be increased. Three caches are exceptions. For `table_metadata`, a low hit rate is expected. For `admission_enforce`, a short TTL or many distinct subjects is the more common cause. For `authentication`, a low hit rate means that clients send few requests with each token, or that the time-to-live is short; a rising `lakekeeper_cache_evictions_total` shows that the cache is too small. See [Configuration > Caching](./configuration.md#caching) for details.
+
+The authentication cache is bounded by memory, so it also counts the entries it removes to make room:
+
+| Metric                                                                 | Type    | Labels       | Description |
+|------------------------------------------------------------------------|---------|--------------|-----|
+| <code class="selectable">lakekeeper_cache_<wbr>evictions_total</code>  | Counter | `cache_type` | Entries of tokens in repeated use that were removed to make room before they expired |
+
+Only the authentication cache reports this metric. If it keeps rising, raise `LAKEKEEPER__CACHE__AUTHENTICATION__MEMORY_LIMIT_BYTES`. Lakekeeper updates the metrics of the authentication cache every 10 seconds, and reports none of them while the cache is off.
 
 The user-assignments and user caches also count the entries they leave uncached because a change or a role provider sync overlapped the load or the sync that read them:
 

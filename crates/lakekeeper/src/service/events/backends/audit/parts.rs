@@ -168,7 +168,7 @@ pub(crate) fn claims_email(request_metadata: &RequestMetadata) -> Option<&str> {
         return None;
     }
     request_metadata
-        .authentication()?
+        .principal_details()
         .email()
         .filter(|email| !email.is_empty())
 }

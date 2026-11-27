@@ -20,7 +20,7 @@ use crate::{
     config::MatchedEngines,
     service::{
         ArcProjectId, ArcRoleIdent, TabularId,
-        authn::{Actor, InternalActor},
+        authn::{Actor, InternalActor, PrincipalDetails},
         authz::{InstanceAdminAuthorizer, UserOrRole},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
         idempotency::IdempotencyKey,
@@ -162,6 +162,8 @@ pub struct RequestMetadata {
     received_at: tokio::time::Instant,
     project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
+    /// What the caller's token says about its principal. Empty without a token.
+    principal_details: PrincipalDetails,
     /// Roles the caller's token carries in the identity provider's roles claim. They
     /// hold in every project.
     token_roles: Option<XXHashSet<ArcRoleIdent>>,
@@ -217,14 +219,17 @@ impl From<ProjectIdMissing> for iceberg_ext::catalog::rest::IcebergErrorResponse
 }
 
 impl RequestMetadata {
-    /// Set authentication information for the request.
+    /// Set authentication information for the request: the verified token, and what
+    /// Lakekeeper reads from it about its principal.
     pub fn set_authentication(
         &mut self,
         actor: Actor,
         authentication: Authentication,
+        principal_details: PrincipalDetails,
     ) -> &mut Self {
         self.actor = actor.into();
         self.authentication = Some(authentication);
+        self.principal_details = principal_details;
         self
     }
 
@@ -351,6 +356,7 @@ impl RequestMetadata {
             request_id: request_id.into(),
             project_id: None,
             authentication: None,
+            principal_details: PrincipalDetails::default(),
             base_url: "http://localhost:8181".to_string(),
             actor: InternalActor::LakekeeperInternal,
             matched_path: None,
@@ -418,6 +424,7 @@ impl RequestMetadata {
             request_id: RequestId::generate(),
             project_id: None,
             authentication: None,
+            principal_details: PrincipalDetails::default(),
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Anonymous.into(),
             matched_path: None,
@@ -492,13 +499,23 @@ impl RequestMetadata {
         user_id: crate::service::UserId,
         name: Option<String>,
     ) -> Authentication {
+        let claims = name.map_or_else(
+            || serde_json::json!({}),
+            |name| serde_json::json!({ "name": name }),
+        );
+        Self::test_authentication_with_claims(user_id, claims)
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    fn test_authentication_with_claims(
+        user_id: crate::service::UserId,
+        claims: serde_json::Value,
+    ) -> Authentication {
         Authentication::builder()
-            .token_header(None)
-            .claims(serde_json::json!({}))
             .subject(user_id.into())
-            .name(name)
-            .email(None)
-            .principal_type(None)
+            .identity(
+                limes::VerifiedClaims::try_from(claims).expect("test claims are a JSON object"),
+            )
             .build()
     }
 
@@ -520,20 +537,14 @@ impl RequestMetadata {
     pub fn test_user_with_email(user_id: crate::service::UserId, email: &str) -> Self {
         RequestMetadataTestBuilder::builder()
             .actor(Actor::Principal(user_id.clone()))
-            .authentication(
-                Authentication::builder()
-                    .token_header(None)
-                    .claims(serde_json::json!({}))
-                    .subject(user_id.into())
-                    .name(Some("Test User".to_string()))
-                    .email(Some(email.to_string()))
-                    .principal_type(None)
-                    .build(),
-            )
+            .authentication(Self::test_authentication_with_claims(
+                user_id,
+                serde_json::json!({ "name": "Test User", "email": email }),
+            ))
             .build()
     }
 
-    /// Like [`Self::test_user`] but the token carries `claims`.
+    /// A user whose token carries exactly `claims`.
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn test_user_with_claims(
@@ -542,16 +553,7 @@ impl RequestMetadata {
     ) -> Self {
         RequestMetadataTestBuilder::builder()
             .actor(Actor::Principal(user_id.clone()))
-            .authentication(
-                Authentication::builder()
-                    .token_header(None)
-                    .claims(claims)
-                    .subject(user_id.into())
-                    .name(Some("Test User".to_string()))
-                    .email(None)
-                    .principal_type(None)
-                    .build(),
-            )
+            .authentication(Self::test_authentication_with_claims(user_id, claims))
             .build()
     }
 
@@ -615,6 +617,13 @@ impl RequestMetadata {
     #[must_use]
     pub fn authentication(&self) -> Option<&Authentication> {
         self.authentication.as_ref()
+    }
+
+    /// What the caller's token says about its principal: a display name, an email and a
+    /// user type. Empty without a token.
+    #[must_use]
+    pub fn principal_details(&self) -> &PrincipalDetails {
+        &self.principal_details
     }
 
     #[must_use]
@@ -726,6 +735,11 @@ pub struct RequestMetadataTestBuilder {
     pub actor: Actor,
     #[builder(default, setter(strip_option))]
     pub authentication: Option<Authentication>,
+    /// What the caller's token says about its principal. When unset, read from
+    /// `authentication` with the rules the auth middleware applies, without a provider's
+    /// display-name template. Token roles are never read from the claims; set `token_roles`.
+    #[builder(default, setter(strip_option))]
+    pub principal_details: Option<PrincipalDetails>,
     #[builder(default = "http://localhost:8181".to_string(), setter(into))]
     pub base_url: String,
     #[builder(default, setter(into))]
@@ -761,10 +775,17 @@ pub struct RequestMetadataTestBuilder {
 #[cfg(any(test, feature = "test-utils"))]
 impl From<RequestMetadataTestBuilder> for RequestMetadata {
     fn from(b: RequestMetadataTestBuilder) -> Self {
+        let principal_details = b.principal_details.unwrap_or_else(|| {
+            b.authentication
+                .as_ref()
+                .map(|authentication| PrincipalDetails::of(authentication, None))
+                .unwrap_or_default()
+        });
         Self {
             received_at: tokio::time::Instant::now(),
             request_id: b.request_id,
             authentication: b.authentication,
+            principal_details,
             base_url: b.base_url,
             actor: b.actor.into(),
             project_id: b.project_id,
@@ -862,6 +883,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         received_at: tokio::time::Instant::now(),
         request_id,
         authentication: None,
+        principal_details: PrincipalDetails::default(),
         token_roles: None,
         admission_roles: None,
         base_url: base_uri,

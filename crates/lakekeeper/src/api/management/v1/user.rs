@@ -51,15 +51,6 @@ pub enum UserType {
     Application,
 }
 
-impl From<limes::PrincipalType> for UserType {
-    fn from(principal_type: limes::PrincipalType) -> Self {
-        match principal_type {
-            limes::PrincipalType::Human => UserType::Human,
-            limes::PrincipalType::Application => UserType::Application,
-        }
-    }
-}
-
 /// User of the catalog
 #[derive(Debug, Serialize, Clone)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -265,13 +256,12 @@ pub(crate) fn parse_create_user_request(
     let (name, user_type, email) = if self_provision {
         // If this is self provisioning, provided values take precedence, but we may
         // use auth info from the token.
-        let auth_details = request_metadata.authentication();
-        let name =
-            request_name.or(auth_details.and_then(|a| a.full_name().map(ToString::to_string)));
-        let email = request_email.or(auth_details.and_then(|a| a.email().map(ToString::to_string)));
+        let principal = request_metadata.principal_details();
+        let name = request_name.or(principal.name().map(ToString::to_string));
+        let email = request_email.or(principal.email().map(ToString::to_string));
         // Human users can typically be identified by the token, which is why we default to Application
         let user_type = request_user_type
-            .or_else(|| auth_details.and_then(|a| a.principal_type().map(Into::into)))
+            .or(principal.user_type())
             .unwrap_or(UserType::Application);
         let name = name.unwrap_or(format!("Nameless App with ID {creation_user_id}"));
 
