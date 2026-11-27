@@ -723,6 +723,8 @@ mod test {
         let exempt_config_paths = [
             "management/v1/warehouse/{warehouse_id}/task-queue/soft_deletion/config",
             "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/table_health/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/table_health/schedule",
             "management/v1/project/task-queue/task_log_cleanup/config",
         ];
         // Upstream Iceberg REST routes Lakekeeper does not serve. They are in the vendored

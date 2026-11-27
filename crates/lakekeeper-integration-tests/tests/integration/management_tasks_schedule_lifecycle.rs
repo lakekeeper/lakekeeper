@@ -762,7 +762,7 @@ async fn get_config_of_unregistered_queue_returns_404(pool: PgPool) {
         404,
         "QueueNotFound".to_string(),
         "Queue 'never-registered-queue' not found! Configurable queues: \
-         [soft_deletion, tabular_purge, task_log_cleanup]"
+         [soft_deletion, table_health, tabular_purge, task_log_cleanup]"
             .to_string(),
     );
 

@@ -7,7 +7,10 @@ use tracing::Instrument;
 #[cfg(feature = "open-api")]
 use utoipa::{PartialSchema, ToSchema};
 
-use super::{SpecializedTask, TaskCheckState, TaskConfig, TaskData, TaskExecutionDetails};
+use super::{
+    SpecializedTask, TaskCheckState, TaskConfig, TaskData, TaskExecutionDetails,
+    heartbeat::with_heartbeat,
+};
 use crate::{
     api::Result,
     server::{io::remove_all, maybe_get_secret},
@@ -245,7 +248,12 @@ where
             }
         }
     };
-    let Some(purged) = with_heartbeat(remove_all(&file_io, &tabular_location), heartbeat).await
+    let Some(purged) = with_heartbeat(
+        remove_all(&file_io, &tabular_location),
+        HEARTBEAT_INTERVAL,
+        heartbeat,
+    )
+    .await
     else {
         return Ok(PurgeEnd::NotActive);
     };
@@ -261,104 +269,4 @@ where
     })?;
 
     Ok(PurgeEnd::Purged)
-}
-
-/// Runs `work` and calls `heartbeat` every [`HEARTBEAT_INTERVAL`] until `work` completes, or until
-/// `heartbeat` breaks. Returns the output of `work`, or `None` if `heartbeat` ended it.
-async fn with_heartbeat<T, H>(
-    work: impl Future<Output = T>,
-    mut heartbeat: impl FnMut() -> H,
-) -> Option<T>
-where
-    H: Future<Output = ControlFlow<()>>,
-{
-    let mut work = std::pin::pin!(work);
-    let mut interval = tokio::time::interval_at(
-        tokio::time::Instant::now() + HEARTBEAT_INTERVAL,
-        HEARTBEAT_INTERVAL,
-    );
-    // The running heartbeat. `work` keeps running while it is pending.
-    let mut beat = None;
-    loop {
-        tokio::select! {
-            output = &mut work => return Some(output),
-            _ = interval.tick(), if beat.is_none() => beat = Some(Box::pin(heartbeat())),
-            flow = async { beat.as_mut().expect("the branch runs only with a heartbeat").await },
-                if beat.is_some() =>
-            {
-                beat = None;
-                if flow.is_break() {
-                    return None;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-
-    use super::*;
-
-    #[tokio::test(start_paused = true)]
-    async fn a_long_purge_heartbeats_until_it_finishes() {
-        let beats = Arc::new(AtomicUsize::new(0));
-        let purged = with_heartbeat(
-            async {
-                tokio::time::sleep(HEARTBEAT_INTERVAL * 3 + Duration::from_secs(1)).await;
-                "purged"
-            },
-            || {
-                let beats = beats.clone();
-                async move {
-                    beats.fetch_add(1, Ordering::SeqCst);
-                    ControlFlow::Continue(())
-                }
-            },
-        )
-        .await;
-
-        assert_eq!(purged, Some("purged"));
-        assert_eq!(beats.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_purge_ends_when_its_heartbeat_says_so() {
-        let start = tokio::time::Instant::now();
-        let purged = with_heartbeat(
-            async {
-                tokio::time::sleep(HEARTBEAT_INTERVAL * 3).await;
-                "purged"
-            },
-            || async { ControlFlow::Break(()) },
-        )
-        .await;
-
-        assert_eq!(purged, None);
-        assert_eq!(start.elapsed(), HEARTBEAT_INTERVAL);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_purge_continues_while_its_heartbeat_is_pending() {
-        let start = tokio::time::Instant::now();
-        let purged = tokio::time::timeout(
-            HEARTBEAT_INTERVAL * 10,
-            with_heartbeat(
-                async {
-                    tokio::time::sleep(HEARTBEAT_INTERVAL * 2).await;
-                    "purged"
-                },
-                std::future::pending::<ControlFlow<()>>,
-            ),
-        )
-        .await
-        .expect("the purge waited for its heartbeat");
-
-        assert_eq!(purged, Some("purged"));
-        assert_eq!(start.elapsed(), HEARTBEAT_INTERVAL * 2);
-    }
 }

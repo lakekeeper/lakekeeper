@@ -30,6 +30,7 @@ use lakekeeper::{
             ScheduleTaskMetadata, SpecializedTask, TaskCheckState, TaskConfig, TaskData,
             TaskEntity, TaskExecutionDetails, TaskId, TaskInput, TaskQueueName, TaskQueueRegistry,
             TaskScheduleUpsert, UserConfiguration, UserScheduling, WarehouseTaskEntityId,
+            table_health_queue,
         },
     },
 };
@@ -661,7 +662,8 @@ async fn test_non_empty_warehouse_delete_keeps_cancel_queue_tasks(pool: PgPool) 
     );
 }
 
-/// Every queue the built-in registration adds keeps the default: its tasks block the delete.
+/// Every queue the built-in registration adds keeps the default, so its tasks block the delete,
+/// except `table_health`: the delete cancels its tasks.
 #[lakekeeper_storage_postgres::db_test]
 async fn test_built_in_queue_tasks_block_warehouse_delete(pool: PgPool) {
     let (ctx, warehouse, _registry) = setup_with_registry(
@@ -681,13 +683,21 @@ async fn test_built_in_queue_tasks_block_warehouse_delete(pool: PgPool) {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
-        ["soft_deletion", "tabular_purge", "task_log_cleanup"]
+        [
+            "soft_deletion",
+            "table_health",
+            "tabular_purge",
+            "task_log_cleanup"
+        ]
     );
 
     let warehouse_entity = TaskEntity::Warehouse {
         warehouse_id: warehouse.warehouse_id,
     };
-    for queue_name in built_in_queues {
+    for queue_name in built_in_queues
+        .into_iter()
+        .filter(|queue_name| *queue_name != &*table_health_queue::QUEUE_NAME)
+    {
         let task_id = enqueue_entity(
             &ctx,
             queue_name,
@@ -726,4 +736,20 @@ async fn test_built_in_queue_tasks_block_warehouse_delete(pool: PgPool) {
             "{queue_name}"
         );
     }
+
+    enqueue_entity(
+        &ctx,
+        &table_health_queue::QUEUE_NAME,
+        &warehouse.project_id,
+        warehouse_entity,
+    )
+    .await;
+    let query = DeleteWarehouseQuery::builder().build();
+    delete_warehouse(&ctx, warehouse.warehouse_id, query)
+        .await
+        .unwrap();
+    assert_eq!(
+        task_rows(&pool, warehouse.warehouse_id).await,
+        Vec::<(String, String)>::new()
+    );
 }

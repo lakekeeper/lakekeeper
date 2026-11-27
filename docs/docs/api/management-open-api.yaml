@@ -7547,6 +7547,133 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/table_health/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+              description: Request identifier, add this to your bug reports. The `x-request-id` the client sent, whatever its form, or one generated for the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetHealthQueueConfig'
+        '404':
+          description: This server has no queue of this name (`QueueNotFound`), or the warehouse does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetHealthQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/table_health/schedule:
+    post:
+      tags:
+        - tasks
+      summary: Schedule a task for an entity.
+      description: |-
+        Pre-checks run against the warehouse config and target entity
+        properties before the task is enqueued. A failure surfaces as `400`
+        with a specific error code (see the operator guide for the full set
+        of pre-check codes).
+
+        When a task is already active for the same (warehouse, entity,
+        queue) triple, the call returns `409 TaskAlreadyActive` with the
+        existing `task-id` in the body — chain to `POST /task/control`
+        with `run-now` or `run-at` to retime it without an extra
+        `task/list` round-trip.
+      operationId: schedule_task_table_health
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleHealthTaskRequest'
+        required: true
+      responses:
+        '200':
+          description: Task scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleTaskResponse'
+        '400':
+          description: Pre-check failed (e.g. scheduling disabled at the warehouse, entity opted out, unsupported entity type) or the request violates a shape limit (e.g. scheduled-for too far in the future).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '404':
+          description: Target entity not found in this warehouse.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '409':
+          description: A task is already active for this (warehouse, entity, queue). The error message includes the existing task-id; retime or cancel via POST /task/control.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config:
     get:
       tags:
@@ -9810,6 +9937,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GenericTableAssignment'
+    GetHealthQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/HealthQueueConfig'
     GetLakekeeperGenericTableActionsResponse:
       type: object
       required:
@@ -10556,6 +10695,18 @@ components:
               $ref: '#/components/schemas/PrivilegeDescriptor'
           propertyNames:
             type: string
+    HealthQueueConfig:
+      type: object
+      properties:
+        max-run-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: |-
+            How long one measurement may run, in seconds. A table whose scan takes longer is reported
+            as not measurable. Default: 900
+          minimum: 0
     IcebergErrorResponse:
       type: object
       description: JSON wrapper for all error responses (non-2xx)
@@ -15496,6 +15647,28 @@ components:
         - path
         - virtual_host
         - auto
+    ScheduleHealthTaskRequest:
+      type: object
+      description: Request body for scheduling a task.
+      required:
+        - entity
+      properties:
+        entity:
+          $ref: '#/components/schemas/WarehouseTaskEntityId'
+          description: |-
+            Entity to schedule the task for. Unsupported entity types return
+            `400` from the pre-check.
+        scheduled-for:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            When the task should run. Omit (or pass `null`) to run on the next
+            worker poll. RFC 3339 / ISO 8601 format. Must be within roughly one
+            year of now; further-out values return
+            `400 ScheduledForTooFarInFuture`.
+          example: 2026-12-31T23:59:59Z
     ScheduleTaskResponse:
       type: object
       description: Response returned on a successful schedule call.
@@ -15785,6 +15958,18 @@ components:
       enum:
         - admin
         - operator
+    SetHealthQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/HealthQueueConfig'
     SetMaintenanceModeRequest:
       type: object
       description: Request to switch this process into or out of read-only maintenance mode.

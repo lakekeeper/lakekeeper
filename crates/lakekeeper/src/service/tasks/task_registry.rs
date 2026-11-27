@@ -624,7 +624,10 @@ impl TaskQueueRegistry {
         authorizer: A,
         poll_interval: Duration,
     ) -> &Self {
-        use super::{tabular_expiration_queue, tabular_purge_queue, task_log_cleanup_queue};
+        use super::{
+            table_health_queue, tabular_expiration_queue, tabular_purge_queue,
+            task_log_cleanup_queue,
+        };
 
         let catalog_state_clone_for_tabular_expiration = catalog_state.clone();
         self.register_queue::<
@@ -656,6 +659,7 @@ impl TaskQueueRegistry {
         )
         .await;
 
+        let secret_store_for_table_health = secret_store.clone();
         let catalog_state_clone_for_tabular_purge = catalog_state.clone();
         self.register_queue::<
             tabular_purge_queue::PurgeQueueConfig,
@@ -704,6 +708,14 @@ impl TaskQueueRegistry {
             user_scheduling: UserScheduling::Disabled,
             user_configuration: UserConfiguration::Enabled,
         })
+        .await;
+
+        table_health_queue::register::<C, S>(
+            self,
+            catalog_state,
+            secret_store_for_table_health,
+            poll_interval,
+        )
         .await;
 
         self
