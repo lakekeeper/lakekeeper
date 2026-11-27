@@ -32,11 +32,11 @@ use crate::{
     },
     server::maybe_get_secret,
     service::{
-        ArcProjectId, CatalogStore, CatalogTableOps, CatalogWarehouseOps, NamedEntity, SecretStore,
-        TableInfo, Transaction, WarehouseStatus,
+        ArcProjectId, CatalogStore, CatalogTableHealthOps, CatalogTableOps, CatalogWarehouseOps,
+        NamedEntity, SecretStore, TableInfo, Transaction, WarehouseStatus,
         table_health::{
-            MEASUREMENT_VERSION, MeasureError, MeasureOutcome, Measurement, NotMeasurableReason,
-            measure,
+            MEASUREMENT_VERSION, MeasureError, MeasureOutcome, NotMeasurableReason,
+            TableHealthWrite, TableHealthWriteOutcome, measure,
         },
     },
 };
@@ -288,7 +288,7 @@ async fn table_health_worker<C: CatalogStore, S: SecretStore>(
     }
 }
 
-/// Measure the task's table, log the result and record the outcome.
+/// Measure the task's table and record the outcome.
 async fn run<C: CatalogStore, S: SecretStore>(
     catalog_state: C::State,
     secret_state: &S,
@@ -313,36 +313,8 @@ async fn run<C: CatalogStore, S: SecretStore>(
             tracing::info!(%warehouse_id, %table_id, table_name, "Table health not measured: {reason}");
             task.record_success::<C>(catalog_state, Some(reason)).await;
         }
-        Ok(RunEnd::Ended {
-            outcome: MeasureOutcome::Measured(measurement),
-            scan_duration,
-            metadata_location,
-        }) => {
-            let details = log_measurement(
-                &warehouse_id,
-                &table_id,
-                table_name,
-                &measurement,
-                scan_duration,
-            );
-            finish::<C>(catalog_state, task, &metadata_location, &details).await;
-        }
-        Ok(RunEnd::Ended {
-            outcome: MeasureOutcome::NotMeasurable(reason),
-            scan_duration,
-            metadata_location,
-        }) => {
-            tracing::info!(
-                %warehouse_id,
-                %table_id,
-                table_name,
-                ?reason,
-                scan_duration_ms = scan_duration.as_millis(),
-                measurement_version = MEASUREMENT_VERSION,
-                "Table can't be measured"
-            );
-            let details = format!("Not measurable: {reason:?}");
-            finish::<C>(catalog_state, task, &metadata_location, &details).await;
+        Ok(RunEnd::Ended(scan)) => {
+            finish::<C>(catalog_state, task, scan).await;
         }
         Ok(RunEnd::Stopped) => {
             tracing::info!(%warehouse_id, %table_id, table_name, "Table health measurement stopped");
@@ -365,22 +337,16 @@ async fn run<C: CatalogStore, S: SecretStore>(
     }
 }
 
-/// Record the task's success. If a commit changed the table during the run, schedule the next
-/// measurement in the same transaction.
+/// Store the result and record the task's success. If a commit changed the table during the run,
+/// schedule the next measurement in the same transaction; a missing file is then not stored.
 ///
 /// The share lock on the table row closes the race with a commit: a commit that locked the row
 /// first ends before the read, so the read sees its location; a commit that locks it later waits
-/// until the task is no longer active, so its own schedule succeeds. On an error the task is
-/// recorded as failed and retried.
-async fn finish<C: CatalogStore>(
-    catalog_state: C::State,
-    task: &TableHealthTask,
-    measured_location: &Location,
-    details: &str,
-) {
-    if let Err(err) =
-        finish_in_transaction::<C>(catalog_state.clone(), task, measured_location, details).await
-    {
+/// until the task is no longer active, so its own schedule succeeds. The lock also keeps the table
+/// from being dropped before the result is stored. On an error the task is recorded as failed and
+/// retried.
+async fn finish<C: CatalogStore>(catalog_state: C::State, task: &TableHealthTask, scan: ScanEnd) {
+    if let Err(err) = finish_in_transaction::<C>(catalog_state.clone(), task, scan).await {
         tracing::error!("Failed to finish the table health measurement: {err}");
         let detail = format!(
             "Failed to record the table health measurement.\nError: {}",
@@ -393,28 +359,82 @@ async fn finish<C: CatalogStore>(
 async fn finish_in_transaction<C: CatalogStore>(
     catalog_state: C::State,
     task: &TableHealthTask,
-    measured_location: &Location,
-    details: &str,
+    scan: ScanEnd,
 ) -> Result<()> {
     let Some((warehouse_id, &WarehouseTaskEntityId::Table { table_id }, _)) =
         task.task_metadata.warehouse_task_sub_entity()
     else {
-        task.record_success::<C>(catalog_state, Some(details)).await;
+        task.record_success::<C>(catalog_state, Some("The task's entity is not a table."))
+            .await;
         return Ok(());
+    };
+    let details = HealthExecutionDetails {
+        measurement_version: MEASUREMENT_VERSION,
+        scan_duration_ms: i64::try_from(scan.scan_duration.as_millis()).unwrap_or(i64::MAX),
+        manifests_read: match &scan.outcome {
+            MeasureOutcome::Measured(measurement) => measurement.manifests_read,
+            MeasureOutcome::NotMeasurable(_) => 0,
+        },
+    };
+    let mut message = match &scan.outcome {
+        MeasureOutcome::Measured(_) => "Measured.".to_string(),
+        MeasureOutcome::NotMeasurable(reason) => format!("Not measurable: {reason:?}"),
     };
     let mut transaction = C::Transaction::begin_write(catalog_state).await?;
     let current_location =
         C::lock_table_metadata_location(warehouse_id, table_id, transaction.transaction())
             .await
             .map_err(ErrorModel::from)?;
-    task.record_success_in_transaction::<C>(transaction.transaction(), Some(details))
+    // After the lock, which waits for a running commit: the next run is due at least
+    // `COMMIT_DELAY` after that commit.
+    let measured_at = chrono::Utc::now();
+    let next_not_before = measured_at + COMMIT_DELAY;
+    // A success moves the task's execution details into its log.
+    if matches!(
+        task.heartbeat_in_transaction::<C>(transaction.transaction(), 1.0, Some(details))
+            .await?,
+        TaskCheckState::NotActive
+    ) {
+        // Another worker holds a newer attempt and records the outcome. Nothing is written.
+        return Ok(());
+    }
+    let changed = current_location
+        .as_ref()
+        .is_some_and(|location| location != &scan.metadata_location);
+    // The commit can have deleted the missing file; the follow-up measures the new metadata.
+    let missing_after_commit = changed
+        && matches!(
+            scan.outcome,
+            MeasureOutcome::NotMeasurable(NotMeasurableReason::MetadataMissing { .. })
+        );
+    if missing_after_commit {
+        message = "Not stored: a file was missing and a commit changed the table during the run."
+            .to_string();
+    } else if current_location.is_some() {
+        let write = TableHealthWrite {
+            warehouse_id,
+            table_id,
+            measurement_version: MEASUREMENT_VERSION,
+            measured_at,
+            next_not_before,
+            outcome: scan.outcome,
+            metadata_location: scan.metadata_location,
+            scan_duration: scan.scan_duration,
+        };
+        if C::write_table_health(&write, transaction.transaction()).await?
+            == TableHealthWriteOutcome::NewerExists
+        {
+            message = "Not stored: a newer measurement version measured the table.".to_string();
+        }
+    }
+    task.record_success_in_transaction::<C>(transaction.transaction(), Some(&message))
         .await;
-    if current_location.is_some_and(|location| &location != measured_location) {
+    if changed {
         TableHealthTask::schedule_task::<C>(
             ScheduleTaskMetadata {
                 project_id: task.task_metadata.project_id.clone(),
                 parent_task_id: None,
-                scheduled_for: Some(chrono::Utc::now() + COMMIT_DELAY),
+                scheduled_for: Some(next_not_before),
                 entity: task.task_metadata.entity.clone(),
                 resource_demand: None,
             },
@@ -427,58 +447,12 @@ async fn finish_in_transaction<C: CatalogStore>(
     Ok(())
 }
 
-/// Log a measured table and its findings. Returns the message for the task log.
-fn log_measurement(
-    warehouse_id: &str,
-    table_id: &str,
-    table_name: &str,
-    measurement: &Measurement,
+/// A scan that ended with an outcome.
+struct ScanEnd {
+    outcome: MeasureOutcome,
     scan_duration: Duration,
-) -> String {
-    let sizes = measurement.sizes;
-    tracing::info!(
-        %warehouse_id,
-        %table_id,
-        table_name,
-        live_data_bytes = sizes.live_data_bytes,
-        live_delete_bytes = sizes.live_delete_bytes,
-        live_metadata_bytes = sizes.live_metadata_bytes,
-        snapshot_id = ?measurement.snapshot_id,
-        manifests_read = measurement.manifests_read,
-        findings = measurement.findings.len(),
-        scan_duration_ms = scan_duration.as_millis(),
-        measurement_version = MEASUREMENT_VERSION,
-        "Measured table health"
-    );
-    for finding in &measurement.findings {
-        tracing::info!(
-            %warehouse_id,
-            %table_id,
-            table_name,
-            kind = %finding.kind,
-            severity = ?finding.severity,
-            evidence = %finding.evidence,
-            thresholds = %finding.thresholds,
-            "Table health finding"
-        );
-    }
-    let kinds = measurement
-        .findings
-        .iter()
-        .map(|finding| finding.kind.to_string())
-        .collect::<Vec<_>>();
-    format!(
-        "Measured: live data {} bytes, live delete {} bytes, live metadata {} bytes. \
-         Findings: {}.",
-        sizes.live_data_bytes,
-        sizes.live_delete_bytes,
-        sizes.live_metadata_bytes,
-        if kinds.is_empty() {
-            "none".to_string()
-        } else {
-            kinds.join(", ")
-        }
-    )
+    /// The metadata location that was measured.
+    metadata_location: Location,
 }
 
 /// How a measurement task ended without an error.
@@ -486,12 +460,7 @@ enum RunEnd {
     /// Nothing to measure.
     Skipped(&'static str),
     /// The scan ended with an outcome.
-    Ended {
-        outcome: MeasureOutcome,
-        scan_duration: Duration,
-        /// The metadata location that was measured.
-        metadata_location: Location,
-    },
+    Ended(ScanEnd),
     /// A stop was requested during the scan.
     Stopped,
     /// Another worker holds a newer attempt of the task, see [`TaskCheckState::NotActive`].
@@ -610,16 +579,16 @@ async fn scan<C: CatalogStore>(
     let scan_duration = started.elapsed();
 
     match result {
-        Ok(outcome) => Ok(RunEnd::Ended {
+        Ok(outcome) => Ok(RunEnd::Ended(ScanEnd {
             outcome,
             scan_duration,
             metadata_location: metadata_location.clone(),
-        }),
-        Err(MeasureError::Cancelled) if deadline_reached => Ok(RunEnd::Ended {
+        })),
+        Err(MeasureError::Cancelled) if deadline_reached => Ok(RunEnd::Ended(ScanEnd {
             outcome: MeasureOutcome::NotMeasurable(NotMeasurableReason::TimeLimit),
             scan_duration,
             metadata_location: metadata_location.clone(),
-        }),
+        })),
         Err(MeasureError::Cancelled) => Ok(RunEnd::Stopped),
         Err(MeasureError::Read(e)) => Err(ErrorModel::internal(
             "Failed to read the table's metadata files.",
