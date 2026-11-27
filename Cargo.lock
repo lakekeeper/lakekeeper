@@ -4046,14 +4046,16 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.31.0"
-source = "git+https://github.com/lakekeeper/console?rev=v0.31.0#4d7e8eadd3e1ae3652ca2763f5a42ad4fb8496c1"
+version = "0.32.0"
+source = "git+https://github.com/lakekeeper/console?rev=v0.32.0#194efe07951ce4762ab322a6c06ef4a8b4600962"
 dependencies = [
+ "bytes",
  "flate2",
  "fs_extra",
  "mime_guess",
  "moka",
  "rust-embed",
+ "serde_json",
  "xxhash-rust",
 ]
 
