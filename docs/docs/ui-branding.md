@@ -12,7 +12,7 @@ Branding is a **Lakekeeper Plus** feature. The open-source console ships the sta
 
 ## How it works
 
-You describe the branding as a small JSON document, **base64-encode** it, and pass it to Lakekeeper Plus in the `LAKEKEEPER__UI__BRANDING` environment variable. At serve time Lakekeeper substitutes the value into the UI, which decodes it **synchronously before the app mounts** — so there is no flash of the default theme and no extra network request.
+You describe the branding as a small JSON document, **base64-encode** it, and pass it to Lakekeeper Plus in the `LAKEKEEPER__UI__BRANDING` environment variable. Lakekeeper passes the value to the UI with the page it serves, and the UI decodes it **synchronously before the app mounts** — so there is no flash of the default theme and no extra network request.
 
 ```text
 branding.json  --base64-->  LAKEKEEPER__UI__BRANDING  --serve-->  themed UI
@@ -167,7 +167,7 @@ export LAKEKEEPER__UI__SUPPORT_CONTACT_URL=https://support.example.com
 | Create an Issue | `LAKEKEEPER__UI__SUPPORT_ISSUE_URL` | `https://support.vakamo.com` |
 | Contact Support | `LAKEKEEPER__UI__SUPPORT_CONTACT_URL` | `https://support.vakamo.com` |
 
-Set them as **ordinary URLs** — unlike `LAKEKEEPER__UI__BRANDING`, there is nothing to encode by hand. Lakekeeper encodes each value before substituting it into the UI, and the console decodes it again on load. Leave one unset and that entry keeps its built-in target.
+Set them as **ordinary URLs** — unlike `LAKEKEEPER__UI__BRANDING`, there is nothing to encode. Leave one unset and that entry keeps its built-in target.
 
 A value that is not an absolute `http(s)` URL is ignored in favour of the default: the URL is handed to the browser to open, so a malformed or non-web value is never followed.
 
