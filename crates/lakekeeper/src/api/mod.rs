@@ -5,6 +5,8 @@ pub mod management;
 pub mod endpoints;
 #[cfg(feature = "router")]
 pub mod maintenance;
+#[cfg(feature = "open-api")]
+mod openapi;
 #[cfg(feature = "router")]
 pub mod router;
 #[cfg(feature = "router")]

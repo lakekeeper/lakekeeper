@@ -66,6 +66,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/bootstrap:
     post:
       tags:
@@ -96,6 +98,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/endpoint-statistics:
     post:
       tags:
@@ -167,6 +171,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/grants:
     get:
       tags:
@@ -262,6 +268,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/grants/grantable-privileges:
     get:
       tags:
@@ -287,6 +295,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/info:
     get:
       tags:
@@ -301,18 +311,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ServerInfo'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-        '500':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/check:
     post:
       tags:
@@ -341,6 +353,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CheckResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
@@ -362,6 +378,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetNamespaceAuthPropertiesResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/namespace/{namespace_id}/access:
     get:
       tags:
@@ -403,6 +423,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetNamespaceAccessResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/permissions/namespace/{namespace_id}/assignments:
     get:
@@ -433,6 +457,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetNamespaceAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -455,6 +483,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/namespace/{namespace_id}/authorizer-actions:
     get:
       tags:
@@ -496,6 +528,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGANamespaceActionsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/namespace/{namespace_id}/managed-access:
     post:
       tags:
@@ -519,6 +555,10 @@ paths:
       responses:
         '200':
           description: ''
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/project/access:
     get:
       tags:
@@ -561,6 +601,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAccessResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/permissions/project/assignments:
     get:
@@ -592,6 +636,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -615,6 +663,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/project/authorizer-actions:
     get:
       tags:
@@ -657,6 +709,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGAProjectActionsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/project/{project_id}/access:
     get:
       tags:
@@ -699,6 +755,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAccessResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/permissions/project/{project_id}/assignments:
     get:
@@ -731,6 +791,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
     post:
       tags:
@@ -755,6 +819,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/role/{role_id}/access:
     get:
       tags:
@@ -779,6 +847,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetRoleAccessResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/permissions/role/{role_id}/assignments:
     get:
@@ -809,6 +881,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetRoleAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -830,6 +906,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/role/{role_id}/authorizer-actions:
     get:
       tags:
@@ -871,6 +951,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGARoleActionsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/server/access:
     get:
       tags:
@@ -905,6 +989,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetServerAccessResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/permissions/server/assignments:
     get:
@@ -928,6 +1016,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetServerAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -942,6 +1034,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/server/authorizer-actions:
     get:
       tags:
@@ -976,6 +1072,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGAServerActionsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/tag/{tag_definition_id}/assignments:
     get:
       tags:
@@ -1005,6 +1105,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTagAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -1027,6 +1131,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
       tags:
@@ -1048,6 +1156,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetWarehouseAuthPropertiesResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/access:
     get:
       tags:
@@ -1089,6 +1201,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetWarehouseAccessResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/assignments:
     get:
@@ -1119,6 +1235,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetWarehouseAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -1141,6 +1261,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/authorizer-actions:
     get:
       tags:
@@ -1182,6 +1306,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGAWarehouseActionsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/generic-table/{generic_table_id}/assignments:
     get:
       tags:
@@ -1218,6 +1346,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetGenericTableAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -1247,6 +1379,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/generic-table/{generic_table_id}/authorizer-actions:
     get:
       tags:
@@ -1295,6 +1431,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGAGenericTableActionsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/managed-access:
     post:
       tags:
@@ -1318,6 +1458,10 @@ paths:
       responses:
         '200':
           description: ''
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access:
     get:
       tags:
@@ -1366,6 +1510,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTableAccessResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments:
     get:
@@ -1403,6 +1551,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTableAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -1432,6 +1584,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/authorizer-actions:
     get:
       tags:
@@ -1480,6 +1636,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGATableActionsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access:
     get:
       tags:
@@ -1528,6 +1688,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetViewAccessResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments:
     get:
@@ -1565,6 +1729,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetViewAssignmentsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - permissions-openfga
@@ -1594,6 +1762,10 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/authorizer-actions:
     get:
       tags:
@@ -1642,6 +1814,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGAViewActionsResponse'
+        4XX:
+          $ref: '#/components/responses/IcebergClientError'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project:
     get:
       tags:
@@ -1671,6 +1847,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - project
@@ -1696,6 +1874,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - project
@@ -1719,6 +1899,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project-list:
     get:
       tags:
@@ -1739,6 +1921,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/actions:
     get:
       tags:
@@ -1784,6 +1968,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/grants:
     get:
       tags:
@@ -1860,6 +2046,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - grant
@@ -1901,6 +2089,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/grants/grantable-privileges:
     get:
       tags:
@@ -1959,6 +2149,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/rename:
     post:
       tags:
@@ -1989,6 +2181,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/task-queue/task_log_cleanup/config:
     get:
       tags:
@@ -2029,6 +2223,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - tasks
@@ -2059,6 +2255,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/task/by-id/{task_id}:
     get:
       tags:
@@ -2104,6 +2302,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/task/control:
     post:
       tags:
@@ -2135,6 +2335,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/task/list:
     post:
       tags:
@@ -2169,6 +2371,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/project/{project_id}:
     get:
       tags:
@@ -2194,6 +2398,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
     delete:
       tags:
@@ -2216,6 +2422,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/project/{project_id}/rename:
     post:
@@ -2245,6 +2453,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
       deprecated: true
   /management/v1/role:
     get:
@@ -2335,6 +2545,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - role
@@ -2369,6 +2581,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}:
     get:
       tags:
@@ -2405,6 +2619,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - role
@@ -2445,6 +2661,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - role
@@ -2488,6 +2706,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}/actions:
     get:
       tags:
@@ -2540,6 +2760,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}/member-of:
     get:
       tags:
@@ -2592,6 +2814,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}/member-of/transitive:
     get:
       tags:
@@ -2654,6 +2878,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}/members:
     get:
       tags:
@@ -2716,6 +2942,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - role
@@ -2771,6 +2999,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}/members/transitive:
     get:
       tags:
@@ -2842,6 +3072,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}/members/{member_type}/{member_id}:
     delete:
       tags:
@@ -2892,6 +3124,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}/metadata:
     get:
       tags:
@@ -2923,6 +3157,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/role/{role_id}/source-system:
     put:
       tags:
@@ -2964,6 +3200,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/search/role:
     post:
       tags:
@@ -2999,6 +3237,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/search/user:
     post:
       tags:
@@ -3025,6 +3265,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/server/actions:
     get:
       tags:
@@ -3062,6 +3304,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/server/grants:
     get:
       tags:
@@ -3128,6 +3372,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - grant
@@ -3164,6 +3410,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/server/grants/grantable-privileges:
     get:
       tags:
@@ -3214,6 +3462,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/server/maintenance-mode:
     post:
       tags:
@@ -3247,6 +3497,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/tag-definition:
     get:
       tags:
@@ -3305,6 +3557,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - tag
@@ -3339,6 +3593,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/tag-definition/{tag_definition_id}:
     get:
       tags:
@@ -3377,6 +3633,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - tag
@@ -3420,6 +3678,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - tag
@@ -3451,6 +3711,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/tag-definition/{tag_definition_id}/actions:
     get:
       tags:
@@ -3502,6 +3764,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/tag-definition/{tag_definition_id}/attachments:
     get:
       tags:
@@ -3605,6 +3869,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/tag-definition/{tag_definition_id}/grants:
     get:
       tags:
@@ -3686,6 +3952,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - grant
@@ -3734,6 +4002,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/tag-definition/{tag_definition_id}/grants/grantable-privileges:
     get:
       tags:
@@ -3798,6 +4068,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/user:
     get:
       tags:
@@ -3846,6 +4118,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - user
@@ -3879,6 +4153,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/user/{user_id}:
     get:
       tags:
@@ -3905,6 +4181,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     put:
       tags:
         - user
@@ -3934,6 +4212,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - user
@@ -3957,6 +4237,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/user/{user_id}/actions:
     get:
       tags:
@@ -3999,6 +4281,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/user/{user_id}/roles:
     get:
       tags:
@@ -4050,6 +4334,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/user/{user_id}/roles/transitive:
     get:
       tags:
@@ -4111,6 +4397,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse:
     get:
       tags:
@@ -4164,6 +4452,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - warehouse
@@ -4201,6 +4491,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse-creation-validation:
     post:
       tags:
@@ -4249,6 +4541,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}:
     get:
       tags:
@@ -4276,6 +4570,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - warehouse
@@ -4307,6 +4603,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/actions:
     get:
       tags:
@@ -4351,6 +4649,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/activate:
     post:
       tags:
@@ -4374,6 +4674,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/deactivate:
     post:
       tags:
@@ -4397,6 +4699,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/delete-profile:
     post:
       tags:
@@ -4430,6 +4734,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/deleted-tabulars:
     get:
       tags:
@@ -4483,6 +4789,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop:
     post:
       tags:
@@ -4512,6 +4820,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/format-version-policy:
     post:
       tags:
@@ -4548,6 +4858,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/actions:
     get:
       tags:
@@ -4597,6 +4909,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants:
     get:
       tags:
@@ -4684,6 +4998,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - grant
@@ -4739,6 +5055,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants/grantable-privileges:
     get:
       tags:
@@ -4809,6 +5127,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection:
     get:
       tags:
@@ -4842,6 +5162,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - warehouse
@@ -4880,6 +5202,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/tags:
     get:
       tags:
@@ -4935,6 +5259,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/tags/{tag_name}:
     put:
       tags:
@@ -4992,6 +5318,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - tag
@@ -5038,6 +5366,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/grants:
     get:
       tags:
@@ -5121,6 +5451,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - grant
@@ -5173,6 +5505,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/grants/grantable-privileges:
     get:
       tags:
@@ -5237,6 +5571,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/grants/subtree:
     get:
       tags:
@@ -5376,6 +5712,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/grants/subtree/revoke:
     post:
       tags:
@@ -5446,6 +5784,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/managed-by:
     post:
       tags:
@@ -5482,6 +5822,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions:
     get:
       tags:
@@ -5531,6 +5873,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants:
     get:
       tags:
@@ -5619,6 +5963,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - grant
@@ -5674,6 +6020,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/grantable-privileges:
     get:
       tags:
@@ -5744,6 +6092,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/subtree:
     get:
       tags:
@@ -5913,6 +6263,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/subtree/revoke:
     post:
       tags:
@@ -6003,6 +6355,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/move:
     post:
       tags:
@@ -6069,6 +6423,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
     get:
       tags:
@@ -6102,6 +6458,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - warehouse
@@ -6140,6 +6498,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/tags:
     get:
       tags:
@@ -6195,6 +6555,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/tags/{tag_name}:
     put:
       tags:
@@ -6250,6 +6612,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - tag
@@ -6296,6 +6660,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/protection:
     post:
       tags:
@@ -6329,6 +6695,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
@@ -6362,6 +6730,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/search-tabular:
     post:
       tags:
@@ -6399,6 +6769,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/statistics:
     get:
       tags:
@@ -6458,6 +6830,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/storage:
     post:
       tags:
@@ -6491,6 +6865,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/storage-credential:
     post:
       tags:
@@ -6526,6 +6902,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/storage/validate-access:
     post:
       tags:
@@ -6557,6 +6935,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/storage/validate-credential:
     post:
       tags:
@@ -6593,6 +6973,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/storage/validate-profile:
     post:
       tags:
@@ -6632,6 +7014,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/actions:
     get:
       tags:
@@ -6681,6 +7065,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/column-tags:
     get:
       tags:
@@ -6727,6 +7113,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/column/{column_name}/tags:
     get:
       tags:
@@ -6788,6 +7176,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/column/{column_name}/tags/{tag_name}:
     put:
       tags:
@@ -6852,6 +7242,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - tag
@@ -6904,6 +7296,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/grants:
     get:
       tags:
@@ -6994,6 +7388,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - grant
@@ -7049,6 +7445,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/grants/grantable-privileges:
     get:
       tags:
@@ -7119,6 +7517,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
     get:
       tags:
@@ -7152,6 +7552,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - warehouse
@@ -7190,6 +7592,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags:
     get:
       tags:
@@ -7245,6 +7649,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags/{tag_name}:
     put:
       tags:
@@ -7300,6 +7706,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - tag
@@ -7346,6 +7754,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/tags:
     get:
       tags:
@@ -7394,6 +7804,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/tags/{tag_name}:
     put:
       tags:
@@ -7442,6 +7854,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - tag
@@ -7481,6 +7895,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/task-queue/soft_deletion/config:
     get:
       tags:
@@ -7519,6 +7935,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - tasks
@@ -7547,6 +7965,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config:
     get:
       tags:
@@ -7585,6 +8005,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - tasks
@@ -7613,6 +8035,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}:
     get:
       tags:
@@ -7656,6 +8080,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/task/control:
     post:
       tags:
@@ -7685,6 +8111,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/task/list:
     post:
       tags:
@@ -7717,6 +8145,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/actions:
     get:
       tags:
@@ -7766,6 +8196,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/grants:
     get:
       tags:
@@ -7853,6 +8285,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - grant
@@ -7908,6 +8342,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/grants/grantable-privileges:
     get:
       tags:
@@ -7978,6 +8414,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection:
     get:
       tags:
@@ -8011,6 +8449,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     post:
       tags:
         - warehouse
@@ -8049,6 +8489,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/tags:
     get:
       tags:
@@ -8104,6 +8546,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/tags/{tag_name}:
     put:
       tags:
@@ -8159,6 +8603,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
     delete:
       tags:
         - tag
@@ -8205,6 +8651,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
   /management/v1/whoami:
     get:
       tags:
@@ -8225,6 +8673,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+        5XX:
+          $ref: '#/components/responses/IcebergServerError'
 components:
   schemas:
     AddRoleMembersRequest:
@@ -18500,6 +18950,19 @@ components:
       description: |-
         Response of the `whoami` endpoint: the catalog user for the current token,
         plus request-scoped privilege not stored on the user record.
+  responses:
+    IcebergClientError:
+      description: Client error. Request rejections may have a plain text or empty body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
+    IcebergServerError:
+      description: Server error. Failures outside the handler may have a plain text or empty body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IcebergErrorResponse'
   securitySchemes:
     bearerAuth:
       type: http
