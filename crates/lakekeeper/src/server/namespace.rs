@@ -21,14 +21,17 @@ use crate::{
             Prefix, Result, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
             namespace::{GetNamespacePropertiesQuery, NamespaceDropFlags},
         },
-        management::v1::warehouse::TabularDeleteProfile,
+        management::v1::{
+            tasks::{ListTasksRequest, TaskStatus, WarehouseTaskEntityFilter},
+            warehouse::TabularDeleteProfile,
+        },
     },
     request_metadata::RequestMetadata,
     server::{self, authorize_soft_deletion_skip, io::cleanup_deadline},
     service::{
         CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTaskOps,
-        NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
-        Transaction, WriteTransaction,
+        NamedEntity, NamespaceDropInfo, NamespaceHierarchy, NamespaceId, NamespaceNotEmpty,
+        ResolvedWarehouse, State, TabularId, Transaction, WriteTransaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
             GrantResource, NamespaceParent, emit_bootstrap_grants_async, write_bootstrap_grants,
@@ -43,7 +46,11 @@ use crate::{
         secrets::SecretStore,
         storage::storage_layout::{NamespaceNameContext, NamespacePath},
         tasks::{
-            CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
+            CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, TaskFilter, WarehouseTaskEntityId,
+            tabular_expiration_queue::{
+                LEGACY_QUEUE_NAME as LEGACY_EXPIRATION_QUEUE_NAME,
+                QUEUE_NAME as EXPIRATION_QUEUE_NAME,
+            },
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
     },
@@ -809,6 +816,70 @@ async fn drop_empty_namespace<A: Authorizer, C: CatalogStore>(
     Ok(drop_info.namespace_locations)
 }
 
+async fn cancel_recursive_drop_tasks<C: CatalogStore>(
+    warehouse: &ResolvedWarehouse,
+    namespace_id: NamespaceId,
+    drop_info: &mut NamespaceDropInfo,
+    transaction: &mut WriteTransaction<C>,
+) -> Result<()> {
+    let task_ids = std::mem::take(&mut drop_info.open_tasks);
+    if task_ids.is_empty() {
+        return Ok(());
+    }
+    C::cancel_scheduled_tasks(
+        None,
+        &[],
+        CancelTasksFilter::TaskIds(task_ids),
+        false,
+        transaction.transaction(),
+    )
+    .await?;
+
+    let entities = drop_info
+        .child_tables
+        .iter()
+        .map(|(id, _, _)| id)
+        .chain(&drop_info.soft_deleted_child_tabular_ids)
+        .map(|id| match *id {
+            TabularId::Table(table_id) => WarehouseTaskEntityFilter::Table { table_id },
+            TabularId::View(view_id) => WarehouseTaskEntityFilter::View { view_id },
+            TabularId::GenericTable(generic_table_id) => {
+                WarehouseTaskEntityFilter::GenericTable { generic_table_id }
+            }
+        })
+        .collect();
+    let remaining = C::list_tasks(
+        &TaskFilter::WarehouseId {
+            warehouse_id: warehouse.warehouse_id,
+            project_id: warehouse.project_id.clone(),
+        },
+        &ListTasksRequest {
+            status: Some(vec![
+                TaskStatus::Scheduled,
+                TaskStatus::Running,
+                TaskStatus::Stopping,
+            ]),
+            queue_name: Some(vec![
+                EXPIRATION_QUEUE_NAME.clone(),
+                LEGACY_EXPIRATION_QUEUE_NAME.clone(),
+            ]),
+            entities: Some(entities),
+            page_size: Some(1),
+            ..Default::default()
+        },
+        transaction.transaction(),
+    )
+    .await?;
+    if !remaining.tasks.is_empty() {
+        return Err(ErrorModel::from(
+            NamespaceNotEmpty::new(warehouse.warehouse_id, namespace_id)
+                .append_detail("Expiration tasks are still active. Retry the recursive drop."),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     flags: NamespaceDropFlags,
@@ -828,17 +899,10 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             TabularDeleteProfile::Soft { .. }
         ))
     {
-        let drop_info =
+        let mut drop_info =
             C::drop_namespace(warehouse.warehouse_id, namespace_id, flags, &mut t).await?;
 
-        C::cancel_scheduled_tasks(
-            None,
-            &[],
-            CancelTasksFilter::TaskIds(drop_info.open_tasks),
-            false,
-            t.transaction(),
-        )
-        .await?;
+        cancel_recursive_drop_tasks::<C>(warehouse, namespace_id, &mut drop_info, &mut t).await?;
         let project_id = &warehouse.project_id;
 
         if flags.purge {
@@ -902,10 +966,15 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             })
             .ok();
 
-        // Delete child tables from authorizer as well.
+        // Clean up authorizer entries for all dropped tabulars, including soft-deleted ones.
         // We do not fail the entire operation if this fails, as the namespace and tables are
         // already gone from the catalog.
-        for (tabular_id, _tabular_location, tabular_ident) in drop_info.child_tables {
+        let dropped_tabular_ids = drop_info
+            .child_tables
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .chain(drop_info.soft_deleted_child_tabular_ids);
+        for tabular_id in dropped_tabular_ids {
             match tabular_id {
                 TabularId::Table(table_id) => {
                     authorizer
@@ -913,7 +982,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .await
                         .inspect_err(|err| {
                             tracing::error!(
-                                "Failed to delete table '{tabular_ident}' with id '{table_id}' from authorizer after recursive namespace drop: {}",
+                                "Failed to delete table '{table_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })
@@ -925,7 +994,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .await
                         .inspect_err(|err| {
                             tracing::error!(
-                                "Failed to delete view '{tabular_ident}' with id '{view_id}' from authorizer after recursive namespace drop: {}",
+                                "Failed to delete view '{view_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })
@@ -937,7 +1006,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .await
                         .inspect_err(|err| {
                             tracing::error!(
-                                "Failed to delete generic table '{tabular_ident}' with id '{generic_table_id}' from authorizer after recursive namespace drop: {}",
+                                "Failed to delete generic table '{generic_table_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })

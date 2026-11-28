@@ -44,6 +44,16 @@ pub(crate) enum TabularType {
     GenericTable,
 }
 
+impl TabularType {
+    pub(crate) fn into_tabular_id(self, id: Uuid) -> TabularId {
+        match self {
+            Self::Table => TabularId::Table(id.into()),
+            Self::View => TabularId::View(id.into()),
+            Self::GenericTable => TabularId::GenericTable(id.into()),
+        }
+    }
+}
+
 impl From<lakekeeper::api::management::v1::TabularType> for TabularType {
     fn from(typ: lakekeeper::api::management::v1::TabularType) -> Self {
         match typ {

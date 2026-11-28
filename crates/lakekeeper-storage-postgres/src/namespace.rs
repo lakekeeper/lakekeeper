@@ -1,4 +1,8 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+    sync::Arc,
+};
 
 use iceberg::TableIdent;
 use itertools::izip;
@@ -7,16 +11,16 @@ use lakekeeper::{
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogGetNamespaceError,
-        CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogMoveNamespaceError,
-        CatalogNamespaceDropError, CatalogSetNamespaceProtectedError,
+        CatalogBackendError, CatalogBackendErrorType, CatalogCreateNamespaceError,
+        CatalogGetNamespaceError, CatalogListNamespaceError, CatalogListNamespacesResponse,
+        CatalogMoveNamespaceError, CatalogNamespaceDropError, CatalogSetNamespaceProtectedError,
         CatalogUpdateNamespacePropertiesError, ChildNamespaceProtected, ChildTabularProtected,
         CreateNamespaceRequest, InternalParseLocationError, InvalidNamespaceIdentifier,
         ListNamespacesQuery, MovedNamespace, Namespace, NamespaceAlreadyExists,
         NamespaceCannotMoveIntoSelf, NamespaceDropInfo, NamespaceHasChildren,
         NamespaceHasRunningTabularExpirations, NamespaceId, NamespaceIdent, NamespaceNotEmpty,
         NamespaceNotFound, NamespacePropertiesSerializationError, NamespaceProtected,
-        NamespaceWithParent, Result, SerializationError, TabularId, UpdatedNamespaceProperties,
+        NamespaceWithParent, Result, SerializationError, UpdatedNamespaceProperties,
         WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
@@ -1051,18 +1055,34 @@ pub(crate) async fn move_namespace(
     })
 }
 
-#[allow(clippy::too_many_lines)]
-pub(crate) async fn drop_namespace(
+struct NamespaceDropSnapshot {
+    is_protected: bool,
+    namespace_name: Vec<String>,
+    has_protected_namespaces: bool,
+    has_protected_tabulars: bool,
+    has_in_flight_expiration: bool,
+    has_unresolved_soft_deletions: bool,
+    child_tabulars: Vec<Uuid>,
+    child_tabulars_namespace_names: Vec<serde_json::Value>,
+    child_tabulars_table_names: Vec<String>,
+    child_tabular_fs_protocol: Vec<String>,
+    child_tabular_fs_location: Vec<String>,
+    child_tabular_typ: Vec<TabularType>,
+    child_tabulars_deleted: Vec<Uuid>,
+    child_namespaces: Vec<Uuid>,
+    child_tabular_task_id: Vec<Uuid>,
+    dropped_ns_ids: Vec<Uuid>,
+    dropped_ns_locations: Vec<String>,
+    child_tabulars_deleted_typ: Vec<TabularType>,
+    expiration_task_ids: Vec<Uuid>,
+}
+
+async fn load_namespace_drop_snapshot(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
-    NamespaceDropFlags {
-        force,
-        purge: _purge,
-        recursive,
-    }: NamespaceDropFlags,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
-    let info = sqlx::query!(r#"
+) -> std::result::Result<NamespaceDropSnapshot, CatalogNamespaceDropError> {
+    sqlx::query_as!(NamespaceDropSnapshot, r#"
         WITH namespace_info AS (
             SELECT namespace_name, namespace_id, protected, namespace_properties->>'location' AS location
             FROM namespace
@@ -1087,26 +1107,44 @@ pub(crate) async fn drop_namespace(
             WHERE warehouse_id = $1 AND (metadata_location IS NOT NULL OR ta.typ = 'generic-table') AND (ta.namespace_id = $2 OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
-            SELECT t.task_id, t.queue_name, t.status as task_status from task t
-            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type in ('table', 'view', 'generic-table')
+            SELECT t.task_id, t.entity_id, t.queue_name, t.status AS task_status,
+                t.task_data->>'deletion_kind' AS deletion_kind
+            FROM task t
+            JOIN tabulars ta ON ta.tabular_id = t.entity_id
+            WHERE t.warehouse_id = $1 AND t.entity_type IN ('table', 'view', 'generic-table')
+        ),
+        expiration_intent AS (
+            SELECT entity_id,
+                bool_and(task_status = 'scheduled' AND deletion_kind IS NOT DISTINCT FROM 'default') AS can_cancel
+            FROM tasks
+            WHERE queue_name IN ('soft_deletion', 'tabular_expiration')
+            GROUP BY entity_id
         )
         SELECT
             ni.protected AS "is_protected!",
             ni.namespace_name AS "namespace_name: Vec<String>",
             EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
-            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running' AND queue_name IN ('soft_deletion', 'tabular_expiration')) AS "has_running_expiration!",
+            EXISTS (SELECT 1 FROM tasks WHERE task_status <> 'scheduled' AND queue_name IN ('soft_deletion', 'tabular_expiration')) AS "has_in_flight_expiration!",
+            EXISTS (
+                SELECT 1 FROM tabulars ta
+                LEFT JOIN expiration_intent ei ON ei.entity_id = ta.tabular_id
+                WHERE (ta.deleted_at IS NOT NULL OR ei.entity_id IS NOT NULL)
+                    AND ei.can_cancel IS DISTINCT FROM true
+            ) AS "has_unresolved_soft_deletions!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
             ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<serde_json::Value>",
             ARRAY(SELECT table_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_table_names!",
             ARRAY(SELECT fs_protocol FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_protocol!",
             ARRAY(SELECT fs_location FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_location!",
             ARRAY(SELECT typ FROM tabulars where deleted_at is NULL) AS "child_tabular_typ!: Vec<TabularType>",
-            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
+            ARRAY(SELECT tabular_id FROM tabulars WHERE deleted_at IS NOT NULL ORDER BY tabular_id) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>",
             ARRAY(SELECT namespace_id FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_ids!: Vec<Uuid>",
-            ARRAY(SELECT location FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_locations!: Vec<String>"
+            ARRAY(SELECT location FROM dropped_namespace_locations ORDER BY namespace_id) AS "dropped_ns_locations!: Vec<String>",
+            ARRAY(SELECT typ FROM tabulars WHERE deleted_at IS NOT NULL ORDER BY tabular_id) AS "child_tabulars_deleted_typ!: Vec<TabularType>",
+            ARRAY(SELECT task_id FROM tasks WHERE queue_name IN ('soft_deletion', 'tabular_expiration') ORDER BY task_id) AS "expiration_task_ids!: Vec<Uuid>"
         FROM namespace_info ni
 "#,
         *warehouse_id,
@@ -1117,7 +1155,134 @@ pub(crate) async fn drop_namespace(
          } else {
             e.into_catalog_backend_error().into()
         }
-    )?;
+    )
+}
+
+fn namespace_drop_lock_error(error: sqlx::Error) -> CatalogBackendError {
+    if matches!(&error, sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")) {
+        CatalogBackendError::new(error, CatalogBackendErrorType::ConcurrentModification)
+            .append_detail(
+                "A namespace, table, or expiration task is busy. Retry the recursive drop.",
+            )
+    } else {
+        error.into_catalog_backend_error()
+    }
+}
+
+async fn lock_namespace_drop_tabulars(
+    warehouse_id: WarehouseId,
+    namespace_ids: &[Uuid],
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<Vec<Uuid>, CatalogBackendError> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT tabular_id
+        FROM tabular
+        WHERE warehouse_id = $1 AND namespace_id = ANY($2)
+        ORDER BY tabular_id
+        FOR UPDATE NOWAIT
+        "#,
+        *warehouse_id,
+        namespace_ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(namespace_drop_lock_error)
+}
+
+async fn lock_namespace_drop_expirations(
+    warehouse_id: WarehouseId,
+    tabular_ids: &[Uuid],
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<Vec<Uuid>, CatalogBackendError> {
+    sqlx::query_scalar!(
+        r#"
+        SELECT task_id
+        FROM task
+        WHERE warehouse_id = $1 AND entity_id = ANY($2)
+            AND entity_type IN ('table', 'view', 'generic-table')
+            AND queue_name IN ('soft_deletion', 'tabular_expiration')
+        ORDER BY task_id
+        FOR UPDATE NOWAIT
+        "#,
+        *warehouse_id,
+        tabular_ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(namespace_drop_lock_error)
+}
+
+async fn load_locked_namespace_drop_snapshot(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<NamespaceDropSnapshot, CatalogNamespaceDropError> {
+    // Namespace rows come first, as in the deletion path. FOR UPDATE conflicts with
+    // the parent key share lock and with insertion of a tabular referencing the namespace.
+    // NOWAIT lets the drop retry if a rename already holds a lock in the subtree.
+    let namespace_ids = sqlx::query_scalar!(
+        r#"
+        SELECT child.namespace_id
+        FROM namespace root
+        JOIN namespace child ON child.warehouse_id = root.warehouse_id
+            AND child.namespace_name[1:array_length(root.namespace_name, 1)] = root.namespace_name
+        WHERE root.warehouse_id = $1 AND root.namespace_id = $2
+        ORDER BY child.namespace_id
+        FOR UPDATE OF child NOWAIT
+        "#,
+        *warehouse_id,
+        *namespace_id,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(namespace_drop_lock_error)?;
+
+    let tabular_ids =
+        lock_namespace_drop_tabulars(warehouse_id, &namespace_ids, transaction).await?;
+    // Soft deletion commits its task under the tabular lock. This statement uses a fresh
+    // READ COMMITTED snapshot after acquiring those locks.
+    let expiration_task_ids =
+        lock_namespace_drop_expirations(warehouse_id, &tabular_ids, transaction).await?;
+
+    let snapshot = load_namespace_drop_snapshot(warehouse_id, namespace_id, transaction).await?;
+    // The expiry IDs are part of open_tasks. The row locks keep each scheduled expiry eligible
+    // for cancellation by ID through the end of this transaction.
+    if snapshot.expiration_task_ids != expiration_task_ids {
+        return Err(NamespaceNotEmpty::new(warehouse_id, namespace_id)
+            .append_detail("Expiration tasks changed during the drop. Retry the recursive drop.")
+            .into());
+    }
+
+    let locked: HashSet<_> = namespace_ids.into_iter().collect();
+    if !locked.contains(&*namespace_id)
+        || snapshot
+            .child_namespaces
+            .iter()
+            .any(|child| !locked.contains(child))
+    {
+        return Err(NamespaceNotEmpty::new(warehouse_id, namespace_id)
+            .append_detail("The namespace tree changed during the drop. Retry the recursive drop.")
+            .into());
+    }
+    Ok(snapshot)
+}
+
+pub(crate) async fn drop_namespace(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    NamespaceDropFlags {
+        force,
+        purge: _purge,
+        recursive,
+    }: NamespaceDropFlags,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
+    let info = if recursive {
+        load_locked_namespace_drop_snapshot(warehouse_id, namespace_id, transaction).await?
+    } else {
+        load_namespace_drop_snapshot(warehouse_id, namespace_id, transaction).await?
+    };
     let namespace_ident = parse_namespace_identifier_from_vec(
         &info.namespace_name,
         warehouse_id,
@@ -1152,7 +1317,7 @@ pub(crate) async fn drop_namespace(
         return Err(ChildTabularProtected::new(warehouse_id, namespace_ident.clone()).into());
     }
 
-    if info.has_running_expiration {
+    if info.has_in_flight_expiration {
         return Err(NamespaceHasRunningTabularExpirations::new(
             warehouse_id,
             namespace_ident.clone(),
@@ -1160,6 +1325,85 @@ pub(crate) async fn drop_namespace(
         .into());
     }
 
+    // A soft-deleted tabular needs a scheduled catalog-only expiration that the drop can cancel.
+    if info.has_unresolved_soft_deletions {
+        return Err(NamespaceNotEmpty::new(warehouse_id, namespace_ident)
+            .append_detail(concat!(
+                "An expiration may still need to purge a table or view. Wait for its expiration to succeed. ",
+                "After a failure, look for the entity ID in the warehouse's failed expiration tasks. ",
+                "If the task history is unavailable, ask a catalog administrator to look up the ID in the catalog database. ",
+                "Undrop the table or view before dropping it again."
+            ))
+            .into());
+    }
+
+    delete_namespace_tree(
+        warehouse_id,
+        namespace_id,
+        &namespace_ident,
+        &info.child_namespaces,
+        transaction,
+    )
+    .await?;
+
+    Ok(NamespaceDropInfo {
+        child_namespaces: info.child_namespaces.into_iter().map(Into::into).collect(),
+        soft_deleted_child_tabular_ids: info
+            .child_tabulars_deleted
+            .into_iter()
+            .zip(info.child_tabulars_deleted_typ)
+            .map(|(id, typ)| typ.into_tabular_id(id))
+            .collect(),
+        child_tables: izip!(
+            info.child_tabulars,
+            info.child_tabular_fs_protocol,
+            info.child_tabular_fs_location,
+            info.child_tabular_typ,
+            info.child_tabulars_namespace_names,
+            info.child_tabulars_table_names
+        )
+        .map(
+            |(tabular_id, protocol, fs_location, typ, ns_name, t_name)| {
+                let ns_ident = json_value_to_namespace_ident(warehouse_id, &ns_name)?;
+                let table_ident = TableIdent::new(ns_ident, t_name);
+                Ok::<_, CatalogNamespaceDropError>((
+                    typ.into_tabular_id(tabular_id),
+                    join_location(protocol.as_str(), fs_location.as_str())
+                        .map_err(InternalParseLocationError::from)?,
+                    table_ident,
+                ))
+            },
+        )
+        .collect::<std::result::Result<Vec<_>, _>>()?,
+        open_tasks: info
+            .child_tabular_task_id
+            .into_iter()
+            .map(TaskId::from)
+            .collect(),
+        namespace_locations: info
+            .dropped_ns_ids
+            .into_iter()
+            .zip(info.dropped_ns_locations)
+            .filter_map(|(ns_id, loc)| match Location::from_str(&loc) {
+                Ok(location) => Some((NamespaceId::from(ns_id), location)),
+                Err(e) => {
+                    tracing::debug!(
+                        "Failed to parse location '{loc}' of dropped namespace {ns_id}, skipping its cleanup: {e}"
+                    );
+                    None
+                }
+            })
+            .collect(),
+    })
+}
+
+async fn delete_namespace_tree(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    namespace_ident: &NamespaceIdent,
+    child_namespaces: &[Uuid],
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<(), CatalogNamespaceDropError> {
     // Foreign-key triggers fire after the whole statement, when the tabulars and view defaults
     // removed here are gone, so no non-cascading key on `namespace` still finds rows, whatever
     // order Postgres fires the triggers in. The order of the CTEs and the main DELETE is not
@@ -1190,7 +1434,7 @@ pub(crate) async fn drop_namespace(
             )
         "#,
         *warehouse_id,
-        &info.child_namespaces,
+        child_namespaces,
         *namespace_id,
     )
     .execute(&mut **transaction)
@@ -1214,53 +1458,7 @@ pub(crate) async fn drop_namespace(
         return Err(NamespaceNotFound::new(warehouse_id, namespace_ident.clone()).into());
     }
 
-    Ok(NamespaceDropInfo {
-        child_namespaces: info.child_namespaces.into_iter().map(Into::into).collect(),
-        child_tables: izip!(
-            info.child_tabulars,
-            info.child_tabular_fs_protocol,
-            info.child_tabular_fs_location,
-            info.child_tabular_typ,
-            info.child_tabulars_namespace_names,
-            info.child_tabulars_table_names
-        )
-        .map(
-            |(tabular_id, protocol, fs_location, typ, ns_name, t_name)| {
-                let ns_ident = json_value_to_namespace_ident(warehouse_id, &ns_name)?;
-                let table_ident = TableIdent::new(ns_ident, t_name);
-                Ok::<_, CatalogNamespaceDropError>((
-                    match typ {
-                        TabularType::Table => TabularId::Table(tabular_id.into()),
-                        TabularType::View => TabularId::View(tabular_id.into()),
-                        TabularType::GenericTable => TabularId::GenericTable(tabular_id.into()),
-                    },
-                    join_location(protocol.as_str(), fs_location.as_str())
-                        .map_err(InternalParseLocationError::from)?,
-                    table_ident,
-                ))
-            },
-        )
-        .collect::<std::result::Result<Vec<_>, _>>()?,
-        open_tasks: info
-            .child_tabular_task_id
-            .into_iter()
-            .map(TaskId::from)
-            .collect(),
-        namespace_locations: info
-            .dropped_ns_ids
-            .into_iter()
-            .zip(info.dropped_ns_locations)
-            .filter_map(|(ns_id, loc)| match Location::from_str(&loc) {
-                Ok(location) => Some((NamespaceId::from(ns_id), location)),
-                Err(e) => {
-                    tracing::debug!(
-                        "Failed to parse location '{loc}' of dropped namespace {ns_id}, skipping its cleanup: {e}"
-                    );
-                    None
-                }
-            })
-            .collect(),
-    })
+    Ok(())
 }
 
 pub(super) fn parse_namespace_identifier_from_vec(
@@ -1487,7 +1685,7 @@ pub mod tests {
     use lakekeeper::{
         api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
         service::{
-            CachePolicy, CatalogNamespaceOps, ReadTransaction, Transaction as _, ViewId,
+            CachePolicy, CatalogNamespaceOps, ReadTransaction, TabularId, Transaction as _, ViewId,
             WriteTransaction, is_same_namespace_path_ignoring_ascii_case,
         },
     };
@@ -2114,6 +2312,85 @@ pub mod tests {
         assert_eq!(*child_id, TabularId::GenericTable(gt_id));
         assert_eq!(child_ident.name, gt_name);
         trx.commit().await.unwrap();
+    }
+
+    #[lakekeeper_storage_postgres::db_test]
+    async fn test_namespace_drop_locks_expiration_committed_between_statements(pool: sqlx::PgPool) {
+        use lakekeeper::{
+            api::management::v1::DeleteKind,
+            service::{
+                NamedEntity as _,
+                tasks::{
+                    ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
+                    tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+                },
+            },
+        };
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
+        let namespace_id = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            Into::<NamespaceIdent>::into(table.namespace),
+            CachePolicy::Skip,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .namespace_id();
+
+        let mut drop_tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let tabular_ids =
+            lock_namespace_drop_tabulars(warehouse_id, &[*namespace_id], drop_tx.transaction())
+                .await
+                .unwrap();
+        assert_eq!(tabular_ids, [*table.table_id]);
+
+        let mut task_tx = PostgresTransaction::begin_write(state).await.unwrap();
+        let task_id = TabularExpirationTask::schedule_task::<PostgresBackend>(
+            ScheduleTaskMetadata {
+                resource_demand: None,
+                project_id,
+                parent_task_id: None,
+                scheduled_for: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                entity: TaskEntity::EntityInWarehouse {
+                    warehouse_id,
+                    entity_id: WarehouseTaskEntityId::Table {
+                        table_id: table.table_id,
+                    },
+                    entity_name: table.table_ident.into_name_parts(),
+                },
+            },
+            TabularExpirationPayload::new(DeleteKind::Default),
+            task_tx.transaction(),
+        )
+        .await
+        .unwrap()
+        .inserted()
+        .unwrap();
+        task_tx.commit().await.unwrap();
+
+        let locked =
+            lock_namespace_drop_expirations(warehouse_id, &tabular_ids, drop_tx.transaction())
+                .await
+                .unwrap();
+        assert_eq!(locked, [*task_id]);
+
+        let err = sqlx::query("SELECT task_id FROM task WHERE task_id = $1 FOR UPDATE NOWAIT")
+            .bind(*task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")),
+            "{err:?}"
+        );
+        drop_tx.rollback().await.unwrap();
     }
 
     #[lakekeeper_storage_postgres::db_test]

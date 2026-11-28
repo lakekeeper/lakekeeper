@@ -4653,6 +4653,7 @@ pub mod tests {
         /// Every table, view and generic-table batch received. See
         /// [`Self::tabular_checks`].
         tabular_checks: Arc<std::sync::Mutex<Vec<Vec<RecordedTabularCheck>>>>,
+        deleted_generic_tables: Arc<std::sync::Mutex<Vec<(WarehouseId, GenericTableId)>>>,
         /// Principals whose tabular checks fail with a backend error. See
         /// [`Self::fail_tabular_checks_for_user`].
         failing_tabular_subjects: Arc<RwLock<HashSet<String>>>,
@@ -4737,6 +4738,7 @@ pub mod tests {
                 check_hook: None,
                 assume_role_checks: Arc::default(),
                 tabular_checks: Arc::default(),
+                deleted_generic_tables: Arc::default(),
                 failing_tabular_subjects: Arc::default(),
             }
         }
@@ -4748,6 +4750,15 @@ pub mod tests {
         #[must_use]
         pub fn tabular_checks(&self) -> Vec<Vec<RecordedTabularCheck>> {
             self.tabular_checks.lock().unwrap().clone()
+        }
+
+        /// Generic table deletions reported to the authorizer, in call order.
+        ///
+        /// # Panics
+        /// Panics if the internal `Mutex` is poisoned.
+        #[must_use]
+        pub fn deleted_generic_tables(&self) -> Vec<(WarehouseId, GenericTableId)> {
+            self.deleted_generic_tables.lock().unwrap().clone()
         }
 
         /// Fail every table, view or generic-table batch that holds a check for
@@ -5567,6 +5578,18 @@ pub mod tests {
         }
 
         async fn delete_view(&self, _warehouse_id: WarehouseId, _view_id: ViewId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_generic_table(
+            &self,
+            warehouse_id: WarehouseId,
+            generic_table_id: GenericTableId,
+        ) -> Result<()> {
+            self.deleted_generic_tables
+                .lock()
+                .unwrap()
+                .push((warehouse_id, generic_table_id));
             Ok(())
         }
     }
