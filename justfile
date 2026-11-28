@@ -191,7 +191,7 @@ clarify-table-purge-default-rest-openapi:
     yq eval '(.paths."/v1/{prefix}/namespaces/{namespace}/tables/{table}".delete.parameters[] | select(.name == "purgeRequested")).description = "Whether the user requested to purge the underlying table data and metadata. Note: when omitted, Lakekeeper treats the drop as a purge for tables it manages, so the data is removed. This differs from the Iceberg REST default of false. See the Dropping Tables section of the Lakekeeper documentation."' -i docs/docs/api/rest-catalog-open-api.yaml
 
 # renovate: datasource=pypi depName=graphifyy
-GRAPHIFY_VERSION := "0.9.112"
+GRAPHIFY_VERSION := "0.9.122"
 
 # Removing the local manifest makes graphify re-extract every file, which drops
 # stale nodes the union merge driver kept. Unlike --force, graphify still refuses
