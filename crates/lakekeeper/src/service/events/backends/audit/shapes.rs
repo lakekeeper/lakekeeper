@@ -1,8 +1,9 @@
 //! The three shapes an audit record can have.
 //!
-//! A shape is what a consumer receives. `#[audit_part(shape = "...")]` writes its `emit()`,
-//! the only code that writes an audit record: it stamps `event_source`, `audit_format` and
-//! `record_type`, and puts every field on the line under its own name.
+//! A shape is what a consumer receives. `#[audit_part(shape = "...")]` writes its
+//! `into_fields()`, the only code that encodes an audit record, which puts every field under its
+//! own name in an [`AuditFields`], and `<shape>_keys!`, which lists those names in order. A
+//! record carries `event_source`, `audit_format` and `record_type` before its fields.
 //!
 //! Every record names its shape in `record_type` and its producers in `emitters`, carries its
 //! action and entity lists under one name whatever their length, and omits a field it has no
@@ -10,8 +11,10 @@
 
 use std::sync::Arc;
 
+use serde::{Serialize, ser::SerializeMap as _};
+
 use super::{
-    Decision,
+    AUDIT_FORMAT, Decision, EVENT_SOURCE, RecordType,
     parts::{
         ActionRecord, ActorRecord, DecisionRecord, Emitters, EntityRecord, ErrorRecord, EventId,
         HandlerContext, RecordTime,
@@ -201,12 +204,12 @@ impl<E: AuditEmitter> OperationRecord<E> {
     /// Attach the operation's `context` object, an audit type of the same emitter.
     ///
     /// Taken by value like every other part of the record. Serialized here, so the record
-    /// carries the tree and needs no second type parameter, and only while the audit log
-    /// records it (see [`crate::audit::log_enabled`]).
+    /// carries the tree and needs no second type parameter, and only while records are built
+    /// (see [`crate::audit::enabled`]).
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub fn context<C: AuditPart<Emitter = E>>(mut self, context: C) -> Self {
-        if crate::audit::log_enabled() {
+        if crate::audit::enabled() {
             self.context = Some(AuditJson::of(&context));
         }
         self
@@ -219,14 +222,12 @@ impl<E: AuditEmitter> OperationRecord<E> {
         self
     }
 
-    /// Hand the record to every listener of `events`, the audit listener among them, which
-    /// writes it to the log.
+    /// Hand the record to every listener of `events`, the audit listener among them.
     ///
-    /// Does nothing while the audit log does not record it (see [`crate::audit::log_enabled`]):
-    /// with the audit trail disabled, or with a `tracing` filter that drops the audit target.
+    /// Does nothing while no sink receives it (see [`crate::audit::enabled`]).
     /// Await it, or spawn it to keep the listeners off the caller's path.
     pub async fn dispatch(self, events: &EventDispatcher) {
-        if !crate::audit::log_enabled() {
+        if !crate::audit::enabled() {
             return;
         }
         events.operation_recorded(self.into_event()).await;
@@ -250,23 +251,6 @@ impl<E: AuditEmitter> OperationRecord<E> {
     }
 }
 
-/// Write `event` as one operation record on the log. The one place an operation record is
-/// written.
-pub(super) fn write_operation_record(event: OperationRecordedEvent) {
-    let record = Arc::unwrap_or_clone(event.record);
-    OperationWire {
-        emitters: record.emitters,
-        event_id: record.event_id,
-        request_id: record.request_id,
-        time: record.time,
-        operation: record.operation,
-        actor: record.actor,
-        outcome: record.outcome,
-        context: record.context,
-    }
-    .emit(record.message);
-}
-
 /// An operation record: something the system did that touches identity or access, with no
 /// permission decision of its own. Any emitter can produce one.
 // Not generic, unlike the builder: the schema is derived from this struct and must not
@@ -274,7 +258,7 @@ pub(super) fn write_operation_record(event: OperationRecordedEvent) {
 #[audit_part(shape = "operation")]
 #[schemars(rename = "OperationRecord")]
 #[derive(Debug)]
-struct OperationWire {
+pub(super) struct OperationWire {
     /// Every product that contributed to this record, keyed by its name, with the version of
     /// what it contributes: the one that assembled it and any whose vocabulary it carries.
     emitters: Emitters,
@@ -295,4 +279,76 @@ struct OperationWire {
     /// emitter; absent for an operation that carries none.
     #[schemars(with = "Option<serde_json::Value>")]
     context: Option<AuditJson>,
+}
+
+impl OperationWire {
+    /// The record `event` carries, and the text of its log line.
+    pub(super) fn from_event(event: OperationRecordedEvent) -> (Self, &'static str) {
+        let record = Arc::unwrap_or_clone(event.record);
+        (
+            Self {
+                emitters: record.emitters,
+                event_id: record.event_id,
+                request_id: record.request_id,
+                time: record.time,
+                operation: record.operation,
+                actor: record.actor,
+                outcome: record.outcome,
+                context: record.context,
+            },
+            record.message,
+        )
+    }
+}
+
+/// A record's fields as JSON: built once per record and shared by every sink.
+#[derive(Debug)]
+pub struct AuditFields {
+    /// The record's shape.
+    record_type: RecordType,
+    /// Every field that has a value, in struct order.
+    fields: Vec<(&'static str, AuditJson)>,
+}
+
+/// Reference to [`AuditFields`] that can be cheaply cloned and shared.
+pub type ArcAuditFields = Arc<AuditFields>;
+
+impl AuditFields {
+    /// Called only by the `into_fields` that `#[audit_part(shape = "...")]` writes.
+    pub(crate) fn new(record_type: RecordType, fields: Vec<(&'static str, AuditJson)>) -> Self {
+        Self {
+            record_type,
+            fields,
+        }
+    }
+
+    /// The record's shape.
+    #[must_use]
+    pub fn record_type(&self) -> RecordType {
+        self.record_type
+    }
+
+    /// The value of the field `key`, or `None` when the record has no value for it.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&AuditJson> {
+        self.fields
+            .iter()
+            .find(|(field, _)| *field == key)
+            .map(|(_, value)| value)
+    }
+}
+
+/// The record as one JSON object: `event_source`, `audit_format`, `record_type`, then the
+/// fields in order. This is what every sink other than the log sends.
+impl Serialize for AuditFields {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.fields.len() + 3))?;
+        map.serialize_entry("event_source", EVENT_SOURCE)?;
+        map.serialize_entry("audit_format", AUDIT_FORMAT)?;
+        map.serialize_entry("record_type", &self.record_type.as_wire())?;
+        for (key, value) in &self.fields {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
 }

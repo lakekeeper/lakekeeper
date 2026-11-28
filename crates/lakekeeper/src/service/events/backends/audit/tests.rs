@@ -1,9 +1,13 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
 use iceberg::{NamespaceIdent, TableIdent};
 
-use super::*;
+use super::{
+    shapes::OperationWire,
+    sink::{ArcAuditSink, AuditDelivery, AuditDispatch, AuditSink, LogSink},
+    *,
+};
 use crate::{
     api::management::v1::{
         check::UserOrRole as AuthzUserOrRole,
@@ -23,15 +27,15 @@ use crate::{
         authn::{Actor, UserId},
         authz::{
             ActionDescriptor, AuthZWarehouseActionForbidden, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            DeterminingFactor, EventAction as _, GrantResource, PolicyEffect, ResourceType,
-            RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal, SubtreeGrantPrivileges,
-            SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
+            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, DeterminingFactor, EventAction as _, GrantResource,
+            PolicyEffect, ResourceType, RoleSourceSystem, RootLevelGrants, SubtreeGrantPrincipal,
+            SubtreeGrantPrivileges, SubtreeGrantScope, SubtreeResourceTypes, UserOrRoleId,
         },
         events::{
             Authorization, EventDispatcher,
             context::{
-                APIEventActions as _, EntityDescriptor, EntityType, EventEntities,
+                APIEventActions as _, APIEventContext, EntityDescriptor, EntityType, EventEntities,
                 FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
                 FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_WAREHOUSE_ID, HandlerContextKey,
                 UserProvidedEntity as _, UserProvidedNamespace, UserProvidedTable,
@@ -67,7 +71,7 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for CapturedLogs {
 }
 
 /// The listener as the binary installs it with emails off.
-static LISTENER: AuditEventListener = AuditEventListener::new();
+static LISTENER: LazyLock<AuditEventListener> = LazyLock::new(AuditEventListener::new);
 
 /// Render audit events through the same JSON formatter the binary configures
 /// (`crates/lakekeeper-bin/src/main.rs`), and return the parsed lines.
@@ -1565,6 +1569,247 @@ fn fixture_idempotent_replay() {
     assert_matches_fixture("idempotent_replay", &contract_fields(record));
 }
 
+/// Assert that `json` carries what the log `line` carries, key for key and in the same order.
+#[track_caller]
+fn assert_json_matches_log_line(json: &serde_json::Value, line: serde_json::Value) {
+    let logged = contract_fields(line);
+    let keys = |record: &serde_json::Value| {
+        record
+            .as_object()
+            .expect("a record is a JSON object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(keys(json), keys(&logged));
+    assert_eq!(json, &logged);
+}
+
+/// A dispatch to the log sink alone.
+fn log_only() -> AuditDispatch {
+    let sinks: Vec<ArcAuditSink> = vec![Arc::new(LogSink)];
+    AuditDispatch::new(sinks)
+}
+
+/// The JSON another sink sends for `fields`, and the log line the log sink writes for them.
+fn json_and_log_line(
+    fields: AuditFields,
+    message: &'static str,
+) -> (serde_json::Value, serde_json::Value) {
+    let json = serde_json::to_value(&fields).expect("audit fields serialize");
+    let dispatch = log_only();
+    let line = emit_and_capture_one(|| async {
+        dispatch.deliver(fields, message);
+        Ok(())
+    });
+    (json, line)
+}
+
+/// An authorization record as JSON carries what its log line carries: the stamped keys are
+/// written in two places, the JSON and the log sink.
+#[test]
+fn an_authorization_record_as_json_matches_its_log_line() {
+    let event = fixture_succeeded_event(
+        fixture_metadata(),
+        EventEntities::one(fixture_table_entity()),
+        vec![fixture_read_action()],
+        fixture_context(&[]),
+    );
+    let fields = assemble::authorization_succeeded(&event, &Enrichment::default()).into_fields();
+
+    let (json, line) = json_and_log_line(fields, "Authorization succeeded event");
+
+    assert_json_matches_log_line(&json, line);
+}
+
+/// A replay record as JSON carries what its log line carries.
+#[test]
+fn a_replay_record_as_json_matches_its_log_line() {
+    let event = IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        occurred_at: chrono::Utc::now(),
+        entities: Arc::new(EventEntities::one(fixture_table_entity())),
+        actions: Arc::new(vec![fixture_drop_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    };
+    let fields = assemble::replay(&event, &Enrichment::default()).into_fields();
+
+    let (json, line) = json_and_log_line(fields, "Idempotent replay served");
+
+    assert_json_matches_log_line(&json, line);
+}
+
+/// An operation record as JSON carries what its log line carries.
+#[test]
+fn an_operation_record_as_json_matches_its_log_line() {
+    let (record, message) = OperationWire::from_event(record_without_request().into_event());
+
+    let (json, line) = json_and_log_line(record.into_fields(), message);
+
+    assert_json_matches_log_line(&json, line);
+}
+
+/// `dispatch_for`, which gives `new()` and `with_catalog()` their dispatch, holds the log sink
+/// only while it is active, so with the log sink off it writes no audit line. `new()` itself
+/// reads the global `CONFIG`, which one test process cannot set to both values.
+#[test]
+fn a_listener_starts_with_the_log_sink_only_while_it_is_active() {
+    let lines_written_with = |log: bool| {
+        let dispatch = super::sink::dispatch_for(super::sink::ActiveSinks { log, others: false });
+        let event = IdempotentReplayEvent {
+            request_metadata: Arc::new(fixture_metadata()),
+            occurred_at: chrono::Utc::now(),
+            entities: Arc::new(EventEntities::one(fixture_table_entity())),
+            actions: Arc::new(vec![fixture_drop_action()]),
+            idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY)
+                .expect("fixed test key"),
+        };
+        emit_and_capture(|| async {
+            let fields = assemble::replay(&event, &Enrichment::default()).into_fields();
+            dispatch.deliver(fields, "Idempotent replay served");
+            Ok(())
+        })
+        .len()
+    };
+
+    assert_eq!(lines_written_with(true), 1);
+    assert_eq!(lines_written_with(false), 0);
+}
+
+/// A record handed to the log sink is written as the line the replay fixture pins.
+#[test]
+fn the_log_sink_writes_the_fixture_line() {
+    let uuid = |s: &str| s.parse::<uuid::Uuid>().expect("fixed test uuid");
+    let entities = UserProvidedTable {
+        warehouse_id: crate::service::WarehouseId::new(uuid(FIXTURE_WAREHOUSE_ID)),
+        table: TableIdent {
+            namespace: NamespaceIdent::new("sales".to_string()),
+            name: "orders".to_string(),
+        }
+        .into(),
+    }
+    .event_entities();
+    let event = IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        occurred_at: chrono::Utc::now(),
+        entities: Arc::new(entities),
+        actions: Arc::new(vec![fixture_drop_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    };
+    let dispatch = log_only();
+
+    let line = emit_and_capture_one(|| async {
+        let record = assemble::replay(&event, &Enrichment::default());
+        dispatch.deliver(record.into_fields(), "Idempotent replay served");
+        Ok(())
+    });
+
+    assert_matches_fixture("idempotent_replay", &contract_fields(line));
+}
+
+/// No shape has a field named like a key the log subscriber adds: on the log line the two
+/// would collide, and the record without its envelope would lose the field.
+#[test]
+fn no_shape_field_is_named_like_a_log_envelope_key() {
+    fn shape_refs(value: &serde_json::Value, refs: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(target) = map.get("then").and_then(|then| then["$ref"].as_str()) {
+                    refs.push(target.trim_start_matches("#/$defs/").to_string());
+                }
+                map.values().for_each(|child| shape_refs(child, refs));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|item| shape_refs(item, refs)),
+            _ => {}
+        }
+    }
+    let schema = crate::audit::schema::audit_schema_for("lakekeeper");
+    let mut shapes = Vec::new();
+    shape_refs(
+        &schema["$defs"][crate::audit::schema::AUDIT_RECORD],
+        &mut shapes,
+    );
+    shapes.sort();
+    assert_eq!(
+        shapes,
+        ["AuthorizationRecord", "OperationRecord", "ReplayRecord"]
+    );
+
+    for shape in shapes {
+        let properties = schema["$defs"][&shape]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{shape} has properties"));
+        for key in crate::audit::validate::ENVELOPE_KEYS {
+            assert!(
+                !properties.contains_key(*key),
+                "{shape} has a field named `{key}`, a key the log subscriber adds"
+            );
+        }
+    }
+}
+
+/// A sink that keeps the shape of every record it is handed.
+#[derive(Debug, Default)]
+struct RecordTypeSink(Mutex<Vec<RecordType>>);
+
+#[async_trait::async_trait]
+impl AuditSink for RecordTypeSink {
+    fn name(&self) -> &'static str {
+        "record-type"
+    }
+
+    fn deliver(&self, delivery: &AuditDelivery) {
+        self.0
+            .lock()
+            .expect("sink poisoned")
+            .push(delivery.fields().record_type());
+    }
+}
+
+/// A listener given a dispatch hands its records to that dispatch's sinks, and to no others.
+#[test]
+fn a_listener_hands_each_record_to_its_dispatch() {
+    let sink = Arc::new(RecordTypeSink::default());
+    let sinks: Vec<ArcAuditSink> = vec![sink.clone()];
+    let listener = AuditEventListener::new().with_dispatch(AuditDispatch::new(sinks));
+
+    let event = IdempotentReplayEvent {
+        request_metadata: Arc::new(fixture_metadata()),
+        occurred_at: chrono::Utc::now(),
+        entities: Arc::new(EventEntities::one(fixture_table_entity())),
+        actions: Arc::new(vec![fixture_drop_action()]),
+        idempotency_key: IdempotencyKey::parse(FIXTURE_IDEMPOTENCY_KEY).expect("fixed test key"),
+    };
+    let log_lines = emit_and_capture(|| listener.idempotent_replay_served(event));
+
+    assert_eq!(
+        *sink.0.lock().expect("sink poisoned"),
+        vec![RecordType::Replay]
+    );
+    assert_eq!(log_lines, Vec::<serde_json::Value>::new());
+}
+
+/// A denial is written before `emit_early_authz_failure` returns, so a shutdown right after
+/// the response cannot lose it. No Tokio runtime runs here: a record left to a spawned task
+/// would never be written.
+#[test]
+fn a_denial_is_written_before_the_failure_returns() {
+    let dispatcher = EventDispatcher::new(vec![Arc::new(AuditEventListener::new())]);
+    let records = emit_and_capture(|| async {
+        let event_ctx = APIEventContext::for_server(
+            Arc::new(fixture_metadata()),
+            dispatcher.clone(),
+            CatalogServerAction::ListUsers,
+            crate::service::ServerId::new_random(),
+        );
+        let _error = event_ctx.emit_early_authz_failure(crate::request_metadata::ProjectIdMissing);
+        Ok(())
+    });
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["decision"], "denied");
+}
+
 /// One `grants_changed` event emits one record per grant triple, revocations
 /// first, so this covers both operations in the order a consumer sees them.
 #[test]
@@ -2233,21 +2478,26 @@ fn audit_part_is_only_implemented_through_the_attribute() {
     );
 }
 
-/// Only the shapes write an audit record. A `tracing::info!(event_source = "audit", …)`
-/// anywhere else would bypass the envelope, the schema and every check.
+/// Only the log sink writes an audit line. A `tracing::info!` with the audit `event_source`
+/// anywhere else would bypass the record's fields, the schema and every check.
 #[test]
-fn only_the_shapes_emit_audit_records() {
+fn only_the_log_sink_writes_audit_lines() {
+    let writes_an_audit_line = |code: &str| {
+        code.match_indices("event_source =").any(|(at, _)| {
+            let rest = code[at..].lines().next().unwrap_or_default();
+            rest.contains("\"audit\"") || rest.contains("EVENT_SOURCE")
+        })
+    };
     let offenders: Vec<String> = crate_sources()
         .into_iter()
-        // `tests.rs` names the literal in its own assertions. The shapes themselves hold no
-        // such line: the attribute writes their `emit()`.
-        .filter(|(path, _)| !path.ends_with("tests.rs"))
-        .filter(|(_, text)| code_only(text).contains("event_source = \"audit\""))
+        // `tests.rs` names the literal in its own assertions.
+        .filter(|(path, _)| !path.ends_with("tests.rs") && !path.ends_with("audit/sink.rs"))
+        .filter(|(_, text)| writes_an_audit_line(&code_only(text)))
         .map(|(path, _)| path.display().to_string())
         .collect();
     assert!(
         offenders.is_empty(),
-        "`event_source = \"audit\"` outside the shapes: {offenders:?}"
+        "an audit line written outside the log sink: {offenders:?}"
     );
 }
 
@@ -2442,11 +2692,12 @@ fn the_generated_schema_is_self_contained_and_documented() {
     crate::audit::schema::assert_descriptions_are_prose(&schema);
 }
 
-/// The schema's description of a record's shape is what the emitter actually writes.
+/// Every shape's `record_type` is a value of the `RecordType` vocabulary, and every value
+/// names a shape.
 ///
-/// A shape's schema is derived from its struct, but `emit()` writes the record field by
-/// field, and the two could drift. Every committed record is checked against the shape its
-/// `record_type` names.
+/// The schema takes a shape's `record_type` from its `shape = "..."` string, while the log
+/// line and the JSON take it from `RecordType::as_wire()`. The two agree only while the string
+/// comes back unchanged from its round trip through the variant name.
 #[test]
 fn the_shapes_and_the_record_type_vocabulary_declare_the_same_names() {
     let schema = crate::audit::schema::audit_schema_for("lakekeeper");
@@ -2637,8 +2888,8 @@ fn every_audit_record_example_in_the_docs_validates() {
 
 /// The gate and the emission name one target.
 ///
-/// `log_enabled()` asks the subscriber about a target, and the shapes write to one. If the two
-/// differed, the gate would answer for a target nothing writes to.
+/// `log_enabled()` asks the subscriber about a target, and the log sink writes to one. If the
+/// two differed, the gate would answer for a target nothing writes to.
 #[test]
 fn the_gate_and_the_emission_name_one_target() {
     let record = emit_and_capture_one(|| {

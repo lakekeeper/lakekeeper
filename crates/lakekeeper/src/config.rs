@@ -1320,10 +1320,27 @@ pub(crate) struct AuditTracingConfig {
     /// provider and may be a free-form name, so it might hold personal data.
     #[serde(default = "include_role_source_id_default")]
     pub include_role_source_id: bool,
+    /// The log sink: audit records written to the log.
+    #[serde(default)]
+    pub log: AuditLogConfig,
 }
 
 fn include_role_source_id_default() -> bool {
     true
+}
+
+/// The audit log sink.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct AuditLogConfig {
+    /// Write audit records to the log.
+    pub enabled: bool,
+}
+
+impl Default for AuditLogConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// Cache for `UserId → ListUserRoleAssignmentsResult` lookups.
@@ -1677,6 +1694,7 @@ impl Default for DynAppConfig {
                     enabled: true,
                     include_user_email: false,
                     include_role_source_id: true,
+                    log: AuditLogConfig::default(),
                 },
             },
             maintenance_mode: MaintenanceMode::Off,
@@ -3287,6 +3305,32 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__ENABLED", "true");
             let config = get_config();
             assert!(config.audit.tracing.enabled);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_audit_log_enabled() {
+        // Test default value is true
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.audit.tracing.log.enabled);
+            Ok(())
+        });
+
+        // Test can be disabled
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__LOG__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.audit.tracing.log.enabled);
+            Ok(())
+        });
+
+        // Test can be explicitly enabled
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__LOG__ENABLED", "true");
+            let config = get_config();
+            assert!(config.audit.tracing.log.enabled);
             Ok(())
         });
     }
